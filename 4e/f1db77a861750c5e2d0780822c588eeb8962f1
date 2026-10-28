@@ -1,0 +1,177 @@
+.editorconfig
+  s_0f2bd77c18c723::t_a7f3353782043e 1-13
+.gitattributes
+  s_0f2bd77c18c723::t_1ffadc2b8c17a0 1-16
+.github/ISSUE_TEMPLATE/bug_report.md
+  s_0f2bd77c18c723::t_aafc8b210a1d6f 1-33
+.github/ISSUE_TEMPLATE/feature_request.md
+  s_0f2bd77c18c723::t_9bf4a16a06f943 1-26
+.github/pull_request_template.md
+  s_0f2bd77c18c723::t_88442b1267dba0 1-17
+.github/workflows/ci.yml
+  s_0f2bd77c18c723::t_9599beb7e6701b 1-41
+.gitignore
+  s_0f2bd77c18c723::t_daba9f60da849d 1-8
+CHANGELOG.md
+  s_0f2bd77c18c723::t_ea465396d3fc47 1-75
+CONTRIBUTING.md
+  s_0f2bd77c18c723::t_be16e4095a130d 1-93
+LICENSE
+  s_0f2bd77c18c723::t_e0d05499090a06 1-202
+NOTICE
+  s_0f2bd77c18c723::t_746153f8ee4e6b 1-28
+README.md
+  s_0f2bd77c18c723::t_dec0b1be45a4ef 1-188
+ROADMAP.md
+  s_0f2bd77c18c723::t_34a97bcae5fe83 1-154
+SAML-implementation.md
+  s_0f2bd77c18c723::t_4c81d1a12a3a94 1-634
+SECURITY.md
+  s_0f2bd77c18c723::t_606383aef83651 1-63
+docs/api.md
+  s_0f2bd77c18c723::t_dcbf89ec976d30 1-337
+docs/architecture.md
+  s_0f2bd77c18c723::t_9f4d913777fee2 1-152
+docs/upgrading.md
+  s_0f2bd77c18c723::t_246e422b551fbb 1-120
+migrations/0001_schema.sql
+  s_0f2bd77c18c723::t_b4aa263b2ea0d4 1-243
+migrations/0002_builtin_groups.sql
+  s_0f2bd77c18c723::t_4c75a5f471e0f8 1-21
+package-lock.json
+  s_0f2bd77c18c723::t_6a5f50934a9a71 1-3174
+package.json
+  s_cfff283cbdebfe::t_b5a3161af90d64 1-48
+scripts/deploy.mjs
+  s_0f2bd77c18c723::t_029d2290455354 1-284
+scripts/gen-secrets-for-deploy.mjs
+  s_0f2bd77c18c723::t_198419d5c54fea 1-26
+scripts/generate-keypair.mjs
+  s_0f2bd77c18c723::t_3aa9fc85689bc4 1-35
+scripts/lib/log.mjs
+  s_0f2bd77c18c723::t_918b41852ff0d1 1-37
+scripts/lib/paths.mjs
+  s_0f2bd77c18c723::t_77b3d94afff87d 1-7
+scripts/lib/run.mjs
+  s_0f2bd77c18c723::t_6a0ef08cc97e61 1-91
+scripts/lib/wrangler.mjs
+  s_0f2bd77c18c723::t_46c430fba34545 1-170
+src/env.ts
+  s_0f2bd77c18c723::t_efc09cfd47188a 1-34
+src/index.ts
+  s_0f2bd77c18c723::t_d4e6aaa363b122 1-48
+src/lib/api-auth.ts
+  s_0f2bd77c18c723::t_b9d83c788bcd6a 1-118
+src/lib/api-keys.ts
+  s_0f2bd77c18c723::t_6f60db706f5c7a 1-126
+src/lib/audit.ts
+  s_0f2bd77c18c723::t_3f283318a7d182 1-33
+src/lib/authorize-state.ts
+  s_0f2bd77c18c723::t_9edc18210c5434 1-61
+src/lib/backup-codes.ts
+  s_0f2bd77c18c723::t_5c415b78605987 1-63
+src/lib/db.ts
+  s_0f2bd77c18c723::t_079307b1fa8eb3 1-62
+src/lib/directory-import.ts
+  s_0f2bd77c18c723::t_528144d4a97e23 1-401
+src/lib/domains.ts
+  s_0f2bd77c18c723::t_45c683cac1c94b 1-83
+src/lib/html.ts
+  s_0f2bd77c18c723::t_062b5d9b6b9e63 1-713
+src/lib/jwt.ts
+  s_0f2bd77c18c723::t_a35dab7dbfba3f 1-93
+src/lib/login-views.ts
+  s_0f2bd77c18c723::t_716290d3d92369 1-154
+src/lib/mfa-enrollment.ts
+  s_0f2bd77c18c723::t_9289efcb58b570 1-15
+src/lib/middleware.ts
+  s_0f2bd77c18c723::t_ff6089aab8076a 1-52
+src/lib/oauth-client-auth.ts
+  s_0f2bd77c18c723::t_0ddf8a7771ed04 1-34
+src/lib/password.ts
+  s_0f2bd77c18c723::t_e535c36d788aa5 1-102
+src/lib/rate-limit.ts
+  s_0f2bd77c18c723::t_fd1c8eace4b2e2 1-92
+src/lib/scim-client.ts
+  s_0f2bd77c18c723::t_fcab243deab41a 1-248
+src/lib/sessions.ts
+  s_0f2bd77c18c723::t_68eb4e2caa2af2 1-107
+src/lib/settings.ts
+  s_0f2bd77c18c723::t_18a46e6881b29d 1-217
+src/lib/tokens.ts
+  s_0f2bd77c18c723::t_7460b22a0bdcc0 1-9
+src/lib/totp.ts
+  s_0f2bd77c18c723::t_ef05e944fb1a9e 1-82
+src/lib/trusted-devices.ts
+  s_0f2bd77c18c723::t_53e1d945c390cf 1-70
+src/lib/types.ts
+  s_0f2bd77c18c723::t_eef785cb7514a7 1-60
+src/routes/account.ts
+  s_0f2bd77c18c723::t_bccc3f8994decc 1-464
+src/routes/admin.ts
+  s_0f2bd77c18c723::t_50b8e95e37c98d 1-2136
+src/routes/api.ts
+  s_0f2bd77c18c723::t_018983c8ea9359 1-551
+src/routes/authorize.ts
+  s_0f2bd77c18c723::t_40beb806c10ed5 1-99
+src/routes/discovery.ts
+  s_0f2bd77c18c723::t_c83483e614f5e1 1-29
+src/routes/introspect.ts
+  s_0f2bd77c18c723::t_03b47e19188f1d 1-82
+src/routes/login.ts
+  s_0f2bd77c18c723::t_d1ee8ad709b1be 1-179
+src/routes/token.ts
+  s_0f2bd77c18c723::t_161c1674364b5b 1-154
+src/routes/userinfo.ts
+  s_0f2bd77c18c723::t_5a735509fa347b 1-49
+test/api.test.ts
+  s_0f2bd77c18c723::t_a0e951add575d2 1-558
+test/apply-migrations.ts
+  s_0f2bd77c18c723::t_6d21c91aa20f34 1-6
+test/env.d.ts
+  s_0f2bd77c18c723::t_06e55021e79edf 1-18
+test/fixtures/signing-key.ts
+  s_0f2bd77c18c723::t_aa355b7dc79612 1-43
+test/helpers.ts
+  s_0f2bd77c18c723::t_00ddc345a0a19e 1-88
+test/oidc.test.ts
+  s_0f2bd77c18c723::t_bca1342a3e9247 1-374
+test/password.test.ts
+  s_0f2bd77c18c723::t_26c95c3e3de49c 1-87
+test/totp.test.ts
+  s_0f2bd77c18c723::t_051c1e7dc23fe9 1-57
+test/tsconfig.json
+  s_0f2bd77c18c723::t_db07df84f95e0d 1-11
+tsconfig.json
+  s_0f2bd77c18c723::t_0d0009c85dd830 1-18
+vitest.config.ts
+  s_0f2bd77c18c723::t_69f97664dbddf7 1-35
+wrangler.jsonc
+  s_0f2bd77c18c723::t_66560a1e509f2f 1-72
+wrangler.test.jsonc
+  s_0f2bd77c18c723::t_8e7924e772ef99 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4ef1db77a861750c5e2d0780822c588eeb8962f1",
+  "prompts": {},
+  "sessions": {
+    "s_0f2bd77c18c723": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "childish-governor",
+        "model": "unknown"
+      },
+      "human_author": "Simon Thorpe <11550089+securitypedant@users.noreply.github.com>"
+    },
+    "s_cfff283cbdebfe": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "persistent-workshop",
+        "model": "unknown"
+      },
+      "human_author": "Simon Thorpe <11550089+securitypedant@users.noreply.github.com>"
+    }
+  }
+}
