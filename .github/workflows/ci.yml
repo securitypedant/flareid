@@ -1,0 +1,41 @@
+name: CI
+
+# Lives here so that it is already in place when this directory becomes its own
+# repository - GitHub only reads .github at a repository root, so until the
+# split this file is inert rather than wrong.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Catches the class of problem a typecheck cannot: a module that does not
+      # bundle for the Workers runtime, or a wrangler config that does not
+      # resolve. No credentials needed and nothing is uploaded.
+      - name: Build
+        run: npx wrangler deploy --dry-run --outdir /tmp/flareid-build
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "0000000000000000000000000000000000"

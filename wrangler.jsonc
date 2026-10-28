@@ -1,0 +1,72 @@
+{
+  // Placeholders, not configuration. `npm run deploy` (scripts/deploy.mjs)
+  // creates the D1 database and KV namespace, generates a signing keypair, and
+  // writes the real values into this file - so expect it to be dirty in your
+  // working tree afterwards. That is the design: a Worker is deployed with the
+  // ids it is bound to, and those ids differ per account.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flareid-idp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  // node:crypto, which is not used yet but is what any future SAML support
+  // needs for X.509 handling - see SAML-implementation.md.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // Public app name shown on the login and admin pages. Also editable at
+    // runtime from Admin -> Security, which takes precedence over this.
+    "APP_NAME": "FlareID",
+    // The issuer this IdP identifies itself as, in OIDC discovery and in every
+    // id_token. It MUST exactly match the issuer configured in each relying
+    // party - a mismatch is rejected by the relying party, usually without
+    // explaining why. Set to the deployed hostname before going anywhere near a
+    // real client; left as localhost so that `npm run dev` works untouched.
+    "ISSUER_URL": "http://localhost:8790",
+    // Public half of the RS256 signing keypair. Not a secret - this is exactly
+    // what /jwks.json publishes - but it must be the counterpart of the
+    // SIGNING_KEY_PKCS8 secret, so generate the pair together with
+    // `npm run keygen` rather than editing either by hand.
+    "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"REPLACE-ME-RUN-NPM-RUN-KEYGEN\",\"e\":\"AQAB\"}",
+    // Key id for the current signing key. Bump it when rotating - see
+    // scripts/generate-keypair.mjs for the procedure.
+    "SIGNING_KEY_ID": "flareid-key-1"
+    // During a rotation window, also set these two to the *previous* key's
+    // public JWK and id, so tokens signed just before the rotation stay
+    // verifiable until they expire:
+    //   "SIGNING_PUBLIC_JWK_PREVIOUS": "...",
+    //   "SIGNING_KEY_ID_PREVIOUS": "flareid-key-1"
+  },
+  "assets": {
+    // Static files - the logo and favicons - served directly, falling through
+    // to the Worker for everything else. No ASSETS binding, since nothing in
+    // code fetches them programmatically.
+    "directory": "./public"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "flareid-db",
+      "database_id": "REPLACE-ME",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      // Short-lived login-flow state, pending MFA challenges, and rate-limit
+      // counters. Nothing in here needs to survive being lost.
+      "binding": "SESSIONS_KV",
+      "id": "REPLACE-ME"
+    }
+  ]
+  // Secrets, set with `wrangler secret put` rather than stored here:
+  //   SIGNING_KEY_PKCS8     - PKCS8 PEM of the RS256 private key that signs
+  //                           id_tokens. Generate with `npm run keygen`.
+  //   COOKIE_ENCRYPTION_KEY - any random string; signs the IdP session cookie.
+  //   BOOTSTRAP_TOKEN       - one-shot provisioning secret for /api/v1. A fresh
+  //                           deployment has no users, so this is the only way
+  //                           to create the first administrator. It stops
+  //                           working once setup completes, except for the
+  //                           documented break-glass route. See docs/api.md.
+}

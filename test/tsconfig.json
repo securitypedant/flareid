@@ -1,0 +1,11 @@
+{
+  // The tests need a different `types` list from src: the Workers Vitest
+  // integration's own types, which declare the "cloudflare:test" module. They
+  // are kept out of the main tsconfig so that a type that only exists under the
+  // test runner cannot accidentally be relied on by the Worker itself.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["./**/*.ts", "../src/**/*.ts"]
+}

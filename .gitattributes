@@ -1,0 +1,16 @@
+# Force LF regardless of the contributor's core.autocrlf.
+#
+# Git for Windows defaults to core.autocrlf=true, and two things here care: the
+# .mjs deploy scripts, and the .sql migrations, which are read and hashed by
+# `wrangler d1 migrations apply` - a CRLF migration is a different file from the
+# one already recorded as applied.
+*.mjs       text eol=lf
+*.ts        text eol=lf
+*.sql       text eol=lf
+*.json      text eol=lf
+*.jsonc     text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+
+# Binary, so git never tries to "fix" them.
+*.png       binary

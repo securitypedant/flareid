@@ -1,0 +1,41 @@
+{
+  // Test-only Worker config, used by vitest.config.ts.
+  //
+  // Separate from wrangler.jsonc on purpose. That file carries the ids of real
+  // Cloudflare resources and is rewritten by the deploy script; this one carries
+  // none, because the test pool simulates D1 and KV locally and never talks to
+  // the network. Keeping them apart means a test run cannot touch a deployed
+  // database, and a deploy cannot be affected by a test setting.
+  //
+  // The `assets` block from wrangler.jsonc is deliberately absent: nothing under
+  // test fetches the logo.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flareid-idp-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "APP_NAME": "FlareID",
+    "ISSUER_URL": "https://idp.test",
+    // A throwaway keypair generated solely for the test suite. The private half
+    // lives beside it in test/fixtures/signing-key.ts - which is fine, and worth
+    // being explicit about: it signs nothing but test assertions, and a test
+    // that needs a verifiable id_token needs both halves.
+    "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"kGtTRI7gyel6KizX3vvPLwXvRj44PI2v6cvenSGdfh_DpeEZ7t1U6li1Erkvd5HLl2uIQbbUkEVl_ZbdpuEvWztRPPu_9sOvURsIQ7VjDuNQdlKiV2hdLennJq0mXpU18FxbsuWgjyN0xcHimZ70DJVhilu5ZXOM3CAVAB5ZUOnGk-yxgbhyD9FE11Bcz4hOHksECtbpJrYPr5fACaEnQKXRPUCmIFVBoJW5-aTrMSbNG8KzB_L6f3fON1eYFce6OjNvlxmotTvkPCQKf8ovIcYGLwQSkmyibkQAUWr6VxUr5WiRaoBVSJ26WFWsCpAjW3bqo8l43ZZkPX9jW0f8YQ\",\"e\":\"AQAB\"}",
+    "SIGNING_KEY_ID": "flareid-test-key"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "flareid-db-test",
+      "database_id": "flareid-db-test",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS_KV",
+      "id": "sessions-test"
+    }
+  ]
+}
