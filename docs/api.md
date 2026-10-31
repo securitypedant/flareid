@@ -261,6 +261,39 @@ Re-registering the same `client_id` updates it rather than colliding, so
 provisioning converges on re-runs. A generated `client_secret` is returned
 once; a supplied one is not echoed back.
 
+### `GET /saml/service-providers`, `POST /saml/service-providers`, `DELETE /saml/service-providers/{id}`
+
+Scope: `directory:read` / `clients:write`.
+
+Registers a SAML 2.0 service provider - an application allowed to sign users
+in via `/saml/sso`. Keyed on `entity_id`, so re-running provisioning updates
+the existing row rather than colliding on the unique index; fields not
+supplied keep their values.
+
+```json
+{
+  "entity_id": "https://team.cloudflareaccess.com",
+  "name": "Cloudflare Access",
+  "acs_urls": ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"],
+  "default_acs_url": "optional - used when the request omits one",
+  "nameid_format": "transient | emailAddress | persistent",
+  "attribute_map": { "email": "email", "groups": "groups" },
+  "sign_response": true,
+  "sign_assertion": true,
+  "want_authn_requests_signed": false,
+  "signing_certs": ["PEM blocks, or bare base64 DER"]
+}
+```
+
+`attribute_map` maps a SAML attribute name onto a user field; an empty object
+falls back to `{"email","name","given_name","family_name","groups"}`.
+`want_authn_requests_signed` requires at least one entry in `signing_certs`,
+any of which may have signed the request - register two during certificate
+rollover.
+
+`DELETE` takes the numeric `id` from the list response, not the entity_id:
+entity IDs are URLs and cannot ride inside a path segment.
+
 ### `POST /scim/config`, `POST /scim/test`, `POST /scim/sync`
 
 Scope: `settings:write`.

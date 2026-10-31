@@ -1,0 +1,191 @@
+import { Hono } from "hono";
+import type { Env } from "../env.js";
+import { loginForm } from "../lib/login-views.js";
+import { deleteLoginFlow, getLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
+import { getSession } from "../lib/sessions.js";
+import { getUserById } from "../lib/db.js";
+import { getLoginGradient, getLoginSubtitle, isSetupCompleted } from "../lib/settings.js";
+import { logAudit } from "../lib/audit.js";
+import { b64encode } from "../lib/saml/xml.js";
+import { isSamlConfigured } from "../lib/saml/sign.js";
+import { idpMetadataXml } from "../lib/saml/metadata.js";
+import { samlPostForm } from "../lib/saml/post-form.js";
+import { buildSignedResponse, idpEntityId } from "../lib/saml/messages.js";
+import {
+  AuthnRequestError,
+  inflateAuthnRequest,
+  parseAuthnRequestXml,
+  rawQueryParams,
+  verifyRedirectSignature,
+} from "../lib/saml/authn-request.js";
+import { getSpByEntityId, getSpById, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
+import type { SamlServiceProviderRow, UserRow } from "../lib/types.js";
+
+export const saml = new Hono<{ Bindings: Env }>();
+
+const REQUEST_ID_TTL_SECONDS = 600;
+
+/**
+ * Issues the signed response and returns the fields for the auto-POST form.
+ *
+ * Shared by both entry points: the SSO path (existing session answers the
+ * AuthnRequest directly) and the end of the login flow (login.ts calls this
+ * once authentication completes).
+ */
+export async function issueSamlResponse(
+  env: Env,
+  sp: SamlServiceProviderRow,
+  request: PendingSamlRequest,
+  user: UserRow,
+  sessionId: string,
+  authnInstant: Date
+): Promise<{ acsUrl: string; samlResponse: string; relayState: string | null }> {
+  const xml = await buildSignedResponse(env, {
+    sp,
+    user,
+    requestId: request.requestId,
+    acsUrl: request.acsUrl,
+    sessionId,
+    authnInstant,
+  });
+  return { acsUrl: request.acsUrl, samlResponse: b64encode(xml), relayState: request.relayState };
+}
+
+/** The IdP's EntityDescriptor - what an SP's administrator points at to learn our endpoints and signing certificate. */
+saml.get("/saml/metadata", async (c) => {
+  if (!isSamlConfigured(c.env)) {
+    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+  }
+  return new Response(idpMetadataXml(c.env, c.get("appName")), {
+    headers: { "Content-Type": "application/samlmetadata+xml" },
+  });
+});
+
+saml.get("/saml/sso", async (c) => {
+  if (!isSamlConfigured(c.env)) {
+    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+  }
+
+  const raw = rawQueryParams(c.req.url);
+  if (!raw.SAMLRequest) return c.text("Missing SAMLRequest parameter.", 400);
+
+  let request;
+  try {
+    // Decoded here, not in rawQueryParams: the signature check below needs
+    // the value exactly as it arrived, but the inflater needs the base64.
+    request = parseAuthnRequestXml(await inflateAuthnRequest(decodeURIComponent(raw.SAMLRequest)));
+  } catch (err) {
+    return c.text(err instanceof AuthnRequestError ? err.message : "Could not decode the SAML request.", 400);
+  }
+
+  if (request.destination && request.destination !== `${idpEntityId(c.env)}/saml/sso`) {
+    return c.text("The request's Destination does not match this endpoint.", 400);
+  }
+
+  const sp = await getSpByEntityId(c.env, request.issuer);
+  if (!sp) return c.text("Unknown service provider.", 400);
+
+  // The ACS allowlist is the control that stops an unsigned request
+  // redirecting a signed assertion somewhere unregistered - exact match only.
+  const acsUrl = resolveAcsUrl(sp, request.acsUrl);
+  if (request.acsUrl && !spAcsUrls(sp).includes(request.acsUrl)) {
+    await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "unregistered_acs", acs: request.acsUrl }, c.req.raw);
+    return c.text("AssertionConsumerServiceURL is not registered for this service provider.", 400);
+  }
+  if (!acsUrl) return c.text("This service provider has no ACS URL configured.", 400);
+
+  const sig = await verifyRedirectSignature(sp, raw);
+  if (sig === "unsigned" && sp.want_authn_requests_signed) {
+    await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "unsigned_request" }, c.req.raw);
+    return c.text("This service provider requires signed authentication requests.", 400);
+  }
+  if (sig === "bad" || sig === "unsupported-alg" || sig === "no-key") {
+    await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: `signature_${sig}` }, c.req.raw);
+    return c.text("The request signature could not be verified.", 400);
+  }
+
+  // Single-use: an AuthnRequest ID may only ever mint one response, so a
+  // replayed request - even one that verifies - gets nothing new to post.
+  if (await c.env.SESSIONS_KV.get(`saml:req:${request.id}`)) {
+    await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "replayed_request_id" }, c.req.raw);
+    return c.text("This authentication request has already been answered.", 400);
+  }
+  await c.env.SESSIONS_KV.put(`saml:req:${request.id}`, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
+
+  let relayState: string | null = null;
+  if (raw.RelayState !== undefined) {
+    try {
+      relayState = decodeURIComponent(raw.RelayState).slice(0, 4000);
+    } catch {
+      return c.text("RelayState is not valid percent-encoding.", 400);
+    }
+  }
+
+  const pending: PendingSamlRequest = { spId: sp.id, requestId: request.id, acsUrl, relayState };
+
+  // SSO: a live session answers the request without a login form, unless the
+  // SP asked for a fresh authentication.
+  if (!request.forceAuthn) {
+    const session = await getSession(c.req.raw, c.env);
+    const user = session ? await getUserById(c.env, session.userId) : null;
+    if (session && user && user.status === "active") {
+      const issued = await issueSamlResponse(c.env, sp, pending, user, session.id, new Date(session.createdAt));
+      await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: request.id, sso: true }, c.req.raw);
+      return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
+    }
+  }
+
+  if (!(await isSetupCompleted(c.env))) {
+    return c.text(
+      "This FlareID instance has not finished initial setup yet. An administrator needs to sign in and complete /admin/setup first.",
+      503
+    );
+  }
+
+  const flowId = await storeLoginFlow(c.env, { kind: "saml", request: pending });
+  return c.html(loginForm(c.get("appName"), flowId, await getLoginGradient(c.env), await getLoginSubtitle(c.env)));
+});
+
+/**
+ * Where a SAML login flow interrupted by forced MFA enrollment resumes. The
+ * backup-codes page links here; the session set at login authenticates it,
+ * and the stored flow is consumed issuing the response.
+ */
+saml.get("/saml/complete", async (c) => {
+  if (!isSamlConfigured(c.env)) {
+    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+  }
+
+  const flowId = c.req.query("flow") ?? "";
+  const flow = await getLoginFlow(c.env, flowId);
+  if (!flow || flow.kind !== "saml") return c.text("Login session expired, please try again.", 400);
+
+  const session = await getSession(c.req.raw, c.env);
+  const user = session ? await getUserById(c.env, session.userId) : null;
+  if (!session || !user || user.status !== "active") {
+    return c.redirect(`/login?next=${encodeURIComponent(`/saml/complete?flow=${flowId}`)}`, 302);
+  }
+
+  const sp = await getSpById(c.env, flow.request.spId);
+  if (!sp) return c.text("Unknown service provider.", 400);
+
+  await deleteLoginFlow(c.env, flowId);
+  const issued = await issueSamlResponse(c.env, sp, flow.request, user, session.id, new Date(session.createdAt));
+  await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId, sso: true }, c.req.raw);
+  return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
+});
+
+/**
+ * The POST binding is deliberately unsupported: an embedded XML signature on
+ * a foreign document is the XML Signature Wrapping attack surface, and
+ * saml2int only requires redirect-binding receipt. Service providers that
+ * POST - notably Cloudflare Access with Signed AuthN enabled - get a clear
+ * refusal rather than a misverified request. See SAML-implementation.md
+ * section 4.
+ */
+saml.post("/saml/sso", (c) => {
+  return c.text(
+    "The HTTP-POST request binding is not supported. Send AuthnRequests over HTTP-Redirect, and if this is Cloudflare Access leave 'Sign SAML authentication request' turned off.",
+    400
+  );
+});

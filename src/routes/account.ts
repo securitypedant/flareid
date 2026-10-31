@@ -406,9 +406,17 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number): 
   const flow = await getLoginFlow(env, resumeFlowId);
   if (!flow) return "/account";
 
-  await deleteLoginFlow(env, resumeFlowId);
-  if (flow.kind === "direct") return flow.next;
+  if (flow.kind === "direct") {
+    await deleteLoginFlow(env, resumeFlowId);
+    return flow.next;
+  }
 
+  // A SAML flow can't finish here - it ends in a POST form, not a URL. The
+  // flow stays in KV and /saml/complete issues the response when the user
+  // clicks through.
+  if (flow.kind === "saml") return `/saml/complete?flow=${resumeFlowId}`;
+
+  await deleteLoginFlow(env, resumeFlowId);
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, ["pwd", "mfa"]);
   return redirectTo;
 }

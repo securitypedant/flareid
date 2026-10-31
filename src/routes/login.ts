@@ -15,6 +15,9 @@ import {
 } from "../lib/authorize-state.js";
 import { clearSessionCookie, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize } from "./authorize.js";
+import { issueSamlResponse } from "./saml.js";
+import { getSpById } from "../lib/saml/service-providers.js";
+import { samlPostForm } from "../lib/saml/post-form.js";
 import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
@@ -42,6 +45,16 @@ login.post("/logout", async (c) => {
   return c.redirect("/login", 302);
 });
 
+/**
+ * What happens at the end of a completed login: most flows end in a redirect
+ * (back to the RP with a code, or to wherever a direct login was heading),
+ * while a SAML flow ends in an auto-submitting POST form carrying the
+ * response to the service provider's ACS.
+ */
+export type LoginFlowOutcome =
+  | { type: "redirect"; to: string }
+  | { type: "saml-post"; acsUrl: string; samlResponse: string; relayState: string | null };
+
 async function completeLoginFlow(
   env: Env,
   flow: LoginFlow,
@@ -49,15 +62,15 @@ async function completeLoginFlow(
   amr: string[],
   request: Request,
   user: { mfa_enabled: number }
-): Promise<{ redirectTo: string; setCookie: string }> {
-  const { setCookie } = await createSession(env, userId, amr, request);
+): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
+  const { sessionId, setCookie } = await createSession(env, userId, amr, request);
 
   // Until initial setup is complete, always land on the setup wizard -
   // regardless of whether this login came from an OIDC request or a direct
   // /account visit - nothing else should be usable yet.
   const setupCompleted = await isSetupCompleted(env);
   if (!setupCompleted) {
-    return { redirectTo: "/admin/setup", setCookie };
+    return { outcome: { type: "redirect", to: "/admin/setup" }, setCookie };
   }
 
   // Once setup is done, MFA can be made mandatory - anyone without it enrolled
@@ -66,12 +79,22 @@ async function completeLoginFlow(
   // login to a relying party.
   if (!user.mfa_enabled && (await isMfaRequired(env))) {
     const resumeFlowId = await storeLoginFlow(env, flow);
-    return { redirectTo: `/account/mfa/setup?resume=${resumeFlowId}`, setCookie };
+    return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
 
-  if (flow.kind === "direct") return { redirectTo: flow.next, setCookie };
+  if (flow.kind === "direct") return { outcome: { type: "redirect", to: flow.next }, setCookie };
+
+  if (flow.kind === "saml") {
+    const sp = await getSpById(env, flow.request.spId);
+    const fullUser = await getUserById(env, userId);
+    if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookie };
+    const issued = await issueSamlResponse(env, sp, flow.request, fullUser, sessionId, new Date());
+    await logAudit(env, fullUser, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId }, request);
+    return { outcome: { type: "saml-post", ...issued }, setCookie };
+  }
+
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr);
-  return { redirectTo, setCookie };
+  return { outcome: { type: "redirect", to: redirectTo }, setCookie };
 }
 
 login.post("/login", async (c) => {
@@ -117,11 +140,14 @@ login.post("/login", async (c) => {
 
   const amr = user.mfa_enabled ? ["pwd", "mfa_remembered_device"] : ["pwd"];
   await deleteLoginFlow(c.env, flowId);
-  const { redirectTo, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   c.header("Set-Cookie", setCookie);
   if (user.mfa_enabled) await logAudit(c.env, user, "login.mfa_skipped_trusted_device", user.upn, undefined, c.req.raw);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
-  return c.redirect(redirectTo, 302);
+  if (outcome.type === "saml-post") {
+    return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  }
+  return c.redirect(outcome.to, 302);
 });
 
 login.post("/login/mfa", async (c) => {
@@ -165,7 +191,7 @@ login.post("/login/mfa", async (c) => {
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);
 
-  const { redirectTo, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   c.header("Set-Cookie", setCookie, { append: true });
 
   if (rememberDevice) {
@@ -175,5 +201,8 @@ login.post("/login/mfa", async (c) => {
   }
 
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
-  return c.redirect(redirectTo, 302);
+  if (outcome.type === "saml-post") {
+    return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  }
+  return c.redirect(outcome.to, 302);
 });

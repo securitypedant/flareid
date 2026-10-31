@@ -24,7 +24,10 @@ import {
   type PasswordPolicy,
 } from "../lib/settings.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
-import type { GroupRow, OAuthClientRow } from "../lib/types.js";
+import type { GroupRow, OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
+import { normalizeCertPem } from "../lib/saml/x509.js";
+import { nameIdFormatUri } from "../lib/saml/messages.js";
+import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
 /**
  * The machine-facing provisioning API.
@@ -462,6 +465,130 @@ api.post("/api/v1/scim/sync", requireScope("settings:write"), async (c) => {
   const summary = await syncAll(c.env);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, summary, c.req.raw);
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
+});
+
+// ---------------------------------------------------------------------------
+// SAML service providers
+// ---------------------------------------------------------------------------
+
+function spJson(sp: SamlServiceProviderRow) {
+  return {
+    id: sp.id,
+    entity_id: sp.entity_id,
+    name: sp.name,
+    acs_urls: JSON.parse(sp.acs_urls) as string[],
+    default_acs_url: sp.default_acs_url,
+    nameid_format: sp.nameid_format,
+    attribute_map: JSON.parse(sp.attribute_map) as Record<string, string>,
+    sign_response: sp.sign_response === 1,
+    sign_assertion: sp.sign_assertion === 1,
+    want_authn_requests_signed: sp.want_authn_requests_signed === 1,
+    signing_certs: JSON.parse(sp.signing_certs) as string[],
+    created_at: sp.created_at,
+    updated_at: sp.updated_at,
+  };
+}
+
+api.get("/api/v1/saml/service-providers", requireScope("directory:read"), async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
+  return c.json({ service_providers: results.map(spJson) });
+});
+
+interface SpUpsertBody {
+  entity_id?: string;
+  name?: string;
+  acs_urls?: string[];
+  default_acs_url?: string;
+  nameid_format?: string;
+  attribute_map?: Record<string, string>;
+  sign_response?: boolean;
+  sign_assertion?: boolean;
+  want_authn_requests_signed?: boolean;
+  signing_certs?: string[];
+}
+
+/**
+ * Registers a service provider, keyed on entity_id so re-running provisioning
+ * converges rather than colliding on the unique index - the same idempotence
+ * rule as POST /api/v1/clients. On update, fields not supplied keep their
+ * existing values; on create, the documented defaults apply.
+ */
+api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async (c) => {
+  const body = await readJson<SpUpsertBody>(c);
+  const entityId = String(body.entity_id ?? "").trim();
+  if (!entityId) return c.json(badRequest("entity_id is required."), 400);
+
+  const existing = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE entity_id = ?")
+    .bind(entityId)
+    .first<SamlServiceProviderRow>();
+
+  const acsUrls = body.acs_urls !== undefined ? body.acs_urls.map((u) => String(u).trim()).filter(Boolean) : existing ? (JSON.parse(existing.acs_urls) as string[]) : [];
+  if (acsUrls.length === 0) return c.json(badRequest("At least one acs_url is required."), 400);
+
+  const nameidFormat = body.nameid_format ?? existing?.nameid_format ?? "transient";
+  if (!nameIdFormatUri(nameidFormat)) return c.json(badRequest(`Unsupported nameid_format "${nameidFormat}".`), 400);
+
+  const attributeMap = body.attribute_map ?? (existing ? (JSON.parse(existing.attribute_map) as Record<string, string>) : {});
+  for (const field of Object.values(attributeMap)) {
+    if (!USER_ATTRIBUTE_FIELDS.includes(field as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
+      return c.json(badRequest(`"${field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`), 400);
+    }
+  }
+
+  const wantSigned = body.want_authn_requests_signed ?? existing?.want_authn_requests_signed === 1;
+  const signingCerts = (body.signing_certs ?? (existing ? (JSON.parse(existing.signing_certs) as string[]) : []))
+    .map((cert) => normalizeCertPem(cert))
+    .filter((pem): pem is string => pem !== null);
+  if (wantSigned && signingCerts.length === 0) {
+    return c.json(badRequest("want_authn_requests_signed needs at least one signing certificate."), 400);
+  }
+
+  const name = String(body.name ?? existing?.name ?? entityId).trim();
+  const now = new Date().toISOString();
+  const values = [
+    entityId,
+    name,
+    JSON.stringify(acsUrls),
+    body.default_acs_url ?? existing?.default_acs_url ?? null,
+    nameidFormat,
+    JSON.stringify(attributeMap),
+    (body.sign_response ?? (existing ? existing.sign_response === 1 : true)) ? 1 : 0,
+    (body.sign_assertion ?? (existing ? existing.sign_assertion === 1 : true)) ? 1 : 0,
+    wantSigned ? 1 : 0,
+    JSON.stringify(signingCerts),
+  ];
+
+  if (existing) {
+    await c.env.DB.prepare(
+      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, updated_at = ? WHERE id = ?`
+    )
+      .bind(...values, now, existing.id)
+      .run();
+    await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
+    return c.json({ ok: true, created: false, id: existing.id, entity_id: entityId });
+  }
+
+  const result = await c.env.DB.prepare(
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(...values, now, now)
+    .run();
+
+  await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.created", name, { entity_id: entityId }, c.req.raw);
+  return c.json({ ok: true, created: true, id: result.meta.last_row_id, entity_id: entityId });
+});
+
+// Keyed on the numeric row id, not entity_id: entity IDs are URLs, and a
+// URL full of slashes cannot ride inside a path segment.
+api.delete("/api/v1/saml/service-providers/:id", requireScope("clients:write"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const existing = await c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ id: number; name: string; entity_id: string }>();
+  if (!existing) return c.json({ error: "not_found", message: `No service provider with id ${id}.` }, 404);
+
+  await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
+  await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.deleted", existing.name, { entity_id: existing.entity_id }, c.req.raw);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

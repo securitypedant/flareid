@@ -3,6 +3,7 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { TEST_SIGNING_KEY_PKCS8 } from "./test/fixtures/signing-key.js";
+import { TEST_SAML_IDP_CERT_PEM, TEST_SAML_IDP_KEY_PKCS8 } from "./test/fixtures/saml-keys.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +26,8 @@ export default defineConfig({
           SIGNING_KEY_PKCS8: TEST_SIGNING_KEY_PKCS8,
           COOKIE_ENCRYPTION_KEY: "test-cookie-key",
           BOOTSTRAP_TOKEN: "test-bootstrap-token",
+          SAML_SIGNING_KEY_PKCS8: TEST_SAML_IDP_KEY_PKCS8,
+          SAML_SIGNING_CERT: TEST_SAML_IDP_CERT_PEM,
         },
       },
     }),

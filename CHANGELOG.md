@@ -4,6 +4,29 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+### Added
+
+- **SAML 2.0 service-provider-initiated SSO.** `/saml/sso` accepts
+  HTTP-Redirect AuthnRequests (unsigned, or signed per the SP's registered
+  certificates - including mid-rollover), and answers with an HTTP-POST
+  Response carrying a signed Assertion in a signed Response. Per-SP registry
+  in Admin → Integrations and `/api/v1/saml/service-providers`: ACS URL
+  allowlist, NameID format (transient / emailAddress / persistent), attribute
+  mapping, signing policy. IdP metadata at `/saml/metadata`; request IDs are
+  single-use, `ForceAuthn` is honoured, and POSTed AuthnRequests are rejected
+  by design (see SAML-implementation.md §4). Responses and Assertions are
+  signed "canonically by construction" - the emitted XML is already
+  exclusive-C14N form, verified in tests against `xml-crypto`.
+- **`npm run saml:keygen`** (`scripts/generate-saml-cert.mjs`) mints the
+  RSA-3072 self-signed certificate + PKCS8 key the endpoints need
+  (`SAML_SIGNING_CERT` var, `SAML_SIGNING_KEY_PKCS8` secret); `npm run deploy`
+  generates them automatically when absent.
+- 16 new tests covering the metadata endpoint, the full login and SSO paths,
+  signature verification, `ForceAuthn`, NameID formats, the ACS allowlist,
+  request replay, signed-request verification, and the SP provisioning API.
+
 ## [0.1.0] - 2026-10-28
 
 First release as a standalone project. FlareID previously lived inside a

@@ -58,3 +58,24 @@ export interface OAuthClientRow {
   redirect_uris: string; // JSON-encoded string[]
   created_at: string;
 }
+
+export interface SamlServiceProviderRow {
+  id: number;
+  entity_id: string;
+  name: string;
+  acs_urls: string; // JSON array of absolute URLs - the exact-match allowlist
+  default_acs_url: string | null;
+  nameid_format: string;
+  attribute_map: string; // JSON object: SAML attribute name -> user field
+  sign_response: number;
+  sign_assertion: number;
+  want_authn_requests_signed: number;
+  signing_certs: string; // JSON array of PEM strings
+  encrypt_assertions: number;
+  encryption_cert: string | null;
+  metadata_url: string | null;
+  metadata_last_refreshed_at: string | null;
+  metadata_valid_until: string | null;
+  created_at: string;
+  updated_at: string;
+}

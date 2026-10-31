@@ -28,16 +28,26 @@ happens to run on Cloudflare's platform.
 - **SCIM 2.0 client**: pushes users and groups to an external SCIM server, such
   as the endpoint Cloudflare Access generates for an identity provider. Scoped
   to all groups or a chosen set.
-- **Admin UX** at `/admin`: users, groups, OIDC clients, API keys, domains,
-  security settings, branding, and an audit log.
+- **SAML 2.0**: Web Browser SSO, service-provider-initiated, HTTP-Redirect for
+  requests and HTTP-POST for responses. Signed Response and Assertion,
+  transient/persistent/emailAddress NameIDs, per-SP attribute mapping, IdP
+  metadata at `/saml/metadata`. Not implemented: HTTP-Artifact binding, SOAP
+  back-channel, ECP/PAOS, Name Identifier Management, Assertion Query/Request,
+  embedded-signature AuthnRequests (see below).
+- **Admin UX** at `/admin`: users, groups, OIDC clients, SAML service
+  providers, API keys, domains, security settings, branding, and an audit log.
 - **Self-service** at `/account`: MFA enrolment, password change, active
   sessions and connected applications.
 - **Provisioning API** at `/api/v1`: everything above, without a browser. See
   [docs/api.md](docs/api.md).
 
-It does not implement SAML yet. [SAML-implementation.md](SAML-implementation.md)
-is the full assessment of what that would take - including a correction to the
-"SAML is impractical on Workers" claim this README used to make.
+SAML support is the v1 profile described in
+[SAML-implementation.md](SAML-implementation.md): redirect-binding AuthnRequest
+receipt (signed or unsigned, verified per-SP), POST-binding Response with both
+Response and Assertion signed. POSTed AuthnRequests - including Cloudflare
+Access's *Signed AuthN requests*, which embed an XML signature - are
+deliberately rejected, so leave `sign_request` off in Access; the reason is in
+section 4 of that document.
 
 ## It starts empty, on purpose
 

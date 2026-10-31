@@ -11,14 +11,29 @@ export interface PendingAuthorizeRequest {
   codeChallengeMethod?: string;
 }
 
+export interface PendingSamlRequest {
+  /** saml_service_providers.id of the SP this request came from. */
+  spId: number;
+  /** The AuthnRequest's ID - echoed as InResponseTo in the assertion. */
+  requestId: string;
+  /** The allowlisted ACS URL the response will be posted to. */
+  acsUrl: string;
+  relayState: string | null;
+}
+
 /**
- * A login flow is either:
+ * A login flow is one of:
  *  - "oidc": triggered by an RP (e.g. Cloudflare Access) hitting /authorize -
  *    on success we issue an authorization code and redirect back to the RP.
+ *  - "saml": triggered by an SP hitting /saml/sso - on success we POST a
+ *    signed response to the SP's ACS instead of redirecting.
  *  - "direct": triggered by someone visiting /account or /admin directly in a
  *    browser with no active session - on success we just redirect to `next`.
  */
-export type LoginFlow = { kind: "oidc"; request: PendingAuthorizeRequest } | { kind: "direct"; next: string };
+export type LoginFlow =
+  | { kind: "oidc"; request: PendingAuthorizeRequest }
+  | { kind: "saml"; request: PendingSamlRequest }
+  | { kind: "direct"; next: string };
 
 const FLOW_TTL_SECONDS = 600;
 const MFA_TTL_SECONDS = 300;

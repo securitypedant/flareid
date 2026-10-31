@@ -31,7 +31,12 @@
     "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"REPLACE-ME-RUN-NPM-RUN-KEYGEN\",\"e\":\"AQAB\"}",
     // Key id for the current signing key. Bump it when rotating - see
     // scripts/generate-keypair.mjs for the procedure.
-    "SIGNING_KEY_ID": "flareid-key-1"
+    "SIGNING_KEY_ID": "flareid-key-1",
+    // PEM X.509 certificate embedded in signed SAML responses and published
+    // at /saml/metadata. Not a secret - but it must be the counterpart of the
+    // SAML_SIGNING_KEY_PKCS8 secret, so generate the pair with
+    // `npm run saml:keygen`. Without it, the /saml endpoints answer 503.
+    "SAML_SIGNING_CERT": "REPLACE-ME-RUN-NPM-RUN-SAML-KEYGEN"
     // During a rotation window, also set these two to the *previous* key's
     // public JWK and id, so tokens signed just before the rotation stay
     // verifiable until they expire:
@@ -69,4 +74,6 @@
   //                           to create the first administrator. It stops
   //                           working once setup completes, except for the
   //                           documented break-glass route. See docs/api.md.
+  //   SAML_SIGNING_KEY_PKCS8 - PKCS8 PEM of the RSA-3072 key that signs SAML
+  //                           responses. Generate with `npm run saml:keygen`.
 }

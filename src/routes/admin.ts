@@ -4,7 +4,7 @@ import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middlew
 import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
-import type { AuditLogRow, GroupRow, OAuthClientRow, UserRow } from "../lib/types.js";
+import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, deleteDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import {
   applyDefaultPasswordToAllUsers,
@@ -27,6 +27,10 @@ import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { listActiveSessionsForUser, revokeAllSessionsForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
+import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
+import { isSamlConfigured, idpCertBase64 } from "../lib/saml/sign.js";
+import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
+import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
 export const admin = new Hono<{ Bindings: Env }>();
 
@@ -1272,6 +1276,7 @@ admin.get("/admin/scim", (c) => c.redirect(`/admin/integrations${new URL(c.req.u
 
 admin.get("/admin/integrations", async (c) => {
   const { results: clients } = await c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>();
+  const { results: sps } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
   const config = await getScimConfig(c.env);
   const scope = await getScimScope(c.env);
   const { results: scopeGroups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
@@ -1303,6 +1308,31 @@ admin.get("/admin/integrations", async (c) => {
                     .map(
                       (cl) =>
                         `<tr><td><a href="/admin/clients/${cl.id}">${escapeHtml(cl.name)}</a></td><td><code>${escapeHtml(cl.client_id)}</code></td><td>${JSON.parse(cl.redirect_uris).map(escapeHtml).join("<br/>")}</td></tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+
+      ${cardSection(`
+        <div class="row between" style="margin:0 0 14px 0;">
+          <div>
+            <h2 style="margin:0;">SAML service providers</h2>
+            <p class="muted" style="margin:4px 0 0;">Applications allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>.</p>
+          </div>
+          <a href="/admin/saml/new"><button class="primary" type="button">+ New service provider</button></a>
+        </div>
+        ${
+          sps.length === 0
+            ? '<p class="muted">No service providers registered yet.</p>'
+            : `<table>
+                <thead><tr><th>Name</th><th>Entity ID</th><th>ACS URLs</th></tr></thead>
+                <tbody>
+                  ${sps
+                    .map(
+                      (sp) =>
+                        `<tr><td><a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></td><td><code>${escapeHtml(sp.entity_id)}</code></td><td>${JSON.parse(sp.acs_urls).map(escapeHtml).join("<br/>")}</td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -1673,6 +1703,249 @@ admin.post("/admin/clients/:id/delete", async (c) => {
 
   await logAudit(c.env, c.get("user"), "oidc_client.deleted", client.name, undefined, c.req.raw);
 
+  return c.redirect("/admin/integrations", 302);
+});
+
+// ---------- SAML service providers ----------
+
+/** What an SP administrator needs to point their service provider at this IdP. */
+function samlIdpBlock(env: Env) {
+  const entityId = idpEntityId(env);
+  const expiry = env.SAML_SIGNING_CERT ? certNotAfter(env.SAML_SIGNING_CERT) : null;
+  const expiryNote = expiry
+    ? expiry.getTime() < Date.now()
+      ? ` - <strong style="color:var(--fi-red);">expired ${escapeHtml(expiry.toISOString().slice(0, 10))}</strong>`
+      : expiry.getTime() - Date.now() < 30 * 24 * 60 * 60 * 1000
+        ? ` - <strong style="color:var(--fi-amber);">expires ${escapeHtml(expiry.toISOString().slice(0, 10))}</strong>`
+        : ` - expires ${escapeHtml(expiry.toISOString().slice(0, 10))}`
+    : "";
+  return `
+    <div style="background:#f9fafb; border-radius:10px; padding:14px 16px; margin:12px 0;">
+      <p class="muted" style="margin:0 0 8px 0;">Use these when configuring this service provider (e.g. Cloudflare Access's SAML identity provider fields):</p>
+      <table style="margin:0;">
+        ${copyableRow("Entity ID / Issuer", entityId, ' style="width:140px;"')}
+        ${copyableRow("SSO URL", `${entityId}/saml/sso`)}
+        ${copyableRow("Metadata URL", `${entityId}/saml/metadata`)}
+        ${copyableRow("Signing certificate", `${idpCertBase64(env).slice(0, 40)}&hellip;${expiryNote}`)}
+      </table>
+      ${!isSamlConfigured(env) ? '<p class="error" style="margin:8px 0 0;">SAML_SIGNING_CERT / SAML_SIGNING_KEY_PKCS8 are not configured - run <code>npm run saml:keygen</code> and set them before this IdP can answer requests.</p>' : ""}
+    </div>
+  `;
+}
+
+/** Every cert-shaped thing in a pasted textarea: PEM blocks, or a single bare base64 blob. */
+function parseCertsInput(input: string): { certs: string[]; invalid: boolean } {
+  const blocks = input.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+  if (blocks.length === 0) {
+    if (!input.trim()) return { certs: [], invalid: false };
+    const single = normalizeCertPem(input);
+    return { certs: single ? [single] : [], invalid: !single };
+  }
+  const certs: string[] = [];
+  let invalid = false;
+  for (const block of blocks) {
+    const pem = normalizeCertPem(block);
+    if (pem) certs.push(pem);
+    else invalid = true;
+  }
+  return { certs, invalid };
+}
+
+interface SpFormValues {
+  name: string;
+  entityId: string;
+  acsUrls: string[];
+  defaultAcsUrl: string;
+  nameidFormat: string;
+  attributeMap: Record<string, string>;
+  signResponse: boolean;
+  signAssertion: boolean;
+  wantSigned: boolean;
+  signingCerts: string[];
+}
+
+/** Parses and validates the new/edit SP form. Returns the values, or a message for the admin. */
+function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
+  const name = String(body.name ?? "").trim();
+  const entityId = String(body.entity_id ?? "").trim();
+  if (!name || !entityId) return "name and entity_id are required.";
+
+  const acsUrls = String(body.acs_urls ?? "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (acsUrls.length === 0) return "At least one ACS URL is required.";
+  const defaultAcsUrl = String(body.default_acs_url ?? "").trim();
+
+  const nameidFormat = String(body.nameid_format ?? "transient");
+  if (!nameIdFormatUri(nameidFormat)) return `Unsupported NameID format "${nameidFormat}".`;
+
+  let attributeMap: Record<string, string> = {};
+  const rawMap = String(body.attribute_map ?? "").trim();
+  if (rawMap) {
+    try {
+      const parsed = JSON.parse(rawMap);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
+      attributeMap = parsed as Record<string, string>;
+      for (const [k, v] of Object.entries(attributeMap)) {
+        if (!USER_ATTRIBUTE_FIELDS.includes(v as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
+          return `"${v}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
+        }
+      }
+    } catch (e) {
+      if (typeof e === "string") return e;
+      return "attribute_map must be a JSON object of {\"saml-attribute-name\": \"field\"}.";
+    }
+  }
+
+  const { certs, invalid } = parseCertsInput(String(body.signing_certs ?? ""));
+  if (invalid) return "One of the pasted certificates could not be parsed.";
+  if (body.want_authn_requests_signed && certs.length === 0) {
+    return "Requiring signed requests needs at least one SP signing certificate.";
+  }
+
+  return {
+    name,
+    entityId,
+    acsUrls,
+    defaultAcsUrl,
+    nameidFormat,
+    attributeMap,
+    signResponse: !!body.sign_response,
+    signAssertion: !!body.sign_assertion,
+    wantSigned: !!body.want_authn_requests_signed,
+    signingCerts: certs,
+  };
+}
+
+function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): string {
+  return `
+    <form method="POST" action="${escapeHtml(action)}">
+      <div class="field-row">
+        <div>
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" value="${escapeHtml(v.name ?? "")}" placeholder="Cloudflare Access" required />
+        </div>
+        <div>
+          <label for="entity_id">Entity ID (Issuer)</label>
+          <input type="text" id="entity_id" name="entity_id" value="${escapeHtml(v.entityId ?? "")}" placeholder="https://your-team.cloudflareaccess.com" required />
+        </div>
+      </div>
+      <label for="acs_urls">Assertion Consumer Service URLs (one per line)</label>
+      <textarea id="acs_urls" name="acs_urls" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback">${escapeHtml((v.acsUrls ?? []).join("\n"))}</textarea>
+      <label for="default_acs_url">Default ACS URL (used when the request omits one)</label>
+      <input type="text" id="default_acs_url" name="default_acs_url" value="${escapeHtml(v.defaultAcsUrl ?? "")}" />
+      <label for="nameid_format">NameID format</label>
+      <select id="nameid_format" name="nameid_format">
+        ${supportedNameIdFormats()
+          .map((f) => `<option value="${f}" ${(v.nameidFormat ?? "transient") === f ? "selected" : ""}>${f}</option>`)
+          .join("")}
+      </select>
+      <label for="attribute_map">Attribute map (JSON - leave empty for the default email/name/groups map)</label>
+      <textarea id="attribute_map" name="attribute_map" rows="4" placeholder='{"email": "email", "department": "department"}'>${escapeHtml(Object.keys(v.attributeMap ?? {}).length ? JSON.stringify(v.attributeMap, null, 2) : "")}</textarea>
+      <p class="muted" style="margin:-8px 0 14px;">Field names: <code>${USER_ATTRIBUTE_FIELDS.join("</code>, <code>")}</code></p>
+      <label for="signing_certs">SP signing certificates (PEM, one or more - leave empty if requests are unsigned)</label>
+      <textarea id="signing_certs" name="signing_certs" rows="6" placeholder="-----BEGIN CERTIFICATE-----">${escapeHtml((v.signingCerts ?? []).join("\n"))}</textarea>
+      <label style="font-weight:400;"><input type="checkbox" name="sign_response" value="1" ${v.signResponse !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Response</label>
+      <label style="font-weight:400;"><input type="checkbox" name="sign_assertion" value="1" ${v.signAssertion !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Assertion</label>
+      <label style="font-weight:400;"><input type="checkbox" name="want_authn_requests_signed" value="1" ${v.wantSigned ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require signed AuthnRequests from this SP</label>
+      <div class="form-actions end">${cancelLink("/admin/integrations")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+    </form>`;
+}
+
+admin.get("/admin/saml/new", async (c) => {
+  return c.html(
+    layout(
+      c,
+      "New SAML service provider",
+      `${samlIdpBlock(c.env)}${cardSection(spForm({}, "/admin/saml", "Create service provider"))}`,
+      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "New service provider" }]
+    )
+  );
+});
+
+admin.post("/admin/saml", async (c) => {
+  const v = parseSpForm(await c.req.parseBody());
+  if (typeof v === "string") return c.text(v, 400);
+
+  const now = new Date().toISOString();
+  const result = await c.env.DB.prepare(
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), now, now)
+    .run();
+
+  await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId }, c.req.raw);
+  return c.redirect(`/admin/saml/${result.meta.last_row_id}`, 302);
+});
+
+admin.get("/admin/saml/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
+  if (!sp) return c.text("Not found", 404);
+
+  return c.html(
+    layout(
+      c,
+      sp.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${samlIdpBlock(c.env)}
+      ${cardSection(`
+        ${spForm(
+          {
+            name: sp.name,
+            entityId: sp.entity_id,
+            acsUrls: JSON.parse(sp.acs_urls),
+            defaultAcsUrl: sp.default_acs_url ?? "",
+            nameidFormat: sp.nameid_format,
+            attributeMap: JSON.parse(sp.attribute_map),
+            signResponse: !!sp.sign_response,
+            signAssertion: !!sp.sign_assertion,
+            wantSigned: !!sp.want_authn_requests_signed,
+            signingCerts: JSON.parse(sp.signing_certs),
+          },
+          `/admin/saml/${id}`,
+          "Save"
+        )}
+        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
+          <form method="POST" action="/admin/saml/${id}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
+            <button class="danger" type="submit">Delete service provider</button>
+          </form>
+        </div>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: sp.name }]
+    )
+  );
+});
+
+admin.post("/admin/saml/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
+  if (!sp) return c.text("Not found", 404);
+
+  const v = parseSpForm(await c.req.parseBody());
+  if (typeof v === "string") return c.text(v, 400);
+
+  await c.env.DB.prepare(
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, updated_at = ? WHERE id = ?`
+  )
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), new Date().toISOString(), id)
+    .run();
+
+  await logAudit(c.env, c.get("user"), "saml_sp.updated", v.name, { entity_id: v.entityId }, c.req.raw);
+  return c.redirect(`/admin/saml/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/saml/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
+  if (!sp) return c.text("Not found", 404);
+
+  await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
+  await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
   return c.redirect("/admin/integrations", 302);
 });
 

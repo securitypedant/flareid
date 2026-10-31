@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "./env.js";
 import { discovery } from "./routes/discovery.js";
 import { authorize } from "./routes/authorize.js";
+import { saml } from "./routes/saml.js";
 import { login } from "./routes/login.js";
 import { token } from "./routes/token.js";
 import { introspect } from "./routes/introspect.js";
@@ -31,6 +32,7 @@ app.get("/", (c) => c.redirect("/account", 302));
 
 app.route("/", discovery);
 app.route("/", authorize);
+app.route("/", saml);
 app.route("/", login);
 app.route("/", token);
 app.route("/", introspect);

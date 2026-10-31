@@ -21,6 +21,16 @@ export interface Env {
   COOKIE_ENCRYPTION_KEY?: string;
 
   /**
+   * PEM X.509 certificate presented in SAML signatures' KeyInfo and published
+   * in /saml/metadata. Not a secret - it is handed to every service provider.
+   * The counterpart of SAML_SIGNING_KEY_PKCS8; generate the pair with
+   * `npm run saml:keygen`.
+   */
+  SAML_SIGNING_CERT?: string;
+  /** PKCS8 PEM of the RSA private key that signs SAML Responses and Assertions. */
+  SAML_SIGNING_KEY_PKCS8?: string;
+
+  /**
    * One-shot provisioning secret for the /api/v1 API, set at deploy time via
    * `wrangler secret put BOOTSTRAP_TOKEN`.
    *

@@ -185,6 +185,24 @@ async function main() {
     detail("SIGNING_KEY_PKCS8 already set, leaving it (FORCE_ROTATE_SIGNING_KEY=true to rotate)");
   }
 
+  // SAML needs a certificate, not just a keypair: service providers consume a
+  // cert, and it is embedded in every signed response's KeyInfo. Minted once
+  // and left alone afterwards - rotating breaks SAML logins until every SP is
+  // updated, so there is deliberately no FORCE_ROTATE flag here.
+  if (!(await hasSecret(ROOT, "SAML_SIGNING_KEY_PKCS8"))) {
+    detail("generating a SAML signing certificate (RSA-3072, 10y)...");
+    await runOrExit("node", ["scripts/generate-saml-cert.mjs", "--out-dir", "."], { cwd: ROOT }, "SAML certificate generation");
+
+    const samlKeyPath = join(ROOT, ".saml-key.pem");
+    const samlCertPath = join(ROOT, ".saml-cert.pem");
+    await setSecret(ROOT, "SAML_SIGNING_KEY_PKCS8", readFileSync(samlKeyPath, "utf8"));
+    patch("SAML_SIGNING_CERT", readFileSync(samlCertPath, "utf8").trim());
+    rmSync(samlKeyPath, { force: true });
+    rmSync(samlCertPath, { force: true });
+  } else {
+    detail("SAML_SIGNING_KEY_PKCS8 already set, leaving it");
+  }
+
   let issuer;
   if (explicitIssuer || zoneName) {
     // The hostname is known before the deploy, so ISSUER_URL can be baked in

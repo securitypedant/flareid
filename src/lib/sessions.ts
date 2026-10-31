@@ -9,6 +9,8 @@ export interface SessionInfo {
   id: string;
   userId: number;
   amr: string[];
+  /** When this session was created - the AuthnInstant an SSO reuse should report. */
+  createdAt: string;
 }
 
 export interface SessionRow {
@@ -66,7 +68,7 @@ export async function getSession(request: Request, env: Env): Promise<SessionInf
   // Best-effort "last seen" bump - powers the active-sessions list.
   await env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();
 
-  return { id: row.id, userId: row.user_id, amr: JSON.parse(row.amr || '["pwd"]') };
+  return { id: row.id, userId: row.user_id, amr: JSON.parse(row.amr || '["pwd"]'), createdAt: row.created_at };
 }
 
 export async function getSessionUserId(request: Request, env: Env): Promise<number | null> {

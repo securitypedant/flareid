@@ -9,6 +9,9 @@ deciding whether to point real traffic at this.
 
 - OIDC: `/authorize`, `/token` (authorization_code + refresh_token, PKCE),
   `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`, discovery
+- SAML 2.0 (v1 profile): SP-initiated Web Browser SSO, redirect binding in,
+  POST binding out, signed Response + Assertion, SP registry, IdP metadata,
+  request-signature verification, `ForceAuthn`
 - Password (PBKDF2) plus optional per-user TOTP MFA, backup codes, trusted
   devices, and an option to require MFA for everyone
 - Flat groups, multi-domain UPNs, HR attributes exposed as claims
@@ -84,9 +87,12 @@ deciding whether to point real traffic at this.
     `auth_time`, `at_hash`, `acr`, `prompt` and `max_age`, none of which are
     present.
 20. **Self-service profile editing** for low-risk fields.
-21. **SAML 2.0.** See [SAML-implementation.md](SAML-implementation.md) - it is
-    achievable to the saml2int bar, and is staged behind the P0 items above
-    because the test harness is what makes it safe to write.
+21. **SAML 2.0, the rest of it.** The v1 profile in
+    [SAML-implementation.md](SAML-implementation.md) is done. Remaining: the
+    v1.5 items (encrypted assertions, Single Logout receipt, SP metadata
+    import) and the v2 saml2int items (metadata-driven SP registry,
+    `subject-id`/`pairwise-id`, multiple SP signing certs in metadata, the
+    full published-metadata requirements).
 
 ## P2 - operational maturity
 
