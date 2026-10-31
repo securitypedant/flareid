@@ -23,12 +23,12 @@
     // party - a mismatch is rejected by the relying party, usually without
     // explaining why. Set to the deployed hostname before going anywhere near a
     // real client; left as localhost so that `npm run dev` works untouched.
-    "ISSUER_URL": "http://localhost:8790",
+    "ISSUER_URL": "https://idp.tmesandbox.com",
     // Public half of the RS256 signing keypair. Not a secret - this is exactly
     // what /jwks.json publishes - but it must be the counterpart of the
     // SIGNING_KEY_PKCS8 secret, so generate the pair together with
     // `npm run keygen` rather than editing either by hand.
-    "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"REPLACE-ME-RUN-NPM-RUN-KEYGEN\",\"e\":\"AQAB\"}",
+    "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"oYCu6FYtrLVGc_alzGx1SO2nZPjtB5pqoYDmO8bTbfg5aoiejvbctASmvCCh-Fb1X3OpR_pmFn_6zA387ZG_q7PW-0_PLWU1PKgVrUNH4loO7O-_WDg5kmpmy8Bs8pIrigGsgooBwDGUr9JLbPM0oltC6tM8NbxUWv7UlZJOIGkbZgp5OyLMWU7PLMML1_Iv7nVupofxzo2MQGvKg9sgXg_tw43DvPfR9OehNAqQB7pu_LP6U--lhnHz-1Z-lglPW1VZN8g8Sx6bZGdMNQ2N96rPFCjQKrWNj38AUm9OdWH_ZaJK6clfrmoKBKLSYE_gE7R5J5UK3KU_Rk2eC8YE0w\",\"e\":\"AQAB\"}",
     // Key id for the current signing key. Bump it when rotating - see
     // scripts/generate-keypair.mjs for the procedure.
     "SIGNING_KEY_ID": "flareid-key-1",
@@ -36,7 +36,7 @@
     // at /saml/metadata. Not a secret - but it must be the counterpart of the
     // SAML_SIGNING_KEY_PKCS8 secret, so generate the pair with
     // `npm run saml:keygen`. Without it, the /saml endpoints answer 503.
-    "SAML_SIGNING_CERT": "REPLACE-ME-RUN-NPM-RUN-SAML-KEYGEN"
+    "SAML_SIGNING_CERT": "-----BEGIN CERTIFICATE-----\r\nMIIDtzCCAh+gAwIBAgIBATANBgkqhkiG9w0BAQsFADAfMR0wGwYDVQQDExRGbGFy\r\nZUlEIFNBTUwgc2lnbmluZzAeFw0yNjEwMzEwODE5MjNaFw0zNjEwMzEwODE5MjNa\r\nMB8xHTAbBgNVBAMTFEZsYXJlSUQgU0FNTCBzaWduaW5nMIIBojANBgkqhkiG9w0B\r\nAQEFAAOCAY8AMIIBigKCAYEAuEO31+EX5J/wcALSfPCv/YRepiL6zaGEsxf09u1j\r\nYsblgRDty+NoxgVrzV408AOh0QuKIJqmeLEKnEuHMMdFk2dY2/avhAurgertsi20\r\nadw/XYV5TL8sloibEcxRvGxJMYrsvFDMF5cFNymYGveO7vdKCTW7XQtCiRjr4ato\r\nnrBUTHBTMg7FRMFyHx2fappC51KVNjf5p+ZFvbUbhFqqK1XgoXKnAQsljV7XPnVR\r\nlpyraf/kCUsbPVwE5pCexe7wbXLyWHdMk+cJ40Ps2IOQ943SV0ljE/7+NV8LAWBU\r\nRHTsIAOTrUdSoM2ruIaCMJR2tiNvfvuF+T6WFduWlCiI6/cyuNy9STllvrfh60va\r\nU+nr/sVwjsYnYgcGM65gqh+33HuWPmDt2nKGHO2+FZJsP3osV7rHa8eqh+FAmlGS\r\nL+jOKIM8nkT8Kl2mx10SjugdoQDxrNJyQne3+bcppQIPtSwwWVSBHWBiRROHbIah\r\ntfhWyTqlRGHCoTSmV3zdTL3RAgMBAAEwDQYJKoZIhvcNAQELBQADggGBABT9kbyb\r\n4/s9/N1aLJZwAMYHfwVTzMAWQBCnV3Lcg773dTt2OYYs4eFK6BB3iL4odBu17qLX\r\nL1xHbmOb5e1o/RnZfCboEXuAgDb0nIq8N1NWuQQ2WQIlvsbSBCzKt9E0623hx0Fv\r\nU3fLwwH7mdz92btpOlyL8ZlRDZF7FBzjdJ7SO0/t1pZW2+vcP86yz0S/J4R2tLHM\r\nfApbwijidvgv59NWKC7MvMM4sD6u59esGPmmW3eXjroqvOehmqIOkCtff5ji0YD7\r\n93gHbsHm9bKP0HGG2iFWiv6R4O+yVkwCRJyKK2H7bY61BrhJfqGpSF9b5fzYhdw4\r\neXppTscPrQhVKWTR38wsmYUT9OlSJsNmo+ZmZGfpc2yekxyXhXVJ1AGzlSBqEEO4\r\nJhRdPkeYU7FLfMzUyZeDGWhTl7976uLMk1e+Z7pKvuNCP6/V9DgS2d1xe2pqhVh8\r\nxX89KIL2f40LnzbpsHJakfl6WhFgZyh0DpmNdc8J+Qh6q6vagt8VNXEP0w==\r\n-----END CERTIFICATE-----"
     // During a rotation window, also set these two to the *previous* key's
     // public JWK and id, so tokens signed just before the rotation stay
     // verifiable until they expire:
@@ -53,7 +53,7 @@
     {
       "binding": "DB",
       "database_name": "flareid-db",
-      "database_id": "REPLACE-ME",
+      "database_id": "f9ea9faa-9016-4e75-af71-5c654093cd44",
       "migrations_dir": "migrations"
     }
   ],
@@ -62,7 +62,7 @@
       // Short-lived login-flow state, pending MFA challenges, and rate-limit
       // counters. Nothing in here needs to survive being lost.
       "binding": "SESSIONS_KV",
-      "id": "REPLACE-ME"
+      "id": "af20f3a4a88e40329062d78a2fc86f99"
     }
   ]
   // Secrets, set with `wrangler secret put` rather than stored here:
