@@ -28,7 +28,7 @@ import { listActiveSessionsForUser, revokeAllSessionsForUser } from "../lib/sess
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
-import { isSamlConfigured, idpCertBase64 } from "../lib/saml/sign.js";
+import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -1726,7 +1726,7 @@ function samlIdpBlock(env: Env) {
         ${copyableRow("Entity ID / Issuer", entityId, ' style="width:140px;"')}
         ${copyableRow("SSO URL", `${entityId}/saml/sso`)}
         ${copyableRow("Metadata URL", `${entityId}/saml/metadata`)}
-        ${copyableRow("Signing certificate", `${idpCertBase64(env).slice(0, 40)}&hellip;${expiryNote}`)}
+        <tr><th>Signing certificate</th><td><a href="/saml/cert.pem">Download PEM</a>${expiryNote}</td></tr>
       </table>
       ${!isSamlConfigured(env) ? '<p class="error" style="margin:8px 0 0;">SAML_SIGNING_CERT / SAML_SIGNING_KEY_PKCS8 are not configured - run <code>npm run saml:keygen</code> and set them before this IdP can answer requests.</p>' : ""}
     </div>

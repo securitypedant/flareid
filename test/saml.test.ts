@@ -193,6 +193,14 @@ describe("metadata", () => {
     expect(xml).toContain("nameid-format:transient");
     expect(xml).toContain(TEST_SAML_IDP_CERT_PEM.replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""));
   });
+
+  it("serves the signing certificate as a PEM download", async () => {
+    const response = await SELF.fetch(`${BASE}/saml/cert.pem`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toContain("attachment");
+    expect(await response.text()).toBe(TEST_SAML_IDP_CERT_PEM);
+  });
 });
 
 describe("SSO happy path", () => {

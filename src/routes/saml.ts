@@ -61,6 +61,19 @@ saml.get("/saml/metadata", async (c) => {
   });
 });
 
+/** The IdP's signing certificate as a PEM download - what Salesforce-style SPs ask to upload. */
+saml.get("/saml/cert.pem", (c) => {
+  if (!isSamlConfigured(c.env)) {
+    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+  }
+  return new Response(c.env.SAML_SIGNING_CERT, {
+    headers: {
+      "Content-Type": "application/x-pem-file",
+      "Content-Disposition": 'attachment; filename="flareid-saml-signing.pem"',
+    },
+  });
+});
+
 saml.get("/saml/sso", async (c) => {
   if (!isSamlConfigured(c.env)) {
     return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
