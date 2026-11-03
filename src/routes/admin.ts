@@ -55,12 +55,28 @@ export const admin = new Hono<{ Bindings: Env }>();
 admin.use("/admin", requireSession, requireAdmin);
 admin.use("/admin/*", requireSession, requireAdmin);
 
-function layout(c: { get: (k: "appName") => string }, title: string, body: string, crumbs?: Breadcrumb[]) {
+/** Section labels (second breadcrumb) -> nav key, so detail pages highlight their section too. */
+const CRUMB_SECTIONS: Record<string, string> = {
+  Users: "users",
+  Groups: "groups",
+  Integrations: "integrations",
+  Domains: "domains",
+  Branding: "branding",
+  Security: "security",
+  Schemas: "schemas",
+  Log: "audit",
+};
+
+function layout(c: { get: (k: "appName") => string }, title: string, body: string, crumbs?: Breadcrumb[], active?: string) {
   const appName = c.get("appName");
   const crumbHtml = crumbs ? breadcrumbs(crumbs) : "";
+  const section = active ?? (crumbs?.[1] ? (CRUMB_SECTIONS[crumbs[1].label] ?? "") : "");
   return page(
     `${title}`,
-    `<div class="page-header">${crumbHtml}<h1>${escapeHtml(title)}</h1></div>${body}`,
+    `<div class="admin-shell">
+      <aside class="admin-side">${adminNav(section)}</aside>
+      <div class="admin-main"><div class="page-header">${crumbHtml}<h1>${escapeHtml(title)}</h1></div>${body}</div>
+    </div>`,
     appName,
     true,
     nav(appName, true)
@@ -91,16 +107,14 @@ function adminNav(active: string) {
   const items: [string, string][] = [
     ["users", "Users"],
     ["groups", "Groups"],
-    ["schemas", "Schemas"],
     ["integrations", "Integrations"],
     ["domains", "Domains"],
     ["branding", "Branding"],
     ["security", "Security"],
+    ["schemas", "Schemas"],
     ["audit", "Log"],
   ];
-  return `<div class="admin-tabs">
-    ${items.map(([key, label]) => `<a href="/admin/${key}" class="${active === key ? "active" : ""}">${label}</a>`).join("")}
-  </div>`;
+  return items.map(([key, label]) => `<a href="/admin/${key}" class="${active === key ? "active" : ""}">${label}</a>`).join("");
 }
 
 /** Either the shared default password, or a freshly generated one that respects the configured complexity policy - per the "New account password" setting on /admin/security. */
@@ -295,8 +309,7 @@ admin.get("/admin", async (c) => {
       c,
       "Admin",
       `
-      ${adminNav("")}
-      <div class="stat-grid">
+            <div class="stat-grid">
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${users}</h2><p>Users</p></div></a>
         <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groupCount[0]?.n ?? 0}</h2><p>Groups</p></div></a>
         <a class="stat-card" href="/admin/clients"><div class="card"><h2>${clientCount[0]?.n ?? 0}</h2><p>OIDC Clients</p></div></a>
@@ -539,8 +552,7 @@ admin.get("/admin/users", async (c) => {
       c,
       "Users",
       `
-      ${adminNav("users")}
-      ${cardSection(`
+            ${cardSection(`
         <form method="GET">
           <div class="row between" style="align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div style="display:flex; gap:8px; flex-wrap:wrap; flex:1;">
@@ -1086,8 +1098,7 @@ admin.get("/admin/groups", async (c) => {
       c,
       "Groups",
       `
-      ${adminNav("groups")}
-      ${cardSection(`
+            ${cardSection(`
         <form method="GET" class="row between" style="margin-bottom:0;">
           <div style="display:flex; gap:8px;">
             <input type="text" name="search" placeholder="Search groups" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />
@@ -1308,8 +1319,7 @@ admin.get("/admin/integrations", async (c) => {
       c,
       "Integrations",
       `
-      ${adminNav("integrations")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
 
       ${cardSection(`
         <div class="row between" style="margin:0 0 14px 0;">
@@ -2042,8 +2052,7 @@ admin.get("/admin/schemas", async (c) => {
       c,
       "Schemas",
       `
-      ${adminNav("schemas")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
       <p class="muted">A schema names the attribute vocabulary an object conforms to. "Bare" is the default for new objects; applying a schema never deletes values - narrower schemas simply hide fields.</p>
       ${table("user")}
       ${table("group")}
@@ -2096,8 +2105,7 @@ admin.get("/admin/schemas/:id", async (c) => {
       c,
       `Schema: ${schema.name}`,
       `
-      ${adminNav("schemas")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
         <form method="POST" action="/admin/schemas/${id}">
           <label for="name">Name</label>
@@ -2196,8 +2204,7 @@ admin.get("/admin/domains", async (c) => {
       c,
       "Domains",
       `
-      ${adminNav("domains")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
         <form method="POST" action="/admin/domains">
           <div class="row between" style="margin:0; gap:12px;">
@@ -2297,8 +2304,7 @@ admin.get("/admin/security", async (c) => {
       c,
       "Security",
       `
-      ${adminNav("security")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
       <div class="two-col security-grid">
       ${cardSection(`
         <h2>Default password</h2>
@@ -2388,8 +2394,7 @@ admin.get("/admin/branding", async (c) => {
       c,
       "Branding",
       `
-      ${adminNav("branding")}
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("saved") ? successBanner("Saved.") : ""}
       <div class="two-col security-grid">
       ${cardSection(`
         <h2>Branding</h2>
@@ -2596,8 +2601,7 @@ admin.get("/admin/audit", async (c) => {
       c,
       "Log",
       `
-      ${adminNav("audit")}
-      ${cardSection(`
+            ${cardSection(`
         <form method="GET" class="row between" style="margin-bottom:0;">
           <div style="display:flex; gap:8px;">
             <input type="text" name="search" placeholder="Search the log" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />

@@ -188,17 +188,64 @@ const STYLES = `
   }
 
   /* --------------------------------------------------------- section nav */
-  .admin-tabs {
-    display: flex; gap: 2px; margin-bottom: 22px; flex-wrap: wrap;
-    border-bottom: 1px solid var(--fi-line);
+  .admin-shell { display: grid; grid-template-columns: 190px 1fr; gap: 28px; align-items: start; }
+  .admin-side { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; }
+  .admin-side a {
+    padding: 8px 12px; text-decoration: none; font-size: 0.875rem; font-weight: 550;
+    color: var(--fi-muted); border-radius: 8px; border-left: 2px solid transparent;
   }
-  .admin-tabs a {
-    padding: 9px 14px; text-decoration: none; font-size: 0.875rem; font-weight: 550;
-    background: transparent; color: var(--fi-muted); border: none;
-    border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0;
+  .admin-side a:hover { background: var(--fi-line-soft); color: var(--fi-ink); text-decoration: none; }
+  .admin-side a.active { background: var(--fi-accent-soft); color: var(--fi-accent); border-left-color: var(--fi-accent); }
+  .admin-main { min-width: 0; }
+  @media (max-width: 900px) {
+    .admin-shell { grid-template-columns: 1fr; }
+    .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; }
+    .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
+    .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
   }
-  .admin-tabs a:hover { background: var(--fi-line-soft); color: var(--fi-ink); text-decoration: none; }
-  .admin-tabs a.active { background: transparent; color: var(--fi-accent); border-bottom-color: var(--fi-accent); }
+
+  /* Row overflow menu (users/groups lists) */
+  .rowmenu { position: relative; display: inline-block; }
+  .rowmenu > button { background: none; border: none; cursor: pointer; font-size: 1.1rem; padding: 0 8px; color: var(--fi-muted); line-height: 1; }
+  .rowmenu > button:hover { color: var(--fi-ink); }
+  .rowmenu-items {
+    display: none; position: absolute; right: 0; top: 100%; z-index: 30; min-width: 120px;
+    background: #fff; border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); padding: 4px;
+  }
+  .rowmenu.open .rowmenu-items { display: block; }
+  .rowmenu-items a, .rowmenu-items button {
+    display: block; width: 100%; text-align: left; padding: 7px 10px; font-size: 0.8125rem;
+    background: none; border: none; border-radius: 5px; color: var(--fi-ink); text-decoration: none; cursor: pointer;
+  }
+  .rowmenu-items a:hover, .rowmenu-items button:hover { background: var(--fi-line-soft); }
+  .rowmenu-items button.danger { color: #b91c1c; }
+
+  /* Toggle switch (account status etc.) */
+  .switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    width: 38px; height: 22px; border-radius: 11px; background: var(--fi-line); transition: background 0.15s;
+    position: relative; flex-shrink: 0;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: left 0.15s;
+  }
+  .switch input:checked + .track { background: var(--fi-accent); }
+  .switch input:checked + .track::after { left: 19px; }
+
+  /* Searchable single-select (manager picker, rule builder) */
+  .searchselect { position: relative; }
+  .searchselect .ss-toggle { width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+  .searchselect .ss-menu {
+    display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 25;
+    background: #fff; border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    max-height: 240px; overflow: auto; padding: 6px;
+  }
+  .searchselect.open .ss-menu { display: block; }
+  .searchselect .ss-menu input { width: 100%; margin-bottom: 4px; }
+  .searchselect .ss-item { display: block; width: 100%; text-align: left; padding: 6px 8px; font-size: 0.8125rem; background: none; border: none; border-radius: 5px; cursor: pointer; }
+  .searchselect .ss-item:hover { background: var(--fi-line-soft); }
 
   /* Searchable multi-select (typeahead: pills + search box, dropdown only while searching) */
   .multiselect { margin-bottom: 16px; }
@@ -433,6 +480,74 @@ function copyValue(btn) {
   });
 }
 `;
+
+/**
+ * Row overflow menus (.rowmenu) and searchable single-selects (.searchselect).
+ *
+ * A searchselect is a <div class="searchselect"> containing one hidden input
+ * (the submitted value), a .ss-toggle button showing the chosen label, and a
+ * .ss-menu of .ss-item buttons carrying data-value/data-label. Selection is
+ * just a value swap - no form submission - so callers re-render dependent
+ * fields through their own onchange hooks.
+ */
+const UI_SCRIPT = `
+(function () {
+  document.addEventListener("click", function (e) {
+    var menu = e.target.closest(".rowmenu");
+    document.querySelectorAll(".rowmenu.open").forEach(function (m) { if (m !== menu) m.classList.remove("open"); });
+    if (menu && e.target.closest("button")) menu.classList.toggle("open");
+  });
+
+  function ssClose(ss) { ss.classList.remove("open"); }
+  document.addEventListener("click", function (e) {
+    var ss = e.target.closest(".searchselect");
+    document.querySelectorAll(".searchselect.open").forEach(function (o) { if (o !== ss) ssClose(o); });
+    if (!ss) return;
+    var toggle = e.target.closest(".ss-toggle");
+    if (toggle) { ss.classList.toggle("open"); var q = ss.querySelector(".ss-menu input"); if (q) q.focus(); return; }
+    var filter = e.target.closest(".ss-menu input");
+    if (filter) return;
+    var item = e.target.closest(".ss-item");
+    if (item) {
+      var input = ss.querySelector("input[type=hidden]");
+      input.value = item.dataset.value;
+      ss.querySelector(".ss-toggle .ss-label").textContent = item.dataset.label;
+      ssClose(ss);
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  document.addEventListener("input", function (e) {
+    if (!e.target.matches(".ss-menu input")) return;
+    var q = e.target.value.toLowerCase();
+    e.target.closest(".ss-menu").querySelectorAll(".ss-item").forEach(function (it) {
+      it.style.display = it.textContent.toLowerCase().indexOf(q) === -1 ? "none" : "";
+    });
+  });
+})();
+`;
+
+/** One-value typeahead: renders the .searchselect control; see UI_SCRIPT. */
+export function searchSelect(
+  name: string,
+  options: { value: string; label: string }[],
+  current: string,
+  placeholder = "Select..."
+): string {
+  const currentLabel = options.find((o) => o.value === current)?.label ?? "";
+  return `<div class="searchselect">
+    <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(current)}" />
+    <button type="button" class="ss-toggle secondary" style="width:100%;"><span class="ss-label">${escapeHtml(currentLabel || placeholder)}</span><span>&#9662;</span></button>
+    <div class="ss-menu">
+      <input type="text" placeholder="Search..." />
+      ${options.map((o) => `<button type="button" class="ss-item" data-value="${escapeHtml(o.value)}" data-label="${escapeHtml(o.label)}">${escapeHtml(o.label)}</button>`).join("")}
+    </div>
+  </div>`;
+}
+
+/** "..." overflow menu on a table row. */
+export function rowMenu(itemsHtml: string): string {
+  return `<div class="rowmenu"><button type="button" aria-label="Row actions">&#8942;</button><div class="rowmenu-items">${itemsHtml}</div></div>`;
+}
 
 /**
  * Attributes that turn a form into a confirmed action, handled by the single
@@ -703,6 +818,7 @@ export function page(
   <script>${MULTISELECT_SCRIPT}</script>
   <script>${COPY_SCRIPT}</script>
   <script>${CONFIRM_SCRIPT}</script>
+  <script>${UI_SCRIPT}</script>
 </body>
 </html>`;
 }
