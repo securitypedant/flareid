@@ -14,6 +14,11 @@
   "observability": {
     "enabled": true
   },
+  // Hourly garbage collection of expired codes, tokens, sessions, trusted
+  // devices and old audit entries - see src/lib/cleanup.ts.
+  "triggers": {
+    "crons": ["23 * * * *"]
+  },
   "vars": {
     // Public app name shown on the login and admin pages. Also editable at
     // runtime from Admin -> Security, which takes precedence over this.

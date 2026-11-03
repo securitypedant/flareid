@@ -93,6 +93,22 @@ export async function setMfaRequired(env: Env, required: boolean): Promise<void>
   await setSetting(env, "require_mfa", required ? "true" : "false");
 }
 
+export const AUDIT_RETENTION_DEFAULT_DAYS = 365;
+export const AUDIT_RETENTION_MIN_DAYS = 30;
+export const AUDIT_RETENTION_MAX_DAYS = 3650;
+
+/** How long audit-log entries are kept before the scheduled cleanup deletes them. */
+export async function getAuditRetentionDays(env: Env): Promise<number> {
+  const raw = Number(await getSetting(env, "audit_retention_days"));
+  return Number.isFinite(raw) && raw > 0 ? raw : AUDIT_RETENTION_DEFAULT_DAYS;
+}
+
+export async function setAuditRetentionDays(env: Env, days: number): Promise<number> {
+  const clamped = Math.min(AUDIT_RETENTION_MAX_DAYS, Math.max(AUDIT_RETENTION_MIN_DAYS, Math.round(days)));
+  await setSetting(env, "audit_retention_days", String(clamped));
+  return clamped;
+}
+
 export async function isSetupCompleted(env: Env): Promise<boolean> {
   return (await getSetting(env, "setup_completed")) === "true";
 }

@@ -79,12 +79,13 @@ async function authorizeAndLogin(params: {
   codeChallenge?: string;
   state?: string;
   nonce?: string;
+  scope?: string;
 }): Promise<{ code: string | null; location: string | null; state: string | null }> {
   const query = new URLSearchParams({
     client_id: params.clientId,
     redirect_uri: REDIRECT_URI,
     response_type: "code",
-    scope: "openid email profile groups",
+    scope: params.scope ?? "openid email profile groups",
     ...(params.state ? { state: params.state } : {}),
     ...(params.nonce ? { nonce: params.nonce } : {}),
     ...(params.codeChallenge ? { code_challenge: params.codeChallenge, code_challenge_method: "S256" } : {}),
@@ -397,5 +398,101 @@ describe("refresh grant", () => {
     // The seeded scope does not include offline_access, so there should be no
     // refresh token to hand out.
     expect(body.refresh_token).toBeUndefined();
+  });
+
+  async function refresh(refreshToken: string, clientId: string, clientSecret: string) {
+    const response = await SELF.fetch(`${BASE}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId, client_secret: clientSecret }).toString(),
+    });
+    return { status: response.status, body: (await response.json()) as any };
+  }
+
+  async function offlineTokens() {
+    const { clientId, clientSecret, upn } = await seedRelyingParty();
+    const { code } = await authorizeAndLogin({ clientId, upn, scope: "openid email offline_access" });
+    const { body } = await exchangeCode({ code: code!, clientId, clientSecret });
+    expect(body.refresh_token).toBeTruthy();
+    return { clientId, clientSecret, refreshToken: body.refresh_token as string };
+  }
+
+  it("rotates the refresh token on every use", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+
+    const first = await refresh(refreshToken, clientId, clientSecret);
+    expect(first.status).toBe(200);
+    expect(first.body.access_token).toBeTruthy();
+    expect(first.body.refresh_token).toBeTruthy();
+    expect(first.body.refresh_token).not.toBe(refreshToken);
+
+    const second = await refresh(first.body.refresh_token, clientId, clientSecret);
+    expect(second.status).toBe(200);
+  });
+
+  it("treats a replayed refresh token as theft and revokes the whole family", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+    const rotated = await refresh(refreshToken, clientId, clientSecret);
+    expect(rotated.status).toBe(200);
+
+    // The original token again: someone else has a copy.
+    const replay = await refresh(refreshToken, clientId, clientSecret);
+    expect(replay.status).toBe(400);
+    expect(replay.body.error).toBe("invalid_grant");
+
+    // ...so the legitimate client's current token is dead too.
+    const afterwards = await refresh(rotated.body.refresh_token, clientId, clientSecret);
+    expect(afterwards.status).toBe(400);
+  });
+
+  it("refuses an expired refresh token", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+    const { env } = await import("cloudflare:test");
+    await env.DB.prepare("UPDATE refresh_tokens SET expires_at = ?").bind(new Date(Date.now() - 1000).toISOString()).run();
+
+    const result = await refresh(refreshToken, clientId, clientSecret);
+    expect(result.status).toBe(400);
+    expect(result.body.error).toBe("invalid_grant");
+  });
+
+  it("revoking a refresh token ends every token in its family", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+    const rotated = await refresh(refreshToken, clientId, clientSecret);
+
+    await SELF.fetch(`${BASE}/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refreshToken, client_id: clientId, client_secret: clientSecret }).toString(),
+    });
+
+    expect((await refresh(rotated.body.refresh_token, clientId, clientSecret)).status).toBe(400);
+  });
+});
+
+describe("PKCE", () => {
+  it("advertises S256 only", async () => {
+    const doc = (await (await SELF.fetch(`${BASE}/.well-known/openid-configuration`)).json()) as { code_challenge_methods_supported: string[] };
+    expect(doc.code_challenge_methods_supported).toEqual(["S256"]);
+  });
+
+  it("refuses the plain method, and a challenge with no method, back to the client", async () => {
+    const { clientId } = await seedRelyingParty();
+    for (const method of ["plain", undefined]) {
+      const query = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: REDIRECT_URI,
+        response_type: "code",
+        scope: "openid",
+        state: "s1",
+        code_challenge: "a-challenge-value-that-is-long-enough-to-pass",
+        ...(method ? { code_challenge_method: method } : {}),
+      });
+      const response = await SELF.fetch(`${BASE}/authorize?${query}`, { redirect: "manual" });
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("Location")!);
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+      expect(location.searchParams.get("error")).toBe("invalid_request");
+      expect(location.searchParams.get("state")).toBe("s1");
+    }
   });
 });

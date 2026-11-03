@@ -65,6 +65,17 @@ authorize.get("/authorize", async (c) => {
     return c.text("redirect_uri is not registered for this client", 400);
   }
 
+  // PKCE is S256 only. "plain" sends the verifier's equivalent in the clear, and
+  // a challenge with no method defaults to plain (RFC 7636 §4.3), so both are
+  // refused - back to the client, now that redirect_uri is known to be safe.
+  if (codeChallenge && codeChallengeMethod !== "S256") {
+    const error = new URL(redirectUri);
+    error.searchParams.set("error", "invalid_request");
+    error.searchParams.set("error_description", "code_challenge_method must be S256");
+    if (state) error.searchParams.set("state", state);
+    return c.redirect(error.toString(), 302);
+  }
+
   const pendingRequest: PendingAuthorizeRequest = {
     clientId,
     redirectUri,

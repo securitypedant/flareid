@@ -35,19 +35,22 @@ introspect.post("/introspect", async (c) => {
     });
   }
 
+  // Only the current token of a family is live: rotated, revoked and expired
+  // ones all report inactive.
   const refreshTokenRow = await c.env.DB.prepare(
-    "SELECT * FROM refresh_tokens WHERE token_hash = ? AND client_id = ? AND revoked_at IS NULL"
+    "SELECT * FROM refresh_tokens WHERE token_hash = ? AND client_id = ? AND revoked_at IS NULL AND rotated_at IS NULL"
   )
     .bind(tokenHash, client.client_id)
-    .first<{ user_id: number; scope: string }>();
+    .first<{ user_id: number; scope: string; expires_at: string | null }>();
 
-  if (refreshTokenRow) {
+  if (refreshTokenRow && (!refreshTokenRow.expires_at || new Date(refreshTokenRow.expires_at).getTime() > Date.now())) {
     return c.json({
       active: true,
       sub: String(refreshTokenRow.user_id),
       client_id: client.client_id,
       scope: refreshTokenRow.scope,
       token_type: "refresh_token",
+      ...(refreshTokenRow.expires_at ? { exp: Math.floor(new Date(refreshTokenRow.expires_at).getTime() / 1000) } : {}),
     });
   }
 
@@ -69,13 +72,15 @@ introspect.post("/revoke", async (c) => {
 
   const tokenHash = await sha256Hex(token);
 
+  // Revoking a refresh token ends the grant: every token in its rotation
+  // family goes with it, not just the one presented.
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM access_tokens WHERE token_hash = ? AND client_id = ?").bind(tokenHash, client.client_id),
-    c.env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND client_id = ?").bind(
-      new Date().toISOString(),
-      tokenHash,
-      client.client_id
-    ),
+    c.env.DB.prepare(
+      `UPDATE refresh_tokens SET revoked_at = ?
+        WHERE client_id = ? AND revoked_at IS NULL
+          AND family_id = (SELECT COALESCE(family_id, token_hash) FROM refresh_tokens WHERE token_hash = ? AND client_id = ?)`
+    ).bind(new Date().toISOString(), client.client_id, tokenHash, client.client_id),
   ]);
 
   return c.body(null, 200);

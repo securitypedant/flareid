@@ -3,7 +3,7 @@ import { randomToken } from "./tokens.js";
 import { getClientIp } from "./rate-limit.js";
 
 const SESSION_COOKIE = "__Host-flareid_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h SSO session
+export const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h SSO session
 
 export interface SessionInfo {
   id: string;

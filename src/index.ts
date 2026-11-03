@@ -11,6 +11,7 @@ import { account } from "./routes/account.js";
 import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
 import { getAppName } from "./lib/settings.js";
+import { purgeExpiredState } from "./lib/cleanup.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -47,4 +48,17 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.text("Not found", 404));
 
-export default app;
+export default {
+  fetch: app.fetch,
+  // Hourly Cron Trigger (wrangler.jsonc): garbage-collect expired codes, tokens,
+  // sessions, devices and old audit entries. Logged so a run is visible in
+  // Workers logs; failures surface there too rather than failing silently.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      purgeExpiredState(env).then(
+        (removed) => console.log(JSON.stringify({ event: "cleanup", removed })),
+        (err) => console.error(JSON.stringify({ event: "cleanup_failed", error: String(err) }))
+      )
+    );
+  },
+} satisfies ExportedHandler<Env>;

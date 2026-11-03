@@ -20,7 +20,7 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     scopes_supported: ["openid", "email", "profile", "groups"],
     claims_supported: ["sub", "email", "name", "groups"],
     token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
-    code_challenge_methods_supported: ["S256", "plain"],
+    code_challenge_methods_supported: ["S256"],
   });
 });
 

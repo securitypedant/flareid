@@ -6,10 +6,13 @@ import { signIdToken } from "../lib/jwt.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
+import { logAudit } from "../lib/audit.js";
 
 export const token = new Hono<{ Bindings: Env }>();
 
 const ACCESS_TOKEN_TTL_SECONDS = 600;
+/** Each refresh token is good for 30 days from issue; using it rotates it, so an active client never hits this. */
+const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 async function base64UrlSha256(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -54,9 +57,8 @@ token.post("/token", async (c) => {
 
     if (authCode.code_challenge) {
       if (!codeVerifier) return c.json({ error: "invalid_grant", error_description: "Missing code_verifier" }, 400);
-      const computed =
-        authCode.code_challenge_method === "plain" ? codeVerifier : await base64UrlSha256(codeVerifier);
-      if (computed !== authCode.code_challenge) {
+      // /authorize only accepts S256, so that is the only transform there is.
+      if ((await base64UrlSha256(codeVerifier)) !== authCode.code_challenge) {
         return c.json({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
       }
     }
@@ -75,23 +77,65 @@ token.post("/token", async (c) => {
     const refreshToken = String(body.refresh_token ?? "");
     const tokenHash = await sha256Hex(refreshToken);
 
-    const row = await c.env.DB.prepare(
-      "SELECT * FROM refresh_tokens WHERE token_hash = ? AND client_id = ? AND revoked_at IS NULL"
-    )
+    const row = await c.env.DB.prepare("SELECT * FROM refresh_tokens WHERE token_hash = ? AND client_id = ?")
       .bind(tokenHash, client.client_id)
-      .first<{ user_id: number; scope: string; amr: string }>();
-    if (!row) return c.json({ error: "invalid_grant" }, 400);
+      .first<RefreshTokenRow>();
+    if (!row || row.revoked_at) return c.json({ error: "invalid_grant" }, 400);
+
+    // Rotation: claim this token exactly once. A token that was already
+    // rotated - or loses the race to be - is being replayed, which means
+    // someone other than the client holds it. Revoke the whole family.
+    const claimed = row.rotated_at
+      ? 0
+      : Number(
+          (
+            await c.env.DB.prepare("UPDATE refresh_tokens SET rotated_at = ? WHERE token_hash = ? AND rotated_at IS NULL AND revoked_at IS NULL")
+              .bind(new Date().toISOString(), tokenHash)
+              .run()
+          ).meta.changes ?? 0
+        );
+    if (claimed !== 1) {
+      await revokeRefreshFamily(c.env, row.family_id ?? row.token_hash);
+      await logAudit(c.env, null, "oauth.refresh_token_reuse", client.name, { client_id: client.client_id, user_id: row.user_id }, c.req.raw);
+      return c.json({ error: "invalid_grant", error_description: "Refresh token reuse detected; the token family has been revoked." }, 400);
+    }
+
+    if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
+      return c.json({ error: "invalid_grant", error_description: "Refresh token expired" }, 400);
+    }
 
     const user = await getUserById(c.env, row.user_id);
     if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(row.amr || '["pwd"]');
-    return issueTokenResponse(c.env, client, user.id, row.scope, amr, undefined, { reuseRefreshToken: refreshToken });
+    return issueTokenResponse(c.env, client, user.id, row.scope, amr, undefined, { refreshFamily: row.family_id ?? row.token_hash });
   }
 
   return c.json({ error: "unsupported_grant_type" }, 400);
 });
 
+interface RefreshTokenRow {
+  token_hash: string;
+  user_id: number;
+  scope: string;
+  amr: string;
+  revoked_at: string | null;
+  rotated_at: string | null;
+  expires_at: string | null;
+  family_id: string | null;
+}
+
+async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
+  await env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL")
+    .bind(new Date().toISOString(), familyId)
+    .run();
+}
+
+/**
+ * @param opts.refreshFamily - set when answering a refresh grant: a new token
+ *   is always issued in that family (rotation). Without it, a refresh token is
+ *   issued only if offline_access was granted, as the head of a new family.
+ */
 async function issueTokenResponse(
   env: Env,
   client: OAuthClientRow,
@@ -99,7 +143,7 @@ async function issueTokenResponse(
   scope: string,
   amr: string[],
   nonce?: string,
-  opts?: { reuseRefreshToken?: string }
+  opts?: { refreshFamily?: string }
 ) {
   const user = await getUserById(env, userId);
   if (!user) return Response.json({ error: "server_error" }, { status: 500 });
@@ -118,14 +162,25 @@ async function issueTokenResponse(
     .bind(accessTokenHash, client.client_id, userId, scope, accessExpiresAt, amrJson)
     .run();
 
-  let refreshToken = opts?.reuseRefreshToken;
-  if (!refreshToken && scope.includes("offline_access")) {
+  let refreshToken: string | undefined;
+  if (opts?.refreshFamily || scope.split(" ").includes("offline_access")) {
     refreshToken = randomToken(32);
     const refreshTokenHash = await sha256Hex(refreshToken);
+    const now = Date.now();
     await env.DB.prepare(
-      "INSERT INTO refresh_tokens (token_hash, client_id, user_id, scope, created_at, amr) VALUES (?, ?, ?, ?, ?, ?)"
+      `INSERT INTO refresh_tokens (token_hash, client_id, user_id, scope, created_at, amr, expires_at, family_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(refreshTokenHash, client.client_id, userId, scope, new Date().toISOString(), amrJson)
+      .bind(
+        refreshTokenHash,
+        client.client_id,
+        userId,
+        scope,
+        new Date(now).toISOString(),
+        amrJson,
+        new Date(now + REFRESH_TOKEN_TTL_SECONDS * 1000).toISOString(),
+        opts?.refreshFamily ?? refreshTokenHash
+      )
       .run();
   }
 

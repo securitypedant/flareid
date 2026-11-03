@@ -21,6 +21,13 @@ import { logAudit } from "../lib/audit.js";
 import { getScimConfig, getScimScope, setScimConfig, setScimScope } from "../lib/settings.js";
 import { getRateLimitPolicy, setRateLimitPolicy } from "../lib/rate-limit.js";
 import { getNewUserPasswordMode, isMfaRequired, setMfaRequired, setNewUserPasswordMode } from "../lib/settings.js";
+import {
+  AUDIT_RETENTION_DEFAULT_DAYS,
+  AUDIT_RETENTION_MAX_DAYS,
+  AUDIT_RETENTION_MIN_DAYS,
+  getAuditRetentionDays,
+  setAuditRetentionDays,
+} from "../lib/settings.js";
 import { getLoginGradient, getLoginSubtitle, setAppName, setLoginGradient, setLoginSubtitle } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
@@ -2708,6 +2715,7 @@ admin.get("/admin/security", async (c) => {
   const rateLimit = await getRateLimitPolicy(c.env);
   const mfaRequired = await isMfaRequired(c.env);
   const newUserPasswordMode = await getNewUserPasswordMode(c.env);
+  const auditRetentionDays = await getAuditRetentionDays(c.env);
 
   return c.html(
     layout(
@@ -2772,6 +2780,15 @@ admin.get("/admin/security", async (c) => {
               <input type="number" id="windowMinutes" name="windowMinutes" min="1" max="1440" value="${rateLimit.windowMinutes}" />
             </div>
           </div>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Audit log retention</h2>
+        <p class="muted">Entries older than this are deleted by the hourly cleanup, along with expired codes, tokens, sessions and remembered devices. ${AUDIT_RETENTION_MIN_DAYS}-${AUDIT_RETENTION_MAX_DAYS} days.</p>
+        <form method="POST" action="/admin/security/audit-retention">
+          <label for="audit_retention_days">Keep audit entries for (days)</label>
+          <input type="number" id="audit_retention_days" name="days" min="${AUDIT_RETENTION_MIN_DAYS}" max="${AUDIT_RETENTION_MAX_DAYS}" value="${auditRetentionDays}" style="max-width:160px;" />
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
@@ -2933,6 +2950,12 @@ admin.post("/admin/security/rate-limit", async (c) => {
     windowMinutes: Number(body.windowMinutes) || 15,
   });
   await logAudit(c.env, c.get("user"), "settings.rate_limit_changed", undefined, undefined, c.req.raw);
+  return c.redirect("/admin/security?saved=1", 302);
+});
+
+admin.post("/admin/security/audit-retention", async (c) => {
+  const days = await setAuditRetentionDays(c.env, Number((await c.req.parseBody()).days) || AUDIT_RETENTION_DEFAULT_DAYS);
+  await logAudit(c.env, c.get("user"), "settings.audit_retention_changed", undefined, { days }, c.req.raw);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
