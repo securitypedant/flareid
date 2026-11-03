@@ -35,7 +35,9 @@ export async function getUserGroupNames(env: Env, userId: number): Promise<strin
     env.DB.prepare("SELECT g.name FROM groups g JOIN group_members gm ON gm.group_id = g.id WHERE gm.user_id = ?")
       .bind(userId)
       .all<{ name: string }>(),
-    env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first<UserRow>(),
+    // The whole row: rules evaluate attributes (employment_type, department,
+    // custom_attributes...), so a partial SELECT silently matches nothing.
+    env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>(),
   ]);
   const names = new Set(explicit.results.map((r) => r.name));
   if (dynamic) {

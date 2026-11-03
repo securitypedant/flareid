@@ -22,10 +22,13 @@ async function seedServiceProvider(sp: Record<string, unknown> = {}): Promise<{ 
   });
   if (created.status !== 200) throw new Error(`SP seed failed: ${JSON.stringify(created.body)}`);
 
+  // "All Employees" is dynamic, as in the lab - the attribute assertions below
+  // therefore cover rule-based membership, not a static stub.
   await apiCall("/api/v1/directory/import", {
     token: apiKey,
     body: {
       version: 1,
+      groups: [{ name: "All Employees", rule: JSON.stringify({ all: [{ field: "employment_type", op: "eq", value: "full_time" }] }) }],
       users: [
         {
           username: "ada.kowalski",
@@ -33,9 +36,19 @@ async function seedServiceProvider(sp: Record<string, unknown> = {}): Promise<{ 
           family_name: "Kowalski",
           job_title: "Chief Executive Officer",
           department: "Executive",
+          employment_type: "full_time",
           password: USER_PASSWORD,
           status: "active",
-          groups: ["All Employees", "Executives"],
+          groups: ["Executives"],
+        },
+        {
+          username: "con.tractor",
+          given_name: "Con",
+          family_name: "Tractor",
+          employment_type: "contractor",
+          password: USER_PASSWORD,
+          status: "active",
+          groups: [],
         },
       ],
     },
@@ -231,6 +244,14 @@ describe("SSO happy path", () => {
     expect(xml).toContain("PasswordProtectedTransport");
 
     await expectSignaturesVerify(xml);
+  });
+
+  it("leaves a dynamic group out of the attributes of someone its rule doesn't match", async () => {
+    await seedServiceProvider();
+    const result = await ssoViaLogin((await ssoQuery(authnRequestXml())).query, "con.tractor@horizon.test");
+    const xml = decodeResponse(postFormFields(result.html).samlResponse!);
+    expect(xml).toContain("status:Success");
+    expect(xml).not.toContain("All Employees");
   });
 
   it("answers with an existing session and no login form", async () => {

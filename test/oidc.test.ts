@@ -17,10 +17,13 @@ async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: str
     body: { name: "Test RP", redirect_uris: [REDIRECT_URI] },
   });
 
+  // "All Employees" is dynamic, the way the lab defines it - so these tests
+  // exercise rule-based membership reaching the tokens, not a static stub.
   await apiCall("/api/v1/directory/import", {
     token: apiKey,
     body: {
       version: 1,
+      groups: [{ name: "All Employees", rule: JSON.stringify({ all: [{ field: "employment_type", op: "eq", value: "full_time" }] }) }],
       users: [
         {
           username: "ada.kowalski",
@@ -28,9 +31,19 @@ async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: str
           family_name: "Kowalski",
           job_title: "Chief Executive Officer",
           department: "Executive",
+          employment_type: "full_time",
           password: USER_PASSWORD,
           status: "active",
-          groups: ["All Employees", "Executives"],
+          groups: ["Executives"],
+        },
+        {
+          username: "con.tractor",
+          given_name: "Con",
+          family_name: "Tractor",
+          employment_type: "contractor",
+          password: USER_PASSWORD,
+          status: "active",
+          groups: [],
         },
       ],
     },
@@ -305,6 +318,19 @@ describe("userinfo", () => {
     expect(response.status).toBe(200);
     expect(claims.email).toBe(upn);
     expect(claims.groups).toEqual(expect.arrayContaining(["All Employees"]));
+  });
+
+  it("leaves a dynamic group out of the claims of someone its rule doesn't match", async () => {
+    const { clientId, clientSecret } = await seedRelyingParty();
+    const { code } = await authorizeAndLogin({ clientId, upn: "con.tractor@horizon.test" });
+    const { body } = await exchangeCode({ code: code!, clientId, clientSecret });
+
+    const idToken = JSON.parse(atob((body.id_token as string).split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/")));
+    expect(idToken.groups).not.toContain("All Employees");
+
+    const response = await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${body.access_token}` } });
+    const claims = (await response.json()) as { groups: string[] };
+    expect(claims.groups).not.toContain("All Employees");
   });
 
   it("refuses an unknown access token", async () => {
