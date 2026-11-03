@@ -4,6 +4,7 @@ import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId } from "./schemas.js";
+import { parseRule } from "./groups.js";
 
 /**
  * Bulk directory import.
@@ -204,8 +205,14 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
   const described = new Map<string, string | null>();
   const ruleByName = new Map<string, string>();
   for (const group of groups) {
-    described.set(cleanString(group.name), cleanString(group.description) || null);
-    if (group.rule) ruleByName.set(cleanString(group.name), group.rule);
+    const name = cleanString(group.name);
+    described.set(name, cleanString(group.description) || null);
+    if (!group.rule) continue;
+    // Super Admins gates /admin: membership by attribute would let anyone who
+    // can edit an attribute grant themselves the console.
+    if (name === SUPER_ADMINS_GROUP) result.errors.push({ group: name, message: `${SUPER_ADMINS_GROUP} cannot be a dynamic group - rule ignored.` });
+    else if (!parseRule(group.rule)) result.errors.push({ group: name, message: "Rule is not valid rule JSON - rule ignored." });
+    else ruleByName.set(name, group.rule);
   }
   for (const user of users) {
     for (const name of user.groups ?? []) {
@@ -240,6 +247,14 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
     } catch (err) {
       result.errors.push({ group: name, message: String(err) });
     }
+  }
+
+  // Dynamic groups take no explicit members - their membership is the rule.
+  const dynamicGroupIds = new Set(
+    (await env.DB.prepare("SELECT id FROM groups WHERE rule != ''").all<{ id: number }>()).results.map((g) => g.id)
+  );
+  if (dynamicGroupIds.size > 0) {
+    await env.DB.prepare("DELETE FROM group_members WHERE group_id IN (SELECT id FROM groups WHERE rule != '')").run();
   }
 
   // --- Users --------------------------------------------------------------
@@ -375,6 +390,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
           const gid = groupIdByName.get(clean);
           if (gid === undefined) {
             result.errors.push({ username, group: clean, message: `Unknown group "${clean}" - membership skipped.` });
+            continue;
+          }
+          if (dynamicGroupIds.has(gid)) {
+            result.errors.push({ username, group: clean, message: `"${clean}" is a dynamic group - membership follows its rule, so this listing was skipped.` });
             continue;
           }
           wanted.add(gid);

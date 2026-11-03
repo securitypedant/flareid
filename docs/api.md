@@ -176,17 +176,21 @@ Other things worth knowing:
 - **Imported users land `disabled` by default.** Set `status: "active"` on
   each user you want to be able to sign in straight away.
 - **`schema` names the schema the user conforms to** (a `user` schema from
-  `GET /schemas`, e.g. `"FlareID HR"`); it defaults to the deployment's Bare
-  schema. `attributes` sets schema-defined attribute values - names matching
-  built-in fields write to those columns; anything else becomes a custom
-  attribute.
-- **Group membership is explicit, unless the group has a `rule`.** A group
-  listed with a `rule` gains dynamic membership - the JSON rule
-  (`{"all":[{"field","op","value"}]}`, ops `eq`/`ne`) is evaluated at read
-  time and unioned with explicit members, so a user need not list a dynamic
-  group to be in it. Omit `groups` on a user to leave existing membership
-  alone; send `[]` to clear the explicit rows (dynamic membership follows the
-  rule either way).
+  `GET /schemas`, e.g. `"FlareID HR"`); it defaults to the deployment's
+  default schema (`Basic` out of the box). `attributes` sets schema-defined
+  attribute values - names matching built-in fields write to those columns;
+  anything else becomes a custom attribute. Import merges custom attributes
+  rather than clearing ones the schema doesn't define; use
+  `POST /schemas/:id/apply` to conform everyone.
+- **A group is static or dynamic, never both.** A group listed with a `rule`
+  is dynamic: the JSON rule (`{"all":[{"schema","field","op","value"}]}`, ops
+  `eq`/`ne`, every condition must match) is evaluated at read time, and its
+  membership is exactly the matching users. `schema` is optional and only
+  labels where the attribute came from. Explicit members are removed when a
+  group becomes dynamic, and a user listing a dynamic group in `groups` is
+  reported in `errors` and skipped. `Super Admins` can never be dynamic. For
+  static groups, omit `groups` on a user to leave membership alone; send `[]`
+  to clear it.
 - **Groups are upserted**, whether they appear in `groups` or only as a
   membership, so a bundle does not have to declare the same thing twice.
 - `manager` names another user's `username`, resolved in a second pass - so a
@@ -313,11 +317,17 @@ entity IDs are URLs and cannot ride inside a path segment.
 Reads carry `directory:read`; writes carry `settings:write`.
 
 A schema names the attribute vocabulary an object type (`user` or `group`)
-conforms to. A fresh deployment ships three provided schemas: user `Bare`
-(identity fields - the default for new objects), user `FlareID HR` (the full
-built-in HR set), and group `Bare`. Provided schemas are editable but not
-deletable. Applying a schema never deletes values - fields it doesn't
-define are hidden, not removed.
+conforms to. A fresh deployment ships three provided schemas: user `Basic`
+(identity fields only - the default for new users), user `FlareID HR` (the
+full built-in HR set), and group `Basic` (the default for new groups). The
+list response marks the default with `"default": true`. Provided schemas are
+editable but not deletable.
+
+Moving an object to a schema **conforms** it: attributes the target schema
+defines keep their values (matched by name, so same-named attributes carry
+over), and everything else is cleared. Identity fields (names, UPN) are on
+every object and are never cleared. Deleting a schema moves its objects to
+the default schema the same way.
 
 ```json
 // POST /schemas
@@ -339,12 +349,13 @@ built-in user fields (`job_title`, `department`, `employee_number`,
 `hire_date`, `employment_status`, `employment_type`, `location`, and the name
 fields) map onto those columns; anything else is stored as a custom
 attribute. `PATCH` accepts `name`, `description` and a full `attributes`
-replacement. `POST /:id/apply` sets every object of that type to conform and
-returns `{ "applied": <count> }`.
+replacement. `POST /:id/apply` conforms every object of that type to the
+schema (see above) and returns `{ "applied": <count> }`.
 
 Users and groups in `GET /users` / `GET /groups` now include `schema_name`,
 `attributes` (the custom-attribute map), and - for groups - `rule`,
-`member_count` (effective, dynamic included) and `explicit_member_count`.
+`member_count` (rule matches for a dynamic group, assigned members for a
+static one) and `explicit_member_count` (always 0 for a dynamic group).
 
 ### `POST /scim/config`, `POST /scim/test`, `POST /scim/sync`
 

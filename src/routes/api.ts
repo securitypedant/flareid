@@ -14,6 +14,7 @@ import {
   saveSchemaAttributes,
   applySchemaToAll,
   countConforming,
+  defaultSchemaId,
 } from "../lib/schemas.js";
 import { addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { logAudit } from "../lib/audit.js";
@@ -389,6 +390,7 @@ api.get("/api/v1/schemas", requireScope("directory:read"), async (c) => {
       name: s.name,
       description: s.description,
       builtin: s.builtin === 1,
+      default: s.is_default === 1,
       conforming: await countConforming(c.env, s.id, s.object_type),
       attributes: (await getSchemaAttributes(c.env, s.id)).map((a) => ({
         name: a.name,
@@ -455,11 +457,10 @@ api.delete("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
   if (!schema) return c.json({ error: "not_found" }, 404);
   if (schema.builtin) return c.json({ error: "forbidden", message: "Provided schemas cannot be deleted." }, 403);
 
-  const table = schema.object_type === "user" ? "users" : "groups";
-  await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE ${table} SET schema_id = NULL WHERE schema_id = ?`).bind(id),
-    c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id),
-  ]);
+  // Objects on it move to the default schema, conforming as they go.
+  const fallback = await getSchema(c.env, Number(await defaultSchemaId(c.env, schema.object_type)));
+  if (fallback) await applySchemaToAll(c.env, fallback, id);
+  await c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
   return c.json({ ok: true });
 });

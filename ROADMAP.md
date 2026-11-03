@@ -14,12 +14,12 @@ deciding whether to point real traffic at this.
   request-signature verification, `ForceAuthn`
 - Password (PBKDF2) plus optional per-user TOTP MFA, backup codes, trusted
   devices, and an option to require MFA for everyone
-- Flat groups with **dynamic membership rules** (attribute-matched, unioned
-  with explicit membership everywhere membership resolves), multi-domain UPNs,
-  HR attributes exposed as claims
-- **Directory schemas**: named attribute vocabularies per object type (Bare
-  default, FlareID HR provided), admin + API CRUD, per-object conformance and
-  non-destructive schema switching
+- Flat groups, each **static** (assigned members) or **dynamic** (attribute
+  rules built in the admin UI, resolved everywhere membership matters),
+  multi-domain UPNs, HR attributes exposed as claims
+- **Directory schemas**: named attribute vocabularies per object type (Basic
+  default, FlareID HR provided), admin + API CRUD, and conforming on schema
+  change (same-named attributes carry over, with a preview of what's cleared)
 - **User lifecycle**: accounts are created disabled and activated explicitly;
   admins can reset passwords to a chosen value or a generated one
 - SCIM 2.0 *client*: pushes users and groups to an external SCIM server,

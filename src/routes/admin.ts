@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
@@ -31,7 +31,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
-import { resolveGroupMemberUserIds, ruleFromLines, ruleToLines, parseRule } from "../lib/groups.js";
+import { resolveGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -41,6 +41,8 @@ import {
   parseCustomAttributes,
   userAttributeValue,
   splitUserAttributes,
+  conformUserAttributes,
+  attributesLostOnMove,
   createSchema,
   saveSchemaAttributes,
   applySchemaToAll,
@@ -67,7 +69,14 @@ const CRUMB_SECTIONS: Record<string, string> = {
   Log: "audit",
 };
 
-function layout(c: { get: (k: "appName") => string }, title: string, body: string, crumbs?: Breadcrumb[], active?: string) {
+function layout(
+  c: { get: (k: "appName") => string },
+  title: string,
+  body: string,
+  crumbs?: Breadcrumb[],
+  active?: string,
+  headerActions = ""
+) {
   const appName = c.get("appName");
   const crumbHtml = crumbs ? breadcrumbs(crumbs) : "";
   const section = active ?? (crumbs?.[1] ? (CRUMB_SECTIONS[crumbs[1].label] ?? "") : "");
@@ -75,7 +84,10 @@ function layout(c: { get: (k: "appName") => string }, title: string, body: strin
     `${title}`,
     `<div class="admin-shell">
       <aside class="admin-side">${adminNav(section)}</aside>
-      <div class="admin-main"><div class="page-header">${crumbHtml}<h1>${escapeHtml(title)}</h1></div>${body}</div>
+      <div class="admin-main">
+        <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
+        ${body}
+      </div>
     </div>`,
     appName,
     true,
@@ -189,23 +201,56 @@ function employmentTypeSelect(current: string, name = "employment_type") {
   </select>`;
 }
 
-/** Renders a user schema's attribute inputs for a form - attr_<name> fields, using the specialized widgets where they exist. */
+/**
+ * Renders a user schema's attribute inputs - attr_<name> fields in a
+ * two-column grid, using the specialized widgets where they exist. User
+ * references (manager) are a searchable picker that never offers the user
+ * being edited, since nobody can be their own manager.
+ */
 async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttributeRow[], values: Record<string, string>, excludeUserId: number | null): Promise<string> {
-  const userOptions = attributes.some((a) => a.type === "reference" && (a.ref_object ?? "user") === "user")
-    ? (await c.env.DB.prepare("SELECT external_id, display_name, upn FROM users ORDER BY display_name").all<{ external_id: string; display_name: string; upn: string }>()).results.map((u) => ({
-        external_id: u.external_id,
-        label: `${u.display_name} (${u.upn})`,
-      }))
+  if (attributes.length === 0) return '<p class="muted">This schema defines no attributes beyond identity.</p>';
+
+  const people = attributes.some((a) => a.type === "reference" && (a.ref_object ?? "user") === "user")
+    ? (
+        await c.env.DB.prepare("SELECT external_id, display_name, upn FROM users WHERE id != ? ORDER BY display_name")
+          .bind(excludeUserId ?? -1)
+          .all<{ external_id: string; display_name: string; upn: string }>()
+      ).results.map((u) => ({ value: u.external_id, label: `${u.display_name} (${u.upn})` }))
     : [];
 
-  return attributes
-    .map((attr) => {
-      const value = values[attr.name] ?? "";
-      if (attr.name === "employment_status") return `<label for="attr_employment_status">${escapeHtml(attr.label)}</label>${employmentStatusSelect(value, "attr_employment_status")}`;
-      if (attr.name === "employment_type") return `<label for="attr_employment_type">${escapeHtml(attr.label)}</label>${employmentTypeSelect(value, "attr_employment_type")}`;
-      return attributeInput(attr, value, userOptions);
-    })
-    .join("\n");
+  const cells = attributes.map((attr) => {
+    const value = values[attr.name] ?? "";
+    const label = `<label for="attr_${escapeHtml(attr.name)}">${escapeHtml(attr.label)}${attr.required ? " *" : ""}</label>`;
+    if (attr.name === "employment_status") return `<div>${label}${employmentStatusSelect(value, "attr_employment_status")}</div>`;
+    if (attr.name === "employment_type") return `<div>${label}${employmentTypeSelect(value, "attr_employment_type")}</div>`;
+    if (attr.type === "reference") {
+      return `<div>${label}${searchSelect(`attr_${attr.name}`, [{ value: "", label: "None" }, ...people], value, "None")}<div style="height:16px;"></div></div>`;
+    }
+    return `<div>${attributeInput(attr, value)}</div>`;
+  });
+  return `<div class="attr-grid">${cells.join("")}</div>`;
+}
+
+/** The top-right account switch on the user page: posts immediately rather than waiting for Save. */
+function accountStatusSwitch(userId: number, status: string, isSelf: boolean): string {
+  const active = status === "active";
+  return `<form method="POST" action="/admin/users/${userId}/status" style="margin:0;"
+      ${active && !isSelf ? confirmAttrs("They are signed out of every session and cannot sign in until reactivated. Their account and data are kept.", { title: "Deactivate this account?", action: "Deactivate" }) : ""}>
+      <input type="hidden" name="status" value="${active ? "disabled" : "active"}" />
+      <label class="switch" title="${isSelf ? "You cannot deactivate your own account" : ""}">
+        <input type="checkbox" ${active ? "checked" : ""} ${isSelf ? "disabled" : ""} onchange="this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()" />
+        <span class="track"></span>
+        <span style="font-size:0.875rem; font-weight:600;">${active ? "Active" : "Inactive"}</span>
+      </label>
+    </form>`;
+}
+
+/** Groups whose dynamic rule matches this user - displayed read-only, since membership follows attributes. */
+function dynamicGroupsFor(user: UserRow, groups: GroupRow[]): GroupRow[] {
+  return groups.filter((g) => {
+    const rule = parseRule(g.rule);
+    return rule !== null && userMatchesRule(user, rule);
+  });
 }
 
 
@@ -505,6 +550,7 @@ admin.get("/admin/users", async (c) => {
   const statusFilter = c.req.query("status") ?? "";
   const mfaFilter = c.req.query("mfa") ?? "";
   const roleFilter = c.req.query("role") ?? "";
+  const schemaFilter = c.req.query("schema") ?? "";
   const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
   const page = Math.max(1, Number(c.req.query("page")) || 1);
   const like = `%${search}%`;
@@ -525,6 +571,10 @@ admin.get("/admin/users", async (c) => {
       `id ${roleFilter === "admin" ? "IN" : "NOT IN"} (SELECT user_id FROM group_members WHERE group_id = (SELECT id FROM groups WHERE name = '${SUPER_ADMINS_GROUP}'))`
     );
   }
+  if (schemaFilter && Number(schemaFilter)) {
+    conditions.push("schema_id = ?");
+    params.push(Number(schemaFilter));
+  }
   const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
   const batchResults = await c.env.DB.batch([
@@ -541,6 +591,9 @@ admin.get("/admin/users", async (c) => {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const admins = await superAdminUserIds(c.env);
+  const userSchemas = await listSchemas(c.env, "user");
+  const schemaNames = new Map(userSchemas.map((s) => [s.id, s.name]));
+  const currentUserId = c.get("user").id;
 
   const filterSelect = (name: string, current: string, options: [string, string][]) =>
     `<select name="${name}" onchange="this.form.querySelector('input[name=page]').value=1; this.form.submit();" style="width:auto; display:inline-block; margin-bottom:0;">
@@ -572,6 +625,7 @@ admin.get("/admin/users", async (c) => {
                 ["admin", "Super Admin"],
                 ["regular", "Regular"],
               ])}
+              ${filterSelect("schema", schemaFilter, [["", "All schemas"], ...userSchemas.map((s): [string, string] => [String(s.id), s.name])])}
               <input type="hidden" name="page" value="1" />
               ${pageSizeSelect(pageSize)}
             </div>
@@ -581,7 +635,7 @@ admin.get("/admin/users", async (c) => {
       `)}
       ${cardSection(`
         <table>
-          <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th></tr></thead>
+          <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th><th>Schema</th><th style="width:40px;"></th></tr></thead>
           <tbody>
             ${(users as UserRow[])
               .map(
@@ -591,12 +645,24 @@ admin.get("/admin/users", async (c) => {
                   <td><span class="badge badge-${u.status}">${u.status}</span></td>
                   <td>${u.mfa_enabled ? "Enabled" : "-"}</td>
                   <td>${admins.has(u.id) ? '<span class="badge badge-admin">Super Admin</span>' : "-"}</td>
+                  <td>${u.schema_id && schemaNames.has(u.schema_id) ? escapeHtml(schemaNames.get(u.schema_id)!) : '<span class="muted">-</span>'}</td>
+                  <td style="text-align:right;">${rowMenu(`
+                    <a href="/admin/users/${u.id}">Edit</a>
+                    ${
+                      u.id === currentUserId
+                        ? ""
+                        : `<form method="POST" action="/admin/users/${u.id}/delete" style="margin:0;"
+                            ${confirmAttrs(`${u.display_name} (${u.upn}) is removed along with their sessions, tokens and group memberships. This cannot be undone.`, { title: "Delete this user?", action: "Delete user", danger: true })}>
+                            <button type="submit" class="danger">Delete</button>
+                          </form>`
+                    }
+                  `)}</td>
                 </tr>`
               )
               .join("")}
           </tbody>
         </table>
-        ${paginationControls("/admin/users", page, totalPages, { search, status: statusFilter, mfa: mfaFilter, role: roleFilter, pageSize })}
+        ${paginationControls("/admin/users", page, totalPages, { search, status: statusFilter, mfa: mfaFilter, role: roleFilter, schema: schemaFilter, pageSize })}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Users" }]
@@ -634,19 +700,26 @@ admin.get("/admin/users/new", async (c) => {
             <input type="text" id="username" name="username" placeholder="username" required style="flex:2;" />
             <div style="flex:1;">${await domainSelect(c.env, "domain", domains[0]?.domain)}</div>
           </div>
-          <h2>Attributes</h2>
-          <label for="schema_id">Schema</label>
-          <select id="schema_id" name="schema_id" onchange="location.href='/admin/users/new?schema='+this.value">
-            ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
-          </select>
+          <div class="row between" style="align-items:flex-end; gap:12px; margin-top:8px;">
+            <h2 style="margin:0;">Attributes</h2>
+            <div style="min-width:220px;">
+              <label for="schema_id">Schema</label>
+              <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='/admin/users/new?schema='+this.value">
+                ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div style="height:14px;"></div>
           ${await userSchemaAttributesHtml(c, schemaAttrs, emptyValues, null)}
           <h2>Groups</h2>
+          <p class="muted" style="margin-top:-6px;">Static groups only - dynamic groups pick people up from their attributes.</p>
           ${multiSelect(
             "group_ids",
-            groups.map((g) => ({ id: g.id, label: g.name })),
+            groups.filter((g) => !parseRule(g.rule)).map((g) => ({ id: g.id, label: g.name })),
             new Set<number>(),
             "Search groups..."
           )}
+          <p class="muted">New accounts start inactive - activate them from their page once they're ready to sign in.</p>
           <div class="form-actions end">${cancelLink(`/admin/users`)}<button class="primary" type="submit">Create user</button></div>
         </form>
       `),
@@ -667,7 +740,9 @@ admin.post("/admin/users", async (c) => {
   const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
   const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
   const { columns, custom } = splitUserAttributes(schemaAttrs, attrValues);
-  const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
+  const postedGroupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
+  const staticIds = new Set((await c.env.DB.prepare("SELECT id FROM groups WHERE rule = ''").all<{ id: number }>()).results.map((g) => g.id));
+  const groupIds = postedGroupIds.filter((gid) => staticIds.has(gid));
 
   if (!username || !domain || !givenName) return c.text("username, domain, and first name are required", 400);
 
@@ -760,13 +835,32 @@ admin.get("/admin/users/:id", async (c) => {
     .bind(id, new Date().toISOString(), id)
     .all<{ id: number; name: string }>();
   const { username, domain } = splitUpn(user.upn);
-  const domains = await listDomains(c.env);
+  const isSelf = id === c.get("user").id;
 
+  // Schema: ?schema= previews a move before it is saved. The values shown
+  // come from the user's row, so attributes with the same name in the target
+  // schema carry over; the notice lists what saving would clear.
   const userSchemas = await listSchemas(c.env, "user");
+  const currentSchemaId = user.schema_id ?? (await defaultSchemaId(c.env, "user"));
   const requestedSchema = Number(c.req.query("schema"));
-  const schema = (await getSchema(c.env, requestedSchema)) ?? (user.schema_id ? await getSchema(c.env, user.schema_id) : null) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "user"))));
+  const schema = (requestedSchema ? await getSchema(c.env, requestedSchema) : null) ?? (currentSchemaId ? await getSchema(c.env, currentSchemaId) : null);
   const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
   const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, userAttributeValue(user, a)]));
+  const lostBySchema = new Map<number, string[]>();
+  for (const s of userSchemas) lostBySchema.set(s.id, attributesLostOnMove(user, await getSchemaAttributes(c.env, s.id)));
+  const previewing = schema !== null && schema.id !== currentSchemaId;
+  const previewLost = previewing ? (lostBySchema.get(schema.id) ?? []) : [];
+  const currentSchemaName = userSchemas.find((s) => s.id === currentSchemaId)?.name ?? "none";
+
+  const staticGroups = groups.filter((g) => !parseRule(g.rule));
+  const dynamicGroups = dynamicGroupsFor(user, groups);
+
+  const schemaOptions = userSchemas
+    .map((s) => {
+      const lost = lostBySchema.get(s.id) ?? [];
+      return `<option value="${s.id}" data-lost="${escapeHtml(lost.join(", "))}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}${s.id === currentSchemaId ? " (current)" : ""}</option>`;
+    })
+    .join("");
 
   return c.html(
     layout(
@@ -774,8 +868,8 @@ admin.get("/admin/users/:id", async (c) => {
       user.display_name,
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        <form method="POST" action="/admin/users/${id}">
+      <form method="POST" action="/admin/users/${id}" id="user-form">
+        ${cardSection(`
           <h2>Identity</h2>
           <div class="field-row">
             <div>
@@ -786,70 +880,121 @@ admin.get("/admin/users/:id", async (c) => {
               <label for="family_name">Last name</label>
               <input type="text" id="family_name" name="family_name" value="${escapeHtml(user.family_name)}" />
             </div>
-            <div>
-              <label for="username">UPN</label>
-              <div class="field-row">
-                <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:1; min-width:0;" />
-                <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain)}</div>
-              </div>
-            </div>
           </div>
-
-          <h2>Attributes</h2>
-          <label for="schema_id">Schema</label>
-          <select id="schema_id" name="schema_id" onchange="location.href='/admin/users/${id}?schema='+this.value">
-            ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
-          </select>
-          ${await userSchemaAttributesHtml(c, schemaAttrs, attrValues, id)}
-
-          <h2>Account</h2>
+          <label for="username">UPN</label>
           <div class="field-row">
-            <div>
-              <label for="status_active">Status</label>
-              <label style="font-weight:400; display:flex; align-items:center; gap:6px; height:38px;">
-                <input type="checkbox" id="status_active" name="status_active" value="1" ${user.status === "active" ? "checked" : ""} style="width:auto; margin:0;" /> Active
-              </label>
+            <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:2; min-width:0;" />
+            <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain)}</div>
+          </div>
+          <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${escapeHtml(new Date(user.created_at).toLocaleString())}</p>
+        `)}
+
+        ${cardSection(`
+          <div class="row between" style="align-items:flex-end; gap:12px; flex-wrap:wrap;">
+            <h2 style="margin:0;">Attributes</h2>
+            <div style="min-width:220px;">
+              <label for="schema_id">Schema</label>
+              <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="
+                var lost = this.selectedOptions[0].dataset.lost;
+                var msg = lost ? 'Moving to ' + this.selectedOptions[0].text + ' clears these attributes when you save: ' + lost + '. Attributes with the same name carry over.' : '';
+                if (msg && !confirm(msg)) { this.value = '${schema?.id ?? ""}'; return; }
+                location.href = '/admin/users/${id}?schema=' + this.value;">
+                ${schemaOptions}
+              </select>
             </div>
           </div>
+          <div style="height:14px;"></div>
+          ${
+            previewing
+              ? `<div class="notice-warn">Previewing <strong>${escapeHtml(schema!.name)}</strong> - currently <strong>${escapeHtml(currentSchemaName)}</strong>. Nothing changes until you save.
+                  ${previewLost.length > 0 ? `<br/>Saving will <strong>clear</strong>: ${previewLost.map((n) => `<code>${escapeHtml(n)}</code>`).join(", ")}.` : "<br/>No attribute values will be lost."}
+                  <a href="/admin/users/${id}">Cancel</a></div>`
+              : ""
+          }
+          ${await userSchemaAttributesHtml(c, schemaAttrs, attrValues, id)}
+        `)}
 
+        ${cardSection(`
           <h2>Groups</h2>
+          <h3>Assigned</h3>
+          <p class="muted" style="margin-top:-4px;">Static groups this person is added to directly.</p>
           ${multiSelect(
             "group_ids",
-            groups.map((g) => ({ id: g.id, label: g.name })),
-            memberGroupIds,
+            staticGroups.map((g) => ({ id: g.id, label: g.name })),
+            new Set([...memberGroupIds].filter((gid) => staticGroups.some((g) => g.id === gid))),
             "Search groups..."
           )}
+          <h3>Dynamic</h3>
+          <p class="muted" style="margin-top:-4px;">Groups whose rules match this person's attributes. Membership follows the attributes - change them to change it.</p>
+          ${
+            dynamicGroups.length > 0
+              ? `<div style="display:flex; flex-wrap:wrap; gap:6px;">${dynamicGroups
+                  .map((g) => `<a class="pill" href="/admin/groups/${g.id}" title="${escapeHtml(ruleDescription(parseRule(g.rule)!))}">${escapeHtml(g.name)}</a>`)
+                  .join("")}</div>`
+              : '<p class="muted">None.</p>'
+          }
+        `)}
 
-          <div class="row between">
-            <p class="muted" style="margin:0;">External ID: <code>${escapeHtml(user.external_id)}</code> &middot; Created ${escapeHtml(new Date(user.created_at).toLocaleString())}</p>
-            <div class="form-actions">
-              ${cancelLink(`/admin/users/${id}`)}
-              <button class="primary" type="submit">Save</button>
-            </div>
+        <div class="form-actions end" style="margin-bottom:18px;">
+          ${cancelLink(`/admin/users/${id}`)}
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+
+      ${cardSection(`
+        <h2>Security</h2>
+        <div class="sec-row">
+          <div>
+            <h3>Password</h3>
+            <p class="muted">Set a new password, or leave it blank to generate one. Their current password stops working.</p>
           </div>
-        </form>
+          <form method="POST" action="/admin/users/${id}/reset-password"
+            ${confirmAttrs("Their current password stops working immediately. A generated password is shown to you once.", { title: "Reset this user's password?", action: "Reset password" })}>
+            <input type="password" name="password" placeholder="Leave blank to generate" autocomplete="new-password" style="width:220px; margin-bottom:0;" />
+            <button class="secondary" type="submit">Reset password</button>
+          </form>
+        </div>
+        <div class="sec-row">
+          <div>
+            <h3>Multi-factor authentication <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enrolled" : "Not enrolled"}</span></h3>
+            <p class="muted">Resetting clears their authenticator, backup codes and remembered devices; they enrol again at next sign-in.</p>
+          </div>
+          <form method="POST" action="/admin/users/${id}/reset-mfa"
+            ${confirmAttrs("Their authenticator, backup codes and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
+            <button class="secondary" type="submit" ${user.mfa_enabled ? "" : "disabled"}>Reset MFA</button>
+          </form>
+        </div>
+        <div class="sec-row">
+          <div>
+            <h3>Sessions</h3>
+            <p class="muted">${sessions.length === 0 ? "No active sessions." : `${sessions.length} active session${sessions.length === 1 ? "" : "s"}.`}</p>
+          </div>
+          <form method="POST" action="/admin/users/${id}/sessions/revoke-all"
+            ${confirmAttrs("Every active session for this user will be signed out immediately.", { title: "Sign this user out everywhere?", action: "Sign out everywhere" })}>
+            <button class="secondary" type="submit" ${sessions.length > 0 ? "" : "disabled"}>Sign out everywhere</button>
+          </form>
+        </div>
       `)}
 
       <div class="two-col">
       ${cardSection(`
-        <div class="row between">
-          <h2 style="margin:0;">Security</h2>
-          <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">MFA ${user.mfa_enabled ? "enabled" : "not enabled"}</span>
-        </div>
-        <p class="muted">Resetting MFA clears their authenticator, backup codes and remembered devices; they are asked to enrol again at next sign-in.</p>
-        <div class="row" style="justify-content:flex-start;">
-          <form method="POST" action="/admin/users/${id}/reset-mfa"
-            ${confirmAttrs("Their authenticator, backup codes and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
-            <button class="secondary" type="submit">Reset MFA</button>
-          </form>
-          <form method="POST" action="/admin/users/${id}/reset-password"
-            ${confirmAttrs("A new temporary password is generated and shown to you once. Their current password stops working.", { title: "Reset this user's password?", action: "Reset password" })}>
-            <input type="password" name="password" placeholder="New password - leave blank to generate one" autocomplete="off" style="max-width:280px; margin-bottom:0;" />
-            <button class="secondary" type="submit">Reset password</button>
-          </form>
-        </div>
+        <h2>Active sessions</h2>
+        ${
+          sessions.length > 0
+            ? `<table>
+                <thead><tr><th>Started</th><th>Last active</th><th>IP</th></tr></thead>
+                <tbody>
+                  ${sessions
+                    .map(
+                      (s) =>
+                        `<tr><td>${escapeHtml(new Date(s.created_at).toLocaleString())}</td><td>${escapeHtml(new Date(s.last_seen_at).toLocaleString())}</td><td class="muted">${escapeHtml(s.ip ?? "unknown")}</td></tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : '<p class="muted">No active sessions.</p>'
+        }
       `)}
-
       ${cardSection(`
         <h2>Connected apps</h2>
         ${
@@ -870,39 +1015,39 @@ admin.get("/admin/users/:id", async (c) => {
       `)}
       </div>
 
-      ${cardSection(`
-        <div class="row between">
-          <h2 style="margin:0;">Active sessions</h2>
-          ${sessions.length > 0 ? `<form method="POST" action="/admin/users/${id}/sessions/revoke-all" ${confirmAttrs("Every active session for this user will be signed out immediately.", { title: "Sign this user out everywhere?", action: "Sign out everywhere" })}><button class="secondary" type="submit">Sign out everywhere</button></form>` : ""}
-        </div>
-        ${
-          sessions.length > 0
-            ? `<table style="margin-top:10px;">
-                <thead><tr><th>Started</th><th>Last active</th><th>IP</th></tr></thead>
-                <tbody>
-                  ${sessions
-                    .map(
-                      (s) =>
-                        `<tr><td>${escapeHtml(new Date(s.created_at).toLocaleString())}</td><td>${escapeHtml(new Date(s.last_seen_at).toLocaleString())}</td><td class="muted">${escapeHtml(s.ip ?? "unknown")}</td></tr>`
-                    )
-                    .join("")}
-                </tbody>
-              </table>`
-            : '<p class="muted">No active sessions.</p>'
-        }
-      `)}
-
-      ${cardSection(`
+      ${
+        isSelf
+          ? ""
+          : cardSection(`
         <h2>Delete user</h2>
-        <p class="muted">Removes the account, its group memberships, and any tokens issued for it. This cannot be undone.</p>
+        <p class="muted">Removes the account, its group memberships, and any tokens issued for it. To keep the account but stop sign-ins, switch it to Inactive instead.</p>
         <form method="POST" action="/admin/users/${id}/delete" ${confirmAttrs(`Deleting ${user.display_name} cannot be undone. Their sessions, tokens and group memberships are removed with them.`, { title: "Delete this user?", action: "Delete user", danger: true })}>
           <button class="danger" type="submit">Delete ${escapeHtml(user.display_name)}</button>
         </form>
-      `)}
+      `)
+      }
       `,
-      [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name }]
+      [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name }],
+      undefined,
+      accountStatusSwitch(id, user.status, isSelf)
     )
   );
+});
+
+admin.post("/admin/users/:id/status", async (c) => {
+  const id = Number(c.req.param("id"));
+  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  if (!user) return c.text("Not found", 404);
+  if (id === c.get("user").id) return c.text("You cannot deactivate your own account.", 400);
+
+  const status = String((await c.req.parseBody()).status ?? "") === "active" ? "active" : "disabled";
+  await c.env.DB.prepare("UPDATE users SET status = ?, updated_at = ? WHERE id = ?").bind(status, new Date().toISOString(), id).run();
+  // Deactivation should take effect now, not at the next sign-in.
+  if (status === "disabled") await revokeAllSessionsForUser(c.env, id);
+
+  await logAudit(c.env, c.get("user"), status === "active" ? "user.activated" : "user.deactivated", user.upn, undefined, c.req.raw);
+  await syncUserBestEffort(c, id, status === "active" ? "push" : "deactivate");
+  return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/users/:id", async (c) => {
@@ -914,20 +1059,26 @@ admin.post("/admin/users/:id", async (c) => {
   const givenName = String(body.given_name ?? "").trim();
   const familyName = String(body.family_name ?? "").trim();
   const displayName = `${givenName} ${familyName}`.trim();
-  const status = body.status_active ? "active" : "disabled";
-  const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
+  const existingRow = await c.env.DB.prepare("SELECT external_id, status FROM users WHERE id = ?").bind(id).first<{ external_id: string; status: string }>();
+  if (!existingRow) return c.text("Not found", 404);
+  const status = existingRow.status; // changed only through the account switch (/status)
 
+  // Only static groups take explicit members - dynamic membership follows the rule.
+  const postedGroupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
+  const { results: staticGroupRows } = await c.env.DB.prepare("SELECT id FROM groups WHERE rule = ''").all<{ id: number }>();
+  const staticIds = new Set(staticGroupRows.map((g) => g.id));
+  const groupIds = postedGroupIds.filter((gid) => staticIds.has(gid));
+
+  // Conform to the chosen schema: what it defines is saved (same-named values
+  // were carried into the form), everything else is cleared.
   const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "user"));
   const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
   const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
-  const { columns, custom } = splitUserAttributes(schemaAttrs, attrValues);
-  // Custom attributes the new schema doesn't define are kept - switching schemas hides fields, it never deletes them.
-  const existingRow = await c.env.DB.prepare("SELECT external_id, custom_attributes FROM users WHERE id = ?").bind(id).first<{ external_id: string; custom_attributes: string }>();
-  const mergedCustom = { ...parseCustomAttributes(existingRow?.custom_attributes), ...custom };
+  const { columns, custom } = conformUserAttributes(schemaAttrs, attrValues);
+  const mergedCustom = custom;
 
-  const existing = { external_id: existingRow?.external_id ?? "" };
   let managerExternalId = (columns.manager_external_id as string | null) ?? null;
-  if (managerExternalId && existing && managerExternalId === existing.external_id) managerExternalId = null; // can't manage yourself
+  if (managerExternalId && managerExternalId === existingRow.external_id) managerExternalId = null; // can't manage yourself
 
   const usernameTaken = await c.env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
   if (usernameTaken) {
@@ -960,6 +1111,7 @@ admin.post("/admin/users/:id", async (c) => {
     )
     .run();
 
+  const { results: previous } = await c.env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?").bind(id).all<{ group_id: number }>();
   await c.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id).run();
   if (groupIds.length > 0) {
     await c.env.DB.batch(
@@ -971,7 +1123,11 @@ admin.post("/admin/users/:id", async (c) => {
 
   await logAudit(c.env, c.get("user"), "user.updated", upn, undefined, c.req.raw);
   await syncUserBestEffort(c, id, status === "active" ? "push" : "deactivate");
-  for (const gid of groupIds) await syncGroupBestEffort(c, gid);
+  // Groups they left, groups they joined, and every dynamic group - an
+  // attribute edit can move them in or out of any rule.
+  const { results: dynamicRows } = await c.env.DB.prepare("SELECT id FROM groups WHERE rule != ''").all<{ id: number }>();
+  const affected = new Set([...previous.map((p) => p.group_id), ...groupIds, ...dynamicRows.map((g) => g.id)]);
+  for (const gid of affected) await syncGroupBestEffort(c, gid);
 
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
@@ -1050,6 +1206,7 @@ admin.post("/admin/users/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return c.text("Not found", 404);
+  if (id === c.get("user").id) return c.text("You cannot delete your own account.", 400);
 
   if (await scimConfigured(c.env)) {
     const result = await deleteUserScim(c.env, user);
@@ -1075,33 +1232,282 @@ admin.post("/admin/users/:id/delete", async (c) => {
 
 // ---------- Groups ----------
 
+/** Identity attributes every user has regardless of schema - offered under every schema in the rule builder. */
+const IDENTITY_RULE_ATTRIBUTES: { name: string; label: string }[] = [
+  { name: "username", label: "Username" },
+  { name: "given_name", label: "First name" },
+  { name: "family_name", label: "Last name" },
+  { name: "display_name", label: "Display name" },
+  { name: "status", label: "Account status" },
+];
+
+interface RuleBuilderData {
+  schemas: { name: string; attributes: { name: string; label: string }[] }[];
+  /** Distinct values already in the directory per attribute - offered as suggestions so "full_time" isn't typed as "Full-time". */
+  values: Record<string, string[]>;
+  defaultSchema: string;
+}
+
+async function ruleBuilderData(env: Env): Promise<RuleBuilderData> {
+  const schemas: RuleBuilderData["schemas"] = [];
+  for (const s of await listSchemas(env, "user")) {
+    // References hold another user's external_id - not something a person can type into a rule.
+    const attrs = (await getSchemaAttributes(env, s.id)).filter((a) => a.type !== "reference").map((a) => ({ name: a.name, label: a.label }));
+    const seen = new Set(attrs.map((a) => a.name));
+    schemas.push({ name: s.name, attributes: [...IDENTITY_RULE_ATTRIBUTES.filter((a) => !seen.has(a.name)), ...attrs] });
+  }
+
+  const names = new Set(schemas.flatMap((s) => s.attributes.map((a) => a.name)));
+  const { results: users } = await env.DB.prepare("SELECT * FROM users").all<UserRow>();
+  const values: Record<string, string[]> = {};
+  for (const name of names) {
+    const distinct = new Set<string>();
+    for (const u of users) {
+      const v = ruleFields(u, parseCustomAttributes(u.custom_attributes))[name];
+      if (v) distinct.add(v);
+      if (distinct.size >= 50) break;
+    }
+    values[name] = [...distinct].sort();
+  }
+
+  const richest = [...schemas].sort((a, b) => b.attributes.length - a.attributes.length)[0];
+  return { schemas, values, defaultSchema: richest?.name ?? "" };
+}
+
+function ruleRowHtml(data: RuleBuilderData, cond?: RuleCondition): string {
+  const schemaName = cond?.schema ?? data.schemas.find((s) => s.attributes.some((a) => a.name === cond?.field))?.name ?? data.defaultSchema;
+  const attrs = data.schemas.find((s) => s.name === schemaName)?.attributes ?? [];
+  const field = cond?.field ?? "";
+  return `<div class="rule-row">
+    ${searchSelect("rule_schema", data.schemas.map((s) => ({ value: s.name, label: s.name })), schemaName, "Schema")}
+    <div class="rule-attr">${searchSelect("rule_field", attrs.map((a) => ({ value: a.name, label: `${a.label} (${a.name})` })), field, "Attribute")}</div>
+    <select name="rule_op">
+      <option value="eq" ${cond?.op !== "ne" ? "selected" : ""}>=</option>
+      <option value="ne" ${cond?.op === "ne" ? "selected" : ""}>!=</option>
+    </select>
+    <input type="text" name="rule_value" value="${escapeHtml(cond?.value ?? "")}" placeholder="Value" ${field ? `list="rv-${escapeHtml(field)}"` : ""} autocomplete="off" />
+    <button type="button" class="secondary" onclick="ruleRemove(this)" aria-label="Remove condition">&times;</button>
+  </div>`;
+}
+
+const GROUP_FORM_SCRIPT = `
+(function () {
+  var dataEl = document.getElementById("rule-data");
+  if (!dataEl) return;
+  var data = JSON.parse(dataEl.textContent);
+  function attrsFor(name) { for (var i = 0; i < data.schemas.length; i++) if (data.schemas[i].name === name) return data.schemas[i].attributes; return []; }
+  document.addEventListener("change", function (e) {
+    var row = e.target.closest(".rule-row");
+    if (!row) return;
+    var valueInput = row.querySelector("input[name=rule_value]");
+    if (e.target.name === "rule_schema") {
+      var ss = row.querySelector(".rule-attr .searchselect");
+      var menu = ss.querySelector(".ss-menu");
+      menu.querySelectorAll(".ss-item").forEach(function (i) { i.remove(); });
+      attrsFor(e.target.value).forEach(function (a) {
+        var b = document.createElement("button");
+        b.type = "button"; b.className = "ss-item";
+        b.dataset.value = a.name; b.dataset.label = a.label + " (" + a.name + ")";
+        b.textContent = b.dataset.label;
+        menu.appendChild(b);
+      });
+      ss.querySelector("input[type=hidden]").value = "";
+      ss.querySelector(".ss-label").textContent = "Attribute";
+      valueInput.removeAttribute("list");
+    }
+    if (e.target.name === "rule_field") valueInput.setAttribute("list", "rv-" + e.target.value);
+  });
+  window.ruleAdd = function () {
+    var t = document.getElementById("rule-row-template");
+    document.getElementById("rule-rows").appendChild(t.content.cloneNode(true));
+  };
+  window.ruleRemove = function (btn) { btn.closest(".rule-row").remove(); };
+  window.groupTypeChanged = function () {
+    var dyn = document.querySelector("input[name=membership]:checked").value === "dynamic";
+    document.getElementById("dynamic-section").style.display = dyn ? "" : "none";
+    document.getElementById("static-section").style.display = dyn ? "none" : "";
+  };
+})();
+`;
+
+/** The new/edit group form: identity, membership type, rule builder or static members, group-schema attributes. */
+async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedSchemaId: number): Promise<string> {
+  const rule = group ? parseRule(group.rule) : null;
+  const isDynamic = rule !== null;
+  const isSuperAdmins = group?.name === SUPER_ADMINS_GROUP;
+  const data = await ruleBuilderData(c.env);
+
+  const groupSchemas = await listSchemas(c.env, "group");
+  const schema =
+    (requestedSchemaId ? await getSchema(c.env, requestedSchemaId) : null) ??
+    (group?.schema_id ? await getSchema(c.env, group.schema_id) : null) ??
+    (await getSchema(c.env, Number(await defaultSchemaId(c.env, "group"))));
+  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
+  const groupCustom = parseCustomAttributes(group?.custom_attributes);
+  const reloadBase = group ? `/admin/groups/${group.id}` : "/admin/groups/new";
+
+  const { results: users } = await c.env.DB.prepare("SELECT * FROM users ORDER BY display_name").all<UserRow>();
+  const explicit = group
+    ? new Set((await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(group.id).all<{ user_id: number }>()).results.map((m) => m.user_id))
+    : new Set<number>();
+  const matched = rule ? users.filter((u) => userMatchesRule(u, rule)) : [];
+
+  return `
+    <form method="POST" action="${group ? `/admin/groups/${group.id}` : "/admin/groups"}">
+      ${cardSection(`
+        <div class="field-row">
+          <div>
+            <label for="name">Name</label>
+            <input type="text" id="name" name="name" value="${escapeHtml(group?.name ?? "")}" required />
+          </div>
+          <div>
+            <label for="description">Description</label>
+            <input type="text" id="description" name="description" value="${escapeHtml(group?.description ?? "")}" />
+          </div>
+        </div>
+        ${
+          schemaAttrs.length > 0 || groupSchemas.length > 1
+            ? `<div class="row between" style="align-items:flex-end; gap:12px;">
+                <h3 style="margin:0;">Attributes</h3>
+                <div style="min-width:200px;">
+                  <label for="schema_id">Schema</label>
+                  <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='${reloadBase}?schema='+this.value">
+                    ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+                  </select>
+                </div>
+              </div>
+              <div style="height:12px;"></div>
+              <div class="attr-grid">${schemaAttrs.map((a) => `<div>${attributeInput(a, groupCustom[a.name] ?? "")}</div>`).join("")}</div>`
+            : `<input type="hidden" name="schema_id" value="${schema?.id ?? ""}" />`
+        }
+      `)}
+
+      ${cardSection(`
+        <h2>Membership</h2>
+        ${
+          isSuperAdmins
+            ? `<input type="hidden" name="membership" value="static" /><p class="muted">Super Admins controls access to this console, so its membership is always assigned by hand.</p>`
+            : `<div class="row" style="justify-content:flex-start; gap:20px; margin-bottom:14px;">
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="static" ${isDynamic ? "" : "checked"} onchange="groupTypeChanged()" style="width:auto; margin:0;" /> Static - members are assigned</label>
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="dynamic" ${isDynamic ? "checked" : ""} onchange="groupTypeChanged()" style="width:auto; margin:0;" /> Dynamic - members match rules</label>
+              </div>`
+        }
+
+        <div id="dynamic-section" style="${isDynamic ? "" : "display:none;"}">
+          <p class="muted" style="margin-top:0;">People who match <strong>every</strong> condition are members. Membership updates as their attributes change.</p>
+          <div id="rule-rows">
+            ${(rule?.all.length ? rule.all : [undefined]).map((cond) => ruleRowHtml(data, cond)).join("")}
+          </div>
+          <button type="button" class="secondary" onclick="ruleAdd()">+ Add condition</button>
+          <template id="rule-row-template">${ruleRowHtml(data)}</template>
+          ${Object.entries(data.values)
+            .map(([name, vals]) => `<datalist id="rv-${escapeHtml(name)}">${vals.map((v) => `<option value="${escapeHtml(v)}"></option>`).join("")}</datalist>`)
+            .join("")}
+          <script type="application/json" id="rule-data">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>
+          ${
+            group && isDynamic
+              ? `<h3 style="margin-top:20px;">Members (${matched.length})</h3>
+                ${
+                  matched.length > 0
+                    ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th></tr></thead><tbody>
+                        ${matched.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${u.status}">${u.status}</span></td></tr>`).join("")}
+                      </tbody></table>`
+                    : '<p class="muted">Nobody matches these rules yet.</p>'
+                }`
+              : ""
+          }
+        </div>
+
+        <div id="static-section" style="${isDynamic ? "display:none;" : ""}">
+          ${multiSelect(
+            "user_ids",
+            users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })),
+            explicit,
+            "Search people..."
+          )}
+        </div>
+      `)}
+
+      <div class="form-actions end" style="margin-bottom:18px;">
+        ${
+          group
+            ? `<button class="danger" type="submit" formaction="/admin/groups/${group.id}/delete" formnovalidate
+                ${confirmAttrs(`Members lose this group, and anything mapping to it - SCIM pushes, Access policies - stops matching.`, { title: `Delete the group "${group.name}"?`, action: "Delete group", danger: true })}>Delete group</button>`
+            : ""
+        }
+        ${cancelLink("/admin/groups")}
+        <button class="primary" type="submit">${group ? "Save" : "Create group"}</button>
+      </div>
+    </form>
+    <script>${GROUP_FORM_SCRIPT}</script>
+  `;
+}
+
+/** Reads the group form: name, description, schema attributes, and either a rule or explicit members (never both). */
+async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }, existingName: string | null) {
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const name = String(body.name ?? "").trim();
+  const description = String(body.description ?? "").trim();
+  if (!name) throw new Error("A group name is required.");
+
+  const superAdmins = existingName === SUPER_ADMINS_GROUP || name === SUPER_ADMINS_GROUP;
+  const dynamic = !superAdmins && String(body.membership ?? "static") === "dynamic";
+  const rule = dynamic ? ruleFromForm(list(body.rule_schema), list(body.rule_field), list(body.rule_op), list(body.rule_value)) : "";
+  if (dynamic && !rule) throw new Error("A dynamic group needs at least one condition.");
+  const userIds = dynamic ? [] : list(body.user_ids).map(Number).filter(Boolean);
+
+  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
+  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
+  // Conform: only the schema's attributes are kept.
+  const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
+  return { name, description, rule, userIds, schemaId, custom };
+}
+
 admin.get("/admin/groups", async (c) => {
   const search = c.req.query("search") ?? "";
+  const typeFilter = c.req.query("type") ?? "";
   const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
   const page = Math.max(1, Number(c.req.query("page")) || 1);
   const like = `%${search}%`;
 
+  const conditions = ["(name LIKE ? OR description LIKE ?)"];
+  if (typeFilter === "dynamic") conditions.push("rule != ''");
+  if (typeFilter === "static") conditions.push("rule = ''");
+  const where = `WHERE ${conditions.join(" AND ")}`;
+
   const batchResults = await c.env.DB.batch([
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM groups WHERE name LIKE ? OR description LIKE ?").bind(like, like),
+    c.env.DB.prepare(`SELECT COUNT(*) as n FROM groups ${where}`).bind(like, like),
     c.env.DB.prepare(
       `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) as member_count
-       FROM groups g WHERE g.name LIKE ? OR g.description LIKE ? ORDER BY g.name LIMIT ? OFFSET ?`
+       FROM groups g ${where} ORDER BY g.name LIMIT ? OFFSET ?`
     ).bind(like, like, pageSize, (page - 1) * pageSize),
   ]);
-  const countRows = batchResults[0]!.results;
-  const groups = batchResults[1]!.results;
-  const total = Number((countRows[0] as { n: number } | undefined)?.n ?? 0);
+  const total = Number((batchResults[0]!.results[0] as { n: number } | undefined)?.n ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const groups = batchResults[1]!.results as (GroupRow & { member_count: number })[];
+
+  // Dynamic counts come from the rule, evaluated against one load of the directory.
+  const { results: allUsers } = groups.some((g) => parseRule(g.rule))
+    ? await c.env.DB.prepare("SELECT * FROM users").all<UserRow>()
+    : { results: [] as UserRow[] };
+  const countFor = (g: GroupRow & { member_count: number }) => {
+    const rule = parseRule(g.rule);
+    return rule ? allUsers.filter((u) => userMatchesRule(u, rule)).length : g.member_count;
+  };
 
   return c.html(
     layout(
       c,
       "Groups",
       `
-            ${cardSection(`
-        <form method="GET" class="row between" style="margin-bottom:0;">
-          <div style="display:flex; gap:8px;">
+      ${cardSection(`
+        <form method="GET" class="row between" style="margin-bottom:0; gap:12px; flex-wrap:wrap;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <input type="text" name="search" placeholder="Search groups" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />
+            <select name="type" onchange="this.form.querySelector('input[name=page]').value=1; this.form.submit();" style="width:auto; display:inline-block; margin-bottom:0;">
+              ${[["", "All types"], ["static", "Static"], ["dynamic", "Dynamic"]].map(([v, l]) => `<option value="${v}" ${v === typeFilter ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
             <input type="hidden" name="page" value="1" />
             ${pageSizeSelect(pageSize)}
           </div>
@@ -1110,17 +1516,22 @@ admin.get("/admin/groups", async (c) => {
       `)}
       ${cardSection(`
         <table>
-          <thead><tr><th>Name</th><th>Description</th><th>Members</th></tr></thead>
+          <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Members</th></tr></thead>
           <tbody>
-            ${(groups as (GroupRow & { member_count: number })[])
-              .map(
-                (g) =>
-                  `<tr><td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${g.name === SUPER_ADMINS_GROUP ? ' <span class="badge badge-admin">Admin access</span>' : ""}${g.name === "All Employees" ? ' <span class="badge badge-active">Auto-joined</span>' : ""}</td><td>${escapeHtml(g.description ?? "")}</td><td>${g.member_count}</td></tr>`
-              )
+            ${groups
+              .map((g) => {
+                const rule = parseRule(g.rule);
+                return `<tr>
+                  <td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${g.name === SUPER_ADMINS_GROUP ? ' <span class="badge badge-admin">Admin access</span>' : ""}</td>
+                  <td>${rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'}</td>
+                  <td>${escapeHtml(g.description ?? "")}</td>
+                  <td>${countFor(g)}</td>
+                </tr>`;
+              })
               .join("")}
           </tbody>
         </table>
-        ${paginationControls("/admin/groups", page, totalPages, { search, pageSize })}
+        ${paginationControls("/admin/groups", page, totalPages, { search, type: typeFilter, pageSize })}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Groups" }]
@@ -1129,156 +1540,88 @@ admin.get("/admin/groups", async (c) => {
 });
 
 admin.get("/admin/groups/new", async (c) => {
-  const groupSchemas = await listSchemas(c.env, "group");
-  const requestedSchema = Number(c.req.query("schema"));
-  const schema = (await getSchema(c.env, requestedSchema)) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "group"))));
-  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
-
   return c.html(
-    layout(
-      c,
-      "New group",
-      cardSection(`
-        <form method="POST" action="/admin/groups">
-          <label for="name">Name</label>
-          <input type="text" id="name" name="name" required />
-          <label for="description">Description</label>
-          <input type="text" id="description" name="description" />
-          <label for="schema_id">Schema</label>
-          <select id="schema_id" name="schema_id" onchange="location.href='/admin/groups/new?schema='+this.value">
-            ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
-          </select>
-          ${schemaAttrs.map((a) => attributeInput(a, "")).join("\n")}
-          <label for="rule">Dynamic membership rule (optional - one condition per line, e.g. <code>employment_type = full_time</code>)</label>
-          <textarea id="rule" name="rule" rows="3" placeholder="employment_type = full_time"></textarea>
-          <div class="form-actions end">${cancelLink(`/admin/groups`)}<button class="primary" type="submit">Create group</button></div>
-        </form>
-      `),
-      [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: "New group" }]
-    )
+    layout(c, "New group", await groupFormHtml(c, null, Number(c.req.query("schema"))), [
+      { label: "Admin", href: "/admin" },
+      { label: "Groups", href: "/admin/groups" },
+      { label: "New group" },
+    ])
   );
 });
 
 admin.post("/admin/groups", async (c) => {
-  const body = await c.req.parseBody();
-  const name = String(body.name ?? "").trim();
-  const description = String(body.description ?? "").trim();
-  if (!name) return c.text("name is required", 400);
-
-  let rule: string;
+  let form;
   try {
-    rule = ruleFromLines(String(body.rule ?? ""));
+    form = await readGroupForm(c, null);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
+    return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
+  }
+  if (await c.env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(form.name).first()) {
+    return c.text(`A group named "${form.name}" already exists.`, 409);
   }
 
-  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
-  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
-  const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
-
   const result = await c.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes) VALUES (?, ?, ?, ?, ?)")
-    .bind(name, description || null, rule, schemaId, JSON.stringify(custom))
+    .bind(form.name, form.description || null, form.rule, form.schemaId, JSON.stringify(form.custom))
     .run();
+  const id = Number(result.meta.last_row_id);
+  if (form.userIds.length > 0) {
+    await c.env.DB.batch(form.userIds.map((uid) => c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
+  }
 
-  await logAudit(c.env, c.get("user"), "group.created", name, undefined, c.req.raw);
-  await syncGroupBestEffort(c, Number(result.meta.last_row_id));
-
-  return c.redirect(`/admin/groups/${result.meta.last_row_id}`, 302);
+  await logAudit(c.env, c.get("user"), "group.created", form.name, form.rule ? { rule: form.rule } : undefined, c.req.raw);
+  await syncGroupBestEffort(c, id);
+  return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
 admin.get("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
   if (!group) return c.text("Not found", 404);
-
-  const { results: users } = await c.env.DB.prepare("SELECT * FROM users ORDER BY display_name").all<UserRow>();
-  const { results: memberships } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?")
-    .bind(id)
-    .all<{ user_id: number }>();
-  const memberIds = new Set(memberships.map((m) => m.user_id));
-  const groupSchemas = await listSchemas(c.env, "group");
-  const requestedSchema = Number(c.req.query("schema"));
-  const schema = (await getSchema(c.env, requestedSchema)) ?? (group.schema_id ? await getSchema(c.env, group.schema_id) : null) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "group"))));
-  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
-  const groupCustom = parseCustomAttributes(group.custom_attributes);
+  const rule = parseRule(group.rule);
 
   return c.html(
     layout(
       c,
       group.name,
-      `
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        <form method="POST" action="/admin/groups/${id}">
-          <label for="name">Name</label>
-          <input type="text" id="name" name="name" value="${escapeHtml(group.name)}" required />
-          <label for="description">Description</label>
-          <input type="text" id="description" name="description" value="${escapeHtml(group.description ?? "")}" />
-          <label for="schema_id">Schema</label>
-          <select id="schema_id" name="schema_id" onchange="location.href='/admin/groups/${id}?schema='+this.value">
-            ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
-          </select>
-          ${schemaAttrs.map((a) => attributeInput(a, groupCustom[a.name] ?? "")).join("\n")}
-          <label for="rule">Dynamic membership rule (one condition per line, e.g. <code>employment_type = full_time</code>; leave empty for explicit membership only)</label>
-          <textarea id="rule" name="rule" rows="3">${escapeHtml(ruleToLines(group.rule))}</textarea>
-          ${parseRule(group.rule) ? `<p class="muted">Dynamic rule matches ${(await resolveGroupMemberUserIds(c.env, group)).length - memberIds.size} users in addition to the members below.</p>` : ""}
-          <h2>Members</h2>
-          ${multiSelect(
-            "user_ids",
-            users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })),
-            memberIds,
-            "Search people..."
-          )}
-          <div class="form-actions end">
-            <button class="danger" type="submit" formaction="/admin/groups/${id}/delete"
-              ${confirmAttrs(`Members lose this group, and anything mapping to it - SCIM pushes, Access policies - stops matching.`, { title: `Delete the group "${group.name}"?`, action: "Delete group", danger: true })}>Delete group</button>
-            ${cancelLink(`/admin/groups`)}
-            <button class="primary" type="submit">Save</button>
-          </div>
-        </form>
-      `)}
-      `,
-      [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }]
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}`,
+      [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }],
+      undefined,
+      rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'
     )
   );
 });
 
 admin.post("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  const body = await c.req.parseBody({ all: true });
-  const name = String(body.name ?? "").trim();
-  const description = String(body.description ?? "").trim();
-  const userIds = Array.isArray(body.user_ids) ? body.user_ids.map(Number) : body.user_ids ? [Number(body.user_ids)] : [];
+  const existing = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
+  if (!existing) return c.text("Not found", 404);
 
-  let rule: string;
+  let form;
   try {
-    rule = ruleFromLines(String(body.rule ?? ""));
+    form = await readGroupForm(c, existing.name);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
+    return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
+  }
+  if (await c.env.DB.prepare("SELECT id FROM groups WHERE name = ? AND id != ?").bind(form.name, id).first()) {
+    return c.text(`A group named "${form.name}" already exists.`, 409);
   }
 
-  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
-  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
-  const existingGroup = await c.env.DB.prepare("SELECT custom_attributes FROM groups WHERE id = ?").bind(id).first<{ custom_attributes: string }>();
-  const newCustom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
-  const mergedCustom = { ...parseCustomAttributes(existingGroup?.custom_attributes), ...newCustom };
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(
+      form.name,
+      form.description || null,
+      form.rule,
+      form.schemaId,
+      JSON.stringify(form.custom),
+      id
+    ),
+    // A dynamic group holds no explicit rows; a static one holds exactly the posted set.
+    c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id),
+    ...form.userIds.map((uid) => c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)),
+  ]);
 
-  await c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?")
-    .bind(name, description || null, rule, schemaId, JSON.stringify(mergedCustom), id)
-    .run();
-
-  await c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id).run();
-  if (userIds.length > 0) {
-    await c.env.DB.batch(
-      userIds.map((uid) =>
-        c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)
-      )
-    );
-  }
-
-  await logAudit(c.env, c.get("user"), "group.updated", name, undefined, c.req.raw);
+  await logAudit(c.env, c.get("user"), "group.updated", form.name, form.rule ? { rule: form.rule } : undefined, c.req.raw);
   await syncGroupBestEffort(c, id);
-
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
@@ -1982,37 +2325,46 @@ admin.post("/admin/saml/:id/delete", async (c) => {
 
 // ---------- Schemas ----------
 
-const ATTRIBUTE_TYPE_OPTIONS = ["string", "number", "date", "boolean", "reference"];
+const ATTRIBUTE_TYPE_OPTIONS: [string, string][] = [
+  ["string", "Text"],
+  ["number", "Number"],
+  ["date", "Date"],
+  ["boolean", "Yes / no"],
+  ["reference", "Person (reference)"],
+];
 
-/** Parses "name | Label | type | required" lines (required optional, type optional). */
-function parseAttributeLines(text: string): { name: string; label: string; type: string; required: boolean; ref_object: string | null }[] {
-  const errors: string[] = [];
-  const attrs = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((line, i) => {
-      const parts = line.split("|").map((p) => p.trim());
-      const [name, label, type = "string", req = ""] = parts;
-      if (!name || !/^[a-z][a-z0-9_]*$/.test(name)) {
-        errors.push(`Line ${i + 1}: attribute names must be lowercase_snake ("${name ?? ""}").`);
-        return null;
-      }
-      const refMatch = /^reference\((\w+)\)$/.exec(type);
-      const resolvedType = refMatch ? "reference" : type;
-      const refObject = refMatch ? refMatch[1]! : null;
-      if (!ATTRIBUTE_TYPE_OPTIONS.includes(resolvedType)) {
-        errors.push(`Line ${i + 1}: unknown type "${type}" (options: ${ATTRIBUTE_TYPE_OPTIONS.join(", ")}, reference(user)).`);
-        return null;
-      }
-      return { name, label: label || name, type: resolvedType, required: /^(required|req|yes|true)$/i.test(req), ref_object: refObject };
-    });
-  if (errors.length) throw new Error(errors.join(" "));
-  return attrs.filter((a): a is NonNullable<typeof a> => a !== null);
+type AttributeInput = { name: string; label: string; type: string; required: boolean; ref_object: string | null };
+
+function attributeRowHtml(a?: { name: string; label: string; type: string; required: number }): string {
+  const required = a?.required ? 1 : 0;
+  return `<div class="attr-row">
+    <input type="text" name="attr_name" value="${escapeHtml(a?.name ?? "")}" placeholder="name (e.g. cost_center)" pattern="[a-z][a-z0-9_]*" title="lowercase letters, digits and underscores, starting with a letter" />
+    <input type="text" name="attr_label" value="${escapeHtml(a?.label ?? "")}" placeholder="Label (e.g. Cost center)" />
+    <select name="attr_type">${ATTRIBUTE_TYPE_OPTIONS.map(([v, l]) => `<option value="${v}" ${(a?.type ?? "string") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <label><input type="hidden" name="attr_required" value="${required}" /><input type="checkbox" ${required ? "checked" : ""} onchange="this.previousElementSibling.value = this.checked ? '1' : '0'" style="width:auto; margin:0;" /> Required</label>
+    <button type="button" class="secondary" onclick="this.closest('.attr-row').remove()" aria-label="Remove attribute">&times;</button>
+  </div>`;
 }
 
-function attributeLinesFromRows(rows: { name: string; label: string; type: string; required: number; ref_object: string | null }[]): string {
-  return rows.map((a) => `${a.name} | ${a.label} | ${a.type === "reference" ? `reference(${a.ref_object ?? "user"})` : a.type}${a.required ? " | required" : ""}`).join("\n");
+/** Reads the attribute rows (parallel attr_name/attr_label/attr_type/attr_required arrays); blank names are dropped. */
+function readAttributeRows(body: Record<string, unknown>): AttributeInput[] {
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const names = list(body.attr_name);
+  const labels = list(body.attr_label);
+  const types = list(body.attr_type);
+  const required = list(body.attr_required);
+  const seen = new Set<string>();
+  const out: AttributeInput[] = [];
+  names.forEach((raw, i) => {
+    const name = raw.trim();
+    if (!name) return;
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`"${name}" is not a valid attribute name - use lowercase letters, digits and underscores, starting with a letter.`);
+    if (seen.has(name)) throw new Error(`The attribute "${name}" is listed twice.`);
+    seen.add(name);
+    const type = ATTRIBUTE_TYPE_OPTIONS.some(([v]) => v === types[i]) ? types[i]! : "string";
+    out.push({ name, label: (labels[i] ?? "").trim() || name, type, required: required[i] === "1", ref_object: type === "reference" ? "user" : null });
+  });
+  return out;
 }
 
 admin.get("/admin/schemas", async (c) => {
@@ -2035,10 +2387,10 @@ admin.get("/admin/schemas", async (c) => {
           ${list
             .map(
               ({ schema: s, attributes, conforming }) => `<tr>
-                <td>${escapeHtml(s.name)}${s.builtin ? ' <span class="badge">provided</span>' : ""}<br/><span class="muted">${escapeHtml(s.description ?? "")}</span></td>
+                <td><a href="/admin/schemas/${s.id}">${escapeHtml(s.name)}</a>${s.is_default ? ' <span class="badge badge-active">default</span>' : ""}${s.builtin ? ' <span class="pill">provided</span>' : ""}<br/><span class="muted">${escapeHtml(s.description ?? "")}</span></td>
                 <td>${attributes}</td>
                 <td>${conforming}</td>
-                <td><a href="/admin/schemas/${s.id}">Edit</a></td>
+                <td style="text-align:right;">${rowMenu(`<a href="/admin/schemas/${s.id}">Edit</a>`)}</td>
               </tr>`
             )
             .join("")}
@@ -2052,8 +2404,8 @@ admin.get("/admin/schemas", async (c) => {
       c,
       "Schemas",
       `
-            ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      <p class="muted">A schema names the attribute vocabulary an object conforms to. "Bare" is the default for new objects; applying a schema never deletes values - narrower schemas simply hide fields.</p>
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      <p class="muted">A schema names the attributes an object has. New objects use the default schema; moving an object to another schema keeps attributes with the same name and clears the rest.</p>
       ${table("user")}
       ${table("group")}
       ${cardSection(`
@@ -2062,7 +2414,7 @@ admin.get("/admin/schemas", async (c) => {
           <div class="field-row">
             <div>
               <label for="object_type">Object type</label>
-              <select id="object_type" name="object_type"><option value="user">user</option><option value="group">group</option></select>
+              <select id="object_type" name="object_type"><option value="user">User</option><option value="group">Group</option></select>
             </div>
             <div>
               <label for="name">Name</label>
@@ -2099,40 +2451,62 @@ admin.get("/admin/schemas/:id", async (c) => {
   if (!schema) return c.text("Not found", 404);
   const attributes = await getSchemaAttributes(c.env, id);
   const conforming = await countConforming(c.env, id, schema.object_type);
+  const columnNote =
+    schema.object_type === "user"
+      ? `Names matching built-in fields (<code>job_title</code>, <code>department</code>, <code>manager</code>, <code>employee_number</code>, <code>hire_date</code>, <code>employment_status</code>, <code>employment_type</code>, <code>location</code>) use those fields; anything else is stored as a custom attribute.`
+      : "Group attributes are stored as custom attributes on the group.";
 
   return c.html(
     layout(
       c,
-      `Schema: ${schema.name}`,
+      schema.name,
       `
-            ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        <form method="POST" action="/admin/schemas/${id}">
-          <label for="name">Name</label>
-          <input type="text" id="name" name="name" value="${escapeHtml(schema.name)}" required />
-          <label for="description">Description</label>
-          <input type="text" id="description" name="description" value="${escapeHtml(schema.description ?? "")}" />
-          <h2>Attributes</h2>
-          <p class="muted">One per line: <code>name | Label | type | required</code> - e.g. <code>cost_center | Cost center | string</code> or <code>manager | Manager | reference(user)</code>. Names matching built-in fields (${["job_title", "department", "employee_number", "hire_date", "employment_status", "employment_type", "location", "display_name", "given_name", "family_name"].join(", ")}) map onto those columns; anything else is stored as a custom attribute.</p>
-          <textarea id="attributes" name="attributes" rows="10">${escapeHtml(attributeLinesFromRows(attributes))}</textarea>
-          <div class="row between">
-            <div class="form-actions">
-              <button class="danger" type="submit" formaction="/admin/schemas/${id}/delete"
-                ${confirmAttrs(`Objects currently conforming fall back to the Bare schema. Attribute values are preserved.`, { title: `Delete the schema "${schema.name}"?`, action: "Delete schema", danger: true })}>Delete schema</button>
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      <form method="POST" action="/admin/schemas/${id}">
+        ${cardSection(`
+          <div class="field-row">
+            <div>
+              <label for="name">Name</label>
+              <input type="text" id="name" name="name" value="${escapeHtml(schema.name)}" required />
             </div>
-            <div class="form-actions">
-              ${cancelLink(`/admin/schemas`)}
-              <button class="primary" type="submit">Save</button>
+            <div>
+              <label for="description">Description</label>
+              <input type="text" id="description" name="description" value="${escapeHtml(schema.description ?? "")}" />
             </div>
           </div>
-        </form>
-      `)}
+          <p class="muted" style="margin:0;">${schema.object_type === "user" ? "User" : "Group"} schema${schema.is_default ? " &middot; the default for new objects" : ""}${schema.builtin ? " &middot; provided with FlareID" : ""}</p>
+        `)}
+        ${cardSection(`
+          <h2>Attributes</h2>
+          <p class="muted" style="margin-top:-4px;">${columnNote} Identity fields (names and UPN) are on every ${schema.object_type} and don't need listing.</p>
+          <div class="attr-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
+            <span>Name</span><span>Label</span><span>Type</span><span></span><span></span>
+          </div>
+          <div id="attr-rows">${(attributes.length ? attributes : [undefined]).map((a) => attributeRowHtml(a)).join("")}</div>
+          <template id="attr-row-template">${attributeRowHtml()}</template>
+          <button type="button" class="secondary" onclick="document.getElementById('attr-rows').appendChild(document.getElementById('attr-row-template').content.cloneNode(true))">+ Add attribute</button>
+        `)}
+        <div class="row between" style="margin-bottom:18px;">
+          <div class="form-actions">
+            ${
+              schema.builtin
+                ? ""
+                : `<button class="danger" type="submit" formaction="/admin/schemas/${id}/delete" formnovalidate
+                    ${confirmAttrs(`Objects using it move to the default schema, and attributes the default schema doesn't define are cleared.`, { title: `Delete the schema "${schema.name}"?`, action: "Delete schema", danger: true })}>Delete schema</button>`
+            }
+          </div>
+          <div class="form-actions">
+            ${cancelLink(`/admin/schemas`)}
+            <button class="primary" type="submit">Save</button>
+          </div>
+        </div>
+      </form>
       ${cardSection(`
-        <h2>Apply</h2>
-        <p class="muted">${conforming} ${schema.object_type}${conforming === 1 ? "" : "s"} currently conform${conforming === 1 ? "s" : ""} to this schema.</p>
+        <h2>Apply to everyone</h2>
+        <p class="muted">${conforming} ${schema.object_type}${conforming === 1 ? "" : "s"} currently use${conforming === 1 ? "s" : ""} this schema.</p>
         <form method="POST" action="/admin/schemas/${id}/apply">
           <button class="secondary" type="submit"
-            ${confirmAttrs(`Every ${schema.object_type} will be set to conform to "${schema.name}". Values are preserved - fields the schema doesn't define are hidden, not deleted.`, { title: `Apply "${schema.name}" to all ${schema.object_type}s?`, action: "Apply to all" })}>Apply to all ${schema.object_type}s</button>
+            ${confirmAttrs(`Every ${schema.object_type} moves to "${schema.name}". Attributes with the same name keep their values; attributes this schema doesn't define are cleared.`, { title: `Apply "${schema.name}" to all ${schema.object_type}s?`, action: "Apply to all", danger: true })}>Apply to all ${schema.object_type}s</button>
         </form>
       `)}
       `,
@@ -2145,19 +2519,19 @@ admin.post("/admin/schemas/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return c.text("Not found", 404);
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
   const name = String(body.name ?? "").trim();
   const description = String(body.description ?? "").trim();
   if (!name) return c.text("name is required", 400);
 
-  const clash = await env0findSchemaByName(c.env, schema.object_type, name, id);
+  const clash = await c.env.DB.prepare("SELECT id FROM schemas WHERE object_type = ? AND name = ? AND id != ?").bind(schema.object_type, name, id).first();
   if (clash) return c.text(`A ${schema.object_type} schema named "${name}" already exists.`, 409);
 
-  let attributes;
+  let attributes: AttributeInput[];
   try {
-    attributes = parseAttributeLines(String(body.attributes ?? ""));
+    attributes = readAttributeRows(body);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid attribute lines.", 400);
+    return c.text(e instanceof Error ? e.message : "Invalid attributes.", 400);
   }
 
   await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description || null, id).run();
@@ -2181,19 +2555,12 @@ admin.post("/admin/schemas/:id/delete", async (c) => {
   if (!schema) return c.text("Not found", 404);
   if (schema.builtin) return c.text("Provided schemas cannot be deleted - remove their attributes instead.", 400);
 
-  const table = schema.object_type === "user" ? "users" : "groups";
-  await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE ${table} SET schema_id = NULL WHERE schema_id = ?`).bind(id),
-    c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id),
-  ]);
+  const fallback = await getSchema(c.env, Number(await defaultSchemaId(c.env, schema.object_type)));
+  if (fallback) await applySchemaToAll(c.env, fallback, id);
+  await c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
   return c.redirect("/admin/schemas?saved=1", 302);
 });
-
-async function env0findSchemaByName(env: Env, objectType: "user" | "group", name: string, excludeId: number): Promise<boolean> {
-  const row = await env.DB.prepare("SELECT id FROM schemas WHERE object_type = ? AND name = ? AND id != ?").bind(objectType, name, excludeId).first();
-  return row !== null;
-}
 
 // ---------- Domains ----------
 

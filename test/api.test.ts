@@ -343,12 +343,14 @@ describe("directory import", () => {
   });
 
   describe("schemas", () => {
-    it("ships Bare and FlareID HR as provided user schemas", async () => {
+    it("ships Basic (the default) and FlareID HR as provided user schemas", async () => {
       const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
       const { body } = await apiCall("/api/v1/schemas?object_type=user", { token: apiKey });
 
       const names = body.schemas.map((s: any) => s.name);
-      expect(names).toContain("Bare");
+      expect(names).toContain("Basic");
+      expect(names).not.toContain("Bare");
+      expect(body.schemas.find((s: any) => s.name === "Basic").default).toBe(true);
       expect(names).toContain("FlareID HR");
       const hr = body.schemas.find((s: any) => s.name === "FlareID HR");
       expect(hr.attributes.map((a: any) => a.name)).toContain("job_title");
@@ -383,8 +385,29 @@ describe("directory import", () => {
     it("refuses to delete a provided schema", async () => {
       const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
       const { body } = await apiCall("/api/v1/schemas?object_type=user", { token: apiKey });
-      const bare = body.schemas.find((s: any) => s.name === "Bare");
-      expect((await apiCall(`/api/v1/schemas/${bare.id}`, { token: apiKey, method: "DELETE" })).status).toBe(403);
+      const basic = body.schemas.find((s: any) => s.name === "Basic");
+      expect((await apiCall(`/api/v1/schemas/${basic.id}`, { token: apiKey, method: "DELETE" })).status).toBe(403);
+    });
+
+    it("conforms users on apply: same-named attributes carry over, the rest are cleared", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      await apiCall("/api/v1/directory/import", {
+        token: apiKey,
+        body: { version: 1, users: [{ username: "ada", schema: "FlareID HR", job_title: "Engineer", department: "R&D", location: "London" }] },
+      });
+
+      const created = await apiCall("/api/v1/schemas", {
+        token: apiKey,
+        body: { object_type: "user", name: "Slim", attributes: [{ name: "department", label: "Department" }] },
+      });
+      await apiCall(`/api/v1/schemas/${created.body.id}/apply`, { token: apiKey, body: {} });
+
+      const users = await apiCall("/api/v1/users", { token: apiKey });
+      const ada = users.body.users.find((u: any) => u.username === "ada");
+      expect(ada.schema_name).toBe("Slim");
+      expect(ada.department).toBe("R&D");
+      expect(ada.job_title).toBe("");
+      expect(ada.location).toBe("");
     });
   });
 
@@ -414,6 +437,59 @@ describe("directory import", () => {
       const fullTimers = groups.body.groups.find((g: any) => g.name === "Full-timers");
       expect(fullTimers.member_count).toBe(1);
       expect(fullTimers.explicit_member_count).toBe(0);
+    });
+
+    it("refuses explicit members for a dynamic group", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      const { body } = await apiCall("/api/v1/directory/import", {
+        token: apiKey,
+        body: {
+          version: 1,
+          groups: [{ name: "Full-timers", rule: JSON.stringify({ all: [{ field: "employment_type", op: "eq", value: "full_time" }] }) }],
+          users: [{ username: "ct.bob", employment_type: "contractor", groups: ["Full-timers"] }],
+        },
+      });
+      expect(body.errors.some((e: any) => e.group === "Full-timers" && /dynamic group/.test(e.message))).toBe(true);
+
+      const users = await apiCall("/api/v1/users", { token: apiKey });
+      expect(users.body.users.find((u: any) => u.username === "ct.bob").groups).not.toContain("Full-timers");
+    });
+
+    it("matches rules on schema-defined custom attributes, with != as well as =", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      await apiCall("/api/v1/schemas", { token: apiKey, body: { object_type: "user", name: "Cost", attributes: [{ name: "cost_center" }] } });
+      await apiCall("/api/v1/directory/import", {
+        token: apiKey,
+        body: {
+          version: 1,
+          groups: [
+            { name: "CC-9", rule: JSON.stringify({ all: [{ schema: "Cost", field: "cost_center", op: "eq", value: "CC-9" }] }) },
+            { name: "Not CC-9", rule: JSON.stringify({ all: [{ schema: "Cost", field: "cost_center", op: "ne", value: "CC-9" }] }) },
+          ],
+          users: [
+            { username: "ada", schema: "Cost", attributes: { cost_center: "CC-9" } },
+            { username: "bob", schema: "Cost", attributes: { cost_center: "CC-1" } },
+          ],
+        },
+      });
+
+      const users = await apiCall("/api/v1/users", { token: apiKey });
+      const byName = (n: string) => users.body.users.find((u: any) => u.username === n).groups;
+      expect(byName("ada")).toContain("CC-9");
+      expect(byName("ada")).not.toContain("Not CC-9");
+      expect(byName("bob")).toContain("Not CC-9");
+    });
+
+    it("never lets Super Admins become dynamic", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      const { body } = await apiCall("/api/v1/directory/import", {
+        token: apiKey,
+        body: { version: 1, groups: [{ name: "Super Admins", rule: JSON.stringify({ all: [{ field: "department", op: "eq", value: "IT" }] }) }], users: [] },
+      });
+      expect(body.errors.some((e: any) => e.group === "Super Admins")).toBe(true);
+
+      const groups = await apiCall("/api/v1/groups", { token: apiKey });
+      expect(groups.body.groups.find((g: any) => g.name === "Super Admins").rule).toBe("");
     });
   });
 

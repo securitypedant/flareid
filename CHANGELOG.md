@@ -10,24 +10,39 @@ may break things.
 
 - **Directory schemas.** Named attribute vocabularies per object type at
   Admin → Schemas and `/api/v1/schemas` (list, create, update, delete,
-  `POST /:id/apply`). Ships two provided user schemas - "Bare" (identity
+  `POST /:id/apply`). Ships two provided user schemas - "Basic" (identity
   fields only, the default for new objects) and "FlareID HR" (the full
-  built-in HR set) - plus a Bare group schema. Attribute names matching
+  built-in HR set) - plus a Basic group schema. Attribute names matching
   built-in fields map to columns; everything else lives in
-  `custom_attributes`. Applying a narrower schema hides fields but preserves
-  values, so schema changes are non-destructive. Custom attributes reach SAML
-  SPs via `attribute_map` and OIDC clients under the `custom` claim.
-- **Dynamic groups.** A group's `rule` is evaluated at read time
-  (`{"all":[{"field":"employment_type","op":"eq","value":"full_time"}]}`) and
-  unioned with explicit membership - in claims, SAML attributes, SCIM pushes,
+  `custom_attributes`. Moving an object to a schema conforms it: same-named
+  attributes carry over, the rest are cleared (the admin UI previews the move
+  and lists what will be cleared before you save). Custom attributes reach
+  SAML SPs via `attribute_map` and OIDC clients under the `custom` claim.
+  Attributes are edited as add/remove rows.
+- **Dynamic groups.** A group is static (assigned members) or dynamic (rule
+  matches only). Rules are built in the admin UI as rows of schema ›
+  attribute, `=`/`!=`, value - with suggestions drawn from values already in
+  the directory - and stored as
+  `{"all":[{"schema":"FlareID HR","field":"department","op":"eq","value":"Sales"}]}`.
+  Membership resolves everywhere: claims, SAML attributes, SCIM pushes,
   admin pages and the API. Import bundles accept `rule` on groups.
+  `Super Admins` can never be dynamic.
+- **Admin console redesign.** Navigation is a left sidebar (Schemas after
+  Security; breadcrumbs kept). Users list gains a Schema column and filter
+  and a row menu (Edit / Delete). The user page has an Active switch in the
+  header that applies immediately and signs the user out when switched off,
+  attributes in two columns, a searchable manager picker that never offers
+  the user themselves, a Groups section listing assigned and dynamic
+  membership separately, and a reorganised Security section. Groups list
+  shows Static/Dynamic with a type filter; dynamic groups list their computed
+  members. You cannot deactivate or delete your own account.
 - **Chosen passwords on reset.** The admin reset form accepts an optional
   password (policy-validated); blank still generates one.
 - **Branding page.** App name, sign-in message and login gradient moved from
   /admin/security to their own /admin/branding tab.
 - **`GET /saml/cert.pem`** downloads the IdP signing certificate - the file
   SPs like Salesforce ask to upload - linked from the SP admin pages.
-- 4 new tests covering schemas and dynamic groups (94 total).
+- 8 new tests covering schemas, conforming, and dynamic groups (98 total).
 - **SAML 2.0 service-provider-initiated SSO.** `/saml/sso` accepts
   HTTP-Redirect AuthnRequests (unsigned, or signed per the SP's registered
   certificates - including mid-rollover), and answers with an HTTP-POST
