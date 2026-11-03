@@ -8,6 +8,26 @@ may break things.
 
 ### Added
 
+- **Directory schemas.** Named attribute vocabularies per object type at
+  Admin → Schemas and `/api/v1/schemas` (list, create, update, delete,
+  `POST /:id/apply`). Ships two provided user schemas - "Bare" (identity
+  fields only, the default for new objects) and "FlareID HR" (the full
+  built-in HR set) - plus a Bare group schema. Attribute names matching
+  built-in fields map to columns; everything else lives in
+  `custom_attributes`. Applying a narrower schema hides fields but preserves
+  values, so schema changes are non-destructive. Custom attributes reach SAML
+  SPs via `attribute_map` and OIDC clients under the `custom` claim.
+- **Dynamic groups.** A group's `rule` is evaluated at read time
+  (`{"all":[{"field":"employment_type","op":"eq","value":"full_time"}]}`) and
+  unioned with explicit membership - in claims, SAML attributes, SCIM pushes,
+  admin pages and the API. Import bundles accept `rule` on groups.
+- **Chosen passwords on reset.** The admin reset form accepts an optional
+  password (policy-validated); blank still generates one.
+- **Branding page.** App name, sign-in message and login gradient moved from
+  /admin/security to their own /admin/branding tab.
+- **`GET /saml/cert.pem`** downloads the IdP signing certificate - the file
+  SPs like Salesforce ask to upload - linked from the SP admin pages.
+- 4 new tests covering schemas and dynamic groups (94 total).
 - **SAML 2.0 service-provider-initiated SSO.** `/saml/sso` accepts
   HTTP-Redirect AuthnRequests (unsigned, or signed per the SP's registered
   certificates - including mid-rollover), and answers with an HTTP-POST
@@ -26,6 +46,18 @@ may break things.
 - 16 new tests covering the metadata endpoint, the full login and SSO paths,
   signature verification, `ForceAuthn`, NameID formats, the ACS allowlist,
   request replay, signed-request verification, and the SP provisioning API.
+
+### Changed
+
+- **Users are created disabled.** New accounts - from the admin form or the
+  import API - cannot sign in until activated via the Active control on the
+  user page or `status: "active"` in the bundle. The setup/admin-reset
+  administrator stays explicitly active.
+- **The seeded "All Employees" group is gone.** A bare install ships only
+  Super Admins. Deployments that want a company-wide group define it as a
+  dynamic group (e.g. `employment_type = full_time`), which also keeps
+  membership correct as attributes change. The admin form's auto-join is
+  gone with it.
 
 ## [0.1.0] - 2026-10-28
 

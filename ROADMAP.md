@@ -14,7 +14,14 @@ deciding whether to point real traffic at this.
   request-signature verification, `ForceAuthn`
 - Password (PBKDF2) plus optional per-user TOTP MFA, backup codes, trusted
   devices, and an option to require MFA for everyone
-- Flat groups, multi-domain UPNs, HR attributes exposed as claims
+- Flat groups with **dynamic membership rules** (attribute-matched, unioned
+  with explicit membership everywhere membership resolves), multi-domain UPNs,
+  HR attributes exposed as claims
+- **Directory schemas**: named attribute vocabularies per object type (Bare
+  default, FlareID HR provided), admin + API CRUD, per-object conformance and
+  non-destructive schema switching
+- **User lifecycle**: accounts are created disabled and activated explicitly;
+  admins can reset passwords to a chosen value or a generated one
 - SCIM 2.0 *client*: pushes users and groups to an external SCIM server,
   scoped to all groups or a chosen set
 - Admin UX: users, groups, clients, API keys, domains, settings, branding,
@@ -110,8 +117,8 @@ deciding whether to point real traffic at this.
 28. Documented backup, restore and disaster recovery for D1; a directory export
     endpoint.
 29. Scale: paginated and searchable group-membership editing - the current
-    member checklist will not survive ten thousand users - documented tested
-    ceilings, and rule-based dynamic groups.
+    member checklist will not survive ten thousand users - and documented,
+    tested ceilings.
 30. Branding: logo upload, per-domain branding, custom CSS.
 31. An accessibility and internationalisation pass on the login, MFA and
     consent pages.

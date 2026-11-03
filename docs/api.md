@@ -121,10 +121,8 @@ was generated:
 }
 ```
 
-The administrator is placed in `Super Admins` and deliberately **not** in
-`All Employees` - a service account that administers the directory is not a
-person, and `All Employees` is the intended target for access policies and SCIM
-sync scope.
+The administrator is placed in `Super Admins` and kept active explicitly -
+imported and admin-created users are `disabled` until activated.
 
 ### `POST /directory/import`
 
@@ -136,7 +134,12 @@ Scope: `directory:write`. The main event.
   "mode": "merge",
   "domain": "example.com",
   "groups": [
-    { "name": "Engineering", "description": "Everyone in Engineering" }
+    { "name": "Engineering", "description": "Everyone in Engineering" },
+    {
+      "name": "All Employees",
+      "description": "Every employee - dynamic",
+      "rule": "{\"all\":[{\"field\":\"employment_type\",\"op\":\"eq\",\"value\":\"full_time\"}]}"
+    }
   ],
   "users": [
     {
@@ -145,7 +148,7 @@ Scope: `directory:write`. The main event.
       "given_name": "Ada",
       "family_name": "Kowalski",
       "password": null,
-      "groups": ["All Employees", "Engineering"],
+      "groups": ["Engineering"],
       "job_title": "Staff Engineer",
       "department": "Engineering",
       "employee_number": "E0007",
@@ -155,6 +158,8 @@ Scope: `directory:write`. The main event.
       "location": "London",
       "manager": "nikita.chapman",
       "status": "active",
+      "schema": "FlareID HR",
+      "attributes": { "cost_center": "CC-100" },
       "super_admin": false
     }
   ]
@@ -168,11 +173,20 @@ instance default. That is what makes one bundle importable onto any deployment.
 
 Other things worth knowing:
 
-- **Group membership is explicit.** The admin form auto-joins new accounts to
-  `All Employees`, because a human filling in a form should not have to
-  remember. An import does not: it produces exactly the directory it describes,
-  so a group that is not listed is a group the person is not in. Omit `groups`
-  entirely to leave existing membership alone; send `[]` to clear it.
+- **Imported users land `disabled` by default.** Set `status: "active"` on
+  each user you want to be able to sign in straight away.
+- **`schema` names the schema the user conforms to** (a `user` schema from
+  `GET /schemas`, e.g. `"FlareID HR"`); it defaults to the deployment's Bare
+  schema. `attributes` sets schema-defined attribute values - names matching
+  built-in fields write to those columns; anything else becomes a custom
+  attribute.
+- **Group membership is explicit, unless the group has a `rule`.** A group
+  listed with a `rule` gains dynamic membership - the JSON rule
+  (`{"all":[{"field","op","value"}]}`, ops `eq`/`ne`) is evaluated at read
+  time and unioned with explicit members, so a user need not list a dynamic
+  group to be in it. Omit `groups` on a user to leave existing membership
+  alone; send `[]` to clear the explicit rows (dynamic membership follows the
+  rule either way).
 - **Groups are upserted**, whether they appear in `groups` or only as a
   membership, so a bundle does not have to declare the same thing twice.
 - `manager` names another user's `username`, resolved in a second pass - so a
@@ -293,6 +307,44 @@ rollover.
 
 `DELETE` takes the numeric `id` from the list response, not the entity_id:
 entity IDs are URLs and cannot ride inside a path segment.
+
+### `GET /schemas`, `POST /schemas`, `PATCH /schemas/:id`, `DELETE /schemas/:id`, `POST /schemas/:id/apply`
+
+Reads carry `directory:read`; writes carry `settings:write`.
+
+A schema names the attribute vocabulary an object type (`user` or `group`)
+conforms to. A fresh deployment ships three provided schemas: user `Bare`
+(identity fields - the default for new objects), user `FlareID HR` (the full
+built-in HR set), and group `Bare`. Provided schemas are editable but not
+deletable. Applying a schema never deletes values - fields it doesn't
+define are hidden, not removed.
+
+```json
+// POST /schemas
+{
+  "object_type": "user",
+  "name": "Contractor",
+  "description": "Engagement fields for non-employees",
+  "attributes": [
+    { "name": "cost_center", "label": "Cost center", "type": "string" },
+    { "name": "end_date", "label": "Contract end", "type": "date" },
+    { "name": "sponsor", "label": "Sponsor", "type": "reference", "ref_object": "user", "required": true }
+  ]
+}
+```
+
+Attribute `type` is `string` (default), `number`, `date`, `boolean`, or
+`reference` (with `ref_object`, currently `user`). Attribute names matching
+built-in user fields (`job_title`, `department`, `employee_number`,
+`hire_date`, `employment_status`, `employment_type`, `location`, and the name
+fields) map onto those columns; anything else is stored as a custom
+attribute. `PATCH` accepts `name`, `description` and a full `attributes`
+replacement. `POST /:id/apply` sets every object of that type to conform and
+returns `{ "applied": <count> }`.
+
+Users and groups in `GET /users` / `GET /groups` now include `schema_name`,
+`attributes` (the custom-attribute map), and - for groups - `rule`,
+`member_count` (effective, dynamic included) and `explicit_member_count`.
 
 ### `POST /scim/config`, `POST /scim/test`, `POST /scim/sync`
 
