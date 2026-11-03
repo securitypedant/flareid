@@ -34,6 +34,7 @@ async function seedServiceProvider(sp: Record<string, unknown> = {}): Promise<{ 
           job_title: "Chief Executive Officer",
           department: "Executive",
           password: USER_PASSWORD,
+          status: "active",
           groups: ["All Employees", "Executives"],
         },
       ],

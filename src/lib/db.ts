@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import type { OAuthClientRow, UserRow } from "./types.js";
+import { dynamicGroupNamesForUser } from "./groups.js";
 
 export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
   return env.DB.prepare("SELECT * FROM users WHERE upn = ?")
@@ -30,12 +31,17 @@ export function getUserById(env: Env, id: number): Promise<UserRow | null> {
 }
 
 export async function getUserGroupNames(env: Env, userId: number): Promise<string[]> {
-  const { results } = await env.DB.prepare(
-    "SELECT g.name FROM groups g JOIN group_members gm ON gm.group_id = g.id WHERE gm.user_id = ?"
-  )
-    .bind(userId)
-    .all<{ name: string }>();
-  return results.map((r) => r.name);
+  const [explicit, dynamic] = await Promise.all([
+    env.DB.prepare("SELECT g.name FROM groups g JOIN group_members gm ON gm.group_id = g.id WHERE gm.user_id = ?")
+      .bind(userId)
+      .all<{ name: string }>(),
+    env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first<UserRow>(),
+  ]);
+  const names = new Set(explicit.results.map((r) => r.name));
+  if (dynamic) {
+    for (const name of await dynamicGroupNamesForUser(env, dynamic)) names.add(name);
+  }
+  return [...names];
 }
 
 export function getUserByExternalId(env: Env, externalId: string): Promise<UserRow | null> {

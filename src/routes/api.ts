@@ -193,6 +193,7 @@ api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
           given_name: body.admin.given_name ?? "Administrator",
           family_name: body.admin.family_name ?? "",
           password: body.admin.password ?? null,
+          status: "active",
           super_admin: true,
         },
       ],

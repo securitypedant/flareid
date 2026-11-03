@@ -29,8 +29,10 @@ export const MAX_USERS_PER_IMPORT = 100;
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 export interface DirectoryGroup {
+  /** Dynamic membership rule JSON, e.g. {"all":[{"field":"employment_type","op":"eq","value":"full_time"}]}. */
   name: string;
   description?: string;
+  rule?: string;
 }
 
 export interface DirectoryUser {
@@ -169,7 +171,7 @@ async function replaceExistingDirectory(env: Env): Promise<void> {
     ]);
   }
 
-  await env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (?, 'All Employees')`).bind(SUPER_ADMINS_GROUP).run();
+  await env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP).run();
 }
 
 export async function importDirectory(env: Env, bundle: DirectoryBundle): Promise<ImportResult> {
@@ -195,7 +197,11 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
   // Every name the bundle mentions, whether in `groups` or only as a user's
   // membership, so a bundle does not have to declare the same thing twice.
   const described = new Map<string, string | null>();
-  for (const group of groups) described.set(cleanString(group.name), cleanString(group.description) || null);
+  const ruleByName = new Map<string, string>();
+  for (const group of groups) {
+    described.set(cleanString(group.name), cleanString(group.description) || null);
+    if (group.rule) ruleByName.set(cleanString(group.name), group.rule);
+  }
   for (const user of users) {
     for (const name of user.groups ?? []) {
       const clean = cleanString(name);
@@ -209,14 +215,17 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
     try {
       const existing = await env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(name).first<{ id: number }>();
       if (existing) {
-        if (description !== null) {
-          await env.DB.prepare("UPDATE groups SET description = ? WHERE id = ?").bind(description, existing.id).run();
+        const rule = ruleByName.get(name);
+        if (description !== null || rule !== undefined) {
+          await env.DB.prepare("UPDATE groups SET description = COALESCE(?, description), rule = COALESCE(?, rule) WHERE id = ?")
+            .bind(description, rule ?? null, existing.id)
+            .run();
           result.groups.updated++;
         }
         groupIdByName.set(name, existing.id);
       } else {
-        const inserted = await env.DB.prepare("INSERT INTO groups (name, description) VALUES (?, ?) RETURNING id")
-          .bind(name, description)
+        const inserted = await env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, ?, ?) RETURNING id")
+          .bind(name, description, ruleByName.get(name) ?? "")
           .first<{ id: number }>();
         if (inserted) {
           groupIdByName.set(name, inserted.id);
@@ -268,7 +277,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
             cleanString(user.employment_status),
             cleanString(user.employment_type),
             cleanString(user.location),
-            user.status ?? "active",
+            user.status ?? "disabled",
             user.super_admin ? 1 : 0,
             now,
             existing.id
@@ -322,7 +331,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
             salt,
             iterations,
             user.super_admin ? 1 : 0,
-            user.status ?? "active",
+            user.status ?? "disabled",
             now,
             now
           )

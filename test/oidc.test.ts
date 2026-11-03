@@ -29,6 +29,7 @@ async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: str
           job_title: "Chief Executive Officer",
           department: "Executive",
           password: USER_PASSWORD,
+          status: "active",
           groups: ["All Employees", "Executives"],
         },
       ],

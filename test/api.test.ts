@@ -198,7 +198,7 @@ describe("directory import", () => {
     expect(status).toBe(200);
     expect(body.domain).toBe("horizon.test");
     expect(body.users).toEqual({ created: 2, updated: 0, skipped: 0 });
-    expect(body.groups.created).toBe(2); // Engineering and Executives; All Employees already existed
+    expect(body.groups.created).toBe(3); // Engineering, Executives and All Employees (created as a membership stub - nothing is seeded)
     expect(body.managers_resolved).toBe(1);
     expect(body.errors).toEqual([]);
 
@@ -339,7 +339,7 @@ describe("directory import", () => {
 
     // Engineering and Executives are gone; the two built-ins remain.
     const groups = await apiCall("/api/v1/groups", { token: apiKey });
-    expect(groups.body.groups.map((g: any) => g.name).sort()).toEqual(["All Employees", "Super Admins"]);
+    expect(groups.body.groups.map((g: any) => g.name).sort()).toEqual(["Super Admins"]);
   });
 
   it("never exposes password material through the users endpoint", async () => {

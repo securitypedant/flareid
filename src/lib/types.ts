@@ -29,6 +29,10 @@ export interface UserRow {
   employment_status: string;
   employment_type: string;
   location: string;
+  /** The directory schema this user conforms to - controls which attributes are shown/edited. */
+  schema_id: number | null;
+  /** JSON object of values for attributes defined by schema_id beyond the fixed columns. */
+  custom_attributes: string;
 }
 
 export interface AuditLogRow {
@@ -48,6 +52,10 @@ export interface GroupRow {
   name: string;
   description: string | null;
   scim_id: string | null;
+  /** JSON dynamic-membership rule (see src/lib/groups.ts) - empty for explicit-only groups. */
+  rule: string;
+  schema_id: number | null;
+  custom_attributes: string; // JSON object of schema attribute values
 }
 
 export interface OAuthClientRow {

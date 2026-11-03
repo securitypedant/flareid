@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { resolveGroupMemberUserIds } from "./groups.js";
 import { getScimConfig, getScimScope, type ScimScope } from "./settings.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -234,11 +235,14 @@ export async function syncAll(env: Env): Promise<{ users: number; userErrors: nu
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
   for (const group of groups) {
-    const { results: memberRows } = await env.DB.prepare(
-      "SELECT u.scim_id as scimId, u.upn FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND u.scim_id IS NOT NULL"
-    )
-      .bind(group.id)
-      .all<{ scimId: string; upn: string }>();
+    const memberIds = await resolveGroupMemberUserIds(env, group);
+    const { results: memberRows } = memberIds.length
+      ? await env.DB.prepare(
+          `SELECT scim_id as scimId, upn FROM users WHERE id IN (${memberIds.map(() => "?").join(",")}) AND scim_id IS NOT NULL`
+        )
+          .bind(...memberIds)
+          .all<{ scimId: string; upn: string }>()
+      : { results: [] as { scimId: string; upn: string }[] };
 
     const result = await pushGroup(env, group, memberRows);
     if (!result.ok) groupErrors++;

@@ -31,6 +31,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
+import { resolveGroupMemberUserIds, ruleFromLines, ruleToLines, parseRule } from "../lib/groups.js";
 
 export const admin = new Hono<{ Bindings: Env }>();
 
@@ -114,11 +115,14 @@ async function syncGroupBestEffort(c: { env: Env; get: (k: "user") => UserRow; r
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(groupId).first<GroupRow>();
   if (!group) return;
 
-  const { results: memberRows } = await c.env.DB.prepare(
-    "SELECT u.scim_id as scimId, u.upn FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND u.scim_id IS NOT NULL"
-  )
-    .bind(groupId)
-    .all<{ scimId: string; upn: string }>();
+  const memberIds = await resolveGroupMemberUserIds(c.env, group);
+  const { results: memberRows } = memberIds.length
+    ? await c.env.DB.prepare(
+        `SELECT scim_id as scimId, upn FROM users WHERE id IN (${memberIds.map(() => "?").join(",")}) AND scim_id IS NOT NULL`
+      )
+        .bind(...memberIds)
+        .all<{ scimId: string; upn: string }>()
+    : { results: [] as { scimId: string; upn: string }[] };
 
   const result = await pushGroup(c.env, group, memberRows);
   if (!result.ok) await logAudit(c.env, c.get("user"), "scim.group_sync_failed", group.name, { error: result.error }, c.req.raw);
@@ -417,7 +421,7 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
     .bind(currentUserId)
     .all<UserRow>();
   const { results: sampleGroups } = await c.env.DB.prepare(
-    `SELECT * FROM groups WHERE name NOT IN (?, 'All Employees')`
+    `SELECT * FROM groups WHERE name != ?`
   )
     .bind(SUPER_ADMINS_GROUP)
     .all<GroupRow>();
@@ -675,8 +679,8 @@ admin.post("/admin/users", async (c) => {
   const externalId = crypto.randomUUID();
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, manager_external_id, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, manager_external_id, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?)`
   )
     .bind(
       upn,
@@ -708,13 +712,6 @@ admin.post("/admin/users", async (c) => {
         c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId)
       )
     );
-  }
-
-  // Every user automatically joins the company-wide "All Employees" group.
-  const allEmployeesGroup = await c.env.DB.prepare("SELECT id FROM groups WHERE name = 'All Employees'").first<{ id: number }>();
-  if (allEmployeesGroup && !groupIds.includes(allEmployeesGroup.id)) {
-    await c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(allEmployeesGroup.id, userId).run();
-    groupIds.push(allEmployeesGroup.id);
   }
 
   await logAudit(c.env, c.get("user"), "user.created", upn, undefined, c.req.raw);
@@ -867,6 +864,7 @@ admin.get("/admin/users/:id", async (c) => {
           </form>
           <form method="POST" action="/admin/users/${id}/reset-password"
             ${confirmAttrs("A new temporary password is generated and shown to you once. Their current password stops working.", { title: "Reset this user's password?", action: "Reset password" })}>
+            <input type="password" name="password" placeholder="New password - leave blank to generate one" autocomplete="off" style="max-width:280px; margin-bottom:0;" />
             <button class="secondary" type="submit">Reset password</button>
           </form>
         </div>
@@ -1011,7 +1009,10 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return c.text("Not found", 404);
 
-  const tempPassword = await generateAccountPassword(c.env);
+  const chosen = String((await c.req.parseBody()).password ?? "").trim();
+  const tempPassword = chosen || (await generateAccountPassword(c.env));
+  const policyError = chosen ? validatePassword(chosen, await getPasswordPolicy(c.env)) : null;
+  if (policyError) return c.text(policyError, 400);
   const { hash, salt, iterations } = await hashPassword(tempPassword);
   await c.env.DB.prepare(
     "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
@@ -1156,6 +1157,8 @@ admin.get("/admin/groups/new", async (c) => {
           <input type="text" id="name" name="name" required />
           <label for="description">Description</label>
           <input type="text" id="description" name="description" />
+          <label for="rule">Dynamic membership rule (optional - one condition per line, e.g. <code>employment_type = full_time</code>)</label>
+          <textarea id="rule" name="rule" rows="3" placeholder="employment_type = full_time"></textarea>
           <div class="form-actions end">${cancelLink(`/admin/groups`)}<button class="primary" type="submit">Create group</button></div>
         </form>
       `),
@@ -1170,8 +1173,15 @@ admin.post("/admin/groups", async (c) => {
   const description = String(body.description ?? "").trim();
   if (!name) return c.text("name is required", 400);
 
-  const result = await c.env.DB.prepare("INSERT INTO groups (name, description) VALUES (?, ?)")
-    .bind(name, description || null)
+  let rule: string;
+  try {
+    rule = ruleFromLines(String(body.rule ?? ""));
+  } catch (e) {
+    return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
+  }
+
+  const result = await c.env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, ?, ?)")
+    .bind(name, description || null, rule)
     .run();
 
   await logAudit(c.env, c.get("user"), "group.created", name, undefined, c.req.raw);
@@ -1203,6 +1213,9 @@ admin.get("/admin/groups/:id", async (c) => {
           <input type="text" id="name" name="name" value="${escapeHtml(group.name)}" required />
           <label for="description">Description</label>
           <input type="text" id="description" name="description" value="${escapeHtml(group.description ?? "")}" />
+          <label for="rule">Dynamic membership rule (one condition per line, e.g. <code>employment_type = full_time</code>; leave empty for explicit membership only)</label>
+          <textarea id="rule" name="rule" rows="3">${escapeHtml(ruleToLines(group.rule))}</textarea>
+          ${parseRule(group.rule) ? `<p class="muted">Dynamic rule matches ${(await resolveGroupMemberUserIds(c.env, group)).length - memberIds.size} users in addition to the members below.</p>` : ""}
           <h2>Members</h2>
           ${multiSelect(
             "user_ids",
@@ -1231,8 +1244,15 @@ admin.post("/admin/groups/:id", async (c) => {
   const description = String(body.description ?? "").trim();
   const userIds = Array.isArray(body.user_ids) ? body.user_ids.map(Number) : body.user_ids ? [Number(body.user_ids)] : [];
 
-  await c.env.DB.prepare("UPDATE groups SET name = ?, description = ? WHERE id = ?")
-    .bind(name, description || null, id)
+  let rule: string;
+  try {
+    rule = ruleFromLines(String(body.rule ?? ""));
+  } catch (e) {
+    return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
+  }
+
+  await c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ? WHERE id = ?")
+    .bind(name, description || null, rule, id)
     .run();
 
   await c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id).run();
