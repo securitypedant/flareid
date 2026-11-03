@@ -76,6 +76,7 @@ function adminNav(active: string) {
     ["groups", "Groups"],
     ["integrations", "Integrations"],
     ["domains", "Domains"],
+    ["branding", "Branding"],
     ["security", "Security"],
     ["audit", "Log"],
   ];
@@ -2073,9 +2074,6 @@ admin.get("/admin/security", async (c) => {
   const rateLimit = await getRateLimitPolicy(c.env);
   const mfaRequired = await isMfaRequired(c.env);
   const newUserPasswordMode = await getNewUserPasswordMode(c.env);
-  const loginGradient = await getLoginGradient(c.env);
-  const loginSubtitle = await getLoginSubtitle(c.env);
-  const appName = c.get("appName");
 
   return c.html(
     layout(
@@ -2128,37 +2126,6 @@ admin.get("/admin/security", async (c) => {
         </form>
       `)}
       ${cardSection(`
-        <h2>Branding</h2>
-        <p class="muted">The display name shown in the nav, page titles, and on the sign-in page.</p>
-        <form method="POST" action="/admin/security/app-name">
-          <label for="app_name">App name</label>
-          <input type="text" id="app_name" name="app_name" value="${escapeHtml(appName)}" required maxlength="60" />
-          <label for="login_subtitle">Sign-in page message</label>
-          <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(loginSubtitle)}" maxlength="140" placeholder="Use your company account to continue." />
-          <p class="muted" style="margin-top:-8px;">Shown under the logo on the sign-in page. Leave empty for no message.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
-        </form>
-      `)}
-      ${cardSection(`
-        <h2>Login page appearance</h2>
-        <p class="muted">The background gradient shown behind the sign-in and MFA cards.</p>
-        <form method="POST" action="/admin/security/login-gradient">
-          <div class="field-row" style="max-width:320px;">
-            <div>
-              <label for="gradient_from">Gradient start</label>
-              <input type="color" id="gradient_from" name="from" value="${escapeHtml(loginGradient.from)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
-            </div>
-            <div>
-              <label for="gradient_to">Gradient end</label>
-              <input type="color" id="gradient_to" name="to" value="${escapeHtml(loginGradient.to)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
-            </div>
-          </div>
-          <label style="margin-top:24px;">Preview</label>
-          <div style="height:60px; border-radius:10px; margin-bottom:20px; background: linear-gradient(45deg, ${escapeHtml(loginGradient.from)}, ${escapeHtml(loginGradient.to)});"></div>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
-        </form>
-      `)}
-      ${cardSection(`
         <h2>Login rate limiting</h2>
         <p class="muted">Locks out an account/IP combination after too many failed password or MFA-code attempts within the window below.</p>
         <form method="POST" action="/admin/security/rate-limit">
@@ -2192,7 +2159,60 @@ admin.post("/admin/security/default-password", async (c) => {
   return c.redirect("/admin/security?saved=1", 302);
 });
 
-admin.post("/admin/security/app-name", async (c) => {
+// ---------- Branding (app name, sign-in message, login page appearance) ----------
+
+admin.get("/admin/branding", async (c) => {
+  const loginGradient = await getLoginGradient(c.env);
+  const loginSubtitle = await getLoginSubtitle(c.env);
+  const appName = c.get("appName");
+
+  return c.html(
+    layout(
+      c,
+      "Branding",
+      `
+      ${adminNav("branding")}
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      <div class="two-col security-grid">
+      ${cardSection(`
+        <h2>Branding</h2>
+        <p class="muted">The display name shown in the nav, page titles, and on the sign-in page.</p>
+        <form method="POST" action="/admin/branding/app-name">
+          <label for="app_name">App name</label>
+          <input type="text" id="app_name" name="app_name" value="${escapeHtml(appName)}" required maxlength="60" />
+          <label for="login_subtitle">Sign-in page message</label>
+          <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(loginSubtitle)}" maxlength="140" placeholder="Use your company account to continue." />
+          <p class="muted" style="margin-top:-8px;">Shown under the logo on the sign-in page. Leave empty for no message.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Login page appearance</h2>
+        <p class="muted">The background gradient shown behind the sign-in and MFA cards.</p>
+        <form method="POST" action="/admin/branding/login-gradient">
+          <div class="field-row" style="max-width:320px;">
+            <div>
+              <label for="gradient_from">Gradient start</label>
+              <input type="color" id="gradient_from" name="from" value="${escapeHtml(loginGradient.from)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
+            </div>
+            <div>
+              <label for="gradient_to">Gradient end</label>
+              <input type="color" id="gradient_to" name="to" value="${escapeHtml(loginGradient.to)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
+            </div>
+          </div>
+          <label style="margin-top:24px;">Preview</label>
+          <div style="height:60px; border-radius:10px; margin-bottom:20px; background: linear-gradient(45deg, ${escapeHtml(loginGradient.from)}, ${escapeHtml(loginGradient.to)});"></div>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      </div>
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Branding" }]
+    )
+  );
+});
+
+admin.post("/admin/branding/app-name", async (c) => {
   const body = await c.req.parseBody();
   const name = String(body.app_name ?? "").trim();
   if (name) {
@@ -2207,10 +2227,10 @@ admin.post("/admin/security/app-name", async (c) => {
     await setLoginSubtitle(c.env, subtitle);
     await logAudit(c.env, c.get("user"), "settings.login_subtitle_changed", undefined, { subtitle }, c.req.raw);
   }
-  return c.redirect("/admin/security?saved=1", 302);
+  return c.redirect("/admin/branding?saved=1", 302);
 });
 
-admin.post("/admin/security/login-gradient", async (c) => {
+admin.post("/admin/branding/login-gradient", async (c) => {
   const body = await c.req.parseBody();
   const from = String(body.from ?? "").trim();
   const to = String(body.to ?? "").trim();
@@ -2220,7 +2240,7 @@ admin.post("/admin/security/login-gradient", async (c) => {
     await setLoginGradient(c.env, { from, to });
     await logAudit(c.env, c.get("user"), "settings.login_gradient_changed", undefined, { from, to }, c.req.raw);
   }
-  return c.redirect("/admin/security?saved=1", 302);
+  return c.redirect("/admin/branding?saved=1", 302);
 });
 
 admin.post("/admin/security/apply-default-password", async (c) => {
