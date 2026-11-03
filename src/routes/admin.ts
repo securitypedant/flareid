@@ -224,11 +224,11 @@ async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttri
     if (attr.name === "employment_status") return `<div>${label}${employmentStatusSelect(value, "attr_employment_status")}</div>`;
     if (attr.name === "employment_type") return `<div>${label}${employmentTypeSelect(value, "attr_employment_type")}</div>`;
     if (attr.type === "reference") {
-      return `<div>${label}${searchSelect(`attr_${attr.name}`, [{ value: "", label: "None" }, ...people], value, "None")}<div style="height:16px;"></div></div>`;
+      return `<div>${label}${searchSelect(`attr_${attr.name}`, [{ value: "", label: "None" }, ...people], value, "None")}</div>`;
     }
     return `<div>${attributeInput(attr, value)}</div>`;
   });
-  return `<div class="attr-grid">${cells.join("")}</div>`;
+  return `<div class="form-grid">${cells.join("")}</div>`;
 }
 
 /** The top-right account switch on the user page: posts immediately rather than waiting for Save. */
@@ -700,16 +700,15 @@ admin.get("/admin/users/new", async (c) => {
             <input type="text" id="username" name="username" placeholder="username" required style="flex:2;" />
             <div style="flex:1;">${await domainSelect(c.env, "domain", domains[0]?.domain)}</div>
           </div>
-          <div class="row between" style="align-items:flex-end; gap:12px; margin-top:8px;">
-            <h2 style="margin:0;">Attributes</h2>
-            <div style="min-width:220px;">
+          <div class="card-head" style="margin-top:8px;">
+            <h2>Attributes</h2>
+            <div class="inline-field">
               <label for="schema_id">Schema</label>
               <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='/admin/users/new?schema='+this.value">
                 ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
               </select>
             </div>
           </div>
-          <div style="height:14px;"></div>
           ${await userSchemaAttributesHtml(c, schemaAttrs, emptyValues, null)}
           <h2>Groups</h2>
           <p class="muted" style="margin-top:-6px;">Static groups only - dynamic groups pick people up from their attributes.</p>
@@ -802,11 +801,16 @@ admin.post("/admin/users", async (c) => {
     layout(
       c,
       "User created",
-      cardSection(`
-        <p class="success">Created ${escapeHtml(displayName)} (${escapeHtml(upn)}).</p>
+      `${cardSection(`
+        <p class="success" style="margin-top:0;">Created ${escapeHtml(displayName)} (${escapeHtml(upn)}). The account is inactive until you switch it on from their page.</p>
         ${secretBlock("Temporary password - share with the user securely", tempPassword)}
-        <a href="/admin/users/${userId}"><button class="primary" type="button">Continue</button></a>
-      `),
+        <a href="/admin/users/${userId}"><button class="primary" type="button">Keep this password and continue</button></a>
+      `)}
+      ${cardSection(`
+        <h2>Or set a password of your own</h2>
+        <p class="muted" style="margin-top:-6px;">Replaces the temporary password above.</p>
+        ${choosePasswordForm(Number(userId), await getPasswordPolicy(c.env))}
+      `)}`,
       [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "User created" }]
     )
   );
@@ -890,9 +894,9 @@ admin.get("/admin/users/:id", async (c) => {
         `)}
 
         ${cardSection(`
-          <div class="row between" style="align-items:flex-end; gap:12px; flex-wrap:wrap;">
-            <h2 style="margin:0;">Attributes</h2>
-            <div style="min-width:220px;">
+          <div class="card-head">
+            <h2>Attributes</h2>
+            <div class="inline-field">
               <label for="schema_id">Schema</label>
               <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="
                 var lost = this.selectedOptions[0].dataset.lost;
@@ -903,7 +907,6 @@ admin.get("/admin/users/:id", async (c) => {
               </select>
             </div>
           </div>
-          <div style="height:14px;"></div>
           ${
             previewing
               ? `<div class="notice-warn">Previewing <strong>${escapeHtml(schema!.name)}</strong> - currently <strong>${escapeHtml(currentSchemaName)}</strong>. Nothing changes until you save.
@@ -1143,33 +1146,74 @@ admin.post("/admin/users/:id/reset-mfa", async (c) => {
   return c.redirect(`/admin/users/${id}`, 302);
 });
 
+/** "At least 12 characters, with an uppercase letter and a number." - the policy as a sentence, shown next to password fields. */
+function passwordPolicySummary(policy: Awaited<ReturnType<typeof getPasswordPolicy>>): string {
+  const needs = [
+    policy.requireUppercase && "an uppercase letter",
+    policy.requireLowercase && "a lowercase letter",
+    policy.requireNumber && "a number",
+    policy.requireSymbol && "a symbol",
+  ].filter(Boolean) as string[];
+  const list = needs.length > 1 ? `${needs.slice(0, -1).join(", ")} and ${needs[needs.length - 1]}` : needs[0];
+  return `At least ${policy.minLength} characters${list ? `, with ${list}` : ""}.`;
+}
+
+/** Form that sets a password of the admin's choosing - posts to reset-password, which enforces the policy. */
+function choosePasswordForm(userId: number, policy: Awaited<ReturnType<typeof getPasswordPolicy>>, error?: string): string {
+  return `
+    <form method="POST" action="/admin/users/${userId}/reset-password">
+      <input type="hidden" name="require_chosen" value="1" />
+      ${error ? `<p class="error" style="margin-top:0;">${escapeHtml(error)}</p>` : ""}
+      <label for="new_password">New password</label>
+      <input type="password" id="new_password" name="password" required minlength="${policy.minLength}" autocomplete="new-password" style="max-width:340px;" />
+      <p class="muted" style="margin-top:-8px;">${escapeHtml(passwordPolicySummary(policy))}</p>
+      <button class="primary" type="submit">Set password</button>
+    </form>`;
+}
+
 admin.post("/admin/users/:id/reset-password", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return c.text("Not found", 404);
 
-  const chosen = String((await c.req.parseBody()).password ?? "").trim();
-  const tempPassword = chosen || (await generateAccountPassword(c.env));
-  const policyError = chosen ? validatePassword(chosen, await getPasswordPolicy(c.env)) : null;
-  if (policyError) return c.text(policyError, 400);
-  const { hash, salt, iterations } = await hashPassword(tempPassword);
+  const body = await c.req.parseBody();
+  const chosen = String(body.password ?? "");
+  const policy = await getPasswordPolicy(c.env);
+  const crumbs = [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name, href: `/admin/users/${id}` }, { label: "Set password" }];
+
+  // Blank means "generate one" - except from a form that exists to set a chosen password.
+  const policyError = chosen ? validatePassword(chosen, policy) : body.require_chosen ? "Enter a password." : null;
+  if (policyError) {
+    return c.html(
+      layout(c, "Set password", cardSection(`<h2>Set a password for ${escapeHtml(user.display_name)}</h2>${choosePasswordForm(id, policy, policyError)}`), crumbs),
+      400
+    );
+  }
+
+  const password = chosen || (await generateAccountPassword(c.env));
+  const { hash, salt, iterations } = await hashPassword(password);
   await c.env.DB.prepare(
     "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
   )
     .bind(hash, salt, iterations, new Date().toISOString(), id)
     .run();
 
-  await logAudit(c.env, c.get("user"), "user.password_reset", user.upn, undefined, c.req.raw);
+  await logAudit(c.env, c.get("user"), "user.password_reset", user.upn, { chosen: Boolean(chosen) }, c.req.raw);
 
   return c.html(
     layout(
       c,
-      "Password reset",
+      chosen ? "Password set" : "Password reset",
       cardSection(`
-        ${secretBlock(`New temporary password for ${user.display_name}`, tempPassword)}
+        ${
+          // A password the admin typed is not echoed back - they already know it.
+          chosen
+            ? `<p class="success">The password for ${escapeHtml(user.display_name)} (${escapeHtml(user.upn)}) has been set. Share it with them securely.</p>`
+            : secretBlock(`New temporary password for ${user.display_name}`, password)
+        }
         <a href="/admin/users/${id}"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name, href: `/admin/users/${id}` }, { label: "Password reset" }]
+      crumbs
     )
   );
 });
@@ -1367,17 +1411,16 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
         </div>
         ${
           schemaAttrs.length > 0 || groupSchemas.length > 1
-            ? `<div class="row between" style="align-items:flex-end; gap:12px;">
-                <h3 style="margin:0;">Attributes</h3>
-                <div style="min-width:200px;">
+            ? `<div class="card-head">
+                <h3>Attributes</h3>
+                <div class="inline-field">
                   <label for="schema_id">Schema</label>
                   <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='${reloadBase}?schema='+this.value">
                     ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
                   </select>
                 </div>
               </div>
-              <div style="height:12px;"></div>
-              <div class="attr-grid">${schemaAttrs.map((a) => `<div>${attributeInput(a, groupCustom[a.name] ?? "")}</div>`).join("")}</div>`
+              <div class="form-grid">${schemaAttrs.map((a) => `<div>${attributeInput(a, groupCustom[a.name] ?? "")}</div>`).join("")}</div>`
             : `<input type="hidden" name="schema_id" value="${schema?.id ?? ""}" />`
         }
       `)}

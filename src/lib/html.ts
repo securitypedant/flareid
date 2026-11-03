@@ -89,9 +89,15 @@ const STYLES = `
   .page-header-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
 
   /* Two-column attribute grid on the user/group forms */
-  .attr-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
-  .attr-grid > div { min-width: 0; }
-  @media (max-width: 760px) { .attr-grid { grid-template-columns: 1fr; } }
+  /* Card title on the left, a compact labelled control (e.g. Schema) on the right. */
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  .card-head h2, .card-head h3 { margin: 0; }
+  .card-head .inline-field { display: flex; align-items: center; gap: 10px; }
+  .card-head .inline-field label { margin: 0; color: var(--fi-muted); font-weight: 500; }
+  .card-head .inline-field select { margin: 0; width: 220px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; row-gap: 4px; }
+  .form-grid > div { min-width: 0; }
+  @media (max-width: 760px) { .form-grid { grid-template-columns: 1fr; } }
 
   /* Labelled setting rows (user Security card) */
   .sec-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--fi-line-soft); flex-wrap: wrap; }
@@ -129,6 +135,8 @@ const STYLES = `
   input:focus, select:focus, textarea:focus {
     outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18);
   }
+  /* One height for every single-line control, so date pickers and selects line up with text inputs in a grid. */
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select { height: 38px; }
   input[type=date] { padding-right: 8px; }
   input[type=date]::-webkit-calendar-picker-indicator {
     cursor: pointer; padding: 5px; margin-left: 6px; border-radius: 6px; opacity: 0.5;
@@ -209,8 +217,14 @@ const STYLES = `
   }
 
   /* --------------------------------------------------------- section nav */
-  .admin-shell { display: grid; grid-template-columns: 190px 1fr; gap: 28px; align-items: start; }
-  .admin-side { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; }
+  /* The admin shell spans the window with the topbar's 24px gutter, so the menu
+     sits directly under the logo at every width instead of floating inside a
+     centred column. The content column is capped so it doesn't sprawl. */
+  .page-wrap:has(> .admin-shell) { max-width: none; padding-left: 24px; padding-right: 24px; }
+  .admin-shell { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 36px; align-items: start; }
+  .admin-main { max-width: 1180px; }
+  /* Pull the menu left by its link padding so the label text lines up with the logo. */
+  .admin-side { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 2px; margin-left: -14px; }
   .admin-side a {
     padding: 8px 12px; text-decoration: none; font-size: 0.875rem; font-weight: 550;
     color: var(--fi-muted); border-radius: 8px; border-left: 2px solid transparent;
@@ -220,7 +234,7 @@ const STYLES = `
   .admin-main { min-width: 0; }
   @media (max-width: 900px) {
     .admin-shell { grid-template-columns: 1fr; }
-    .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; }
+    .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; margin-left: 0; }
     .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
     .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
   }
@@ -256,8 +270,18 @@ const STYLES = `
   .switch input:checked + .track::after { left: 19px; }
 
   /* Searchable single-select (manager picker, rule builder) */
-  .searchselect { position: relative; }
-  .searchselect .ss-toggle { width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+  .searchselect { position: relative; margin-bottom: 16px; }
+  .rule-row .searchselect { margin-bottom: 0; }
+  /* Styled to match a native <select> exactly - same border, height and chevron. */
+  .searchselect .ss-toggle {
+    width: 100%; height: 38px; text-align: left; display: flex; align-items: center;
+    padding: 0 32px 0 12px; border: 1px solid #cbd5e1; border-radius: 8px; color: var(--fi-ink);
+    font-size: 0.875rem; font-weight: 400; box-shadow: none; cursor: pointer;
+    background: var(--fi-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  }
+  .searchselect .ss-toggle:hover { border-color: #94a3b8; }
+  .searchselect.open .ss-toggle { border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18); }
+  .searchselect .ss-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .searchselect .ss-menu {
     display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 25;
     background: #fff; border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
@@ -557,7 +581,7 @@ export function searchSelect(
   const currentLabel = options.find((o) => o.value === current)?.label ?? "";
   return `<div class="searchselect">
     <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(current)}" />
-    <button type="button" class="ss-toggle secondary" style="width:100%;"><span class="ss-label">${escapeHtml(currentLabel || placeholder)}</span><span>&#9662;</span></button>
+    <button type="button" class="ss-toggle"><span class="ss-label">${escapeHtml(currentLabel || placeholder)}</span></button>
     <div class="ss-menu">
       <input type="text" placeholder="Search..." />
       ${options.map((o) => `<button type="button" class="ss-item" data-value="${escapeHtml(o.value)}" data-label="${escapeHtml(o.label)}">${escapeHtml(o.label)}</button>`).join("")}
