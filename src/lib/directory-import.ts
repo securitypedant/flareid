@@ -3,6 +3,7 @@ import { hashPassword } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
+import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId } from "./schemas.js";
 
 /**
  * Bulk directory import.
@@ -55,6 +56,10 @@ export interface DirectoryUser {
   manager?: string | null;
   status?: "active" | "disabled";
   super_admin?: boolean;
+  /** Schema name (e.g. "FlareID HR") the user should conform to; defaults to the deployment's Bare schema. */
+  schema?: string;
+  /** Attribute values keyed by schema attribute name; names matching built-in fields map to columns, the rest become custom attributes. */
+  attributes?: Record<string, string>;
 }
 
 export interface DirectoryBundle {
@@ -257,12 +262,26 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
       const displayName = cleanString(user.display_name) || `${givenName} ${familyName}`.trim() || username;
       const now = new Date().toISOString();
 
+      const schemaName = cleanString(user.schema);
+      const schema = schemaName ? await findSchema(env, "user", schemaName) : null;
+      if (schemaName && !schema) {
+        result.errors.push({ username, message: `Unknown user schema "${schemaName}".` });
+        result.users.skipped++;
+        continue;
+      }
+      const schemaAttrs = schema ? await getSchemaAttributes(env, schema.id) : [];
+      const { columns: attrColumns, custom: attrCustom } = splitUserAttributes(schemaAttrs, user.attributes ?? {});
+
       let userId: number;
       if (existing) {
+        const existingCustom = parseCustomAttributes(
+          (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(existing.id).first<{ custom_attributes: string }>())?.custom_attributes
+        );
+        const mergedCustom = { ...existingCustom, ...attrCustom };
         await env.DB.prepare(
           `UPDATE users SET upn = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?,
              employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?,
-             status = ?, is_admin = ?, updated_at = ?
+             status = ?, is_admin = ?, schema_id = ?, custom_attributes = ?, updated_at = ?
            WHERE id = ?`
         )
           .bind(
@@ -270,15 +289,17 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
             displayName,
             givenName,
             familyName,
-            cleanString(user.job_title),
-            cleanString(user.department),
-            cleanString(user.employee_number),
-            cleanString(user.hire_date),
-            cleanString(user.employment_status),
-            cleanString(user.employment_type),
-            cleanString(user.location),
+            cleanString(user.job_title) || String(attrColumns.job_title ?? ""),
+            cleanString(user.department) || String(attrColumns.department ?? ""),
+            cleanString(user.employee_number) || String(attrColumns.employee_number ?? ""),
+            cleanString(user.hire_date) || String(attrColumns.hire_date ?? ""),
+            cleanString(user.employment_status) || String(attrColumns.employment_status ?? ""),
+            cleanString(user.employment_type) || String(attrColumns.employment_type ?? ""),
+            cleanString(user.location) || String(attrColumns.location ?? ""),
             user.status ?? "disabled",
             user.super_admin ? 1 : 0,
+            schema?.id ?? null,
+            JSON.stringify(mergedCustom),
             now,
             existing.id
           )
@@ -309,8 +330,8 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
         const inserted = await env.DB.prepare(
           `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department,
              employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt,
-             password_iterations, is_admin, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             password_iterations, is_admin, status, schema_id, custom_attributes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id`
         )
           .bind(
@@ -320,18 +341,20 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
             givenName,
             familyName,
             externalId,
-            cleanString(user.job_title),
-            cleanString(user.department),
-            cleanString(user.employee_number),
-            cleanString(user.hire_date),
-            cleanString(user.employment_status),
-            cleanString(user.employment_type),
-            cleanString(user.location),
+            cleanString(user.job_title) || String(attrColumns.job_title ?? ""),
+            cleanString(user.department) || String(attrColumns.department ?? ""),
+            cleanString(user.employee_number) || String(attrColumns.employee_number ?? ""),
+            cleanString(user.hire_date) || String(attrColumns.hire_date ?? ""),
+            cleanString(user.employment_status) || String(attrColumns.employment_status ?? ""),
+            cleanString(user.employment_type) || String(attrColumns.employment_type ?? ""),
+            cleanString(user.location) || String(attrColumns.location ?? ""),
             hash,
             salt,
             iterations,
             user.super_admin ? 1 : 0,
             user.status ?? "disabled",
+            schema?.id ?? (await defaultSchemaId(env, "user")),
+            JSON.stringify(attrCustom),
             now,
             now
           )

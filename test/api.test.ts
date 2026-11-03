@@ -342,6 +342,81 @@ describe("directory import", () => {
     expect(groups.body.groups.map((g: any) => g.name).sort()).toEqual(["Super Admins"]);
   });
 
+  describe("schemas", () => {
+    it("ships Bare and FlareID HR as provided user schemas", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      const { body } = await apiCall("/api/v1/schemas?object_type=user", { token: apiKey });
+
+      const names = body.schemas.map((s: any) => s.name);
+      expect(names).toContain("Bare");
+      expect(names).toContain("FlareID HR");
+      const hr = body.schemas.find((s: any) => s.name === "FlareID HR");
+      expect(hr.attributes.map((a: any) => a.name)).toContain("job_title");
+    });
+
+    it("creates, edits, applies and deletes a custom schema", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+
+      const created = await apiCall("/api/v1/schemas", {
+        token: apiKey,
+        body: { object_type: "user", name: "Contractor", attributes: [{ name: "cost_center", label: "Cost center" }] },
+      });
+      expect(created.status).toBe(201);
+      const id = created.body.id;
+
+      await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "ada", schema: "Contractor", attributes: { cost_center: "CC-9" } }] } });
+      const users = await apiCall("/api/v1/users", { token: apiKey });
+      const ada = users.body.users.find((u: any) => u.username === "ada");
+      expect(ada.schema_name ?? ada.schema).toBeTruthy();
+      expect(ada.attributes.cost_center).toBe("CC-9");
+
+      const applied = await apiCall(`/api/v1/schemas/${id}/apply`, { token: apiKey, body: {} });
+      expect(applied.body.applied).toBeGreaterThan(0);
+
+      const listed = await apiCall("/api/v1/schemas?object_type=user", { token: apiKey });
+      const contractor = listed.body.schemas.find((s: any) => s.id === id);
+      expect(contractor.conforming).toBeGreaterThan(0);
+
+      expect((await apiCall(`/api/v1/schemas/${id}`, { token: apiKey, method: "DELETE" })).status).toBe(200);
+    });
+
+    it("refuses to delete a provided schema", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+      const { body } = await apiCall("/api/v1/schemas?object_type=user", { token: apiKey });
+      const bare = body.schemas.find((s: any) => s.name === "Bare");
+      expect((await apiCall(`/api/v1/schemas/${bare.id}`, { token: apiKey, method: "DELETE" })).status).toBe(403);
+    });
+  });
+
+  describe("dynamic groups", () => {
+    it("resolves rule-based membership in users and groups responses", async () => {
+      const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+
+      await apiCall("/api/v1/directory/import", {
+        token: apiKey,
+        body: {
+          version: 1,
+          groups: [{ name: "Full-timers", rule: JSON.stringify({ all: [{ field: "employment_type", op: "eq", value: "full_time" }] }) }],
+          users: [
+            { username: "ft.ada", employment_type: "full_time" },
+            { username: "ct.bob", employment_type: "contractor" },
+          ],
+        },
+      });
+
+      const users = await apiCall("/api/v1/users", { token: apiKey });
+      const ftAda = users.body.users.find((u: any) => u.username === "ft.ada");
+      const ctBob = users.body.users.find((u: any) => u.username === "ct.bob");
+      expect(ftAda.groups).toContain("Full-timers");
+      expect(ctBob.groups).not.toContain("Full-timers");
+
+      const groups = await apiCall("/api/v1/groups", { token: apiKey });
+      const fullTimers = groups.body.groups.find((g: any) => g.name === "Full-timers");
+      expect(fullTimers.member_count).toBe(1);
+      expect(fullTimers.explicit_member_count).toBe(0);
+    });
+  });
+
   it("never exposes password material through the users endpoint", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await apiCall("/api/v1/directory/import", { token: apiKey, body: BUNDLE });

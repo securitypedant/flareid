@@ -3,6 +3,7 @@ import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { buildClaims } from "../lib/jwt.js";
+import { parseCustomAttributes } from "../lib/schemas.js";
 
 export const userinfo = new Hono<{ Bindings: Env }>();
 
@@ -44,6 +45,7 @@ userinfo.get("/userinfo", async (c) => {
       jobTitle: user.job_title,
       department: user.department,
       managerEmail,
+      customAttributes: parseCustomAttributes(user.custom_attributes),
     }),
   });
 });

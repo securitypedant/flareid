@@ -3,6 +3,18 @@ import type { Env } from "../env.js";
 import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from "../lib/api-auth.js";
 import { createApiKey, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
+import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
+import {
+  listSchemas,
+  getSchema,
+  findSchema,
+  getSchemaAttributes,
+  parseCustomAttributes,
+  createSchema,
+  saveSchemaAttributes,
+  applySchemaToAll,
+  countConforming,
+} from "../lib/schemas.js";
 import { addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
@@ -24,7 +36,7 @@ import {
   type PasswordPolicy,
 } from "../lib/settings.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
-import type { GroupRow, OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
+import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
@@ -314,13 +326,20 @@ api.get("/api/v1/users", requireScope("directory:read"), async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.upn, u.username, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
             u.mfa_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
-            u.employment_type, u.location, u.manager_external_id, u.created_at, u.updated_at,
+            u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
             (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,
+            (SELECT name FROM schemas s WHERE s.id = u.schema_id) AS schema_name,
             (SELECT GROUP_CONCAT(g.name, char(10)) FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = u.id) AS group_names
        FROM users u ORDER BY u.id LIMIT ? OFFSET ?`
   )
     .bind(limit, offset)
-    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number }>();
+    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; custom_attributes: string }>();
+
+  // Dynamic groups don't live in group_members, so resolve them once per
+  // request and fold them into each user's groups.
+  const { results: ruleGroups } = await c.env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
+  const { results: pageUsers } = await c.env.DB.prepare("SELECT * FROM users ORDER BY id LIMIT ? OFFSET ?").bind(limit, offset).all<UserRow>();
+  const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => userMatchesRule(u, parseRule(g.rule)!)).map((g) => g.name)]));
 
   const total = await c.env.DB.prepare("SELECT COUNT(*) as n FROM users").first<{ n: number }>();
 
@@ -328,22 +347,121 @@ api.get("/api/v1/users", requireScope("directory:read"), async (c) => {
     total: total?.n ?? 0,
     limit,
     offset,
-    users: results.map(({ group_names, mfa_enabled, ...user }) => ({
+    users: results.map(({ group_names, mfa_enabled, custom_attributes, id, ...user }) => ({
       ...user,
       mfa_enabled: mfa_enabled === 1,
-      groups: group_names ? group_names.split("\n") : [],
+      attributes: parseCustomAttributes(custom_attributes),
+      groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
     })),
   });
 });
 
 api.get("/api/v1/groups", requireScope("directory:read"), async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT g.id, g.name, g.description, g.scim_id,
-            (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count
+    `SELECT g.*, (SELECT name FROM schemas s WHERE s.id = g.schema_id) AS schema_name,
+            (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS explicit_member_count
        FROM groups g ORDER BY g.name`
-  ).all<GroupRow & { member_count: number }>();
+  ).all<GroupRow & { member_count: number; explicit_member_count: number; schema_name: string | null }>();
 
-  return c.json({ groups: results });
+  const groups = await Promise.all(
+    results.map(async ({ explicit_member_count, custom_attributes, ...g }) => ({
+      ...g,
+      attributes: parseCustomAttributes(custom_attributes),
+      member_count: (await resolveGroupMemberUserIds(c.env, g as unknown as GroupRow)).length,
+      explicit_member_count,
+    }))
+  );
+
+  return c.json({ groups });
+});
+
+// ---------------------------------------------------------------------------
+// Directory schemas
+// ---------------------------------------------------------------------------
+
+api.get("/api/v1/schemas", requireScope("directory:read"), async (c) => {
+  const objectType = c.req.query("object_type");
+  const schemas = await listSchemas(c.env, objectType === "group" ? "group" : objectType === "user" ? "user" : undefined);
+  const result = await Promise.all(
+    schemas.map(async (s) => ({
+      id: s.id,
+      object_type: s.object_type,
+      name: s.name,
+      description: s.description,
+      builtin: s.builtin === 1,
+      conforming: await countConforming(c.env, s.id, s.object_type),
+      attributes: (await getSchemaAttributes(c.env, s.id)).map((a) => ({
+        name: a.name,
+        label: a.label,
+        type: a.type,
+        required: a.required === 1,
+        ref_object: a.ref_object,
+      })),
+    }))
+  );
+  return c.json({ schemas: result });
+});
+
+api.post("/api/v1/schemas", requireScope("settings:write"), async (c) => {
+  const body = await readJson<{
+    object_type?: string;
+    name?: string;
+    description?: string;
+    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string }[];
+  }>(c);
+  const objectType = body.object_type === "group" ? "group" : "user";
+  const name = String(body.name ?? "").trim();
+  if (!name) return c.json(badRequest("name is required."), 400);
+  if (await findSchema(c.env, objectType, name)) return c.json({ error: "conflict", message: `A ${objectType} schema named "${name}" already exists.` }, 409);
+
+  const id = await createSchema(c.env, objectType, name, String(body.description ?? "").trim());
+  if (body.attributes) await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object })));
+  await logAudit(c.env, auditActor(c.get("apiActor")), "schema.created", `${objectType}:${name}`, undefined, c.req.raw);
+  return c.json({ id }, 201);
+});
+
+api.patch("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.json({ error: "not_found" }, 404);
+  const body = await readJson<{
+    name?: string;
+    description?: string;
+    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string }[];
+  }>(c);
+  const name = String(body.name ?? schema.name).trim();
+  const description = body.description === undefined ? schema.description : String(body.description).trim() || null;
+
+  await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description, id).run();
+  if (body.attributes) {
+    await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object })));
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "schema.updated", `${schema.object_type}:${name}`, undefined, c.req.raw);
+  return c.json({ ok: true });
+});
+
+api.post("/api/v1/schemas/:id/apply", requireScope("settings:write"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.json({ error: "not_found" }, 404);
+  const count = await applySchemaToAll(c.env, schema);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "schema.applied", `${schema.object_type}:${schema.name}`, { count }, c.req.raw);
+  return c.json({ applied: count });
+});
+
+api.delete("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.json({ error: "not_found" }, 404);
+  if (schema.builtin) return c.json({ error: "forbidden", message: "Provided schemas cannot be deleted." }, 403);
+
+  const table = schema.object_type === "user" ? "users" : "groups";
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE ${table} SET schema_id = NULL WHERE schema_id = ?`).bind(id),
+    c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id),
+  ]);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

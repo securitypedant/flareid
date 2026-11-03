@@ -4,6 +4,7 @@ import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex, randomToken } from "../lib/tokens.js";
 import { signIdToken } from "../lib/jwt.js";
 import type { OAuthClientRow } from "../lib/types.js";
+import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 
 export const token = new Hono<{ Bindings: Env }>();
@@ -140,6 +141,7 @@ async function issueTokenResponse(
     jobTitle: user.job_title,
     department: user.department,
     managerEmail,
+    customAttributes: parseCustomAttributes(user.custom_attributes),
     nonce,
   });
 

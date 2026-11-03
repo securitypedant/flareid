@@ -2,6 +2,7 @@ import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { getManagerEmail, getUserGroupNames } from "../db.js";
 import { spAttributeMap } from "./service-providers.js";
+import { parseCustomAttributes } from "../schemas.js";
 
 /**
  * Maps a user onto SAML attributes for one service provider.
@@ -68,9 +69,12 @@ export async function resolveAttributes(
     location: user.location,
   };
 
+  const custom = parseCustomAttributes(user.custom_attributes);
   const attributes: { name: string; values: string[] }[] = [];
   for (const [samlName, field] of Object.entries(map)) {
-    const value = fields[field];
+    // Fields outside the fixed vocabulary resolve against custom attributes -
+    // that is how schema-defined attributes reach an SP.
+    const value = field in fields ? fields[field] : custom[field];
     if (value === undefined || value === null) continue;
     const values = (Array.isArray(value) ? value : [value]).filter((v) => v !== "");
     if (values.length === 0) continue;

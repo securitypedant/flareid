@@ -32,6 +32,23 @@ import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 import { resolveGroupMemberUserIds, ruleFromLines, ruleToLines, parseRule } from "../lib/groups.js";
+import {
+  listSchemas,
+  getSchema,
+  findSchema,
+  getSchemaAttributes,
+  defaultSchemaId,
+  parseCustomAttributes,
+  userAttributeValue,
+  splitUserAttributes,
+  createSchema,
+  saveSchemaAttributes,
+  applySchemaToAll,
+  countConforming,
+  attributeInput,
+  type SchemaRow,
+  type SchemaAttributeRow,
+} from "../lib/schemas.js";
 
 export const admin = new Hono<{ Bindings: Env }>();
 
@@ -74,6 +91,7 @@ function adminNav(active: string) {
   const items: [string, string][] = [
     ["users", "Users"],
     ["groups", "Groups"],
+    ["schemas", "Schemas"],
     ["integrations", "Integrations"],
     ["domains", "Domains"],
     ["branding", "Branding"],
@@ -134,46 +152,48 @@ function splitUpn(upn: string): { username: string; domain: string } {
   return at === -1 ? { username: upn, domain: "" } : { username: upn.slice(0, at), domain: upn.slice(at + 1) };
 }
 
-function employmentStatusSelect(current: string) {
+function employmentStatusSelect(current: string, name = "employment_status") {
   const options: [string, string][] = [
     ["", "-"],
     ["active", "Active"],
     ["on_leave", "On leave"],
     ["terminated", "Terminated"],
   ];
-  return `<select id="employment_status" name="employment_status">
+  return `<select id="${name}" name="${name}">
     ${options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`).join("")}
   </select>`;
 }
 
-function employmentTypeSelect(current: string) {
+function employmentTypeSelect(current: string, name = "employment_type") {
   const options: [string, string][] = [
     ["", "-"],
     ["full_time", "Full-time"],
     ["contractor", "Contractor"],
   ];
-  return `<select id="employment_type" name="employment_type">
+  return `<select id="${name}" name="${name}">
     ${options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`).join("")}
   </select>`;
 }
 
-async function managerSelect(env: Env, excludeUserId: number | null, selectedExternalId: string | null) {
-  const { results: candidates } = await env.DB.prepare(
-    excludeUserId ? "SELECT external_id, display_name, upn FROM users WHERE id != ? ORDER BY display_name" : "SELECT external_id, display_name, upn FROM users ORDER BY display_name"
-  )
-    .bind(...(excludeUserId ? [excludeUserId] : []))
-    .all<{ external_id: string; display_name: string; upn: string }>();
+/** Renders a user schema's attribute inputs for a form - attr_<name> fields, using the specialized widgets where they exist. */
+async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttributeRow[], values: Record<string, string>, excludeUserId: number | null): Promise<string> {
+  const userOptions = attributes.some((a) => a.type === "reference" && (a.ref_object ?? "user") === "user")
+    ? (await c.env.DB.prepare("SELECT external_id, display_name, upn FROM users ORDER BY display_name").all<{ external_id: string; display_name: string; upn: string }>()).results.map((u) => ({
+        external_id: u.external_id,
+        label: `${u.display_name} (${u.upn})`,
+      }))
+    : [];
 
-  return `<select name="manager_external_id">
-    <option value="">No manager</option>
-    ${candidates
-      .map(
-        (u) =>
-          `<option value="${escapeHtml(u.external_id)}" ${u.external_id === selectedExternalId ? "selected" : ""}>${escapeHtml(u.display_name)} (${escapeHtml(u.upn)})</option>`
-      )
-      .join("")}
-  </select>`;
+  return attributes
+    .map((attr) => {
+      const value = values[attr.name] ?? "";
+      if (attr.name === "employment_status") return `<label for="attr_employment_status">${escapeHtml(attr.label)}</label>${employmentStatusSelect(value, "attr_employment_status")}`;
+      if (attr.name === "employment_type") return `<label for="attr_employment_type">${escapeHtml(attr.label)}</label>${employmentTypeSelect(value, "attr_employment_type")}`;
+      return attributeInput(attr, value, userOptions);
+    })
+    .join("\n");
 }
+
 
 async function domainSelect(env: Env, name: string, selectedDomain?: string) {
   const domains = await listDomains(env);
@@ -575,6 +595,11 @@ admin.get("/admin/users", async (c) => {
 admin.get("/admin/users/new", async (c) => {
   const { results: groups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
   const domains = await listDomains(c.env);
+  const userSchemas = await listSchemas(c.env, "user");
+  const requestedSchema = Number(c.req.query("schema"));
+  const schema = (await getSchema(c.env, requestedSchema)) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "user"))));
+  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
+  const emptyValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, ""]));
 
   return c.html(
     layout(
@@ -597,48 +622,17 @@ admin.get("/admin/users/new", async (c) => {
             <input type="text" id="username" name="username" placeholder="username" required style="flex:2;" />
             <div style="flex:1;">${await domainSelect(c.env, "domain", domains[0]?.domain)}</div>
           </div>
-          <div class="field-row">
-            <div>
-              <label for="job_title">Job title</label>
-              <input type="text" id="job_title" name="job_title" placeholder="e.g. Software Engineer" />
-            </div>
-            <div>
-              <label for="department">Department</label>
-              <input type="text" id="department" name="department" placeholder="e.g. Engineering" />
-            </div>
-          </div>
-          <label for="manager_external_id">Manager</label>
-          ${await managerSelect(c.env, null, null)}
-          <div class="field-row">
-            <div>
-              <label for="employee_number">Employee #</label>
-              <input type="text" id="employee_number" name="employee_number" placeholder="e.g. E0031" />
-            </div>
-            <div>
-              <label for="location">Location</label>
-              <input type="text" id="location" name="location" placeholder="e.g. Remote - US" />
-            </div>
-          </div>
-          <div class="field-row">
-            <div>
-              <label for="hire_date">Hire date</label>
-              <input type="date" id="hire_date" name="hire_date" />
-            </div>
-            <div>
-              <label for="employment_status">Employment status</label>
-              ${employmentStatusSelect("")}
-            </div>
-            <div>
-              <label for="employment_type">Employment type</label>
-              ${employmentTypeSelect("")}
-            </div>
-          </div>
+          <h2>Attributes</h2>
+          <label for="schema_id">Schema</label>
+          <select id="schema_id" name="schema_id" onchange="location.href='/admin/users/new?schema='+this.value">
+            ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+          </select>
+          ${await userSchemaAttributesHtml(c, schemaAttrs, emptyValues, null)}
           <h2>Groups</h2>
-          <p class="muted" style="margin-top:-8px;">Everyone automatically joins "All Employees" regardless of what's selected here.</p>
           ${multiSelect(
             "group_ids",
             groups.map((g) => ({ id: g.id, label: g.name })),
-            new Set(groups.filter((g) => g.name === "All Employees").map((g) => g.id)),
+            new Set<number>(),
             "Search groups..."
           )}
           <div class="form-actions end">${cancelLink(`/admin/users`)}<button class="primary" type="submit">Create user</button></div>
@@ -657,14 +651,10 @@ admin.post("/admin/users", async (c) => {
   const givenName = String(body.given_name ?? "").trim();
   const familyName = String(body.family_name ?? "").trim();
   const displayName = `${givenName} ${familyName}`.trim();
-  const jobTitle = String(body.job_title ?? "").trim();
-  const department = String(body.department ?? "").trim();
-  const managerExternalId = String(body.manager_external_id ?? "").trim() || null;
-  const employeeNumber = String(body.employee_number ?? "").trim();
-  const hireDate = String(body.hire_date ?? "").trim();
-  const employmentStatus = String(body.employment_status ?? "").trim();
-  const employmentType = String(body.employment_type ?? "").trim();
-  const location = String(body.location ?? "").trim();
+  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "user"));
+  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
+  const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
+  const { columns, custom } = splitUserAttributes(schemaAttrs, attrValues);
   const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
 
   if (!username || !domain || !givenName) return c.text("username, domain, and first name are required", 400);
@@ -680,8 +670,8 @@ admin.post("/admin/users", async (c) => {
   const externalId = crypto.randomUUID();
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, manager_external_id, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?)`
+    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, manager_external_id, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, status, schema_id, custom_attributes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, ?)`
   )
     .bind(
       upn,
@@ -690,17 +680,19 @@ admin.post("/admin/users", async (c) => {
       givenName,
       familyName,
       externalId,
-      jobTitle,
-      department,
-      managerExternalId,
-      employeeNumber,
-      hireDate,
-      employmentStatus,
-      employmentType,
-      location,
+      String(columns.job_title ?? ""),
+      String(columns.department ?? ""),
+      (columns.manager_external_id as string | null) ?? null,
+      String(columns.employee_number ?? ""),
+      String(columns.hire_date ?? ""),
+      String(columns.employment_status ?? ""),
+      String(columns.employment_type ?? ""),
+      String(columns.location ?? ""),
       hash,
       salt,
       iterations,
+      schemaId,
+      JSON.stringify(custom),
       now,
       now
     )
@@ -758,6 +750,12 @@ admin.get("/admin/users/:id", async (c) => {
   const { username, domain } = splitUpn(user.upn);
   const domains = await listDomains(c.env);
 
+  const userSchemas = await listSchemas(c.env, "user");
+  const requestedSchema = Number(c.req.query("schema"));
+  const schema = (await getSchema(c.env, requestedSchema)) ?? (user.schema_id ? await getSchema(c.env, user.schema_id) : null) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "user"))));
+  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
+  const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, userAttributeValue(user, a)]));
+
   return c.html(
     layout(
       c,
@@ -785,51 +783,20 @@ admin.get("/admin/users/:id", async (c) => {
             </div>
           </div>
 
-          <h2>Organisation</h2>
-          <div class="field-row">
-            <div>
-              <label for="job_title">Job title</label>
-              <input type="text" id="job_title" name="job_title" value="${escapeHtml(user.job_title)}" placeholder="e.g. Software Engineer" />
-            </div>
-            <div>
-              <label for="department">Department</label>
-              <input type="text" id="department" name="department" value="${escapeHtml(user.department)}" placeholder="e.g. Engineering" />
-            </div>
-            <div>
-              <label for="manager_external_id">Manager</label>
-              ${await managerSelect(c.env, id, user.manager_external_id)}
-            </div>
-          </div>
+          <h2>Attributes</h2>
+          <label for="schema_id">Schema</label>
+          <select id="schema_id" name="schema_id" onchange="location.href='/admin/users/${id}?schema='+this.value">
+            ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+          </select>
+          ${await userSchemaAttributesHtml(c, schemaAttrs, attrValues, id)}
 
-          <h2>Employment</h2>
+          <h2>Account</h2>
           <div class="field-row">
             <div>
-              <label for="hire_date">Hire date</label>
-              <input type="date" id="hire_date" name="hire_date" value="${escapeHtml(user.hire_date)}" />
-            </div>
-            <div>
-              <label for="employee_number">Employee #</label>
-              <input type="text" id="employee_number" name="employee_number" value="${escapeHtml(user.employee_number)}" placeholder="e.g. E0031" />
-            </div>
-            <div>
-              <label for="location">Location</label>
-              <input type="text" id="location" name="location" value="${escapeHtml(user.location)}" placeholder="e.g. Remote - US" />
-            </div>
-          </div>
-          <div class="field-row">
-            <div>
-              <label for="status_active">Account</label>
+              <label for="status_active">Status</label>
               <label style="font-weight:400; display:flex; align-items:center; gap:6px; height:38px;">
                 <input type="checkbox" id="status_active" name="status_active" value="1" ${user.status === "active" ? "checked" : ""} style="width:auto; margin:0;" /> Active
               </label>
-            </div>
-            <div>
-              <label for="employment_status">Employment status</label>
-              ${employmentStatusSelect(user.employment_status)}
-            </div>
-            <div>
-              <label for="employment_type">Employment type</label>
-              ${employmentTypeSelect(user.employment_type)}
             </div>
           </div>
 
@@ -935,18 +902,19 @@ admin.post("/admin/users/:id", async (c) => {
   const givenName = String(body.given_name ?? "").trim();
   const familyName = String(body.family_name ?? "").trim();
   const displayName = `${givenName} ${familyName}`.trim();
-  const jobTitle = String(body.job_title ?? "").trim();
-  const department = String(body.department ?? "").trim();
-  const employeeNumber = String(body.employee_number ?? "").trim();
-  const hireDate = String(body.hire_date ?? "").trim();
-  const employmentStatus = String(body.employment_status ?? "").trim();
-  const employmentType = String(body.employment_type ?? "").trim();
-  const location = String(body.location ?? "").trim();
   const status = body.status_active ? "active" : "disabled";
   const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
 
-  const existing = await c.env.DB.prepare("SELECT external_id FROM users WHERE id = ?").bind(id).first<{ external_id: string }>();
-  let managerExternalId = String(body.manager_external_id ?? "").trim() || null;
+  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "user"));
+  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
+  const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
+  const { columns, custom } = splitUserAttributes(schemaAttrs, attrValues);
+  // Custom attributes the new schema doesn't define are kept - switching schemas hides fields, it never deletes them.
+  const existingRow = await c.env.DB.prepare("SELECT external_id, custom_attributes FROM users WHERE id = ?").bind(id).first<{ external_id: string; custom_attributes: string }>();
+  const mergedCustom = { ...parseCustomAttributes(existingRow?.custom_attributes), ...custom };
+
+  const existing = { external_id: existingRow?.external_id ?? "" };
+  let managerExternalId = (columns.manager_external_id as string | null) ?? null;
   if (managerExternalId && existing && managerExternalId === existing.external_id) managerExternalId = null; // can't manage yourself
 
   const usernameTaken = await c.env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
@@ -956,7 +924,7 @@ admin.post("/admin/users/:id", async (c) => {
 
   await c.env.DB.prepare(
     `UPDATE users SET upn = ?, username = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?, manager_external_id = ?,
-     employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?, status = ?, updated_at = ? WHERE id = ?`
+     employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?, status = ?, schema_id = ?, custom_attributes = ?, updated_at = ? WHERE id = ?`
   )
     .bind(
       upn,
@@ -964,15 +932,17 @@ admin.post("/admin/users/:id", async (c) => {
       displayName,
       givenName,
       familyName,
-      jobTitle,
-      department,
+      String(columns.job_title ?? ""),
+      String(columns.department ?? ""),
       managerExternalId,
-      employeeNumber,
-      hireDate,
-      employmentStatus,
-      employmentType,
-      location,
+      String(columns.employee_number ?? ""),
+      String(columns.hire_date ?? ""),
+      String(columns.employment_status ?? ""),
+      String(columns.employment_type ?? ""),
+      String(columns.location ?? ""),
       status,
+      schemaId,
+      JSON.stringify(mergedCustom),
       new Date().toISOString(),
       id
     )
@@ -1148,6 +1118,11 @@ admin.get("/admin/groups", async (c) => {
 });
 
 admin.get("/admin/groups/new", async (c) => {
+  const groupSchemas = await listSchemas(c.env, "group");
+  const requestedSchema = Number(c.req.query("schema"));
+  const schema = (await getSchema(c.env, requestedSchema)) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "group"))));
+  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
+
   return c.html(
     layout(
       c,
@@ -1158,6 +1133,11 @@ admin.get("/admin/groups/new", async (c) => {
           <input type="text" id="name" name="name" required />
           <label for="description">Description</label>
           <input type="text" id="description" name="description" />
+          <label for="schema_id">Schema</label>
+          <select id="schema_id" name="schema_id" onchange="location.href='/admin/groups/new?schema='+this.value">
+            ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+          </select>
+          ${schemaAttrs.map((a) => attributeInput(a, "")).join("\n")}
           <label for="rule">Dynamic membership rule (optional - one condition per line, e.g. <code>employment_type = full_time</code>)</label>
           <textarea id="rule" name="rule" rows="3" placeholder="employment_type = full_time"></textarea>
           <div class="form-actions end">${cancelLink(`/admin/groups`)}<button class="primary" type="submit">Create group</button></div>
@@ -1181,8 +1161,12 @@ admin.post("/admin/groups", async (c) => {
     return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
   }
 
-  const result = await c.env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, ?, ?)")
-    .bind(name, description || null, rule)
+  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
+  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
+  const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
+
+  const result = await c.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes) VALUES (?, ?, ?, ?, ?)")
+    .bind(name, description || null, rule, schemaId, JSON.stringify(custom))
     .run();
 
   await logAudit(c.env, c.get("user"), "group.created", name, undefined, c.req.raw);
@@ -1201,6 +1185,11 @@ admin.get("/admin/groups/:id", async (c) => {
     .bind(id)
     .all<{ user_id: number }>();
   const memberIds = new Set(memberships.map((m) => m.user_id));
+  const groupSchemas = await listSchemas(c.env, "group");
+  const requestedSchema = Number(c.req.query("schema"));
+  const schema = (await getSchema(c.env, requestedSchema)) ?? (group.schema_id ? await getSchema(c.env, group.schema_id) : null) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "group"))));
+  const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
+  const groupCustom = parseCustomAttributes(group.custom_attributes);
 
   return c.html(
     layout(
@@ -1214,6 +1203,11 @@ admin.get("/admin/groups/:id", async (c) => {
           <input type="text" id="name" name="name" value="${escapeHtml(group.name)}" required />
           <label for="description">Description</label>
           <input type="text" id="description" name="description" value="${escapeHtml(group.description ?? "")}" />
+          <label for="schema_id">Schema</label>
+          <select id="schema_id" name="schema_id" onchange="location.href='/admin/groups/${id}?schema='+this.value">
+            ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+          </select>
+          ${schemaAttrs.map((a) => attributeInput(a, groupCustom[a.name] ?? "")).join("\n")}
           <label for="rule">Dynamic membership rule (one condition per line, e.g. <code>employment_type = full_time</code>; leave empty for explicit membership only)</label>
           <textarea id="rule" name="rule" rows="3">${escapeHtml(ruleToLines(group.rule))}</textarea>
           ${parseRule(group.rule) ? `<p class="muted">Dynamic rule matches ${(await resolveGroupMemberUserIds(c.env, group)).length - memberIds.size} users in addition to the members below.</p>` : ""}
@@ -1252,8 +1246,14 @@ admin.post("/admin/groups/:id", async (c) => {
     return c.text(e instanceof Error ? e.message : "Invalid rule.", 400);
   }
 
-  await c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ? WHERE id = ?")
-    .bind(name, description || null, rule, id)
+  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
+  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
+  const existingGroup = await c.env.DB.prepare("SELECT custom_attributes FROM groups WHERE id = ?").bind(id).first<{ custom_attributes: string }>();
+  const newCustom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
+  const mergedCustom = { ...parseCustomAttributes(existingGroup?.custom_attributes), ...newCustom };
+
+  await c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?")
+    .bind(name, description || null, rule, schemaId, JSON.stringify(mergedCustom), id)
     .run();
 
   await c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id).run();
@@ -1969,6 +1969,223 @@ admin.post("/admin/saml/:id/delete", async (c) => {
   await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
   return c.redirect("/admin/integrations", 302);
 });
+
+// ---------- Schemas ----------
+
+const ATTRIBUTE_TYPE_OPTIONS = ["string", "number", "date", "boolean", "reference"];
+
+/** Parses "name | Label | type | required" lines (required optional, type optional). */
+function parseAttributeLines(text: string): { name: string; label: string; type: string; required: boolean; ref_object: string | null }[] {
+  const errors: string[] = [];
+  const attrs = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line, i) => {
+      const parts = line.split("|").map((p) => p.trim());
+      const [name, label, type = "string", req = ""] = parts;
+      if (!name || !/^[a-z][a-z0-9_]*$/.test(name)) {
+        errors.push(`Line ${i + 1}: attribute names must be lowercase_snake ("${name ?? ""}").`);
+        return null;
+      }
+      const refMatch = /^reference\((\w+)\)$/.exec(type);
+      const resolvedType = refMatch ? "reference" : type;
+      const refObject = refMatch ? refMatch[1]! : null;
+      if (!ATTRIBUTE_TYPE_OPTIONS.includes(resolvedType)) {
+        errors.push(`Line ${i + 1}: unknown type "${type}" (options: ${ATTRIBUTE_TYPE_OPTIONS.join(", ")}, reference(user)).`);
+        return null;
+      }
+      return { name, label: label || name, type: resolvedType, required: /^(required|req|yes|true)$/i.test(req), ref_object: refObject };
+    });
+  if (errors.length) throw new Error(errors.join(" "));
+  return attrs.filter((a): a is NonNullable<typeof a> => a !== null);
+}
+
+function attributeLinesFromRows(rows: { name: string; label: string; type: string; required: number; ref_object: string | null }[]): string {
+  return rows.map((a) => `${a.name} | ${a.label} | ${a.type === "reference" ? `reference(${a.ref_object ?? "user"})` : a.type}${a.required ? " | required" : ""}`).join("\n");
+}
+
+admin.get("/admin/schemas", async (c) => {
+  const schemas = await listSchemas(c.env);
+  const rows = await Promise.all(
+    schemas.map(async (s) => ({
+      schema: s,
+      attributes: (await getSchemaAttributes(c.env, s.id)).length,
+      conforming: await countConforming(c.env, s.id, s.object_type),
+    }))
+  );
+
+  const table = (objectType: "user" | "group") => {
+    const list = rows.filter((r) => r.schema.object_type === objectType);
+    return cardSection(`
+      <h2>${objectType === "user" ? "User" : "Group"} schemas</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Attributes</th><th>Conforming</th><th></th></tr></thead>
+        <tbody>
+          ${list
+            .map(
+              ({ schema: s, attributes, conforming }) => `<tr>
+                <td>${escapeHtml(s.name)}${s.builtin ? ' <span class="badge">provided</span>' : ""}<br/><span class="muted">${escapeHtml(s.description ?? "")}</span></td>
+                <td>${attributes}</td>
+                <td>${conforming}</td>
+                <td><a href="/admin/schemas/${s.id}">Edit</a></td>
+              </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `);
+  };
+
+  return c.html(
+    layout(
+      c,
+      "Schemas",
+      `
+      ${adminNav("schemas")}
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      <p class="muted">A schema names the attribute vocabulary an object conforms to. "Bare" is the default for new objects; applying a schema never deletes values - narrower schemas simply hide fields.</p>
+      ${table("user")}
+      ${table("group")}
+      ${cardSection(`
+        <h2>New schema</h2>
+        <form method="POST" action="/admin/schemas">
+          <div class="field-row">
+            <div>
+              <label for="object_type">Object type</label>
+              <select id="object_type" name="object_type"><option value="user">user</option><option value="group">group</option></select>
+            </div>
+            <div>
+              <label for="name">Name</label>
+              <input type="text" id="name" name="name" required />
+            </div>
+          </div>
+          <label for="description">Description</label>
+          <input type="text" id="description" name="description" />
+          <div class="form-actions end"><button class="primary" type="submit">Create schema</button></div>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Schemas" }]
+    )
+  );
+});
+
+admin.post("/admin/schemas", async (c) => {
+  const body = await c.req.parseBody();
+  const objectType = String(body.object_type ?? "") === "group" ? "group" : "user";
+  const name = String(body.name ?? "").trim();
+  const description = String(body.description ?? "").trim();
+  if (!name) return c.text("name is required", 400);
+  if (await findSchema(c.env, objectType, name)) return c.text(`A ${objectType} schema named "${name}" already exists.`, 409);
+
+  const id = await createSchema(c.env, objectType, name, description);
+  await logAudit(c.env, c.get("user"), "schema.created", `${objectType}:${name}`, undefined, c.req.raw);
+  return c.redirect(`/admin/schemas/${id}`, 302);
+});
+
+admin.get("/admin/schemas/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.text("Not found", 404);
+  const attributes = await getSchemaAttributes(c.env, id);
+  const conforming = await countConforming(c.env, id, schema.object_type);
+
+  return c.html(
+    layout(
+      c,
+      `Schema: ${schema.name}`,
+      `
+      ${adminNav("schemas")}
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${cardSection(`
+        <form method="POST" action="/admin/schemas/${id}">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" value="${escapeHtml(schema.name)}" required />
+          <label for="description">Description</label>
+          <input type="text" id="description" name="description" value="${escapeHtml(schema.description ?? "")}" />
+          <h2>Attributes</h2>
+          <p class="muted">One per line: <code>name | Label | type | required</code> - e.g. <code>cost_center | Cost center | string</code> or <code>manager | Manager | reference(user)</code>. Names matching built-in fields (${["job_title", "department", "employee_number", "hire_date", "employment_status", "employment_type", "location", "display_name", "given_name", "family_name"].join(", ")}) map onto those columns; anything else is stored as a custom attribute.</p>
+          <textarea id="attributes" name="attributes" rows="10">${escapeHtml(attributeLinesFromRows(attributes))}</textarea>
+          <div class="row between">
+            <div class="form-actions">
+              <button class="danger" type="submit" formaction="/admin/schemas/${id}/delete"
+                ${confirmAttrs(`Objects currently conforming fall back to the Bare schema. Attribute values are preserved.`, { title: `Delete the schema "${schema.name}"?`, action: "Delete schema", danger: true })}>Delete schema</button>
+            </div>
+            <div class="form-actions">
+              ${cancelLink(`/admin/schemas`)}
+              <button class="primary" type="submit">Save</button>
+            </div>
+          </div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Apply</h2>
+        <p class="muted">${conforming} ${schema.object_type}${conforming === 1 ? "" : "s"} currently conform${conforming === 1 ? "s" : ""} to this schema.</p>
+        <form method="POST" action="/admin/schemas/${id}/apply">
+          <button class="secondary" type="submit"
+            ${confirmAttrs(`Every ${schema.object_type} will be set to conform to "${schema.name}". Values are preserved - fields the schema doesn't define are hidden, not deleted.`, { title: `Apply "${schema.name}" to all ${schema.object_type}s?`, action: "Apply to all" })}>Apply to all ${schema.object_type}s</button>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Schemas", href: "/admin/schemas" }, { label: schema.name }]
+    )
+  );
+});
+
+admin.post("/admin/schemas/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.text("Not found", 404);
+  const body = await c.req.parseBody();
+  const name = String(body.name ?? "").trim();
+  const description = String(body.description ?? "").trim();
+  if (!name) return c.text("name is required", 400);
+
+  const clash = await env0findSchemaByName(c.env, schema.object_type, name, id);
+  if (clash) return c.text(`A ${schema.object_type} schema named "${name}" already exists.`, 409);
+
+  let attributes;
+  try {
+    attributes = parseAttributeLines(String(body.attributes ?? ""));
+  } catch (e) {
+    return c.text(e instanceof Error ? e.message : "Invalid attribute lines.", 400);
+  }
+
+  await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description || null, id).run();
+  await saveSchemaAttributes(c.env, id, attributes);
+  await logAudit(c.env, c.get("user"), "schema.updated", `${schema.object_type}:${name}`, { attributes: attributes.length }, c.req.raw);
+  return c.redirect(`/admin/schemas/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/schemas/:id/apply", async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.text("Not found", 404);
+  const count = await applySchemaToAll(c.env, schema);
+  await logAudit(c.env, c.get("user"), "schema.applied", `${schema.object_type}:${schema.name}`, { count }, c.req.raw);
+  return c.redirect(`/admin/schemas/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/schemas/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const schema = await getSchema(c.env, id);
+  if (!schema) return c.text("Not found", 404);
+  if (schema.builtin) return c.text("Provided schemas cannot be deleted - remove their attributes instead.", 400);
+
+  const table = schema.object_type === "user" ? "users" : "groups";
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE ${table} SET schema_id = NULL WHERE schema_id = ?`).bind(id),
+    c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id),
+  ]);
+  await logAudit(c.env, c.get("user"), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
+  return c.redirect("/admin/schemas?saved=1", 302);
+});
+
+async function env0findSchemaByName(env: Env, objectType: "user" | "group", name: string, excludeId: number): Promise<boolean> {
+  const row = await env.DB.prepare("SELECT id FROM schemas WHERE object_type = ? AND name = ? AND id != ?").bind(objectType, name, excludeId).first();
+  return row !== null;
+}
 
 // ---------- Domains ----------
 

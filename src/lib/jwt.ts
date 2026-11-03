@@ -28,6 +28,8 @@ export interface IdTokenClaims {
   department: string;
   /** The manager's email, resolved at issuance time from their stable external_id reference. */
   managerEmail: string | null;
+  /** Schema-defined attributes beyond the fixed vocabulary, surfaced under the "custom" claim. */
+  customAttributes?: Record<string, string>;
   nonce?: string;
 }
 
@@ -54,7 +56,7 @@ export function buildClaims(claims: IdTokenClaims) {
   return {
     ...attributes,
     amr: claims.amr,
-    custom: attributes,
+    custom: { ...attributes, ...(claims.customAttributes ?? {}) },
   };
 }
 
