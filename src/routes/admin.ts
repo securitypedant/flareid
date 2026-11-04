@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
@@ -245,7 +245,7 @@ function accountStatusSwitch(userId: number, status: string, isSelf: boolean): s
       ${active && !isSelf ? confirmAttrs("They are signed out of every session and cannot sign in until reactivated. Their account and data are kept.", { title: "Deactivate this account?", action: "Deactivate" }) : ""}>
       <input type="hidden" name="status" value="${active ? "disabled" : "active"}" />
       <label class="switch" title="${isSelf ? "You cannot deactivate your own account" : ""}">
-        <input type="checkbox" ${active ? "checked" : ""} ${isSelf ? "disabled" : ""} onchange="this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()" />
+        <input type="checkbox" ${active ? "checked" : ""} ${isSelf ? "disabled" : ""} data-autosubmit />
         <span class="track"></span>
         <span style="font-size:0.875rem; font-weight:600;">${active ? "Active" : "Inactive"}</span>
       </label>
@@ -603,7 +603,7 @@ admin.get("/admin/users", async (c) => {
   const currentUserId = c.get("user").id;
 
   const filterSelect = (name: string, current: string, options: [string, string][]) =>
-    `<select name="${name}" onchange="this.form.querySelector('input[name=page]').value=1; this.form.submit();" style="width:auto; display:inline-block; margin-bottom:0;">
+    `<select name="${name}" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
       ${options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`).join("")}
     </select>`;
 
@@ -711,7 +711,7 @@ admin.get("/admin/users/new", async (c) => {
             <h2>Attributes</h2>
             <div class="inline-field">
               <label for="schema_id">Schema</label>
-              <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='/admin/users/new?schema='+this.value">
+              <select id="schema_id" name="schema_id" style="margin-bottom:0;" data-navigate="/admin/users/new?schema=">
                 ${userSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
               </select>
             </div>
@@ -869,7 +869,7 @@ admin.get("/admin/users/:id", async (c) => {
   const schemaOptions = userSchemas
     .map((s) => {
       const lost = lostBySchema.get(s.id) ?? [];
-      return `<option value="${s.id}" data-lost="${escapeHtml(lost.join(", "))}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}${s.id === currentSchemaId ? " (current)" : ""}</option>`;
+      return `<option value="${s.id}" data-confirm-lost="${escapeHtml(lost.join(", "))}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}${s.id === currentSchemaId ? " (current)" : ""}</option>`;
     })
     .join("");
 
@@ -905,11 +905,7 @@ admin.get("/admin/users/:id", async (c) => {
             <h2>Attributes</h2>
             <div class="inline-field">
               <label for="schema_id">Schema</label>
-              <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="
-                var lost = this.selectedOptions[0].dataset.lost;
-                var msg = lost ? 'Moving to ' + this.selectedOptions[0].text + ' clears these attributes when you save: ' + lost + '. Attributes with the same name carry over.' : '';
-                if (msg && !confirm(msg)) { this.value = '${schema?.id ?? ""}'; return; }
-                location.href = '/admin/users/${id}?schema=' + this.value;">
+              <select id="schema_id" name="schema_id" style="margin-bottom:0;" data-navigate="/admin/users/${id}?schema=" data-current="${schema?.id ?? ""}">
                 ${schemaOptions}
               </select>
             </div>
@@ -1337,7 +1333,7 @@ function ruleRowHtml(data: RuleBuilderData, cond?: RuleCondition): string {
       <option value="ne" ${cond?.op === "ne" ? "selected" : ""}>!=</option>
     </select>
     <input type="text" name="rule_value" value="${escapeHtml(cond?.value ?? "")}" placeholder="Value" ${field ? `list="rv-${escapeHtml(field)}"` : ""} autocomplete="off" />
-    <button type="button" class="secondary" onclick="ruleRemove(this)" aria-label="Remove condition">&times;</button>
+    <button type="button" class="secondary" data-remove-closest=".rule-row" aria-label="Remove condition">&times;</button>
   </div>`;
 }
 
@@ -1348,6 +1344,12 @@ const GROUP_FORM_SCRIPT = `
   var data = JSON.parse(dataEl.textContent);
   function attrsFor(name) { for (var i = 0; i < data.schemas.length; i++) if (data.schemas[i].name === name) return data.schemas[i].attributes; return []; }
   document.addEventListener("change", function (e) {
+    if (e.target.name === "membership") {
+      var dyn = e.target.value === "dynamic";
+      document.getElementById("dynamic-section").style.display = dyn ? "" : "none";
+      document.getElementById("static-section").style.display = dyn ? "none" : "";
+      return;
+    }
     var row = e.target.closest(".rule-row");
     if (!row) return;
     var valueInput = row.querySelector("input[name=rule_value]");
@@ -1368,16 +1370,6 @@ const GROUP_FORM_SCRIPT = `
     }
     if (e.target.name === "rule_field") valueInput.setAttribute("list", "rv-" + e.target.value);
   });
-  window.ruleAdd = function () {
-    var t = document.getElementById("rule-row-template");
-    document.getElementById("rule-rows").appendChild(t.content.cloneNode(true));
-  };
-  window.ruleRemove = function (btn) { btn.closest(".rule-row").remove(); };
-  window.groupTypeChanged = function () {
-    var dyn = document.querySelector("input[name=membership]:checked").value === "dynamic";
-    document.getElementById("dynamic-section").style.display = dyn ? "" : "none";
-    document.getElementById("static-section").style.display = dyn ? "none" : "";
-  };
 })();
 `;
 
@@ -1422,7 +1414,7 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
                 <h3>Attributes</h3>
                 <div class="inline-field">
                   <label for="schema_id">Schema</label>
-                  <select id="schema_id" name="schema_id" style="margin-bottom:0;" onchange="location.href='${reloadBase}?schema='+this.value">
+                  <select id="schema_id" name="schema_id" style="margin-bottom:0;" data-navigate="${reloadBase}?schema=">
                     ${groupSchemas.map((s) => `<option value="${s.id}" ${schema?.id === s.id ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
                   </select>
                 </div>
@@ -1438,8 +1430,8 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
           isSuperAdmins
             ? `<input type="hidden" name="membership" value="static" /><p class="muted">Super Admins controls access to this console, so its membership is always assigned by hand.</p>`
             : `<div class="row" style="justify-content:flex-start; gap:20px; margin-bottom:14px;">
-                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="static" ${isDynamic ? "" : "checked"} onchange="groupTypeChanged()" style="width:auto; margin:0;" /> Static - members are assigned</label>
-                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="dynamic" ${isDynamic ? "checked" : ""} onchange="groupTypeChanged()" style="width:auto; margin:0;" /> Dynamic - members match rules</label>
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="static" ${isDynamic ? "" : "checked"} style="width:auto; margin:0;" /> Static - members are assigned</label>
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="dynamic" ${isDynamic ? "checked" : ""} style="width:auto; margin:0;" /> Dynamic - members match rules</label>
               </div>`
         }
 
@@ -1448,7 +1440,7 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
           <div id="rule-rows">
             ${(rule?.all.length ? rule.all : [undefined]).map((cond) => ruleRowHtml(data, cond)).join("")}
           </div>
-          <button type="button" class="secondary" onclick="ruleAdd()">+ Add condition</button>
+          <button type="button" class="secondary" data-append-template="rule-row-template" data-append-to="rule-rows">+ Add condition</button>
           <template id="rule-row-template">${ruleRowHtml(data)}</template>
           ${Object.entries(data.values)
             .map(([name, vals]) => `<datalist id="rv-${escapeHtml(name)}">${vals.map((v) => `<option value="${escapeHtml(v)}"></option>`).join("")}</datalist>`)
@@ -1489,7 +1481,7 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
         <button class="primary" type="submit">${group ? "Save" : "Create group"}</button>
       </div>
     </form>
-    <script>${GROUP_FORM_SCRIPT}</script>
+    ${scriptTag(GROUP_FORM_SCRIPT)}
   `;
 }
 
@@ -1555,7 +1547,7 @@ admin.get("/admin/groups", async (c) => {
         <form method="GET" class="row between" style="margin-bottom:0; gap:12px; flex-wrap:wrap;">
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <input type="text" name="search" placeholder="Search groups" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />
-            <select name="type" onchange="this.form.querySelector('input[name=page]').value=1; this.form.submit();" style="width:auto; display:inline-block; margin-bottom:0;">
+            <select name="type" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
               ${[["", "All types"], ["static", "Static"], ["dynamic", "Dynamic"]].map(([v, l]) => `<option value="${v}" ${v === typeFilter ? "selected" : ""}>${l}</option>`).join("")}
             </select>
             <input type="hidden" name="page" value="1" />
@@ -1688,6 +1680,35 @@ admin.post("/admin/groups/:id/delete", async (c) => {
   await logAudit(c.env, c.get("user"), "group.deleted", group?.name, undefined, c.req.raw);
   return c.redirect("/admin/groups", 302);
 });
+
+/** Test / Sync buttons on the Integrations page - data-scim="test|sync". */
+const SCIM_SCRIPT = `
+document.addEventListener("click", async function (e) {
+  const btn = e.target.closest("[data-scim]");
+  if (!btn) return;
+  const kind = btn.dataset.scim;
+  const status = document.getElementById("scim-status");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = kind === "test" ? "Testing..." : "Syncing...";
+  status.replaceChildren();
+  const p = document.createElement("p");
+  p.style.marginTop = "12px";
+  try {
+    const res = await fetch("/admin/scim/" + kind, { method: "POST" });
+    const data = await res.json();
+    p.className = data.ok ? "success" : "error";
+    p.textContent = data.message;
+  } catch (err) {
+    p.className = "error";
+    p.textContent = "Request failed: " + err;
+  } finally {
+    status.appendChild(p);
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+`;
 
 // ---------- Integrations: OIDC clients in, SCIM provisioning out ----------
 //
@@ -1826,8 +1847,8 @@ admin.get("/admin/integrations", async (c) => {
           <h2>Sync scope</h2>
           <p class="muted">Push everyone, or only members of specific groups. Users and groups outside scope are removed from the SCIM server if they had previously been synced.</p>
           <form method="POST" action="/admin/scim/scope">
-            <label><input type="radio" name="mode" value="all" ${scope.mode === "all" ? "checked" : ""} onclick="document.getElementById('scim-scope-groups').style.display='none';" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
-            <label><input type="radio" name="mode" value="selected" ${scope.mode === "selected" ? "checked" : ""} onclick="document.getElementById('scim-scope-groups').style.display='block';" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
+            <label><input type="radio" name="mode" value="all" ${scope.mode === "all" ? "checked" : ""} data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
+            <label><input type="radio" name="mode" value="selected" ${scope.mode === "selected" ? "checked" : ""} data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
             <div id="scim-scope-groups" style="display:${scope.mode === "selected" ? "block" : "none"}; margin-top:8px;">
               ${multiSelect(
                 "group_ids",
@@ -1843,41 +1864,14 @@ admin.get("/admin/integrations", async (c) => {
           <h2>Test &amp; sync</h2>
           <p class="muted">Test the connection, then push every in-scope user and group. New and changed users and groups are pushed automatically from then on.</p>
           <div class="row" style="justify-content:flex-start; gap:10px;">
-            <button class="secondary" type="button" id="scim-test-btn" onclick="scimAction('test')">Test connection</button>
-            <button class="primary" type="button" id="scim-sync-btn" onclick="scimAction('sync')">Sync all now</button>
+            <button class="secondary" type="button" id="scim-test-btn" data-scim="test">Test connection</button>
+            <button class="primary" type="button" id="scim-sync-btn" data-scim="sync">Sync all now</button>
           </div>
           <div id="scim-status"></div>
         `)}
       </div>
 
-      <script>
-        async function scimAction(kind) {
-          const btn = document.getElementById('scim-' + kind + '-btn');
-          const status = document.getElementById('scim-status');
-          const original = btn.textContent;
-          btn.disabled = true;
-          btn.textContent = kind === 'test' ? 'Testing...' : 'Syncing...';
-          status.innerHTML = '';
-          try {
-            const res = await fetch('/admin/scim/' + kind, { method: 'POST' });
-            const data = await res.json();
-            const p = document.createElement('p');
-            p.className = data.ok ? 'success' : 'error';
-            p.style.marginTop = '12px';
-            p.textContent = data.message;
-            status.appendChild(p);
-          } catch (e) {
-            const p = document.createElement('p');
-            p.className = 'error';
-            p.style.marginTop = '12px';
-            p.textContent = 'Request failed: ' + e;
-            status.appendChild(p);
-          } finally {
-            btn.disabled = false;
-            btn.textContent = original;
-          }
-        }
-      </script>
+      ${scriptTag(SCIM_SCRIPT)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Integrations" }]
     )
@@ -2391,8 +2385,8 @@ function attributeRowHtml(a?: { name: string; label: string; type: string; requi
     <input type="text" name="attr_name" value="${escapeHtml(a?.name ?? "")}" placeholder="name (e.g. cost_center)" pattern="[a-z][a-z0-9_]*" title="lowercase letters, digits and underscores, starting with a letter" />
     <input type="text" name="attr_label" value="${escapeHtml(a?.label ?? "")}" placeholder="Label (e.g. Cost center)" />
     <select name="attr_type">${ATTRIBUTE_TYPE_OPTIONS.map(([v, l]) => `<option value="${v}" ${(a?.type ?? "string") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-    <label><input type="hidden" name="attr_required" value="${required}" /><input type="checkbox" ${required ? "checked" : ""} onchange="this.previousElementSibling.value = this.checked ? '1' : '0'" style="width:auto; margin:0;" /> Required</label>
-    <button type="button" class="secondary" onclick="this.closest('.attr-row').remove()" aria-label="Remove attribute">&times;</button>
+    <label><input type="hidden" name="attr_required" value="${required}" /><input type="checkbox" ${required ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> Required</label>
+    <button type="button" class="secondary" data-remove-closest=".attr-row" aria-label="Remove attribute">&times;</button>
   </div>`;
 }
 
@@ -2534,7 +2528,7 @@ admin.get("/admin/schemas/:id", async (c) => {
           </div>
           <div id="attr-rows">${(attributes.length ? attributes : [undefined]).map((a) => attributeRowHtml(a)).join("")}</div>
           <template id="attr-row-template">${attributeRowHtml()}</template>
-          <button type="button" class="secondary" onclick="document.getElementById('attr-rows').appendChild(document.getElementById('attr-row-template').content.cloneNode(true))">+ Add attribute</button>
+          <button type="button" class="secondary" data-append-template="attr-row-template" data-append-to="attr-rows">+ Add attribute</button>
         `)}
         <div class="row between" style="margin-bottom:18px;">
           <div class="form-actions">
@@ -3072,7 +3066,7 @@ admin.get("/admin/audit", async (c) => {
                   2
                 );
 
-                return `<tr class="audit-row" onclick="this.nextElementSibling.classList.toggle('open')">
+                return `<tr class="audit-row" data-toggle-next="open">
                   <td class="muted">${escapeHtml(new Date(e.at).toLocaleString())}</td>
                   <td>${escapeHtml(e.actor_upn ?? "system")}</td>
                   <td><code>${escapeHtml(e.action)}</code></td>

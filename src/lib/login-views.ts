@@ -1,4 +1,4 @@
-import { escapeHtml, page } from "./html.js";
+import { escapeHtml, page, scriptTag } from "./html.js";
 import type { LoginGradient } from "./settings.js";
 
 /** Inline <style> override for the auth-flow pages (login, MFA) - a full-bleed gradient behind the centered card. */
@@ -22,7 +22,7 @@ function gradientStyles(gradient: LoginGradient): string {
 /** The product mark above the sign-in form, as every IdP puts there. */
 function authBrand(appName: string): string {
   return `<div class="auth-brand">
-    <img src="/FlareID_Icon.png" alt="" onerror="this.style.display='none'" />
+    <img src="/FlareID_Icon.png" alt="" data-hide-on-error />
     <span>${escapeHtml(appName)}</span>
   </div>`;
 }
@@ -94,7 +94,7 @@ const CURSOR_FX_SCRIPT = `
 })();
 `;
 
-const CURSOR_FX_HTML = `<canvas id="cursor-fx"></canvas><script>${CURSOR_FX_SCRIPT}</script>`;
+const CURSOR_FX_HTML = `<canvas id="cursor-fx"></canvas>${scriptTag(CURSOR_FX_SCRIPT)}`;
 
 export function loginForm(
   appName: string,

@@ -392,15 +392,19 @@ const MULTISELECT_SCRIPT = `
 function msSync(root) {
   const chipsEl = root.querySelector('.multiselect-chips');
   const boxes = [...root.querySelectorAll('input[type=checkbox]')];
-  chipsEl.innerHTML = boxes.filter(b => b.checked).map(b =>
-    '<span class="multiselect-chip">' + b.dataset.label + '<button type="button" data-id="' + b.value + '">\\u00d7</button></span>'
-  ).join('');
-  chipsEl.querySelectorAll('button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const box = boxes.find(b => b.value === btn.dataset.id);
-      if (box) { box.checked = false; msSync(root); }
-    });
-  });
+  // Built as DOM nodes with textContent, never innerHTML: labels are user and
+  // group names, which can arrive from the import API or SCIM carrying markup.
+  chipsEl.replaceChildren(...boxes.filter(b => b.checked).map(b => {
+    const chip = document.createElement('span');
+    chip.className = 'multiselect-chip';
+    chip.textContent = b.dataset.label;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '\\u00d7';
+    btn.addEventListener('click', () => { b.checked = false; msSync(root); });
+    chip.appendChild(btn);
+    return chip;
+  }));
   root.querySelectorAll('.multiselect-option').forEach(opt => {
     const box = opt.querySelector('input[type=checkbox]');
     opt.classList.toggle('selected', box.checked);
@@ -416,6 +420,7 @@ function msFilter(input) {
     opt.classList.toggle('hidden', !matches);
   });
 }
+document.addEventListener('input', (e) => { if (e.target.matches('.multiselect-search')) msFilter(e.target); });
 document.querySelectorAll('.multiselect').forEach(root => {
   msSync(root);
   const input = root.querySelector('.multiselect-search');
@@ -536,6 +541,59 @@ function copyValue(btn) {
  * fields through their own onchange hooks.
  */
 const UI_SCRIPT = `
+// Declarative behaviours, wired once by delegation. These replace inline
+// on*= attributes, which the Content-Security-Policy forbids: markup asks for a
+// behaviour with a data- attribute instead.
+//
+//   data-autosubmit                 change submits the form (resetting ?page=1)
+//   data-navigate="/path?x="        change navigates to that prefix + value;
+//                                   with data-confirm-lost on the selected
+//                                   <option>, asks first and reverts on cancel
+//   data-append-template="tpl-id"   click clones <template id=tpl-id> ...
+//     data-append-to="list-id"      ... into #list-id
+//   data-remove-closest=".sel"      click removes the nearest ancestor .sel
+//   data-mirror-prev                checkbox writes 1/0 into the hidden input
+//                                   just before it (checkbox rows in arrays)
+//   data-toggle-next="cls"          click toggles cls on the next sibling
+//   data-show="id" / data-hide="id" click shows / hides #id
+//   data-hide-on-error              an <img> that fails to load is hidden
+(function () {
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (el.matches("[data-autosubmit]")) {
+      var page = el.form && el.form.querySelector("input[name=page]");
+      if (page) page.value = 1;
+      if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
+    } else if (el.matches("[data-navigate]")) {
+      var opt = el.selectedOptions && el.selectedOptions[0];
+      var lost = opt && opt.dataset.confirmLost;
+      if (lost && !confirm("Moving to " + opt.text + " clears these attributes when you save: " + lost + ". Attributes with the same name carry over.")) {
+        el.value = el.dataset.current || el.value;
+        return;
+      }
+      location.href = el.dataset.navigate + encodeURIComponent(el.value);
+    } else if (el.matches("[data-mirror-prev]")) {
+      el.previousElementSibling.value = el.checked ? "1" : "0";
+    }
+  });
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-append-template],[data-remove-closest],[data-toggle-next],[data-show],[data-hide],.copy-btn");
+    if (!t) return;
+    if (t.matches(".copy-btn")) return copyValue(t);
+    if (t.dataset.appendTemplate) {
+      document.getElementById(t.dataset.appendTo).appendChild(document.getElementById(t.dataset.appendTemplate).content.cloneNode(true));
+    }
+    if (t.dataset.removeClosest) { var row = t.closest(t.dataset.removeClosest); if (row) row.remove(); }
+    if (t.dataset.toggleNext) t.nextElementSibling.classList.toggle(t.dataset.toggleNext);
+    if (t.dataset.show) document.getElementById(t.dataset.show).style.display = "block";
+    if (t.dataset.hide) document.getElementById(t.dataset.hide).style.display = "none";
+  });
+  // error does not bubble, so this listens in the capture phase.
+  document.addEventListener("error", function (e) {
+    if (e.target.matches && e.target.matches("img[data-hide-on-error]")) e.target.style.display = "none";
+  }, true);
+})();
+
 (function () {
   document.addEventListener("click", function (e) {
     var menu = e.target.closest(".rowmenu");
@@ -570,6 +628,34 @@ const UI_SCRIPT = `
   });
 })();
 `;
+
+/**
+ * Inline scripts allowed by the Content-Security-Policy.
+ *
+ * Every inline <script> FlareID emits goes through scriptTag(), which records
+ * its exact text; the CSP then allows those texts by SHA-256 hash and nothing
+ * else. The scripts are fixed strings in this codebase - never built from
+ * request data - so the set is small and stable, and markup injected into a
+ * page cannot ride on an allowance the way it could with a nonce stamped onto
+ * every <script> after rendering.
+ */
+const INLINE_SCRIPTS = new Set<string>();
+const SCRIPT_HASHES = new Map<string, string>();
+
+export function scriptTag(js: string): string {
+  INLINE_SCRIPTS.add(js);
+  return `<script>${js}</script>`;
+}
+
+/** CSP source expressions ('sha256-...') for every inline script rendered so far. */
+export async function inlineScriptHashes(): Promise<string[]> {
+  for (const js of INLINE_SCRIPTS) {
+    if (SCRIPT_HASHES.has(js)) continue;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(js));
+    SCRIPT_HASHES.set(js, `'sha256-${btoa(String.fromCharCode(...new Uint8Array(digest)))}'`);
+  }
+  return [...SCRIPT_HASHES.values()];
+}
 
 /** One-value typeahead: renders the .searchselect control; see UI_SCRIPT. */
 export function searchSelect(
@@ -726,7 +812,7 @@ export function rankedBars(points: ChartPoint[]): string {
 
 /** A small inline "Copy" button that copies `value` to the clipboard on click. */
 export function copyButton(value: string, label = "Copy"): string {
-  return `<button type="button" class="copy-btn" data-copy="${escapeHtml(value)}" onclick="copyValue(this)">${escapeHtml(label)}</button>`;
+  return `<button type="button" class="copy-btn" data-copy="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
 }
 
 /**
@@ -765,7 +851,7 @@ export function multiSelect(
   return `
     <div class="multiselect">
       <div class="multiselect-field">
-        <input type="text" class="multiselect-search" placeholder="${escapeHtml(placeholder)}" oninput="msFilter(this)" />
+        <input type="text" class="multiselect-search" placeholder="${escapeHtml(placeholder)}" />
         <div class="multiselect-options">
           ${options
             .map(
@@ -782,7 +868,7 @@ export function multiSelect(
 
 /** Page-size <select> that auto-submits its enclosing GET form (resetting to page 1). */
 export function pageSizeSelect(current: number, options: number[] = [20, 50, 100]): string {
-  return `<select name="pageSize" onchange="this.closest('form').querySelector('input[name=page]') && (this.closest('form').querySelector('input[name=page]').value = 1); this.form.submit();" style="width:auto; display:inline-block; margin-bottom:0;">
+  return `<select name="pageSize" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
     ${options.map((n) => `<option value="${n}" ${n === current ? "selected" : ""}>${n} / page</option>`).join("")}
   </select>`;
 }
@@ -823,7 +909,7 @@ export function breadcrumbs(items: Breadcrumb[]): string {
 export function nav(appName: string, isAdmin: boolean): string {
   return `<header class="topbar">
     <a href="/" class="brand">
-      <img src="/FlareID_Icon.png" alt="" class="brand-logo" onerror="this.style.display='none'" />
+      <img src="/FlareID_Icon.png" alt="" class="brand-logo" data-hide-on-error />
       <span class="brand-name">${escapeHtml(appName)}</span>
       <span class="brand-tagline">Open source, Cloudflare hosted IDP</span>
     </a>
@@ -860,10 +946,10 @@ export function page(
   ${extraBodyHtml}
   ${wide ? `<div class="page-wrap">${bodyHtml}</div>` : `<div class="center-wrap"><div class="card">${bodyHtml}</div></div>`}
   ${CONFIRM_DIALOG_HTML}
-  <script>${MULTISELECT_SCRIPT}</script>
-  <script>${COPY_SCRIPT}</script>
-  <script>${CONFIRM_SCRIPT}</script>
-  <script>${UI_SCRIPT}</script>
+  ${scriptTag(MULTISELECT_SCRIPT)}
+  ${scriptTag(COPY_SCRIPT)}
+  ${scriptTag(CONFIRM_SCRIPT)}
+  ${scriptTag(UI_SCRIPT)}
 </body>
 </html>`;
 }

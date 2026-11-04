@@ -75,6 +75,43 @@ describe("CSRF protection", () => {
   });
 });
 
+async function sha256b64(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)));
+}
+
+/** Asserts a page's CSP allows exactly the inline scripts it contains, and that it has no inline handlers. */
+async function expectCspCoversPage(res: Response, label: string) {
+  const csp = res.headers.get("Content-Security-Policy") ?? "";
+  const html = await res.text();
+  expect(csp, label).toContain("frame-ancestors 'none'");
+  expect(csp, label).not.toContain("'unsafe-inline' 'sha256");
+  const scriptSrc = /script-src ([^;]*)/.exec(csp)?.[1] ?? "";
+  expect(scriptSrc, label).not.toContain("unsafe-inline");
+
+  const scripts = [...html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+  expect(scripts.length, label).toBeGreaterThan(0);
+  for (const body of scripts) {
+    expect(scriptSrc, `${label}: script starting ${JSON.stringify(body.slice(0, 40))}`).toContain(`'sha256-${await sha256b64(body)}'`);
+  }
+  expect(html, label).not.toMatch(/\son[a-z]+="/);
+}
+
+describe("content security policy", () => {
+  it("allows exactly the inline scripts on the login page and the admin console", async () => {
+    const cookie = await adminSession();
+    await expectCspCoversPage(await SELF.fetch(`${BASE}/login?next=/x`), "/login");
+    for (const path of ["/admin", "/admin/users", "/admin/groups/new", "/admin/integrations", "/admin/schemas"]) {
+      await expectCspCoversPage(await SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie } }), path);
+    }
+  });
+
+  it("locks non-HTML responses down completely", async () => {
+    const res = await SELF.fetch(`${BASE}/api/v1/status`);
+    expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+  });
+});
+
 describe("security headers", () => {
   it("sets the standard headers on pages and API responses", async () => {
     for (const path of ["/login", "/api/v1/status", "/.well-known/openid-configuration"]) {

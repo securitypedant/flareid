@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
 import { hasSessionCookie } from "./sessions.js";
+import { inlineScriptHashes } from "./html.js";
 
 /**
  * Cross-site request forgery defence for every state-changing browser route.
@@ -59,10 +60,7 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   return next();
 };
 
-/**
- * Response headers that don't depend on page content. The Content-Security-
- * Policy is added per page (it carries a nonce) in html.ts.
- */
+/** Security response headers, on every response. */
 export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   await next();
   const h = c.res.headers;
@@ -77,4 +75,32 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   h.set("Referrer-Policy", "same-origin");
   h.set("Cross-Origin-Opener-Policy", "same-origin");
   h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+
+  // Content-Security-Policy. Pages may run only the inline scripts FlareID
+  // itself renders (allowed by hash - see scriptTag in html.ts); there are no
+  // inline event handlers, no external scripts, and nothing may frame us.
+  // Styles keep 'unsafe-inline': the console uses style attributes throughout,
+  // and CSS injection is a far smaller risk than script.
+  //
+  // form-action is deliberately absent. Browsers apply it to the redirect that
+  // follows a form POST, and the login POST ends in a redirect to whatever
+  // redirect_uri a relying party registered (or an auto-POST to a SAML ACS) -
+  // any host, sometimes http://localhost.
+  if ((h.get("Content-Type") ?? "").startsWith("text/html")) {
+    h.set(
+      "Content-Security-Policy",
+      [
+        "default-src 'self'",
+        `script-src ${(await inlineScriptHashes()).join(" ")}`,
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+      ].join("; ")
+    );
+  } else {
+    h.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+  }
 };

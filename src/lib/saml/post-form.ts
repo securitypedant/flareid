@@ -1,4 +1,4 @@
-import { escapeHtml, page } from "../html.js";
+import { escapeHtml, page, scriptTag } from "../html.js";
 
 /**
  * The auto-submitting form that delivers a SAML Response to a service
@@ -15,7 +15,7 @@ export function samlPostForm(appName: string, acsUrl: string, samlResponse: stri
       ${relayState !== null ? `<input type="hidden" name="RelayState" value="${escapeHtml(relayState)}" />` : ""}
       <noscript><div class="row"><button class="primary" type="submit">Continue</button></div></noscript>
     </form>
-    <script>document.forms[0].submit();</script>
+    ${scriptTag("document.forms[0].submit();")}
     `,
     appName,
     false
