@@ -137,10 +137,22 @@ BOOTSTRAP_TOKEN=<any random string>
 
 Then run the setup call above against `http://localhost:8790`.
 
+### Workers plan
+
+Passwords are hashed with scrypt, which takes about 100 ms of CPU per sign-in -
+fine on Workers Paid, but beyond the Free plan's 10 ms CPU limit. On the Free
+plan set the `PASSWORD_HASHER` var to `pbkdf2` (PBKDF2-SHA256 at the platform's
+100,000-iteration ceiling). Existing hashes of either kind keep verifying
+whichever is set.
+
+The Worker also runs an hourly Cron Trigger that deletes expired codes, tokens,
+sessions and remembered devices, and audit entries past the retention set in
+Admin → Security.
+
 ## Tests
 
 ```bash
-npm test          # 73 tests: crypto, OIDC flows, the provisioning API
+npm test          # 121 tests: crypto, OIDC and SAML flows, the provisioning API, security
 npm run typecheck
 ```
 

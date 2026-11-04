@@ -200,9 +200,10 @@ Other things worth knowing:
   leaves whatever the user has chosen since, which is the only safe default.
 - `mode: "replace"` deletes every user who is not a Super Admin, and every
   group except the two built-ins, before importing.
-- **Maximum 100 users per request.** Each new account costs a PBKDF2 hash, and
-  a few hundred of those in one request finds the Worker CPU limit. Chunk;
-  the import is idempotent by username, so chunking is safe.
+- **Maximum 100 users per request.** Each distinct password costs a scrypt
+  hash (~100 ms of CPU): a chunk of 100 users with generated passwords takes
+  around ten seconds, while 100 users sharing a default password hash it once.
+  Chunk; the import is idempotent by username, so chunking is safe.
 
 ```json
 {

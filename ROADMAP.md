@@ -44,28 +44,25 @@ deciding whether to point real traffic at this.
    primitives, the OIDC flows and the whole provisioning API.
 2. ~~**A shipped administrator with a committed password hash.**~~ Done - the
    migrations seed no users.
-3. **Password hashing is below current guidance.** PBKDF2-HMAC-SHA256 at
-   100,000 iterations; OWASP currently says 600,000 for PBKDF2-SHA256. The
-   iteration count is already stored per row, so the path is clear: move to
-   `scrypt` via `node:crypto` (now available in Workers) or raise the count,
-   with a versioned `password_algo` column and rehash-on-login.
-4. **No CSRF defence on state-changing forms.** There are no tokens and no
-   `Origin`/`Referer` checks anywhere. `SameSite=Lax` on the session cookie
-   blocks cross-*site* POSTs, which covers the classic attack - but any app on
-   the same registrable domain is same-site, so an XSS on a sibling subdomain
-   can drive `/admin`. Needs per-session tokens and an `Origin` check.
-5. **No security headers.** No CSP, `frame-ancestors`, `Referrer-Policy` or
-   HSTS. CSP needs nonces first, since all CSS and JS is currently inline.
-6. **Expired state is never garbage-collected.** There is no `scheduled`
-   handler, so `auth_codes`, `access_tokens`, `sessions`, `trusted_devices` and
-   `audit_log` only shrink incidentally. Needs a Cron Trigger and retention
-   settings; unbounded D1 growth is a real operational failure.
-7. **PKCE is optional and `plain` is accepted.** The token endpoint only
-   verifies PKCE when the authorization code carried a challenge, and discovery
-   advertises `plain`. Require S256 for public clients and drop `plain`.
-8. **Refresh tokens never expire and are never rotated.** There is no
-   `expires_at`, and the refresh grant hands back the same token. Needs expiry,
-   rotation, and reuse detection that revokes the family.
+3. ~~**Password hashing is below current guidance.**~~ Done - scrypt
+   (N=2^13, r=8, p=10) as self-describing PHC strings, legacy PBKDF2 upgraded
+   at sign-in. PBKDF2 could not simply be raised: Workers caps it at 100,000
+   iterations in production (local dev does not). `PASSWORD_HASHER=pbkdf2`
+   remains for the Workers Free plan, whose CPU limit can't fit scrypt.
+4. ~~**No CSRF defence on state-changing forms.**~~ Done - every browser POST
+   is verified against `Origin` / `Sec-Fetch-Site` / `Referer` and refused
+   unless it comes from this origin, sibling subdomains included.
+5. ~~**No security headers.**~~ Done - HSTS, `X-Frame-Options`,
+   `Referrer-Policy`, COOP, `Permissions-Policy`, and a CSP that allows only
+   FlareID's own inline scripts, by hash. Inline event handlers are gone.
+6. ~~**Expired state is never garbage-collected.**~~ Done - an hourly Cron
+   Trigger purges expired codes, tokens, sessions and devices, and audit
+   entries past a configurable retention (default 365 days).
+7. ~~**PKCE is optional and `plain` is accepted.**~~ Done for `plain` - S256
+   only. Mandatory PKCE arrives with public clients (item 14); every client
+   today is confidential.
+8. ~~**Refresh tokens never expire and are never rotated.**~~ Done - 30-day
+   expiry, rotation on every use, and reuse detection that revokes the family.
 
 ## P1 - to call it a real identity provider
 

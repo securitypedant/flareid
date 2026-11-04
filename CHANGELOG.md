@@ -73,6 +73,41 @@ may break things.
   dynamic group (e.g. `employment_type = full_time`), which also keeps
   membership correct as attributes change. The admin form's auto-join is
   gone with it.
+- **Admin layout** spans the window with the topbar's gutter, so the sidebar
+  sits under the logo at every width. After creating a user you can replace
+  the temporary password with one of your own (policy-checked).
+- **Refresh tokens rotate.** Each use returns a new refresh token; clients
+  must store it. Presenting an old one revokes the whole family.
+
+### Security
+
+- **Password hashing moves to scrypt** (N=2^13, r=8, p=10, ~100 ms CPU per
+  hash), stored as PHC strings. Legacy PBKDF2 hashes keep working and are
+  upgraded at the next sign-in. Workers caps PBKDF2 at 100,000 iterations in
+  production - a limit local dev doesn't enforce - so raising it wasn't an
+  option. Set `PASSWORD_HASHER=pbkdf2` on the Workers Free plan.
+- **CSRF defence**: browser POSTs are verified against `Origin` /
+  `Sec-Fetch-Site` / `Referer` and refused unless same-origin - sibling
+  subdomains included, which `SameSite=Lax` alone allowed.
+- **Security headers and CSP**: HSTS, `X-Frame-Options: DENY`,
+  `Referrer-Policy: same-origin`, COOP, `Permissions-Policy`, and a CSP that
+  allows only FlareID's own inline scripts by SHA-256 hash. Inline event
+  handlers are replaced by `data-` attributes.
+- **Refresh-token lifecycle**: 30-day expiry, rotation on use, reuse
+  detection (RFC 9700) that revokes the family; `/revoke` ends the family.
+- **PKCE is S256-only**; `plain` and challenges without a method are refused.
+- **Hourly cleanup** (Cron Trigger) of expired codes, tokens, sessions and
+  trusted devices, and audit entries past a configurable retention (Admin →
+  Security, default 365 days).
+
+### Fixed
+
+- **Dynamic groups never reached tokens or SAML assertions.** Group
+  resolution loaded only the user's id before evaluating rules, so sign-ins
+  carried no dynamic groups even though the admin UI listed the members.
+- **Stored XSS in the multi-select**: chip labels (user and group names,
+  which the import API and SCIM can set) were inserted with `innerHTML`.
+- 23 new tests (121 total).
 
 ## [0.1.0] - 2026-10-28
 
