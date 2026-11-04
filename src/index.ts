@@ -12,8 +12,12 @@ import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
 import { getAppName } from "./lib/settings.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
+import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Every response, the API included.
+app.use("*", securityHeaders);
 
 app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
 
@@ -28,6 +32,9 @@ app.use("*", async (c, next) => {
   c.set("appName", await getAppName(c.env));
   await next();
 });
+
+// Browser routes only - the API above authenticates with bearer tokens.
+app.use("*", csrfProtection);
 
 app.get("/", (c) => c.redirect("/account", 302));
 

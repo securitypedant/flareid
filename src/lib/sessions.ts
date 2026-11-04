@@ -24,6 +24,11 @@ export interface SessionRow {
   revoked_at: string | null;
 }
 
+/** Whether the request carries a FlareID session cookie at all (valid or not) - i.e. whether it could act as someone. */
+export function hasSessionCookie(request: Request): boolean {
+  return readSessionIdFromCookie(request) !== null;
+}
+
 function readSessionIdFromCookie(request: Request): string | null {
   const cookieHeader = request.headers.get("Cookie") ?? "";
   const cookies = cookieHeader.split(";").map((c) => c.trim());
