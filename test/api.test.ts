@@ -286,7 +286,9 @@ describe("directory import", () => {
 
     expect(status).toBe(200);
     expect(body.users.created).toBe(MAX_USERS_PER_IMPORT);
-  });
+    // Every user gets a generated password, so this is a hundred scrypt hashes
+    // (~100 ms each) - the realistic worst case for one import call.
+  }, 30_000);
 
   it("rejects malformed usernames before writing anything", async () => {
     const { apiKey } = await bootstrapInstance();

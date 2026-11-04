@@ -309,7 +309,7 @@ account.post("/account/password", async (c) => {
     return c.html(errorRedirectPage(c, policyError));
   }
 
-  const { hash, salt, iterations } = await hashPassword(newPassword);
+  const { hash, salt, iterations } = await hashPassword(newPassword, c.env);
   await c.env.DB.prepare(
     "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
   )

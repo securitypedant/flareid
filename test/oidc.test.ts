@@ -469,6 +469,28 @@ describe("refresh grant", () => {
   });
 });
 
+describe("password hash upgrade", () => {
+  it("signs in a user with a legacy PBKDF2 hash and re-hashes it to scrypt", async () => {
+    const { clientId, upn } = await seedRelyingParty();
+    const { env } = await import("cloudflare:test");
+    const { hashPassword } = await import("../src/lib/password.js");
+    const legacy = await hashPassword(USER_PASSWORD, { PASSWORD_HASHER: "pbkdf2" });
+    await env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ? WHERE upn = ?")
+      .bind(legacy.hash, legacy.salt, legacy.iterations, upn)
+      .run();
+
+    const { code } = await authorizeAndLogin({ clientId, upn });
+    expect(code).toBeTruthy();
+
+    const row = await env.DB.prepare("SELECT password_hash, password_salt, password_iterations FROM users WHERE upn = ?").bind(upn).first<any>();
+    expect(row.password_hash).toMatch(/^\$scrypt\$/);
+    expect(row.password_iterations).toBe(0);
+
+    // ...and the new hash works on the next sign-in.
+    expect((await authorizeAndLogin({ clientId, upn })).code).toBeTruthy();
+  });
+});
+
 describe("PKCE", () => {
   it("advertises S256 only", async () => {
     const doc = (await (await SELF.fetch(`${BASE}/.well-known/openid-configuration`)).json()) as { code_challenge_methods_supported: string[] };

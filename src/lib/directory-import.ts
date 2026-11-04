@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import { hashPassword } from "./password.js";
+import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
@@ -263,6 +263,16 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
   // should be reported, not abort the other ninety-nine.
   const externalIdByUsername = new Map<string, string>();
 
+  // One hash per distinct password in this import. A bundle typically gives
+  // dozens of people the same default password, and scrypt costs ~100 ms of
+  // CPU per hash; reusing it for an identical, admin-known password loses
+  // nothing a per-user salt would have protected.
+  const hashes = new Map<string, Promise<PasswordHash>>();
+  const hashOnce = (password: string) => {
+    if (!hashes.has(password)) hashes.set(password, hashPassword(password, env));
+    return hashes.get(password)!;
+  };
+
   for (const user of users) {
     const username = cleanString(user.username).toLowerCase();
     const upn = `${username}@${domain}`;
@@ -323,7 +333,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
         // An explicit password resets it; omitting it leaves whatever the user
         // has chosen since, which is the only safe default for a re-import.
         if (typeof user.password === "string" && user.password !== "") {
-          const { hash, salt, iterations } = await hashPassword(user.password);
+          const { hash, salt, iterations } = await hashOnce(user.password);
           await env.DB.prepare(
             "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ? WHERE id = ?"
           )
@@ -339,7 +349,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
         const { password, generated } = supplied
           ? { password: supplied, generated: false }
           : await resolveNewAccountPassword(env);
-        const { hash, salt, iterations } = await hashPassword(password);
+        const { hash, salt, iterations } = await hashOnce(password);
         const externalId = crypto.randomUUID();
 
         const inserted = await env.DB.prepare(

@@ -758,7 +758,7 @@ admin.post("/admin/users", async (c) => {
   }
 
   const tempPassword = await generateAccountPassword(c.env);
-  const { hash, salt, iterations } = await hashPassword(tempPassword);
+  const { hash, salt, iterations } = await hashPassword(tempPassword, c.env);
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
 
@@ -1198,7 +1198,7 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
   }
 
   const password = chosen || (await generateAccountPassword(c.env));
-  const { hash, salt, iterations } = await hashPassword(password);
+  const { hash, salt, iterations } = await hashPassword(password, c.env);
   await c.env.DB.prepare(
     "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
   )

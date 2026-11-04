@@ -149,25 +149,23 @@ export async function resolveNewAccountPassword(env: Env): Promise<{ password: s
 }
 
 /**
- * Rehashes every user's password to the configured default password (fresh
- * salt per user). Refuses when no default is set, rather than setting every
- * password in the directory to the empty string.
+ * Sets every user's password to the configured default password. Refuses when
+ * no default is set, rather than setting every password in the directory to
+ * the empty string.
+ *
+ * The password is hashed once and the same hash written to every row. A
+ * per-user salt would protect nothing here - every account is being given the
+ * same, admin-known password - and at ~100 ms of CPU per scrypt hash, hashing
+ * per user would run a large directory past the Worker CPU limit.
  */
 export async function applyDefaultPasswordToAllUsers(env: Env): Promise<number> {
   const password = await getDefaultPassword(env);
   if (!password) return 0;
-  const { results: users } = await env.DB.prepare("SELECT id FROM users").all<{ id: number }>();
-
-  for (const user of users) {
-    const { hash, salt, iterations } = await hashPassword(password);
-    await env.DB.prepare(
-      "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
-    )
-      .bind(hash, salt, iterations, new Date().toISOString(), user.id)
-      .run();
-  }
-
-  return users.length;
+  const { hash, salt, iterations } = await hashPassword(password, env);
+  const result = await env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ?")
+    .bind(hash, salt, iterations, new Date().toISOString())
+    .run();
+  return Number(result.meta.changes ?? 0);
 }
 
 export async function setPasswordPolicy(env: Env, policy: PasswordPolicy): Promise<void> {

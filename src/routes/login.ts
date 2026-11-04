@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { loginForm, mfaForm } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
-import { verifyPassword } from "../lib/password.js";
+import { upgradePasswordHashIfNeeded, verifyPassword } from "../lib/password.js";
 import { verifyTotp } from "../lib/totp.js";
 import {
   deleteLoginFlow,
@@ -126,6 +126,10 @@ login.post("/login", async (c) => {
   }
 
   await clearLoginAttempts(c.env, upn);
+  // Legacy PBKDF2 hashes move to scrypt now, while the password is in hand.
+  if (await upgradePasswordHashIfNeeded(c.env, user, password)) {
+    await logAudit(c.env, null, "user.password_rehashed", user.upn, undefined, c.req.raw);
+  }
 
   if (!(await isSetupCompleted(c.env)) && !(await isSuperAdmin(c.env, user.id))) {
     return c.html(

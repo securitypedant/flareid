@@ -41,4 +41,10 @@ export interface Env {
    */
   BOOTSTRAP_TOKEN?: string;
 
+  /**
+   * "scrypt" (default) or "pbkdf2". Set "pbkdf2" only on the Workers Free plan:
+   * a scrypt hash takes ~100 ms of CPU, beyond its 10 ms limit. Existing hashes
+   * of either kind keep verifying whichever is set. See src/lib/password.ts.
+   */
+  PASSWORD_HASHER?: string;
 }
