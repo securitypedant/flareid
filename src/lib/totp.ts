@@ -1,6 +1,8 @@
 // RFC 6238 TOTP, compatible with standard authenticator apps (Google
 // Authenticator, Authy, 1Password, etc.): HMAC-SHA1, 6 digits, 30s step.
 
+import type { Env } from "../env.js";
+
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const STEP_SECONDS = 30;
 const DIGITS = 6;
@@ -59,14 +61,38 @@ async function hotp(secret: Uint8Array, counter: number): Promise<string> {
 
 /** Verifies a 6-digit code, tolerating +/-1 time step of clock drift. */
 export async function verifyTotp(base32Secret: string, code: string, at = Date.now()): Promise<boolean> {
+  return (await matchTotpCounter(base32Secret, code, at)) !== null;
+}
+
+/**
+ * Like verifyTotp, but returns the time-step counter that matched (or null).
+ * Callers that can replay-protect - anything verifying against a user's stored
+ * secret - should use this and claim the counter with claimTotpCounter, so a
+ * code cannot be presented twice inside its validity window.
+ */
+export async function matchTotpCounter(base32Secret: string, code: string, at = Date.now()): Promise<number | null> {
   const secret = base32Decode(base32Secret);
   const counter = Math.floor(at / 1000 / STEP_SECONDS);
   const cleanCode = code.replace(/\s+/g, "");
 
   for (const drift of [0, -1, 1]) {
-    if ((await hotp(secret, counter + drift)) === cleanCode) return true;
+    if ((await hotp(secret, counter + drift)) === cleanCode) return counter + drift;
   }
-  return false;
+  return null;
+}
+
+/**
+ * Records an accepted counter atomically: the UPDATE only lands while the
+ * stored counter is still lower, so a replayed code - or two concurrent
+ * submissions in the same window - cannot pass twice.
+ */
+export async function claimTotpCounter(env: Env, userId: number, counter: number): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "UPDATE users SET totp_last_counter = ? WHERE id = ? AND (totp_last_counter IS NULL OR totp_last_counter < ?)"
+  )
+    .bind(counter, userId, counter)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export function buildOtpAuthUri(params: { secret: string; upn: string; issuer: string }): string {

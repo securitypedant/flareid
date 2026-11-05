@@ -10,6 +10,8 @@ export interface UserRow {
   password_salt: string;
   password_iterations: number;
   totp_secret: string | null;
+  /** The last TOTP time-step counter accepted - a code at or below it is a replay. */
+  totp_last_counter: number | null;
   mfa_enabled: number;
   /** Legacy attribute - no longer used for authorization. Membership in the "Super Admins" group is authoritative. */
   is_admin: number;

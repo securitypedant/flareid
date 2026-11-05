@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { loginForm } from "../lib/login-views.js";
-import { deleteLoginFlow, getLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
+import { deleteLoginFlow, getFlowBinding, getLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
-import { getLoginGradient, getLoginSubtitle, isSetupCompleted } from "../lib/settings.js";
+import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -142,6 +142,12 @@ saml.get("/saml/sso", async (c) => {
     const session = await getSession(c.req.raw, c.env);
     const user = session ? await getUserById(c.env, session.userId) : null;
     if (session && user && user.status === "active") {
+      // Same rule as /authorize: a password-only session minted before forced
+      // enrolment parks the request and goes through MFA setup first.
+      if (!user.mfa_enabled && (await isMfaRequired(c.env))) {
+        const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending });
+        return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
+      }
       const issued = await issueSamlResponse(c.env, sp, pending, user, session.id, new Date(session.createdAt));
       await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: request.id, sso: true }, c.req.raw);
       return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
@@ -173,10 +179,19 @@ saml.get("/saml/complete", async (c) => {
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow || flow.kind !== "saml") return c.text("Login session expired, please try again.", 400);
 
+  // Only a flow bound by the post-enrolment resume path can redeem here - a
+  // flow minted by /saml/sso (e.g. for a ForceAuthn request) has no binding,
+  // so a session cookie alone can never answer it without a fresh login.
+  const boundUserId = await getFlowBinding(c.env, flowId);
+  if (boundUserId === null) return c.text("Login session expired, please try again.", 400);
+
   const session = await getSession(c.req.raw, c.env);
   const user = session ? await getUserById(c.env, session.userId) : null;
   if (!session || !user || user.status !== "active") {
     return c.redirect(`/login?next=${encodeURIComponent(`/saml/complete?flow=${flowId}`)}`, 302);
+  }
+  if (user.id !== boundUserId) {
+    return c.text("This login cannot be resumed for a different account.", 400);
   }
 
   const sp = await getSpById(c.env, flow.request.spId);

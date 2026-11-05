@@ -4,6 +4,41 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+### Security
+
+Fixes from the v2.0.0 independent security audit (all confirmed findings of
+medium severity and above; migration `0007` adds the `rate_limits` table and
+`users.totp_last_counter`):
+
+- **API scope boundaries.** `directory:write` keys can no longer grant
+  `super_admin`, add members to `Super Admins`, or overwrite an existing Super
+  Admin through the import; `settings:write` keys can no longer create or
+  reset an administrator through `POST /api/v1/setup` after setup. Both were
+  effectively admin.
+- **Mandatory MFA enforced at issuance.** A password-only session minted
+  before forced enrolment no longer produces OIDC codes or SAML assertions at
+  the SSO endpoints - the request is parked at enrolment and resumed
+  afterwards.
+- **Lifecycle consistency.** Deactivating a user (console or import) now
+  revokes their sessions *and* token grants immediately; `/introspect` reports
+  a deactivated user's tokens inactive; the MFA step re-checks account status
+  so a pending challenge cannot complete for a disabled account; password
+  change and admin reset sign out the user's other sessions.
+- **SAML request handling.** `/saml/complete` only redeems flows bound to the
+  user who just finished login+enrolment, so an ambient session alone cannot
+  answer a `ForceAuthn` request. Inflated `SAMLRequest`s are capped at 64 KB
+  before any DOM parsing.
+- **Login rate limiting rewritten.** Attempts are counted atomically in D1
+  (the KV read-modify-write could lose increments under bursts), keyed on the
+  resolved account rather than the submitted spelling, the MFA bucket moved to
+  a namespace password-step input cannot reach, and the shared per-IP budget
+  raised to 20x so colleagues behind one egress address can't lock each other
+  out.
+- **TOTP replay.** A code already accepted cannot be used again inside its
+  validity window, for login or for disabling MFA.
+
 ## [2.0.0] - 2026-11-03
 
 ### Added

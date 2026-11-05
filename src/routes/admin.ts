@@ -31,7 +31,7 @@ import {
 import { getLoginGradient, getLoginSubtitle, setAppName, setLoginGradient, setLoginSubtitle } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
-import { listActiveSessionsForUser, revokeAllSessionsForUser } from "../lib/sessions.js";
+import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
@@ -1048,8 +1048,12 @@ admin.post("/admin/users/:id/status", async (c) => {
 
   const status = String((await c.req.parseBody()).status ?? "") === "active" ? "active" : "disabled";
   await c.env.DB.prepare("UPDATE users SET status = ?, updated_at = ? WHERE id = ?").bind(status, new Date().toISOString(), id).run();
-  // Deactivation should take effect now, not at the next sign-in.
-  if (status === "disabled") await revokeAllSessionsForUser(c.env, id);
+  // Deactivation should take effect now, not at the next sign-in - and not at
+  // the next introspection or refresh grant either.
+  if (status === "disabled") {
+    await revokeAllSessionsForUser(c.env, id);
+    await revokeTokensForUser(c.env, id);
+  }
 
   await logAudit(c.env, c.get("user"), status === "active" ? "user.activated" : "user.deactivated", user.upn, undefined, c.req.raw);
   await syncUserBestEffort(c, id, status === "active" ? "push" : "deactivate");
@@ -1140,7 +1144,7 @@ admin.post("/admin/users/:id", async (c) => {
 
 admin.post("/admin/users/:id/reset-mfa", async (c) => {
   const id = Number(c.req.param("id"));
-  await c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, updated_at = ? WHERE id = ?")
+  await c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, updated_at = ? WHERE id = ?")
     .bind(new Date().toISOString(), id)
     .run();
   await deleteBackupCodes(c.env, id);
@@ -1200,6 +1204,10 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
   )
     .bind(hash, salt, iterations, new Date().toISOString(), id)
     .run();
+
+  // A reset is a compromise response too: every existing session ends, same
+  // as the self-service change keeps only its own.
+  await revokeAllSessionsForUser(c.env, id);
 
   await logAudit(c.env, c.get("user"), "user.password_reset", user.upn, { chosen: Boolean(chosen) }, c.req.raw);
 
@@ -1882,9 +1890,9 @@ admin.get("/admin/integrations", async (c) => {
 
 const SCOPE_DESCRIPTIONS: Record<ApiScope, string> = {
   "directory:read": "Read users, groups, domains and registered clients",
-  "directory:write": "Create and update users and groups, manage domains",
+  "directory:write": "Create and update users and groups, manage domains (cannot grant or reset Super Admins)",
   "clients:write": "Register OIDC relying parties",
-  "settings:write": "Change settings, branding and SCIM configuration",
+  "settings:write": "Change settings, branding and SCIM configuration (cannot create administrators)",
   admin: "Everything above, plus minting further API keys",
 };
 

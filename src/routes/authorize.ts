@@ -5,7 +5,7 @@ import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSessionAmr, getSessionUserId } from "../lib/sessions.js";
-import { getLoginGradient, getLoginSubtitle, isSetupCompleted } from "../lib/settings.js";
+import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -92,6 +92,13 @@ authorize.get("/authorize", async (c) => {
   if (existingUserId) {
     const user = await getUserById(c.env, existingUserId);
     if (user && user.status === "active") {
+      // A password-only session minted before forced enrolment must not mint
+      // credentials either: park this request and send the browser through
+      // MFA setup; resumeLoginFlow finishes the code issue afterwards.
+      if (!user.mfa_enabled && (await isMfaRequired(c.env))) {
+        const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
+        return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
+      }
       const amr = await getSessionAmr(c.req.raw, c.env);
       const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, amr);
       return c.redirect(redirectTo, 302);

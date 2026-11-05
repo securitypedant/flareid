@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from "../lib/api-auth.js";
-import { createApiKey, isApiScope, type ApiScope } from "../lib/api-keys.js";
+import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
@@ -135,6 +135,12 @@ interface SetupBody {
 api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
   const body = await readJson<SetupBody>(c);
   const actor = c.get("apiActor");
+  // Creating or resetting an administrator grants Super Admin, and with it key
+  // minting - that is admin authority, not settings authority. Refuse it
+  // before anything is applied so a rejected request has no partial effects.
+  if (body.admin?.username && !hasScope(actor.scopes, "admin")) {
+    return c.json({ error: "forbidden", message: 'Creating an administrator requires the "admin" scope.' }, 403);
+  }
   const applied: string[] = [];
 
   if (body.domain !== undefined) {
@@ -195,22 +201,27 @@ api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
   let admin: { upn: string; password?: string } | undefined;
   if (body.admin?.username) {
     const username = String(body.admin.username).trim().toLowerCase();
-    const result = await importDirectory(c.env, {
-      version: 1,
-      domain: body.domain,
-      groups: [{ name: SUPER_ADMINS_GROUP, description: "Members can administer this directory" }],
-      users: [
-        {
-          username,
-          display_name: body.admin.display_name ?? "Administrator",
-          given_name: body.admin.given_name ?? "Administrator",
-          family_name: body.admin.family_name ?? "",
-          password: body.admin.password ?? null,
-          status: "active",
-          super_admin: true,
-        },
-      ],
-    });
+    const result = await importDirectory(
+      c.env,
+      {
+        version: 1,
+        domain: body.domain,
+        groups: [{ name: SUPER_ADMINS_GROUP, description: "Members can administer this directory" }],
+        users: [
+          {
+            username,
+            display_name: body.admin.display_name ?? "Administrator",
+            given_name: body.admin.given_name ?? "Administrator",
+            family_name: body.admin.family_name ?? "",
+            password: body.admin.password ?? null,
+            status: "active",
+            super_admin: true,
+          },
+        ],
+      },
+      // The admin check already ran above; this bundle is built internally.
+      { allowPrivileged: true }
+    );
 
     if (result.errors.length > 0) {
       return c.json({ error: "setup_failed", message: "Could not create the administrator.", details: result.errors }, 400);
@@ -297,7 +308,9 @@ api.post("/api/v1/domains/:domain/apply-to-all", requireScope("directory:write")
 
 api.post("/api/v1/directory/import", requireScope("directory:write"), async (c) => {
   const bundle = await readJson<DirectoryBundle>(c);
-  const result = await importDirectory(c.env, bundle);
+  // super_admin grants, "Super Admins" membership and overwriting an existing
+  // admin are admin authority, not directory authority.
+  const result = await importDirectory(c.env, bundle, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
 
   await logAudit(
     c.env,
@@ -313,7 +326,7 @@ api.post("/api/v1/directory/import", requireScope("directory:write"), async (c) 
 
 /** The "remove the sample directory" wipe, as an API call. Keeps the built-in groups and the administrators. */
 api.post("/api/v1/directory/reset", requireScope("directory:write"), async (c) => {
-  const result = await importDirectory(c.env, { version: 1, mode: "replace", users: [], groups: [] });
+  const result = await importDirectory(c.env, { version: 1, mode: "replace", users: [], groups: [] }, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
   await logAudit(c.env, auditActor(c.get("apiActor")), "directory.reset", undefined, undefined, c.req.raw);
   return c.json({ ok: true, domain: result.domain });
 });
@@ -764,12 +777,17 @@ api.post("/api/v1/recovery/admin-reset", async (c) => {
   const password = String(body.password ?? "") || randomToken(12);
   const domain = await getDefaultDomain(c.env);
 
-  const result = await importDirectory(c.env, {
-    version: 1,
-    domain,
-    groups: [{ name: SUPER_ADMINS_GROUP, description: "Members can administer this directory" }],
-    users: [{ username, display_name: "Administrator", given_name: "Administrator", password, status: "active", super_admin: true }],
-  });
+  const result = await importDirectory(
+    c.env,
+    {
+      version: 1,
+      domain,
+      groups: [{ name: SUPER_ADMINS_GROUP, description: "Members can administer this directory" }],
+      users: [{ username, display_name: "Administrator", given_name: "Administrator", password, status: "active", super_admin: true }],
+    },
+    // The bootstrap token is the highest-trust caller there is.
+    { allowPrivileged: true }
+  );
 
   if (result.errors.length > 0) {
     return c.json({ error: "recovery_failed", message: "Could not reset the administrator.", details: result.errors }, 400);

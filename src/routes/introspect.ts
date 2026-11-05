@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
+import { getUserById } from "../lib/db.js";
 
 export const introspect = new Hono<{ Bindings: Env }>();
 
@@ -22,8 +23,15 @@ introspect.post("/introspect", async (c) => {
     .bind(tokenHash, client.client_id)
     .first<{ user_id: number; scope: string; expires_at: string }>();
 
+  // Same rule every other grant consumer applies (/token, /userinfo): a token
+  // for a deactivated user is not active, however fresh it is.
+  const userActive = async (userId: number): Promise<boolean> => {
+    const user = await getUserById(c.env, userId);
+    return user?.status === "active";
+  };
+
   if (accessTokenRow) {
-    const active = new Date(accessTokenRow.expires_at).getTime() > Date.now();
+    const active = new Date(accessTokenRow.expires_at).getTime() > Date.now() && (await userActive(accessTokenRow.user_id));
     if (!active) return c.json({ active: false });
     return c.json({
       active: true,
@@ -43,7 +51,11 @@ introspect.post("/introspect", async (c) => {
     .bind(tokenHash, client.client_id)
     .first<{ user_id: number; scope: string; expires_at: string | null }>();
 
-  if (refreshTokenRow && (!refreshTokenRow.expires_at || new Date(refreshTokenRow.expires_at).getTime() > Date.now())) {
+  if (
+    refreshTokenRow &&
+    (!refreshTokenRow.expires_at || new Date(refreshTokenRow.expires_at).getTime() > Date.now()) &&
+    (await userActive(refreshTokenRow.user_id))
+  ) {
     return c.json({
       active: true,
       sub: String(refreshTokenRow.user_id),

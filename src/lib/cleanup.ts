@@ -10,9 +10,10 @@ import { getAuditRetentionDays } from "./settings.js";
  * redeemed, but one that is never redeemed sits there forever - and unbounded
  * D1 growth is an operational failure, not a cosmetic one.
  *
- * KV-backed state (login flows, MFA challenges, rate-limit counters, SAML
- * request IDs) is not here: it is written with expirationTtl and expires on
- * its own.
+ * KV-backed state (login flows, MFA challenges, SAML request IDs) is not here:
+ * it is written with expirationTtl and expires on its own. Rate-limit counters
+ * moved to D1 (atomic upserts), so they are pruned below - a week is far past
+ * any sane window_minutes and stale rows self-reset anyway.
  *
  * Grace periods are deliberate:
  * - Rotated and revoked refresh tokens are kept for REFRESH_TOMBSTONE_DAYS so a
@@ -55,6 +56,7 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
     ),
     env.DB.prepare("DELETE FROM trusted_devices WHERE expires_at < ?").bind(iso(now)),
     env.DB.prepare("DELETE FROM audit_log WHERE at < ?").bind(iso(now - retentionDays * day)),
+    env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(iso(now - 7 * day)),
   ]);
 
   const [authCodes, accessTokens, refreshTokens, sessions, trustedDevices, auditLog] = results.map((r) => Number(r.meta.changes ?? 0));

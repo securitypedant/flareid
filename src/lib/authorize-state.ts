@@ -37,6 +37,23 @@ export type LoginFlow =
 
 const FLOW_TTL_SECONDS = 600;
 const MFA_TTL_SECONDS = 300;
+const RESUME_TTL_SECONDS = 600;
+
+/**
+ * Marks a stored login flow as resumable only by the given user. Written only
+ * by the post-enrolment resume path, after a completed login - a flow minted
+ * by /saml/sso or /authorize has no binding, which is what lets /saml/complete
+ * tell "paused after a completed login" apart from "fresh".
+ */
+export async function bindFlowToUser(env: Env, flowId: string, userId: number): Promise<void> {
+  await env.SESSIONS_KV.put(`resume:${flowId}`, String(userId), { expirationTtl: RESUME_TTL_SECONDS });
+}
+
+/** The user a flow is bound to, or null when it was never paused after a completed login. */
+export async function getFlowBinding(env: Env, flowId: string): Promise<number | null> {
+  const raw = await env.SESSIONS_KV.get(`resume:${flowId}`);
+  return raw === null ? null : Number(raw);
+}
 
 export async function storeLoginFlow(env: Env, flow: LoginFlow): Promise<string> {
   const flowId = randomToken(16);

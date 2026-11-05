@@ -40,7 +40,14 @@ export function rawQueryParams(requestUrl: string): Record<string, string> {
   return out;
 }
 
-/** base64 + raw DEFLATE, the HTTP-Redirect binding's encoding. */
+/**
+ * Real AuthnRequests are a few KB. The inflated size is capped while streaming
+ * (a deflate bomb never finishes buffering), and the same cap is enforced at
+ * the top of parseAuthnRequestXml before the DOMParser does any superlinear work.
+ */
+const MAX_INFLATED_BYTES = 64 * 1024;
+
+/** base64 + raw DEFLATE, the HTTP-Redirect binding's encoding. Output is capped. */
 export async function inflateAuthnRequest(encoded: string): Promise<string> {
   let bytes: Uint8Array;
   try {
@@ -48,12 +55,30 @@ export async function inflateAuthnRequest(encoded: string): Promise<string> {
   } catch {
     throw new AuthnRequestError("SAMLRequest is not valid base64.");
   }
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    const stream = new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")));
-    return await stream.text();
-  } catch {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_INFLATED_BYTES) throw new AuthnRequestError("SAMLRequest inflates beyond the size limit.");
+      chunks.push(value);
+    }
+  } catch (err) {
+    if (err instanceof AuthnRequestError) throw err;
     throw new AuthnRequestError("SAMLRequest is not a deflated message.");
+  } finally {
+    await reader.cancel().catch(() => {});
   }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(out);
 }
 
 /**
@@ -65,6 +90,9 @@ export async function inflateAuthnRequest(encoded: string): Promise<string> {
  * that asks us to has no business being here.
  */
 export function parseAuthnRequestXml(xml: string): ParsedAuthnRequest {
+  if (xml.length > MAX_INFLATED_BYTES) {
+    throw new AuthnRequestError("SAMLRequest exceeds the size limit.");
+  }
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
     throw new AuthnRequestError("The request contains a DOCTYPE or entity declaration.");
   }

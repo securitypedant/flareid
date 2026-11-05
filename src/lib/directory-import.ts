@@ -5,6 +5,7 @@ import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId } from "./schemas.js";
 import { parseRule } from "./groups.js";
+import { revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 
 /**
  * Bulk directory import.
@@ -180,8 +181,44 @@ async function replaceExistingDirectory(env: Env): Promise<void> {
   await env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP).run();
 }
 
-export async function importDirectory(env: Env, bundle: DirectoryBundle): Promise<ImportResult> {
+export interface ImportOptions {
+  /**
+   * Whether the caller may use the bundle features that grant or seize Super
+   * Admin: super_admin:true, "Super Admins" in a user's groups, or any row
+   * whose username matches an existing Super Admin (which would reset that
+   * admin's password and attributes). The import route passes the caller's
+   * `admin` scope; the bootstrap setup and break-glass paths pass true.
+   */
+  allowPrivileged?: boolean;
+}
+
+export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: ImportOptions = {}): Promise<ImportResult> {
   const { users, groups } = validateBundle(bundle);
+
+  if (!opts.allowPrivileged) {
+    const { results: adminRows } = await env.DB.prepare(
+      `SELECT u.username FROM users u
+       JOIN group_members gm ON gm.user_id = u.id
+       JOIN groups g ON g.id = gm.group_id WHERE g.name = ?`
+    )
+      .bind(SUPER_ADMINS_GROUP)
+      .all<{ username: string }>();
+    const adminUsernames = new Set(adminRows.map((r) => r.username));
+    for (const user of users) {
+      const username = cleanString(user.username).toLowerCase();
+      if (user.super_admin) {
+        throw new ImportValidationError(`User "${username}" sets super_admin, which requires an admin-scoped token.`);
+      }
+      if ((user.groups ?? []).some((name) => cleanString(name) === SUPER_ADMINS_GROUP)) {
+        throw new ImportValidationError(`User "${username}" lists "${SUPER_ADMINS_GROUP}", which requires an admin-scoped token.`);
+      }
+      if (adminUsernames.has(username)) {
+        throw new ImportValidationError(
+          `User "${username}" would overwrite an existing member of "${SUPER_ADMINS_GROUP}", which requires an admin-scoped token.`
+        );
+      }
+    }
+  }
 
   const mode = bundle.mode ?? "merge";
   const domain = (cleanString(bundle.domain) || (await getDefaultDomain(env))).toLowerCase();
@@ -278,9 +315,9 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
     const upn = `${username}@${domain}`;
 
     try {
-      const existing = await env.DB.prepare("SELECT id, external_id FROM users WHERE username = ?")
+      const existing = await env.DB.prepare("SELECT id, external_id, status FROM users WHERE username = ?")
         .bind(username)
-        .first<{ id: number; external_id: string }>();
+        .first<{ id: number; external_id: string; status: string }>();
 
       const givenName = cleanString(user.given_name);
       const familyName = cleanString(user.family_name);
@@ -329,6 +366,14 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle): Promis
             existing.id
           )
           .run();
+
+        // Deactivation takes effect now, not at the next sign-in - the same
+        // contract as the console's account switch (admin.ts), so a dormant
+        // session cannot come back to life on re-activation.
+        if ((user.status ?? "disabled") === "disabled") {
+          await revokeAllSessionsForUser(env, existing.id);
+          await revokeTokensForUser(env, existing.id);
+        }
 
         // An explicit password resets it; omitting it leaves whatever the user
         // has chosen since, which is the only safe default for a re-import.

@@ -8,6 +8,14 @@ export interface RateLimitPolicy {
 
 const DEFAULT_POLICY: RateLimitPolicy = { maxAttempts: 5, windowMinutes: 15 };
 
+/**
+ * The per-IP bucket aggregates the failures of every principal behind one
+ * egress address, so it needs a budget far larger than any single account's;
+ * otherwise a handful of failures by one party denies sign-in to everyone
+ * sharing the IP (office NAT, VPN, CGNAT). 20x still throttles real sprays.
+ */
+const IP_BUCKET_ATTEMPT_MULTIPLIER = 20;
+
 export async function getRateLimitPolicy(env: Env): Promise<RateLimitPolicy> {
   const [maxAttempts, windowMinutes] = await Promise.all([
     getSetting(env, "rate_limit_max_attempts"),
@@ -26,67 +34,80 @@ export async function setRateLimitPolicy(env: Env, policy: RateLimitPolicy): Pro
   ]);
 }
 
-interface AttemptRecord {
-  count: number;
-  windowStart: number;
-}
-
 /**
- * Fixed-window login attempt limiter, backed by KV. Tracks by an arbitrary key
- * (call once for the UPN being attempted and once for the client IP, so both a
- * targeted attack on one account and a broad spray from one IP get throttled).
+ * Fixed-window attempt accounting in D1: a single INSERT .. ON CONFLICT ..
+ * DO UPDATE .. RETURNING increments and reports the count atomically, so the
+ * limit decision and the record can never race the way the KV get/put pair did.
+ *
+ * Callers record the attempt BEFORE checking credentials and refuse the
+ * request when the returned count exceeds the budget. Counting an attempt
+ * before verifying slightly over-counts mixed success/failure bursts, which
+ * fails safe; a successful login clears the account bucket.
  */
-async function recordAttempt(env: Env, key: string, policy: RateLimitPolicy): Promise<boolean> {
-  const kvKey = `ratelimit:${key}`;
+async function recordAttempt(env: Env, key: string, windowMs: number): Promise<number> {
   const now = Date.now();
-  const windowMs = policy.windowMinutes * 60_000;
-
-  const raw = await env.SESSIONS_KV.get(kvKey);
-  let record: AttemptRecord = raw ? JSON.parse(raw) : { count: 0, windowStart: now };
-
-  if (now - record.windowStart > windowMs) {
-    record = { count: 0, windowStart: now };
-  }
-
-  record.count++;
-  await env.SESSIONS_KV.put(kvKey, JSON.stringify(record), { expirationTtl: policy.windowMinutes * 60 });
-
-  return record.count >= policy.maxAttempts;
-}
-
-async function isLimited(env: Env, key: string, policy: RateLimitPolicy): Promise<boolean> {
-  const kvKey = `ratelimit:${key}`;
-  const raw = await env.SESSIONS_KV.get(kvKey);
-  if (!raw) return false;
-  const record = JSON.parse(raw) as AttemptRecord;
-  if (Date.now() - record.windowStart > policy.windowMinutes * 60_000) return false;
-  return record.count >= policy.maxAttempts;
+  const row = await env.DB.prepare(
+    `INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       count = CASE WHEN ? - window_start > ? THEN 1 ELSE count + 1 END,
+       window_start = CASE WHEN ? - window_start > ? THEN ? ELSE window_start END
+     RETURNING count`
+  )
+    .bind(key, now, now, windowMs, now, windowMs, now)
+    .first<{ count: number }>();
+  return row?.count ?? 1;
 }
 
 export function getClientIp(request: Request): string {
   return request.headers.get("CF-Connecting-IP") ?? request.headers.get("X-Forwarded-For") ?? "unknown";
 }
 
-/** Checks (without recording) whether login attempts for this UPN or IP are currently blocked. */
-export async function isLoginRateLimited(env: Env, upn: string, ip: string): Promise<boolean> {
-  const policy = await getRateLimitPolicy(env);
-  const [byUpn, byIp] = await Promise.all([
-    isLimited(env, `login:upn:${upn.toLowerCase()}`, policy),
-    isLimited(env, `login:ip:${ip}`, policy),
-  ]);
-  return byUpn || byIp;
+/**
+ * The identifier a bucket binds to: the resolved account's canonical UPN when
+ * the submitted name matches a user, else the normalized submission - so
+ * spelling variants (" admin", "admin@x", whitespace tricks) share one budget
+ * instead of each claiming a fresh one.
+ */
+export function loginRateKey(identifier: string, user: { upn: string } | null): string {
+  return (user?.upn ?? identifier).trim().toLowerCase();
 }
 
-/** Records a failed login attempt for both the UPN and the source IP. */
-export async function recordFailedLogin(env: Env, upn: string, ip: string): Promise<void> {
+/**
+ * Records one password-step attempt against the account bucket and the shared
+ * per-IP bucket, and reports whether either is over budget. Call BEFORE
+ * verifying the password; the increment IS the attempt. On success the caller
+ * clears the account bucket with clearLoginAttempts.
+ */
+export async function recordLoginAttempt(env: Env, accountKey: string, ip: string): Promise<boolean> {
   const policy = await getRateLimitPolicy(env);
-  await Promise.all([
-    recordAttempt(env, `login:upn:${upn.toLowerCase()}`, policy),
-    recordAttempt(env, `login:ip:${ip}`, policy),
+  const windowMs = policy.windowMinutes * 60_000;
+  const [byAccount, byIp] = await Promise.all([
+    recordAttempt(env, `login:upn:${accountKey}`, windowMs),
+    recordAttempt(env, `login:ip:${ip}`, windowMs),
   ]);
+  return byAccount > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
 }
 
-/** Clears the failed-attempt counters for a UPN after a successful login. */
-export async function clearLoginAttempts(env: Env, upn: string): Promise<void> {
-  await env.SESSIONS_KV.delete(`ratelimit:login:upn:${upn.toLowerCase()}`);
+/** Clears the account bucket after a successful password step. */
+export async function clearLoginAttempts(env: Env, accountKey: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(`login:upn:${accountKey}`).run();
+}
+
+/**
+ * The MFA step's bucket lives in a namespace no password-step input can reach:
+ * it is keyed on the numeric user id, never on a submitted identifier string.
+ */
+export async function recordMfaAttempt(env: Env, userId: number, ip: string): Promise<boolean> {
+  const policy = await getRateLimitPolicy(env);
+  const windowMs = policy.windowMinutes * 60_000;
+  const [byUser, byIp] = await Promise.all([
+    recordAttempt(env, `login:mfa:${userId}`, windowMs),
+    recordAttempt(env, `login:ip:${ip}`, windowMs),
+  ]);
+  return byUser > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
+}
+
+/** Clears the account's MFA bucket after a successful second factor. */
+export async function clearMfaAttempts(env: Env, userId: number): Promise<void> {
+  await env.DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(`login:mfa:${userId}`).run();
 }

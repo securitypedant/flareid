@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
 import { attr, attrGrid, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, successBanner } from "../lib/html.js";
-import { buildOtpAuthUri, generateBase32Secret, verifyTotp } from "../lib/totp.js";
+import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserGroupNames } from "../lib/db.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
@@ -11,7 +11,7 @@ import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes } from "../lib/backup-codes.js";
 import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession } from "../lib/sessions.js";
-import { deleteLoginFlow, getLoginFlow } from "../lib/authorize-state.js";
+import { bindFlowToUser, deleteLoginFlow, getLoginFlow } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 
@@ -316,6 +316,10 @@ account.post("/account/password", async (c) => {
     .bind(hash, salt, iterations, new Date().toISOString(), user.id)
     .run();
 
+  // A password change is a compromise response: end every other session,
+  // keeping only the one that just proved knowledge of the old password.
+  await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
+
   await logAudit(c.env, user, "user.password_changed_self", user.upn, undefined, c.req.raw);
 
   return c.redirect("/account?saved=password", 302);
@@ -382,15 +386,17 @@ account.post("/account/mfa/setup", async (c) => {
   const secret = await getPendingEnrollment(c.env, user.id);
   if (!secret) return c.text("Enrollment session expired, please start again.", 400);
 
-  const valid = await verifyTotp(secret, code);
-  if (!valid) {
+  const counter = await matchTotpCounter(secret, code);
+  if (counter === null) {
     return c.redirect(`/account/mfa/setup?error=1&resume=${encodeURIComponent(resume)}`, 302);
   }
 
+  // totp_last_counter starts at the code that proved enrolment, so that very
+  // code cannot be replayed at /login/mfa or /account/mfa/disable.
   await c.env.DB.prepare(
-    "UPDATE users SET totp_secret = ?, mfa_enabled = 1, updated_at = ? WHERE id = ?"
+    "UPDATE users SET totp_secret = ?, mfa_enabled = 1, totp_last_counter = ?, updated_at = ? WHERE id = ?"
   )
-    .bind(secret, new Date().toISOString(), user.id)
+    .bind(secret, counter, new Date().toISOString(), user.id)
     .run();
   await deletePendingEnrollment(c.env, user.id);
   await logAudit(c.env, user, "user.mfa_enabled", user.upn, undefined, c.req.raw);
@@ -413,8 +419,12 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number): 
 
   // A SAML flow can't finish here - it ends in a POST form, not a URL. The
   // flow stays in KV and /saml/complete issues the response when the user
-  // clicks through.
-  if (flow.kind === "saml") return `/saml/complete?flow=${resumeFlowId}`;
+  // clicks through. The binding is what marks it "paused after a completed
+  // login": without it /saml/complete refuses the flow (see saml.ts).
+  if (flow.kind === "saml") {
+    await bindFlowToUser(env, resumeFlowId, userId);
+    return `/saml/complete?flow=${resumeFlowId}`;
+  }
 
   await deleteLoginFlow(env, resumeFlowId);
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, ["pwd", "mfa"]);
@@ -454,13 +464,15 @@ account.post("/account/mfa/disable", async (c) => {
   const code = String(body.code ?? "");
 
   // A wrong code used to redirect here with no message at all, which was
-  // indistinguishable from MFA having been switched off.
-  if (!user.totp_secret || !(await verifyTotp(user.totp_secret, code))) {
+  // indistinguishable from MFA having been switched off. The claim also makes
+  // this a replay check: a code already accepted once cannot disable MFA.
+  const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+  if (counter === null || !(await claimTotpCounter(c.env, user.id, counter))) {
     return c.redirect("/account?error=mfa-code", 302);
   }
 
   await c.env.DB.prepare(
-    "UPDATE users SET totp_secret = NULL, mfa_enabled = 0, updated_at = ? WHERE id = ?"
+    "UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, updated_at = ? WHERE id = ?"
   )
     .bind(new Date().toISOString(), user.id)
     .run();

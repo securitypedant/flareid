@@ -86,6 +86,21 @@ export async function getSessionAmr(request: Request, env: Env): Promise<string[
   return session?.amr ?? ["pwd"];
 }
 
+/**
+ * Ends every token grant a user holds. Deactivation is meant to cut access
+ * immediately; revoking the grants directly means it does not depend on every
+ * consumer (/token, /userinfo, /introspect, RPs' caches) re-checking status.
+ */
+export async function revokeTokensForUser(env: Env, userId: number): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ?").bind(userId),
+    env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(
+      new Date().toISOString(),
+      userId
+    ),
+  ]);
+}
+
 /** Revokes a session by its own id (e.g. on logout, or "sign out this device"). */
 export async function revokeSession(env: Env, sessionId: string): Promise<void> {
   await env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();

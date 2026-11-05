@@ -47,9 +47,9 @@ Scopes:
 | Scope | Allows |
 |---|---|
 | `directory:read` | Read users, groups, domains, clients, status |
-| `directory:write` | Create and update users and groups, manage domains |
+| `directory:write` | Create and update users and groups, manage domains; cannot grant `super_admin`, add members to `Super Admins`, or overwrite an existing `Super Admins` member |
 | `clients:write` | Register OIDC relying parties |
-| `settings:write` | Settings, branding, SCIM configuration, setup |
+| `settings:write` | Settings, branding, SCIM configuration, setup; cannot create or reset an administrator |
 | `admin` | All of the above, plus minting further keys |
 
 A failure answers `401` (unknown, revoked or expired token) or `403` (the token
@@ -75,7 +75,9 @@ Scope: `directory:read`.
 
 ### `POST /setup`
 
-Scope: `settings:write`. Every field is optional; only what is present is
+Scope: `settings:write` for the settings fields; the `admin` block additionally
+requires the `admin` scope (it creates or resets a Super Admin), and is checked
+before anything is applied. Every field is optional; only what is present is
 applied, in a fixed order - settings, then the administrator, then the
 completion flag. That order matters: the account is created using whatever
 `new_user_password_mode` and `default_password` say, so applying those

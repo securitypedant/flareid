@@ -3,7 +3,7 @@ import type { Env } from "../env.js";
 import { loginForm, mfaForm } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { upgradePasswordHashIfNeeded, verifyPassword } from "../lib/password.js";
-import { verifyTotp } from "../lib/totp.js";
+import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
   deleteLoginFlow,
   deletePendingMfa,
@@ -21,7 +21,7 @@ import { samlPostForm } from "../lib/saml/post-form.js";
 import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
-import { clearLoginAttempts, getClientIp, isLoginRateLimited, recordFailedLogin } from "../lib/rate-limit.js";
+import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt } from "../lib/rate-limit.js";
 import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { isDeviceTrusted, trustDevice } from "../lib/trusted-devices.js";
 
@@ -109,23 +109,28 @@ login.post("/login", async (c) => {
   const gradient = await getLoginGradient(c.env);
   const subtitle = await getLoginSubtitle(c.env);
 
-  if (await isLoginRateLimited(c.env, upn, ip)) {
+  // Resolve first: the bucket must bind to the account, not the spelling, or
+  // "admin", " admin" and "admin@x" would each get their own failure budget.
+  // Recording before verifying keeps the increment and the limit decision
+  // atomic - a burst can never see a stale under-limit count.
+  const user = await getUserByLoginIdentifier(c.env, upn);
+  const rateKey = loginRateKey(upn, user);
+
+  if (await recordLoginAttempt(c.env, rateKey, ip)) {
     await logAudit(c.env, null, "login.rate_limited", upn, { ip }, c.req.raw);
     return c.html(
       loginForm(c.get("appName"), flowId, gradient, subtitle, "Too many attempts. Please wait a few minutes before trying again.")
     );
   }
 
-  const user = await getUserByLoginIdentifier(c.env, upn);
   const valid = user && user.status === "active" && (await verifyPassword(password, user));
 
   if (!valid || !user) {
-    await recordFailedLogin(c.env, upn, ip);
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
     return c.html(loginForm(c.get("appName"), flowId, gradient, subtitle, "Incorrect username/UPN or password."));
   }
 
-  await clearLoginAttempts(c.env, upn);
+  await clearLoginAttempts(c.env, rateKey);
   // Legacy PBKDF2 hashes move to scrypt now, while the password is in hand.
   if (await upgradePasswordHashIfNeeded(c.env, user, password)) {
     await logAudit(c.env, null, "user.password_rehashed", user.upn, undefined, c.req.raw);
@@ -165,21 +170,30 @@ login.post("/login/mfa", async (c) => {
   if (!pending) return c.text("Login session expired, please try again.", 400);
 
   const user = await getUserById(c.env, pending.userId);
-  if (!user || !user.totp_secret) return c.text("MFA is not configured for this account.", 400);
+  // The account is re-checked here, not just at the password step: a user
+  // deactivated while the challenge was pending must not complete it.
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return c.text("Login session expired, please try again.", 400);
+  }
+  if (!user.totp_secret) return c.text("MFA is not configured for this account.", 400);
   const gradient = await getLoginGradient(c.env);
   const subtitle = await getLoginSubtitle(c.env);
 
-  if (await isLoginRateLimited(c.env, `mfa:${user.upn}`, ip)) {
+  // The bucket is keyed on the user id, not any submitted string - nothing in
+  // the password step can reach this namespace.
+  if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip }, c.req.raw);
     return c.html(mfaForm(c.get("appName"), mfaId, gradient, "Too many attempts. Please wait a few minutes before trying again."));
   }
 
   let amr = ["pwd", "mfa"];
-  const validTotp = await verifyTotp(user.totp_secret, code);
-  if (!validTotp) {
+  // A code inside its window that was already accepted is a replay, and counts
+  // as a failure - the claim only lands while the stored counter is lower.
+  const counter = await matchTotpCounter(user.totp_secret, code);
+  if (counter === null || !(await claimTotpCounter(c.env, user.id, counter))) {
     const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
     if (!validBackupCode) {
-      await recordFailedLogin(c.env, `mfa:${user.upn}`, ip);
       await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
       return c.html(mfaForm(c.get("appName"), mfaId, gradient, "Incorrect code, please try again."));
     }
@@ -187,7 +201,7 @@ login.post("/login/mfa", async (c) => {
     await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
   }
 
-  await clearLoginAttempts(c.env, `mfa:${user.upn}`);
+  await clearMfaAttempts(c.env, user.id);
 
   const flow = await getLoginFlow(c.env, pending.flowId);
   if (!flow) return c.text("Login session expired, please try again.", 400);
