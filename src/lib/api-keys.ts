@@ -30,7 +30,12 @@ export interface ApiKeyRow {
   revoked_at: string | null;
 }
 
-const KEY_PREFIX = "flareid_sk_";
+export const KEY_PREFIX = "flareid_sk_";
+
+/** The non-secret leading part of a key, as stored and shown in the admin console. */
+export function keyDisplayPrefix(token: string): string {
+  return token.slice(0, KEY_PREFIX.length + 8);
+}
 
 export function isApiScope(value: string): value is ApiScope {
   return (API_SCOPES as readonly string[]).includes(value);
@@ -65,7 +70,7 @@ export async function createApiKey(
 ): Promise<CreatedApiKey> {
   const token = `${KEY_PREFIX}${randomToken(24)}`;
   const keyHash = await sha256Hex(token);
-  const prefix = token.slice(0, KEY_PREFIX.length + 8);
+  const prefix = keyDisplayPrefix(token);
 
   const result = await env.DB.prepare(
     "INSERT INTO api_keys (name, key_hash, prefix, scopes, created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"

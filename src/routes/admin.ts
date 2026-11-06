@@ -28,7 +28,20 @@ import {
   getAuditRetentionDays,
   setAuditRetentionDays,
 } from "../lib/settings.js";
-import { getLoginGradient, getLoginSubtitle, setAppName, setLoginGradient, setLoginSubtitle } from "../lib/settings.js";
+import {
+  CURSOR_TRAIL_MAX_CHARACTERS,
+  getCursorTrail,
+  getLoginGradient,
+  getLoginSubtitle,
+  getSessionPolicy,
+  SESSION_IDLE_MINUTES_RANGE,
+  SESSION_MAX_HOURS_RANGE,
+  setAppName,
+  setCursorTrail,
+  setLoginGradient,
+  setLoginSubtitle,
+  setSessionPolicy,
+} from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
@@ -86,11 +99,13 @@ function layout(
 ) {
   const appName = c.get("appName");
   const crumbHtml = crumbs ? breadcrumbs(crumbs) : "";
-  const section = active ?? (crumbs?.[1] ? (CRUMB_SECTIONS[crumbs[1].label] ?? "") : "");
+  const section = active ?? (crumbs?.[1] ? (CRUMB_SECTIONS[crumbs[1].label] ?? "") : crumbs?.length === 1 ? "overview" : "");
+  // Inside Integrations, the third crumb names the page (see integrationCrumb).
+  const sub = section === "integrations" ? (INTEGRATION_PAGES.find((p) => p.label === crumbs?.[2]?.label)?.key ?? "") : "";
   return page(
     `${title}`,
     `<div class="admin-shell">
-      <aside class="admin-side">${adminNav(section)}</aside>
+      <aside class="admin-side">${adminNav(section, sub)}</aside>
       <div class="admin-main">
         <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
         ${body}
@@ -122,18 +137,43 @@ function oidcEndpointsBlock(env: Env, clientId: string) {
   `;
 }
 
-function adminNav(active: string) {
-  const items: [string, string][] = [
-    ["users", "Users"],
-    ["groups", "Groups"],
-    ["integrations", "Integrations"],
-    ["domains", "Domains"],
-    ["branding", "Branding"],
-    ["security", "Security"],
-    ["schemas", "Schemas"],
-    ["audit", "Log"],
+/** The Integrations pages, which the sidebar lists under their section. Labels double as the third breadcrumb. */
+const INTEGRATION_PAGES = [
+  { key: "oidc", label: "OIDC clients" },
+  { key: "saml", label: "SAML apps" },
+  { key: "api-keys", label: "API keys" },
+  { key: "scim", label: "SCIM provisioning" },
+] as const;
+type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
+
+const INTEGRATIONS_CRUMB: Breadcrumb = { label: "Integrations", href: "/admin/integrations" };
+function integrationCrumb(key: IntegrationPage): Breadcrumb {
+  const p = INTEGRATION_PAGES.find((x) => x.key === key)!;
+  return { label: p.label, href: `/admin/integrations/${p.key}` };
+}
+
+function adminNav(active: string, sub = "") {
+  const items: [string, string, string][] = [
+    ["overview", "/admin", "Overview"],
+    ["users", "/admin/users", "Users"],
+    ["groups", "/admin/groups", "Groups"],
+    ["integrations", "/admin/integrations", "Integrations"],
+    ["domains", "/admin/domains", "Domains"],
+    ["branding", "/admin/branding", "Branding"],
+    ["security", "/admin/security", "Security"],
+    ["schemas", "/admin/schemas", "Schemas"],
+    ["audit", "/admin/audit", "Log"],
   ];
-  return items.map(([key, label]) => `<a href="/admin/${key}" class="${active === key ? "active" : ""}">${label}</a>`).join("");
+  return items
+    .map(([key, href, label]) => {
+      const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
+      if (key !== "integrations") return link;
+      const children = INTEGRATION_PAGES.map(
+        (p) => `<a href="/admin/integrations/${p.key}" class="sub${sub === p.key ? " active" : ""}">${p.label}</a>`
+      ).join("");
+      return link + children;
+    })
+    .join("");
 }
 
 /** Either the shared default password, or a freshly generated one that respects the configured complexity policy - per the "New account password" setting on /admin/security. */
@@ -1718,39 +1758,36 @@ document.addEventListener("click", async function (e) {
 });
 `;
 
-// ---------- Integrations: OIDC clients in, SCIM provisioning out ----------
+// ---------- Integrations: OIDC clients, SAML apps, API keys, SCIM ----------
 //
-// These were two pages. They are two halves of the same job - how other
-// systems connect to this directory - and splitting them made configuring
-// Cloudflare Access a hunt across the nav: register the client here, then find
-// SCIM over there. Both old paths still resolve so existing links survive.
+// One section, because they are all how other systems connect to this
+// directory - configuring Cloudflare Access means registering a client and
+// then setting up SCIM, and that should not be a hunt across the nav. Each
+// kind has its own page, listed under Integrations in the sidebar;
+// /admin/integrations lands on the first. The older single-page paths still
+// resolve so existing links and bookmarks survive.
+admin.get("/admin/integrations", (c) => c.redirect("/admin/integrations/oidc", 302));
+admin.get("/admin/clients", (c) => c.redirect("/admin/integrations/oidc", 302));
+admin.get("/admin/scim", (c) => c.redirect(`/admin/integrations/scim${new URL(c.req.url).search}`, 302));
 
-admin.get("/admin/clients", (c) => c.redirect("/admin/integrations", 302));
-admin.get("/admin/scim", (c) => c.redirect(`/admin/integrations${new URL(c.req.url).search}`, 302));
+/** Page heading row: the page's description plus its primary action. */
+function integrationIntro(description: string, action?: { href: string; label: string }): string {
+  return `<div class="row between" style="margin:0 0 14px 0; align-items:flex-start; gap:16px;">
+    <p class="muted" style="margin:0; max-width:720px;">${description}</p>
+    ${action ? `<a href="${escapeHtml(action.href)}"><button class="primary" type="button">${escapeHtml(action.label)}</button></a>` : ""}
+  </div>`;
+}
 
-admin.get("/admin/integrations", async (c) => {
+admin.get("/admin/integrations/oidc", async (c) => {
   const { results: clients } = await c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>();
-  const { results: sps } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
-  const config = await getScimConfig(c.env);
-  const scope = await getScimScope(c.env);
-  const { results: scopeGroups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
-  const apiKeys = await listApiKeys(c.env);
-
   return c.html(
     layout(
       c,
-      "Integrations",
+      "OIDC clients",
       `
-            ${c.req.query("saved") ? successBanner("Saved.") : ""}
-
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        <div class="row between" style="margin:0 0 14px 0;">
-          <div>
-            <h2 style="margin:0;">OIDC clients</h2>
-            <p class="muted" style="margin:4px 0 0;">The relying parties allowed to sign users in with this directory &mdash; Cloudflare Access, for example.</p>
-          </div>
-          <a href="/admin/clients/new"><button class="primary" type="button">+ New client</button></a>
-        </div>
+        ${integrationIntro("The relying parties allowed to sign users in with this directory over OpenID Connect &mdash; Cloudflare Access, for example.", { href: "/admin/clients/new", label: "+ New client" })}
         ${
           clients.length === 0
             ? '<p class="muted">No clients registered yet.</p>'
@@ -1767,15 +1804,22 @@ admin.get("/admin/integrations", async (c) => {
               </table>`
         }
       `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "OIDC clients" }]
+    )
+  );
+});
 
+admin.get("/admin/integrations/saml", async (c) => {
+  const { results: sps } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
+  return c.html(
+    layout(
+      c,
+      "SAML apps",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        <div class="row between" style="margin:0 0 14px 0;">
-          <div>
-            <h2 style="margin:0;">SAML service providers</h2>
-            <p class="muted" style="margin:4px 0 0;">Applications allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>.</p>
-          </div>
-          <a href="/admin/saml/new"><button class="primary" type="button">+ New service provider</button></a>
-        </div>
+        ${integrationIntro("Service providers allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>.", { href: "/admin/saml/new", label: "+ New service provider" })}
         ${
           sps.length === 0
             ? '<p class="muted">No service providers registered yet.</p>'
@@ -1792,15 +1836,22 @@ admin.get("/admin/integrations", async (c) => {
               </table>`
         }
       `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SAML apps" }]
+    )
+  );
+});
 
+admin.get("/admin/integrations/api-keys", async (c) => {
+  const apiKeys = await listApiKeys(c.env);
+  return c.html(
+    layout(
+      c,
+      "API keys",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        <div class="row between" style="margin:0 0 14px 0;">
-          <div>
-            <h2 style="margin:0;">API keys</h2>
-            <p class="muted" style="margin:4px 0 0;">Bearer tokens for the provisioning API at <code>/api/v1</code> &mdash; creating users and groups, registering clients and changing settings without a browser session. See <code>docs/api.md</code>.</p>
-          </div>
-          <a href="/admin/api-keys/new"><button class="primary" type="button">+ New key</button></a>
-        </div>
+        ${integrationIntro("Bearer tokens for the provisioning API at <code>/api/v1</code> &mdash; creating users and groups, registering clients and changing settings without a browser session. Every call a key makes is recorded in the log. See <code>docs/api.md</code>.", { href: "/admin/api-keys/new", label: "+ New key" })}
         ${
           apiKeys.length === 0
             ? '<p class="muted">No API keys yet.</p>'
@@ -1815,14 +1866,17 @@ admin.get("/admin/integrations", async (c) => {
                           <td><code>${escapeHtml(k.prefix)}&hellip;</code></td>
                           <td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td>
                           <td>${k.last_used_at ? escapeHtml(k.last_used_at.slice(0, 19).replace("T", " ")) : '<span class="muted">never</span>'}</td>
-                          <td>${
-                            k.revoked_at
-                              ? ""
-                              : `<form method="POST" action="/admin/api-keys/${k.id}/revoke" style="display:inline" ${confirmAttrs(
-                                  `Anything using "${k.name}" stops working immediately. This cannot be undone.`,
-                                  { title: "Revoke this API key?", action: "Revoke", danger: true }
-                                )}><button class="link-button" type="submit">Revoke</button></form>`
-                          }</td>
+                          <td style="white-space:nowrap;">
+                            <a href="/admin/audit?${new URLSearchParams({ actor: "api", search: `api-key:${k.name}` }).toString()}">Activity</a>
+                            ${
+                              k.revoked_at
+                                ? ""
+                                : ` &middot; <form method="POST" action="/admin/api-keys/${k.id}/revoke" style="display:inline" ${confirmAttrs(
+                                    `Anything using "${k.name}" stops working immediately. This cannot be undone.`,
+                                    { title: "Revoke this API key?", action: "Revoke", danger: true }
+                                  )}><button class="link-button" type="submit">Revoke</button></form>`
+                            }
+                          </td>
                         </tr>`
                     )
                     .join("")}
@@ -1830,11 +1884,24 @@ admin.get("/admin/integrations", async (c) => {
               </table>`
         }
       `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "API keys" }]
+    )
+  );
+});
 
+admin.get("/admin/integrations/scim", async (c) => {
+  const config = await getScimConfig(c.env);
+  const scope = await getScimScope(c.env);
+  const { results: scopeGroups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
+  return c.html(
+    layout(
+      c,
+      "SCIM provisioning",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        <h2>User provisioning (SCIM)</h2>
-        <p class="muted">FlareID acts as a SCIM 2.0 <em>client</em>, pushing users and groups to a SCIM server &mdash; for example
-        the endpoint and secret Cloudflare generates once you enable SCIM on this IdP's Access identity provider.</p>
+        ${integrationIntro("FlareID acts as a SCIM 2.0 <em>client</em>, pushing users and groups to a SCIM server &mdash; for example the endpoint and secret Cloudflare generates once you enable SCIM on this IdP's Access identity provider.")}
         <form method="POST" action="/admin/scim">
           <div class="field-row">
             <div>
@@ -1881,7 +1948,7 @@ admin.get("/admin/integrations", async (c) => {
 
       ${scriptTag(SCIM_SCRIPT)}
       `,
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SCIM provisioning" }]
     )
   );
 });
@@ -1916,11 +1983,11 @@ admin.get("/admin/api-keys/new", async (c) => {
 
           <div class="form-actions" style="margin-top:16px;">
             <button class="primary" type="submit">Create key</button>
-            ${cancelLink("/admin/integrations", "Cancel")}
+            ${cancelLink("/admin/integrations/api-keys", "Cancel")}
           </div>
         </form>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "New API key" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("api-keys"), { label: "New API key" }]
     )
   );
 });
@@ -1946,9 +2013,9 @@ admin.post("/admin/api-keys", async (c) => {
         <p class="success">Created "${escapeHtml(name)}" with ${scopes.map((s) => `<code>${s}</code>`).join(", ")}.</p>
         ${secretBlock("API key - copy this now", created.token)}
         <p class="muted">Send it as <code>Authorization: Bearer &lt;token&gt;</code>.</p>
-        <a href="/admin/integrations"><button class="primary" type="button">Continue</button></a>
+        <a href="/admin/integrations/api-keys"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "API key created" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("api-keys"), { label: "API key created" }]
     )
   );
 });
@@ -1960,7 +2027,7 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
 
   await revokeApiKey(c.env, id);
   await logAudit(c.env, c.get("user"), "api_key.revoked", key.name, undefined, c.req.raw);
-  return c.redirect("/admin/integrations?saved=1", 302);
+  return c.redirect("/admin/integrations/api-keys?saved=1", 302);
 });
 
 admin.get("/admin/clients/new", async (c) => {
@@ -1974,10 +2041,10 @@ admin.get("/admin/clients/new", async (c) => {
           <input type="text" id="name" name="name" placeholder="Cloudflare Access" required />
           <label for="redirect_uris">Redirect URIs (one per line)</label>
           <textarea id="redirect_uris" name="redirect_uris" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback"></textarea>
-          <div class="form-actions end">${cancelLink(`/admin/integrations`)}<button class="primary" type="submit">Create client</button></div>
+          <div class="form-actions end">${cancelLink("/admin/integrations/oidc")}<button class="primary" type="submit">Create client</button></div>
         </form>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "New client" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: "New client" }]
     )
   );
 });
@@ -2030,7 +2097,7 @@ admin.post("/admin/clients", async (c) => {
         ${oidcEndpointsBlock(c.env, clientId)}
         <a href="/admin/clients/${result.meta.last_row_id}"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "Client created" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: "Client created" }]
     )
   );
 });
@@ -2065,7 +2132,7 @@ admin.get("/admin/clients/:id", async (c) => {
         </div>
       `)}
       `,
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: client.name }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: client.name }]
     )
   );
 });
@@ -2110,7 +2177,7 @@ admin.post("/admin/clients/:id/rotate-secret", async (c) => {
         ${oidcEndpointsBlock(c.env, client.client_id)}
         <a href="/admin/clients/${id}"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: client.name, href: `/admin/clients/${id}` }, { label: "Secret rotated" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: client.name, href: `/admin/clients/${id}` }, { label: "Secret rotated" }]
     )
   );
 });
@@ -2129,7 +2196,7 @@ admin.post("/admin/clients/:id/delete", async (c) => {
 
   await logAudit(c.env, c.get("user"), "oidc_client.deleted", client.name, undefined, c.req.raw);
 
-  return c.redirect("/admin/integrations", 302);
+  return c.redirect("/admin/integrations/oidc?saved=1", 302);
 });
 
 // ---------- SAML service providers ----------
@@ -2275,7 +2342,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
       <label style="font-weight:400;"><input type="checkbox" name="sign_response" value="1" ${v.signResponse !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Response</label>
       <label style="font-weight:400;"><input type="checkbox" name="sign_assertion" value="1" ${v.signAssertion !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Assertion</label>
       <label style="font-weight:400;"><input type="checkbox" name="want_authn_requests_signed" value="1" ${v.wantSigned ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require signed AuthnRequests from this SP</label>
-      <div class="form-actions end">${cancelLink("/admin/integrations")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+      <div class="form-actions end">${cancelLink("/admin/integrations/saml")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
 
@@ -2285,7 +2352,7 @@ admin.get("/admin/saml/new", async (c) => {
       c,
       "New SAML service provider",
       `${samlIdpBlock(c.env)}${cardSection(spForm({}, "/admin/saml", "Create service provider"))}`,
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: "New service provider" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: "New service provider" }]
     )
   );
 });
@@ -2342,7 +2409,7 @@ admin.get("/admin/saml/:id", async (c) => {
         </div>
       `)}
       `,
-      [{ label: "Admin", href: "/admin" }, { label: "Integrations", href: "/admin/integrations" }, { label: sp.name }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: sp.name }]
     )
   );
 });
@@ -2372,7 +2439,7 @@ admin.post("/admin/saml/:id/delete", async (c) => {
 
   await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
-  return c.redirect("/admin/integrations", 302);
+  return c.redirect("/admin/integrations/saml?saved=1", 302);
 });
 
 // ---------- Schemas ----------
@@ -2718,6 +2785,7 @@ admin.get("/admin/security", async (c) => {
   const mfaRequired = await isMfaRequired(c.env);
   const newUserPasswordMode = await getNewUserPasswordMode(c.env);
   const auditRetentionDays = await getAuditRetentionDays(c.env);
+  const sessionPolicy = await getSessionPolicy(c.env);
 
   return c.html(
     layout(
@@ -2769,6 +2837,24 @@ admin.get("/admin/security", async (c) => {
         </form>
       `)}
       ${cardSection(`
+        <h2>Session limits</h2>
+        <p class="muted">How long someone stays signed in to ${escapeHtml(c.get("appName"))} &mdash; and so how long single sign-on into apps works without a password. Changes apply to existing sessions straight away.</p>
+        <form method="POST" action="/admin/security/session-limits">
+          <div class="field-row">
+            <div>
+              <label for="session_max_hours">Maximum session length (hours)</label>
+              <input type="number" id="session_max_hours" name="maxHours" min="${SESSION_MAX_HOURS_RANGE.min}" max="${SESSION_MAX_HOURS_RANGE.max}" value="${sessionPolicy.maxHours}" required />
+            </div>
+            <div>
+              <label for="session_idle_minutes">Sign out after inactivity (minutes)</label>
+              <input type="number" id="session_idle_minutes" name="idleMinutes" min="0" max="${SESSION_IDLE_MINUTES_RANGE.max}" value="${sessionPolicy.idleMinutes}" />
+            </div>
+          </div>
+          <p class="muted" style="margin-top:-4px;">Maximum: ${SESSION_MAX_HOURS_RANGE.min}&ndash;${SESSION_MAX_HOURS_RANGE.max} hours from sign-in. Inactivity: 0 for no limit, otherwise at least ${SESSION_IDLE_MINUTES_RANGE.min} minutes. Tokens already issued to apps keep their own lifetimes.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
         <h2>Login rate limiting</h2>
         <p class="muted">Locks out an account/IP combination after too many failed password or MFA-code attempts within the window below.</p>
         <form method="POST" action="/admin/security/rate-limit">
@@ -2816,6 +2902,7 @@ admin.post("/admin/security/default-password", async (c) => {
 admin.get("/admin/branding", async (c) => {
   const loginGradient = await getLoginGradient(c.env);
   const loginSubtitle = await getLoginSubtitle(c.env);
+  const cursorTrail = await getCursorTrail(c.env);
   const appName = c.get("appName");
 
   return c.html(
@@ -2856,6 +2943,17 @@ admin.get("/admin/branding", async (c) => {
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
+      ${cardSection(`
+        <h2>Cursor trail</h2>
+        <p class="muted">Faint characters that drift away from the pointer on the sign-in and two-step pages. Purely decorative, and never shown on touch screens.</p>
+        <form method="POST" action="/admin/branding/cursor-trail">
+          <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${cursorTrail.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Show the cursor trail</label>
+          <label for="cursor_characters" style="margin-top:12px;">Characters</label>
+          <input type="text" id="cursor_characters" name="characters" value="${escapeHtml(cursorTrail.characters)}" maxlength="${CURSOR_TRAIL_MAX_CHARACTERS}" placeholder="Leave empty for the default symbols, e.g. { } &lt; /&gt; &#955;" />
+          <p class="muted" style="margin-top:-8px;">Shown one character at a time, in order &mdash; enter your company name and it spells itself out. Spaces are skipped. Empty uses a random mix of code symbols.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
       </div>
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Branding" }]
@@ -2891,6 +2989,13 @@ admin.post("/admin/branding/login-gradient", async (c) => {
     await setLoginGradient(c.env, { from, to });
     await logAudit(c.env, c.get("user"), "settings.login_gradient_changed", undefined, { from, to }, c.req.raw);
   }
+  return c.redirect("/admin/branding?saved=1", 302);
+});
+
+admin.post("/admin/branding/cursor-trail", async (c) => {
+  const body = await c.req.parseBody();
+  const trail = await setCursorTrail(c.env, { enabled: !!body.enabled, characters: String(body.characters ?? "") });
+  await logAudit(c.env, c.get("user"), "settings.cursor_trail_changed", undefined, { ...trail }, c.req.raw);
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
@@ -2955,6 +3060,13 @@ admin.post("/admin/security/rate-limit", async (c) => {
   return c.redirect("/admin/security?saved=1", 302);
 });
 
+admin.post("/admin/security/session-limits", async (c) => {
+  const body = await c.req.parseBody();
+  const policy = await setSessionPolicy(c.env, { maxHours: Number(body.maxHours), idleMinutes: Number(body.idleMinutes) });
+  await logAudit(c.env, c.get("user"), "settings.session_limits_changed", undefined, { ...policy }, c.req.raw);
+  return c.redirect("/admin/security?saved=1", 302);
+});
+
 admin.post("/admin/security/audit-retention", async (c) => {
   const days = await setAuditRetentionDays(c.env, Number((await c.req.parseBody()).days) || AUDIT_RETENTION_DEFAULT_DAYS);
   await logAudit(c.env, c.get("user"), "settings.audit_retention_changed", undefined, { days }, c.req.raw);
@@ -2967,7 +3079,7 @@ admin.post("/admin/scim", async (c) => {
   const body = await c.req.parseBody();
   await setScimConfig(c.env, { endpoint: String(body.endpoint ?? ""), secret: String(body.secret ?? "") });
   await logAudit(c.env, c.get("user"), "settings.scim_config_changed", undefined, undefined, c.req.raw);
-  return c.redirect("/admin/integrations?saved=1", 302);
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 
 admin.post("/admin/scim/scope", async (c) => {
@@ -2978,7 +3090,7 @@ admin.post("/admin/scim/scope", async (c) => {
   await setScimScope(c.env, { mode, groupIds });
   await logAudit(c.env, c.get("user"), "settings.scim_scope_changed", undefined, { mode, groupIds }, c.req.raw);
 
-  return c.redirect("/admin/integrations?saved=1", 302);
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 
 admin.post("/admin/scim/test", async (c) => {
@@ -3009,14 +3121,78 @@ admin.post("/admin/scim/sync", async (c) => {
 // what older links and bookmarks use, /admin/log is what the name implies.
 admin.get("/admin/log", (c) => c.redirect(`/admin/audit${new URL(c.req.url).search}`, 302));
 
+/** Who did it: a person, an API key (or the bootstrap token), or nobody signed in (failed sign-ins, the scheduler). */
+const LOG_ACTORS: Record<string, { label: string; where: string }> = {
+  people: { label: "People", where: "actor_user_id IS NOT NULL" },
+  // Failed key attempts have no actor (the key did not authenticate) but belong here.
+  api: { label: "API keys", where: "(actor_upn LIKE 'api-key:%' OR actor_upn = 'bootstrap-token' OR action = 'api.auth_failed')" },
+  system: {
+    label: "Anonymous & system",
+    where:
+      "actor_user_id IS NULL AND action != 'api.auth_failed' AND (actor_upn IS NULL OR (actor_upn NOT LIKE 'api-key:%' AND actor_upn != 'bootstrap-token'))",
+  },
+};
+
+/** Action families, by the prefix before the dot. SAML covers both saml.* and saml_sp.*. */
+const LOG_CATEGORIES: Record<string, { label: string; like: string }> = {
+  login: { label: "Sign-ins", like: "login.%" },
+  user: { label: "Users", like: "user.%" },
+  group: { label: "Groups", like: "group.%" },
+  directory: { label: "Directory imports", like: "directory.%" },
+  api: { label: "API requests", like: "api.%" },
+  api_key: { label: "API keys", like: "api_key.%" },
+  oidc: { label: "OIDC", like: "oidc_client.%" },
+  oauth: { label: "OAuth tokens", like: "oauth.%" },
+  saml: { label: "SAML", like: "saml%" },
+  scim: { label: "SCIM", like: "scim.%" },
+  settings: { label: "Settings", like: "settings.%" },
+  domain: { label: "Domains", like: "domain.%" },
+  schema: { label: "Schemas", like: "schema.%" },
+  idp: { label: "Setup & recovery", like: "idp.%" },
+};
+
+function logSelect(name: string, current: string, allLabel: string, options: Record<string, { label: string }>): string {
+  return `<select name="${name}" data-autosubmit style="margin-bottom:0; width:auto;">
+    <option value="">${escapeHtml(allLabel)}</option>
+    ${Object.entries(options)
+      .map(([value, o]) => `<option value="${value}" ${current === value ? "selected" : ""}>${escapeHtml(o.label)}</option>`)
+      .join("")}
+  </select>`;
+}
+
 admin.get("/admin/audit", async (c) => {
   const search = c.req.query("search") ?? "";
+  const actor = LOG_ACTORS[c.req.query("actor") ?? ""] ? c.req.query("actor")! : "";
+  const category = LOG_CATEGORIES[c.req.query("category") ?? ""] ? c.req.query("category")! : "";
+  const isDate = (v: string | undefined) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "");
+  const from = isDate(c.req.query("from"));
+  const to = isDate(c.req.query("to"));
   const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
   const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const like = `%${search}%`;
 
-  const whereClause = "WHERE actor_upn LIKE ? OR action LIKE ? OR target LIKE ? OR details LIKE ? OR ip LIKE ?";
-  const params = [like, like, like, like, like];
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  if (search) {
+    const like = `%${search}%`;
+    conditions.push("(actor_upn LIKE ? OR action LIKE ? OR target LIKE ? OR details LIKE ? OR ip LIKE ?)");
+    params.push(like, like, like, like, like);
+  }
+  if (actor) conditions.push(LOG_ACTORS[actor]!.where);
+  if (category) {
+    conditions.push("action LIKE ?");
+    params.push(LOG_CATEGORIES[category]!.like);
+  }
+  // Dates are whole UTC days, inclusive at both ends.
+  if (from) {
+    conditions.push("at >= ?");
+    params.push(`${from}T00:00:00.000Z`);
+  }
+  if (to) {
+    conditions.push("at < ?");
+    params.push(new Date(Date.parse(`${to}T00:00:00.000Z`) + 86_400_000).toISOString());
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const filtered = Boolean(search || actor || category || from || to);
 
   const batchResults = await c.env.DB.batch([
     c.env.DB.prepare(`SELECT COUNT(*) as n FROM audit_log ${whereClause}`).bind(...params),
@@ -3037,16 +3213,20 @@ admin.get("/admin/audit", async (c) => {
       "Log",
       `
             ${cardSection(`
-        <form method="GET" class="row between" style="margin-bottom:0;">
-          <div style="display:flex; gap:8px;">
-            <input type="text" name="search" placeholder="Search the log" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />
-            <input type="hidden" name="page" value="1" />
-            ${pageSizeSelect(pageSize)}
-          </div>
+        <form method="GET" class="log-filters">
+          <input type="text" name="search" placeholder="Search actor, action, target, IP" value="${escapeHtml(search)}" style="margin-bottom:0;" />
+          ${logSelect("actor", actor, "Anyone", LOG_ACTORS)}
+          ${logSelect("category", category, "All actions", LOG_CATEGORIES)}
+          <label class="log-date">From <input type="date" name="from" value="${from}" data-autosubmit style="margin-bottom:0;" /></label>
+          <label class="log-date">To <input type="date" name="to" value="${to}" data-autosubmit style="margin-bottom:0;" /></label>
+          <input type="hidden" name="page" value="1" />
+          ${pageSizeSelect(pageSize)}
+          <button class="secondary" type="submit">Filter</button>
+          ${filtered ? '<a href="/admin/audit" class="muted">Clear</a>' : ""}
         </form>
       `)}
       ${cardSection(`
-        <p class="muted" style="margin-top:0;">Click a row to see its IP and details.</p>
+        <p class="muted" style="margin-top:0;">${total} ${total === 1 ? "entry" : "entries"}${filtered ? " match" : ""}. Click a row to see its IP and details. Dates are UTC.</p>
         <table>
           <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead>
           <tbody>
@@ -3096,7 +3276,7 @@ admin.get("/admin/audit", async (c) => {
               .join("")}
           </tbody>
         </table>
-        ${paginationControls("/admin/audit", page, totalPages, { search, pageSize })}
+        ${paginationControls("/admin/audit", page, totalPages, Object.fromEntries(Object.entries({ search, actor, category, from, to, pageSize }).filter(([, v]) => v !== "")))}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Log" }]

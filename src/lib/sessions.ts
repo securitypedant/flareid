@@ -1,9 +1,11 @@
 import type { Env } from "../env.js";
 import { randomToken } from "./tokens.js";
 import { getClientIp } from "./rate-limit.js";
+import { getSessionPolicy, normalizeSessionPolicy, SESSION_DEFAULTS } from "./settings.js";
 
 const SESSION_COOKIE = "__Host-flareid_session";
-export const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h SSO session
+/** The default SSO session lifetime; the effective one is the "session_max_hours" setting (Admin → Security). */
+export const SESSION_TTL_SECONDS = 60 * 60 * SESSION_DEFAULTS.maxHours;
 
 export interface SessionInfo {
   id: string;
@@ -46,13 +48,16 @@ export async function createSession(
   const sessionId = randomToken(32);
   const now = new Date().toISOString();
 
-  await env.DB.prepare(
-    "INSERT INTO sessions (id, user_id, amr, created_at, last_seen_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  )
-    .bind(sessionId, userId, JSON.stringify(amr), now, now, getClientIp(request), request.headers.get("User-Agent"))
-    .run();
+  const [policy] = await Promise.all([
+    getSessionPolicy(env),
+    env.DB.prepare("INSERT INTO sessions (id, user_id, amr, created_at, last_seen_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(sessionId, userId, JSON.stringify(amr), now, now, getClientIp(request), request.headers.get("User-Agent"))
+      .run(),
+  ]);
 
-  const setCookie = `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}`;
+  // The cookie outlives nothing the server would honour: getSession enforces
+  // the same maximum (and the idle limit) on every request.
+  const setCookie = `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${policy.maxHours * 3600}`;
   return { sessionId, setCookie };
 }
 
@@ -64,11 +69,21 @@ export async function getSession(request: Request, env: Env): Promise<SessionInf
   const sessionId = readSessionIdFromCookie(request);
   if (!sessionId) return null;
 
-  const row = await env.DB.prepare("SELECT * FROM sessions WHERE id = ? AND revoked_at IS NULL")
+  // The session limits ride along in the same query, so enforcing them costs
+  // no extra round trip on what is the hottest path in the app.
+  const row = await env.DB.prepare(
+    `SELECT s.*,
+            (SELECT value FROM idp_settings WHERE key = 'session_max_hours') AS policy_max_hours,
+            (SELECT value FROM idp_settings WHERE key = 'session_idle_minutes') AS policy_idle_minutes
+       FROM sessions s WHERE s.id = ? AND s.revoked_at IS NULL`
+  )
     .bind(sessionId)
-    .first<SessionRow>();
+    .first<SessionRow & { policy_max_hours: string | null; policy_idle_minutes: string | null }>();
   if (!row) return null;
-  if (Date.now() - new Date(row.created_at).getTime() > SESSION_TTL_SECONDS * 1000) return null;
+  const policy = normalizeSessionPolicy(row.policy_max_hours, row.policy_idle_minutes);
+  const now = Date.now();
+  if (now - new Date(row.created_at).getTime() > policy.maxHours * 3600 * 1000) return null;
+  if (policy.idleMinutes > 0 && now - new Date(row.last_seen_at).getTime() > policy.idleMinutes * 60 * 1000) return null;
 
   // Best-effort "last seen" bump - powers the active-sessions list.
   await env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();

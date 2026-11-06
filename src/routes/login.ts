@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { loginForm, mfaForm } from "../lib/login-views.js";
+import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { upgradePasswordHashIfNeeded, verifyPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
@@ -18,7 +18,7 @@ import { finishOidcAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
 import { getSpById } from "../lib/saml/service-providers.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
-import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
 import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt } from "../lib/rate-limit.js";
@@ -35,7 +35,7 @@ login.get("/login", async (c) => {
   if (existingUserId) return c.redirect(next, 302);
 
   const flowId = await storeLoginFlow(c.env, { kind: "direct", next });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginGradient(c.env), await getLoginSubtitle(c.env)));
+  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });
 
 login.post("/logout", async (c) => {
@@ -105,9 +105,8 @@ login.post("/login", async (c) => {
   const ip = getClientIp(c.req.raw);
 
   const flow = await getLoginFlow(c.env, flowId);
-  if (!flow) return c.text("Login session expired, please try again.", 400);
-  const gradient = await getLoginGradient(c.env);
-  const subtitle = await getLoginSubtitle(c.env);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const appearance = await getLoginAppearance(c.env);
 
   // Resolve first: the bucket must bind to the account, not the spelling, or
   // "admin", " admin" and "admin@x" would each get their own failure budget.
@@ -119,7 +118,7 @@ login.post("/login", async (c) => {
   if (await recordLoginAttempt(c.env, rateKey, ip)) {
     await logAudit(c.env, null, "login.rate_limited", upn, { ip }, c.req.raw);
     return c.html(
-      loginForm(c.get("appName"), flowId, gradient, subtitle, "Too many attempts. Please wait a few minutes before trying again.")
+      loginForm(c.get("appName"), flowId, appearance, "Too many attempts. Please wait a few minutes before trying again.")
     );
   }
 
@@ -127,7 +126,7 @@ login.post("/login", async (c) => {
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
-    return c.html(loginForm(c.get("appName"), flowId, gradient, subtitle, "Incorrect username/UPN or password."));
+    return c.html(loginForm(c.get("appName"), flowId, appearance, "Incorrect username/UPN or password."));
   }
 
   await clearLoginAttempts(c.env, rateKey);
@@ -138,13 +137,13 @@ login.post("/login", async (c) => {
 
   if (!(await isSetupCompleted(c.env)) && !(await isSuperAdmin(c.env, user.id))) {
     return c.html(
-      loginForm(c.get("appName"), flowId, gradient, subtitle, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.")
+      loginForm(c.get("appName"), flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.")
     );
   }
 
   if (user.mfa_enabled && !(await isDeviceTrusted(c.env, c.req.raw, user.id))) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId);
-    return c.html(mfaForm(c.get("appName"), mfaId, gradient));
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance));
   }
 
   const amr = user.mfa_enabled ? ["pwd", "mfa_remembered_device"] : ["pwd"];
@@ -167,24 +166,28 @@ login.post("/login/mfa", async (c) => {
   const ip = getClientIp(c.req.raw);
 
   const pending = await getPendingMfa(c.env, mfaId);
-  if (!pending) return c.text("Login session expired, please try again.", 400);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
 
   const user = await getUserById(c.env, pending.userId);
   // The account is re-checked here, not just at the password step: a user
   // deactivated while the challenge was pending must not complete it.
   if (!user || user.status !== "active") {
     await deletePendingMfa(c.env, mfaId);
-    return c.text("Login session expired, please try again.", 400);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  if (!user.totp_secret) return c.text("MFA is not configured for this account.", 400);
-  const gradient = await getLoginGradient(c.env);
-  const subtitle = await getLoginSubtitle(c.env);
+  if (!user.totp_secret) {
+    return renderAuthMessage(c, 400, {
+      title: "Two-step verification isn't set up",
+      message: "This account no longer has an authenticator enrolled. Start the sign-in again; if it keeps happening, ask your administrator.",
+    });
+  }
+  const appearance = await getLoginAppearance(c.env);
 
   // The bucket is keyed on the user id, not any submitted string - nothing in
   // the password step can reach this namespace.
   if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, gradient, "Too many attempts. Please wait a few minutes before trying again."));
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again."));
   }
 
   let amr = ["pwd", "mfa"];
@@ -195,7 +198,7 @@ login.post("/login/mfa", async (c) => {
     const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
     if (!validBackupCode) {
       await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
-      return c.html(mfaForm(c.get("appName"), mfaId, gradient, "Incorrect code, please try again."));
+      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Incorrect code, please try again."));
     }
     amr = ["pwd", "mfa", "backup_code"];
     await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
@@ -204,7 +207,7 @@ login.post("/login/mfa", async (c) => {
   await clearMfaAttempts(c.env, user.id);
 
   const flow = await getLoginFlow(c.env, pending.flowId);
-  if (!flow) return c.text("Login session expired, please try again.", 400);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
 
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);

@@ -231,12 +231,21 @@ const STYLES = `
   }
   .admin-side a:hover { background: var(--fi-line-soft); color: var(--fi-ink); text-decoration: none; }
   .admin-side a.active { background: var(--fi-accent-soft); color: var(--fi-accent); border-left-color: var(--fi-accent); }
+  /* Log page filter bar */
+  .log-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .log-filters input[type="text"] { flex: 1 1 240px; max-width: 320px; }
+  .log-date { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 500; font-size: 0.8125rem; color: var(--fi-muted); }
+  .log-date input { width: auto; }
+  /* A section's own pages (Integrations), indented under it. */
+  .admin-side a.sub { padding: 5px 12px 5px 26px; font-size: 0.8125rem; font-weight: 500; }
+  .admin-side a.sub.active { background: transparent; color: var(--fi-accent); border-left-color: var(--fi-accent); }
   .admin-main { min-width: 0; }
   @media (max-width: 900px) {
     .admin-shell { grid-template-columns: 1fr; }
     .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; margin-left: 0; }
     .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
     .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
+    .admin-side a.sub { padding: 8px 12px; }
   }
 
   /* Row overflow menu (users/groups lists) */

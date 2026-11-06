@@ -23,7 +23,11 @@ import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
 import {
   getAppName,
+  getCursorTrail,
+  getSessionPolicy,
   isSetupCompleted,
+  setCursorTrail,
+  setSessionPolicy,
   markSetupCompleted,
   setAppName,
   setDefaultPassword,
@@ -121,6 +125,8 @@ interface SetupBody {
   new_user_password_mode?: "default" | "random";
   password_policy?: Partial<PasswordPolicy>;
   rate_limit?: { max_attempts?: number; window_minutes?: number };
+  cursor_trail?: { enabled?: boolean; characters?: string };
+  session_limits?: { max_hours?: number; idle_minutes?: number };
   complete?: boolean;
 }
 
@@ -194,6 +200,22 @@ api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
       windowMinutes: Number(body.rate_limit.window_minutes ?? 15),
     });
     applied.push("rate_limit");
+  }
+  if (body.cursor_trail !== undefined) {
+    const current = await getCursorTrail(c.env);
+    await setCursorTrail(c.env, {
+      enabled: body.cursor_trail.enabled ?? current.enabled,
+      characters: body.cursor_trail.characters !== undefined ? String(body.cursor_trail.characters) : current.characters,
+    });
+    applied.push("cursor_trail");
+  }
+  if (body.session_limits !== undefined) {
+    const current = await getSessionPolicy(c.env);
+    await setSessionPolicy(c.env, {
+      maxHours: body.session_limits.max_hours ?? current.maxHours,
+      idleMinutes: body.session_limits.idle_minutes ?? current.idleMinutes,
+    });
+    applied.push("session_limits");
   }
 
   // The administrator, routed through the ordinary import so there is exactly

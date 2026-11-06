@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { loginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSessionAmr, getSessionUserId } from "../lib/sessions.js";
-import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -54,15 +54,15 @@ authorize.get("/authorize", async (c) => {
   const codeChallengeMethod = url.searchParams.get("code_challenge_method") ?? undefined;
 
   if (!clientId || !redirectUri || responseType !== "code") {
-    return c.text("Invalid authorization request", 400);
+    return renderAuthMessage(c, 400, appConfigError("The sign-in request it sent is missing required parameters."));
   }
 
   const client = await getClientByClientId(c.env, clientId);
-  if (!client) return c.text("Unknown client", 400);
+  if (!client) return renderAuthMessage(c, 400, appConfigError("It is not registered with this sign-in service."));
 
   const allowedRedirectUris: string[] = JSON.parse(client.redirect_uris);
   if (!allowedRedirectUris.includes(redirectUri)) {
-    return c.text("redirect_uri is not registered for this client", 400);
+    return renderAuthMessage(c, 400, appConfigError("The address it asked to return to (redirect_uri) is not registered for it."));
   }
 
   // PKCE is S256 only. "plain" sends the verifier's equivalent in the clear, and
@@ -106,12 +106,9 @@ authorize.get("/authorize", async (c) => {
   }
 
   if (!(await isSetupCompleted(c.env))) {
-    return c.text(
-      "This FlareID instance has not finished initial setup yet. An administrator needs to sign in and complete /admin/setup first.",
-      503
-    );
+    return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
   const flowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginGradient(c.env), await getLoginSubtitle(c.env)));
+  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });

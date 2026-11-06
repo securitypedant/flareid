@@ -1,5 +1,7 @@
+import type { Context } from "hono";
+import type { Env } from "../env.js";
 import { escapeHtml, page, scriptTag } from "./html.js";
-import type { LoginGradient } from "./settings.js";
+import { getLoginAppearance, type CursorTrail, type LoginAppearance, type LoginGradient } from "./settings.js";
 
 /** Inline <style> override for the auth-flow pages (login, MFA) - a full-bleed gradient behind the centered card. */
 function gradientStyles(gradient: LoginGradient): string {
@@ -7,13 +9,17 @@ function gradientStyles(gradient: LoginGradient): string {
     body { min-height: 100vh; background: linear-gradient(45deg, ${gradient.from}, ${gradient.to}); }
     .center-wrap { margin-top: 11vh; position: relative; }
     .center-wrap .card { padding: 32px 32px 28px; }
-    .auth-brand { display: flex; align-items: center; justify-content: center; gap: 14px; margin-bottom: 10px; }
-    .auth-brand img { width: 52px; height: 52px; border-radius: 12px; object-fit: contain; }
-    .auth-brand span { font-size: 1.75rem; font-weight: 700; color: var(--fi-ink); letter-spacing: -0.025em; }
+    .auth-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 12px; }
+    /* FlareID_Mark.png is FlareID_Icon.png cropped to the shield with its
+       off-white field made transparent, so it sits on the card without a pale
+       box; drawn at its own portrait aspect ratio rather than squeezed square. */
+    .auth-brand img { height: 46px; width: auto; }
+    .auth-brand span { font-size: 1.75rem; font-weight: 700; line-height: 1; color: var(--fi-ink); letter-spacing: -0.025em; }
     .center-wrap h1 { text-align: center; font-size: 1.25rem; margin: 0 0 6px 0; }
     .center-wrap p.sub { text-align: center; margin: 0 0 24px; font-size: 0.9375rem; }
     .center-wrap form .row { margin-top: 20px; }
-    .center-wrap form .row button { width: 100%; padding: 10px 16px; font-size: 0.9375rem; }
+    .center-wrap form .row button, .auth-actions button { width: 100%; padding: 10px 16px; font-size: 0.9375rem; }
+    .auth-actions { margin-top: 4px; }
     .auth-foot { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--fi-line); text-align: center; }
     #cursor-fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   `;
@@ -22,7 +28,7 @@ function gradientStyles(gradient: LoginGradient): string {
 /** The product mark above the sign-in form, as every IdP puts there. */
 function authBrand(appName: string): string {
   return `<div class="auth-brand">
-    <img src="/FlareID_Icon.png" alt="" data-hide-on-error />
+    <img src="/FlareID_Mark.png" alt="" data-hide-on-error />
     <span>${escapeHtml(appName)}</span>
   </div>`;
 }
@@ -38,7 +44,13 @@ const CURSOR_FX_SCRIPT = `
   var canvas = document.getElementById("cursor-fx");
   if (!canvas) return;
   var ctx = canvas.getContext("2d");
-  var symbols = ["{ }", "0 1", "< />", "λ", "→", "*", "#", "::", "[ ]", "→→", "←←", "↑↑", "↓↓", "&", "|", "@", "%"];
+  // Configured characters arrive as a data attribute rather than in this text,
+  // because the CSP allows inline scripts by hash: the script stays constant.
+  var custom = [];
+  try { custom = JSON.parse(canvas.getAttribute("data-symbols") || "[]"); } catch (e) {}
+  var cycle = custom.length > 0;
+  var symbols = cycle ? custom : ["{ }", "0 1", "< />", "λ", "→", "*", "#", "::", "[ ]", "→→", "←←", "↑↑", "↓↓", "&", "|", "@", "%"];
+  var next = 0;
   var particles = [];
   var dpr = window.devicePixelRatio || 1;
 
@@ -61,7 +73,7 @@ const CURSOR_FX_SCRIPT = `
       life: 0,
       maxLife: 70 + Math.random() * 40,
       size: 12 + Math.random() * 8,
-      text: symbols[(Math.random() * symbols.length) | 0],
+      text: cycle ? symbols[next++ % symbols.length] : symbols[(Math.random() * symbols.length) | 0],
     });
     if (particles.length > 60) particles.shift();
   }
@@ -94,19 +106,30 @@ const CURSOR_FX_SCRIPT = `
 })();
 `;
 
-const CURSOR_FX_HTML = `<canvas id="cursor-fx"></canvas>${scriptTag(CURSOR_FX_SCRIPT)}`;
+/**
+ * The canvas and script, or nothing when the trail is switched off. Custom
+ * characters are split into individual characters (whitespace dropped), so
+ * "Horizon Inc" cycles H, o, r, i, z, o, n, I, n, c.
+ */
+function cursorFx(trail: CursorTrail): string {
+  if (!trail.enabled) return "";
+  const symbols = Array.from(trail.characters).filter((ch) => ch.trim() !== "");
+  const attr = symbols.length > 0 ? ` data-symbols="${escapeHtml(JSON.stringify(symbols))}"` : "";
+  return `<canvas id="cursor-fx"${attr}></canvas>${scriptTag(CURSOR_FX_SCRIPT)}`;
+}
 
-export function loginForm(
-  appName: string,
-  flowId: string,
-  gradient: LoginGradient,
-  subtitle: string,
-  error?: string
-): string {
-  return page(
+/** Shared frame for the auth-flow pages: brand, gradient and cursor trail. */
+function authPage(title: string, appName: string, appearance: LoginAppearance, body: string): string {
+  return page(title, `${authBrand(appName)}${body}`, appName, false, "", gradientStyles(appearance.gradient), cursorFx(appearance.cursorTrail));
+}
+
+export function loginForm(appName: string, flowId: string, appearance: LoginAppearance, error?: string): string {
+  const { subtitle } = appearance;
+  return authPage(
     "Sign in",
+    appName,
+    appearance,
     `
-    ${authBrand(appName)}
     ${subtitle ? `<p class="sub">${escapeHtml(subtitle)}</p>` : ""}
     ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     <form method="POST" action="/login">
@@ -118,20 +141,16 @@ export function loginForm(
       <div class="row"><button class="primary" type="submit">Sign in</button></div>
     </form>
     <div class="auth-foot"><span class="muted">Protected by ${escapeHtml(appName)} single sign-on</span></div>
-    `,
-    appName,
-    false,
-    "",
-    gradientStyles(gradient),
-    CURSOR_FX_HTML
+    `
   );
 }
 
-export function mfaForm(appName: string, mfaId: string, gradient: LoginGradient, error?: string): string {
-  return page(
+export function mfaForm(appName: string, mfaId: string, appearance: LoginAppearance, error?: string): string {
+  return authPage(
     "Two-factor authentication",
+    appName,
+    appearance,
     `
-    ${authBrand(appName)}
     <h1>Two-step verification</h1>
     <p class="sub">Enter the 6-digit code from your authenticator app, or one of your backup codes if you've lost access to it.</p>
     ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
@@ -144,11 +163,53 @@ export function mfaForm(appName: string, mfaId: string, gradient: LoginGradient,
       </label>
       <div class="row"><button class="primary" type="submit">Verify</button></div>
     </form>
-    `,
-    appName,
-    false,
-    "",
-    gradientStyles(gradient),
-    CURSOR_FX_HTML
+    `
   );
+}
+
+export interface AuthMessage {
+  title: string;
+  message: string;
+  /** Defaults to a fresh direct sign-in; null for errors that retrying cannot fix (a misconfigured app). */
+  action?: { href: string; label: string } | null;
+}
+
+/** The sign-in flow's error page: the same branded card as the form, not a bare text response. */
+export function authMessagePage(appName: string, appearance: LoginAppearance, msg: AuthMessage): string {
+  const action = msg.action === undefined ? { href: "/login", label: "Sign in again" } : msg.action;
+  return authPage(
+    msg.title,
+    appName,
+    appearance,
+    `
+    <h1>${escapeHtml(msg.title)}</h1>
+    <p class="sub">${escapeHtml(msg.message)}</p>
+    ${action ? `<div class="auth-actions"><a href="${escapeHtml(action.href)}"><button class="primary" type="button">${escapeHtml(action.label)}</button></a></div>` : ""}
+    <div class="auth-foot"><span class="muted">Protected by ${escapeHtml(appName)} single sign-on</span></div>
+    `
+  );
+}
+
+/** The two messages the browser-facing auth routes need most, worded once. */
+export const AUTH_MESSAGES = {
+  expired: {
+    title: "This sign-in has expired",
+    message:
+      "For your security, sign-in attempts time out after a few minutes. Go back to the app you were signing in to and start again, or sign in to your account below.",
+  },
+  notReady: {
+    title: "Not ready yet",
+    message: "This sign-in service hasn't finished its initial setup. An administrator needs to complete it before anyone can sign in to apps.",
+    action: null,
+  },
+} satisfies Record<string, AuthMessage>;
+
+/** A request from an app this IdP cannot honour: the reason is for the app's administrator, so it is shown as-is. */
+export function appConfigError(reason: string): AuthMessage {
+  return { title: "This app can't sign you in", message: `${reason} The app's administrator needs to check its sign-in configuration.`, action: null };
+}
+
+/** Renders an auth-flow error with the configured branding, for use straight from a route. */
+export async function renderAuthMessage(c: Context<{ Bindings: Env }>, status: 400 | 403 | 503, msg: AuthMessage) {
+  return c.html(authMessagePage(c.get("appName"), await getLoginAppearance(c.env), msg), status);
 }

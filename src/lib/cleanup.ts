@@ -1,6 +1,5 @@
 import type { Env } from "../env.js";
-import { SESSION_TTL_SECONDS } from "./sessions.js";
-import { getAuditRetentionDays } from "./settings.js";
+import { getAuditRetentionDays, getSessionPolicy } from "./settings.js";
 
 /**
  * Scheduled garbage collection for expiring state.
@@ -38,7 +37,7 @@ export interface CleanupResult {
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export async function purgeExpiredState(env: Env, now = Date.now()): Promise<CleanupResult> {
-  const retentionDays = await getAuditRetentionDays(env);
+  const [retentionDays, sessionPolicy] = await Promise.all([getAuditRetentionDays(env), getSessionPolicy(env)]);
   const day = 24 * 60 * 60 * 1000;
 
   const results = await env.DB.batch([
@@ -51,12 +50,14 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
            OR (rotated_at IS NOT NULL AND rotated_at < ?)`
     ).bind(iso(now), iso(now - REFRESH_TOMBSTONE_DAYS * day), iso(now - REFRESH_TOMBSTONE_DAYS * day)),
     env.DB.prepare("DELETE FROM sessions WHERE created_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)").bind(
-      iso(now - SESSION_TTL_SECONDS * 1000),
+      iso(now - sessionPolicy.maxHours * 3600 * 1000),
       iso(now - REVOKED_SESSION_GRACE_SECONDS * 1000)
     ),
     env.DB.prepare("DELETE FROM trusted_devices WHERE expires_at < ?").bind(iso(now)),
     env.DB.prepare("DELETE FROM audit_log WHERE at < ?").bind(iso(now - retentionDays * day)),
-    env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(iso(now - 7 * day)),
+    // window_start is epoch milliseconds, not an ISO string: compared with
+    // text, SQLite sorts every integer lower, which deleted every counter.
+    env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 7 * day),
   ]);
 
   const [authCodes, accessTokens, refreshTokens, sessions, trustedDevices, auditLog] = results.map((r) => Number(r.meta.changes ?? 0));

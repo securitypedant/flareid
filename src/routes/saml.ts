@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { loginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
 import { deleteLoginFlow, getFlowBinding, getLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
-import { getLoginGradient, getLoginSubtitle, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -76,11 +76,11 @@ saml.get("/saml/cert.pem", (c) => {
 
 saml.get("/saml/sso", async (c) => {
   if (!isSamlConfigured(c.env)) {
-    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+    return renderAuthMessage(c, 503, appConfigError("SAML sign-in is not configured on this deployment."));
   }
 
   const raw = rawQueryParams(c.req.url);
-  if (!raw.SAMLRequest) return c.text("Missing SAMLRequest parameter.", 400);
+  if (!raw.SAMLRequest) return renderAuthMessage(c, 400, appConfigError("Missing SAMLRequest parameter."));
 
   let request;
   try {
@@ -88,40 +88,40 @@ saml.get("/saml/sso", async (c) => {
     // the value exactly as it arrived, but the inflater needs the base64.
     request = parseAuthnRequestXml(await inflateAuthnRequest(decodeURIComponent(raw.SAMLRequest)));
   } catch (err) {
-    return c.text(err instanceof AuthnRequestError ? err.message : "Could not decode the SAML request.", 400);
+    return renderAuthMessage(c, 400, appConfigError(err instanceof AuthnRequestError ? err.message : "Could not decode the SAML request."));
   }
 
   if (request.destination && request.destination !== `${idpEntityId(c.env)}/saml/sso`) {
-    return c.text("The request's Destination does not match this endpoint.", 400);
+    return renderAuthMessage(c, 400, appConfigError("The request's Destination does not match this endpoint."));
   }
 
   const sp = await getSpByEntityId(c.env, request.issuer);
-  if (!sp) return c.text("Unknown service provider.", 400);
+  if (!sp) return renderAuthMessage(c, 400, appConfigError("Unknown service provider."));
 
   // The ACS allowlist is the control that stops an unsigned request
   // redirecting a signed assertion somewhere unregistered - exact match only.
   const acsUrl = resolveAcsUrl(sp, request.acsUrl);
   if (request.acsUrl && !spAcsUrls(sp).includes(request.acsUrl)) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "unregistered_acs", acs: request.acsUrl }, c.req.raw);
-    return c.text("AssertionConsumerServiceURL is not registered for this service provider.", 400);
+    return renderAuthMessage(c, 400, appConfigError("AssertionConsumerServiceURL is not registered for this service provider."));
   }
-  if (!acsUrl) return c.text("This service provider has no ACS URL configured.", 400);
+  if (!acsUrl) return renderAuthMessage(c, 400, appConfigError("This service provider has no ACS URL configured."));
 
   const sig = await verifyRedirectSignature(sp, raw);
   if (sig === "unsigned" && sp.want_authn_requests_signed) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "unsigned_request" }, c.req.raw);
-    return c.text("This service provider requires signed authentication requests.", 400);
+    return renderAuthMessage(c, 400, appConfigError("This service provider requires signed authentication requests."));
   }
   if (sig === "bad" || sig === "unsupported-alg" || sig === "no-key") {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: `signature_${sig}` }, c.req.raw);
-    return c.text("The request signature could not be verified.", 400);
+    return renderAuthMessage(c, 400, appConfigError("The request signature could not be verified."));
   }
 
   // Single-use: an AuthnRequest ID may only ever mint one response, so a
   // replayed request - even one that verifies - gets nothing new to post.
   if (await c.env.SESSIONS_KV.get(`saml:req:${request.id}`)) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "replayed_request_id" }, c.req.raw);
-    return c.text("This authentication request has already been answered.", 400);
+    return renderAuthMessage(c, 400, { title: "This sign-in was already completed", message: "That sign-in request has already been answered. Go back to the app and start again.", action: null });
   }
   await c.env.SESSIONS_KV.put(`saml:req:${request.id}`, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
 
@@ -130,7 +130,7 @@ saml.get("/saml/sso", async (c) => {
     try {
       relayState = decodeURIComponent(raw.RelayState).slice(0, 4000);
     } catch {
-      return c.text("RelayState is not valid percent-encoding.", 400);
+      return renderAuthMessage(c, 400, appConfigError("RelayState is not valid percent-encoding."));
     }
   }
 
@@ -155,14 +155,11 @@ saml.get("/saml/sso", async (c) => {
   }
 
   if (!(await isSetupCompleted(c.env))) {
-    return c.text(
-      "This FlareID instance has not finished initial setup yet. An administrator needs to sign in and complete /admin/setup first.",
-      503
-    );
+    return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
   const flowId = await storeLoginFlow(c.env, { kind: "saml", request: pending });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginGradient(c.env), await getLoginSubtitle(c.env)));
+  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });
 
 /**
@@ -172,18 +169,18 @@ saml.get("/saml/sso", async (c) => {
  */
 saml.get("/saml/complete", async (c) => {
   if (!isSamlConfigured(c.env)) {
-    return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
+    return renderAuthMessage(c, 503, appConfigError("SAML sign-in is not configured on this deployment."));
   }
 
   const flowId = c.req.query("flow") ?? "";
   const flow = await getLoginFlow(c.env, flowId);
-  if (!flow || flow.kind !== "saml") return c.text("Login session expired, please try again.", 400);
+  if (!flow || flow.kind !== "saml") return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
 
   // Only a flow bound by the post-enrolment resume path can redeem here - a
   // flow minted by /saml/sso (e.g. for a ForceAuthn request) has no binding,
   // so a session cookie alone can never answer it without a fresh login.
   const boundUserId = await getFlowBinding(c.env, flowId);
-  if (boundUserId === null) return c.text("Login session expired, please try again.", 400);
+  if (boundUserId === null) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
 
   const session = await getSession(c.req.raw, c.env);
   const user = session ? await getUserById(c.env, session.userId) : null;
@@ -191,11 +188,11 @@ saml.get("/saml/complete", async (c) => {
     return c.redirect(`/login?next=${encodeURIComponent(`/saml/complete?flow=${flowId}`)}`, 302);
   }
   if (user.id !== boundUserId) {
-    return c.text("This login cannot be resumed for a different account.", 400);
+    return renderAuthMessage(c, 400, { title: "Signed in as someone else", message: "This sign-in was started by a different account than the one signed in now. Sign out and start again from the app." });
   }
 
   const sp = await getSpById(c.env, flow.request.spId);
-  if (!sp) return c.text("Unknown service provider.", 400);
+  if (!sp) return renderAuthMessage(c, 400, appConfigError("Unknown service provider."));
 
   await deleteLoginFlow(c.env, flowId);
   const issued = await issueSamlResponse(c.env, sp, flow.request, user, session.id, new Date(session.createdAt));
@@ -212,8 +209,11 @@ saml.get("/saml/complete", async (c) => {
  * section 4.
  */
 saml.post("/saml/sso", (c) => {
-  return c.text(
-    "The HTTP-POST request binding is not supported. Send AuthnRequests over HTTP-Redirect, and if this is Cloudflare Access leave 'Sign SAML authentication request' turned off.",
-    400
+  return renderAuthMessage(
+    c,
+    400,
+    appConfigError(
+      "The HTTP-POST request binding is not supported. Send AuthnRequests over HTTP-Redirect, and if this is Cloudflare Access leave 'Sign SAML authentication request' turned off."
+    )
   );
 });

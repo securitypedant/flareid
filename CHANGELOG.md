@@ -4,6 +4,46 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+### Added
+
+- **Session limits** in Admin → Security (and `session_limits` on
+  `POST /api/v1/setup`): a maximum session length (1-720 hours, default 12)
+  and an optional inactivity timeout. Checked on every request, so changes
+  apply to sessions that already exist.
+- **Cursor trail controls** in Admin → Branding (and `cursor_trail` on
+  `POST /api/v1/setup`): switch the sign-in page's drifting characters off, or
+  give them your own characters - a company name spells itself out. On by
+  default, as before.
+- **API key activity in the log.** Every authenticated API call is recorded as
+  `api.request` (method, path, status); failed key attempts as
+  `api.auth_failed` with only the key's prefix. The API keys page links each
+  key to its activity.
+- **Log filters**: by actor (people, API keys, anonymous and system), action
+  family, and date range, alongside the search.
+
+### Changed
+
+- **Integrations split into four pages** - OIDC clients, SAML apps, API keys
+  and SCIM provisioning - listed under Integrations in the admin sidebar.
+  `/admin/integrations`, `/admin/clients` and `/admin/scim` redirect.
+- The admin sidebar has an **Overview** link to the dashboard.
+- **A backup code can disable MFA**, so someone who lost their authenticator
+  and signed in with a backup code can enrol a new one.
+- **Sign-in errors are branded pages** (an expired sign-in, an MFA challenge
+  for an account deactivated mid-login, an app misconfiguration) instead of
+  plain text. Errors an app's configuration causes have no "sign in again"
+  button, because retrying cannot fix them.
+- Sign-in page logo: the mark is drawn at its own proportions with its
+  off-white background removed (`public/FlareID_Mark.png`), closer to the name.
+
+### Fixed
+
+- The hourly cleanup compared rate-limit window starts (epoch milliseconds)
+  with an ISO date string, which SQLite always orders after numbers, so every
+  run deleted every lockout counter instead of only week-old ones.
+
 ## [2.0.1] - 2026-11-05
 
 ### Security

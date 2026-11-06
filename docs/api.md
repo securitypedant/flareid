@@ -9,7 +9,11 @@ regexing a `flow_id` out of the login page and parsing a client secret out of a
 `<code>` block in the response. That worked until a heading moved.
 
 Base path: `/api/v1`. JSON in, JSON out. Every mutation is idempotent and is
-recorded in the audit log against the token that made it.
+recorded in the audit log against the token that made it. Every authenticated
+call, reads included, is also logged as `api.request` with its method, path and
+response status; a presented key that is unknown, revoked or expired is logged as
+`api.auth_failed` with only its non-secret prefix. Admin → Log → "API keys"
+shows both.
 
 ## Authentication
 
@@ -107,9 +111,17 @@ afterwards would mint an administrator with the wrong credential.
     "requireSymbol": false
   },
   "rate_limit": { "max_attempts": 5, "window_minutes": 15 },
+  "cursor_trail": { "enabled": true, "characters": "" },
+  "session_limits": { "max_hours": 12, "idle_minutes": 0 },
   "complete": false
 }
 ```
+
+`cursor_trail.characters` empty means the default symbols; otherwise its
+characters (spaces dropped, at most 64) are cycled in order on the sign-in page.
+`session_limits.max_hours` is 1-720; `idle_minutes` is 0 (no inactivity limit)
+or 5-10080. Both apply to existing sessions immediately. For either object, an
+omitted field keeps its current value.
 
 Answers with what it applied, and the administrator's generated password if one
 was generated:

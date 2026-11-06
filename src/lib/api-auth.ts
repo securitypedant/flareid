@@ -1,8 +1,9 @@
 import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
 import { isSetupCompleted } from "./settings.js";
-import { hasScope, parseScopes, touchApiKey, verifyApiKey, type ApiScope } from "./api-keys.js";
+import { hasScope, KEY_PREFIX, keyDisplayPrefix, parseScopes, touchApiKey, verifyApiKey, type ApiScope } from "./api-keys.js";
 import { sha256Hex } from "./tokens.js";
+import { logAudit } from "./audit.js";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -83,17 +84,42 @@ export async function requireApiAuth(c: Context<{ Bindings: Env }>, next: Next) 
       scopes: setupDone ? [] : ["admin"],
     });
     await next();
+    await logApiRequest(c);
     return;
   }
 
   const key = await verifyApiKey(c.env, token);
   if (!key) {
+    // Only tokens shaped like a FlareID key are recorded - someone presenting a
+    // revoked or expired key is worth seeing; arbitrary scanner noise is not.
+    // The stored, non-secret prefix is all that is logged, never the token.
+    if (token.startsWith(KEY_PREFIX)) {
+      await logAudit(c.env, null, "api.auth_failed", `${c.req.method} ${new URL(c.req.url).pathname}`, { key_prefix: keyDisplayPrefix(token) }, c.req.raw);
+    }
     return c.json({ error: "unauthorized", message: "Unknown, revoked or expired token." }, 401);
   }
 
   c.set("apiActor", { kind: "key", label: `api-key:${key.name}`, scopes: parseScopes(key.scopes), keyId: key.id });
   await touchApiKey(c.env, key.id);
   await next();
+  await logApiRequest(c);
+}
+
+/**
+ * One log entry per authenticated API call, reads included - the routes log
+ * what they changed, this logs that the key was used at all, and with what
+ * result (a 403 here is a key reaching beyond its scopes).
+ */
+async function logApiRequest(c: Context<{ Bindings: Env }>): Promise<void> {
+  const actor = c.get("apiActor");
+  await logAudit(
+    c.env,
+    auditActor(actor),
+    "api.request",
+    `${c.req.method} ${new URL(c.req.url).pathname}`,
+    { status: c.res.status, ...(actor.keyId !== undefined ? { key_id: actor.keyId } : {}) },
+    c.req.raw
+  );
 }
 
 /** Route-level authorization. Returns a 403 JSON body rather than throwing. */
@@ -104,7 +130,7 @@ export function requireScope(scope: ApiScope) {
       const setupDone = await isSetupCompleted(c.env);
       const hint =
         actor?.kind === "bootstrap" && setupDone
-          ? " The bootstrap token only works until initial setup is complete; use an API key minted from /admin/integrations."
+          ? " The bootstrap token only works until initial setup is complete; use an API key minted from /admin/integrations/api-keys."
           : "";
       return c.json({ error: "forbidden", message: `This token lacks the "${scope}" scope.${hint}` }, 403);
     }

@@ -9,7 +9,7 @@ import { getUserGroupNames } from "../lib/db.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes } from "../lib/backup-codes.js";
+import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession } from "../lib/sessions.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
@@ -49,7 +49,7 @@ const SAVED_MESSAGES: Record<string, string> = {
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
-  "mfa-code": "That code was not correct, so two-factor authentication is still enabled. Try again with a current code.",
+  "mfa-code": "That code was not correct, so two-factor authentication is still enabled. Try again with a current code or an unused backup code.",
 };
 
 function savedBanner(c: Context<{ Bindings: Env }>): string {
@@ -135,9 +135,9 @@ account.get("/account", async (c) => {
                    <button class="secondary" type="submit">Regenerate backup codes</button>
                  </form>
                  <form method="POST" action="/account/mfa/disable" ${confirmAttrs("Your authenticator and backup codes are removed, and every remembered device is forgotten.", { title: "Disable two-factor authentication?", action: "Disable MFA", danger: true })}>
-                   <label for="mfa_code">Enter a current code to disable MFA</label>
+                   <label for="mfa_code">Enter a current code, or a backup code if you lost your authenticator</label>
                    <div class="field-row" style="align-items:flex-start;">
-                     <input type="text" id="mfa_code" name="code" inputmode="numeric" maxlength="6" required style="max-width:160px" />
+                     <input type="text" id="mfa_code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px" />
                      <div></div>
                    </div>
                    <button class="danger" type="submit">Disable MFA</button>
@@ -466,8 +466,14 @@ account.post("/account/mfa/disable", async (c) => {
   // A wrong code used to redirect here with no message at all, which was
   // indistinguishable from MFA having been switched off. The claim also makes
   // this a replay check: a code already accepted once cannot disable MFA.
+  //
+  // A backup code works too. It is the only factor left to someone who lost
+  // their authenticator and signed in with one - and without it they could
+  // never disable MFA to enrol a new device.
   const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
-  if (counter === null || !(await claimTotpCounter(c.env, user.id, counter))) {
+  const totpOk = counter !== null && (await claimTotpCounter(c.env, user.id, counter));
+  const backupOk = !totpOk && (await verifyAndConsumeBackupCode(c.env, user.id, code));
+  if (!totpOk && !backupOk) {
     return c.redirect("/account?error=mfa-code", 302);
   }
 
@@ -478,7 +484,7 @@ account.post("/account/mfa/disable", async (c) => {
     .run();
   await deleteBackupCodes(c.env, user.id);
   await deleteTrustedDevicesForUser(c.env, user.id);
-  await logAudit(c.env, user, "user.mfa_disabled", user.upn, undefined, c.req.raw);
+  await logAudit(c.env, user, "user.mfa_disabled", user.upn, { with: backupOk ? "backup_code" : "totp" }, c.req.raw);
 
   return c.redirect("/account?saved=mfa-disabled", 302);
 });

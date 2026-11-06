@@ -221,6 +221,90 @@ export async function setLoginGradient(env: Env, gradient: LoginGradient): Promi
   ]);
 }
 
+/**
+ * The decorative symbols that drift away from the cursor on the sign-in pages.
+ * On by default. `characters` empty means the built-in symbol set (picked at
+ * random); otherwise its characters are cycled in order, so a company name
+ * spells itself out behind the pointer.
+ */
+export interface CursorTrail {
+  enabled: boolean;
+  characters: string;
+}
+
+export const CURSOR_TRAIL_MAX_CHARACTERS = 64;
+
+export async function getCursorTrail(env: Env): Promise<CursorTrail> {
+  const [enabled, characters] = await Promise.all([getSetting(env, "login_cursor_trail"), getSetting(env, "login_cursor_characters")]);
+  return { enabled: enabled !== "false", characters: characters ?? "" };
+}
+
+export async function setCursorTrail(env: Env, trail: CursorTrail): Promise<CursorTrail> {
+  const clean = { enabled: trail.enabled, characters: trail.characters.trim().slice(0, CURSOR_TRAIL_MAX_CHARACTERS) };
+  await Promise.all([
+    setSetting(env, "login_cursor_trail", clean.enabled ? "true" : "false"),
+    setSetting(env, "login_cursor_characters", clean.characters),
+  ]);
+  return clean;
+}
+
+/** Everything the sign-in, MFA and sign-in error pages need to look like the configured brand. */
+export interface LoginAppearance {
+  gradient: LoginGradient;
+  subtitle: string;
+  cursorTrail: CursorTrail;
+}
+
+export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
+  const [gradient, subtitle, cursorTrail] = await Promise.all([getLoginGradient(env), getLoginSubtitle(env), getCursorTrail(env)]);
+  return { gradient, subtitle, cursorTrail };
+}
+
+/**
+ * How long a browser session lasts. `maxHours` is the absolute lifetime from
+ * sign-in; `idleMinutes` ends a session that has not been used for that long
+ * (0 turns the idle limit off). Both apply to existing sessions as soon as
+ * they are changed, because they are checked on every request.
+ */
+export interface SessionPolicy {
+  maxHours: number;
+  idleMinutes: number;
+}
+
+export const SESSION_DEFAULTS: SessionPolicy = { maxHours: 12, idleMinutes: 0 };
+export const SESSION_MAX_HOURS_RANGE = { min: 1, max: 720 } as const;
+export const SESSION_IDLE_MINUTES_RANGE = { min: 5, max: 10080 } as const;
+
+/** Clamps raw values into range; shared with sessions.ts, which reads both settings in the same query as the session. */
+export function normalizeSessionPolicy(maxHours: unknown, idleMinutes: unknown): SessionPolicy {
+  const max = Number(maxHours);
+  const idle = Number(idleMinutes);
+  return {
+    maxHours:
+      Number.isFinite(max) && max > 0
+        ? Math.min(SESSION_MAX_HOURS_RANGE.max, Math.max(SESSION_MAX_HOURS_RANGE.min, Math.round(max)))
+        : SESSION_DEFAULTS.maxHours,
+    idleMinutes:
+      Number.isFinite(idle) && idle > 0
+        ? Math.min(SESSION_IDLE_MINUTES_RANGE.max, Math.max(SESSION_IDLE_MINUTES_RANGE.min, Math.round(idle)))
+        : 0,
+  };
+}
+
+export async function getSessionPolicy(env: Env): Promise<SessionPolicy> {
+  const [maxHours, idleMinutes] = await Promise.all([getSetting(env, "session_max_hours"), getSetting(env, "session_idle_minutes")]);
+  return normalizeSessionPolicy(maxHours, idleMinutes);
+}
+
+export async function setSessionPolicy(env: Env, policy: SessionPolicy): Promise<SessionPolicy> {
+  const clean = normalizeSessionPolicy(policy.maxHours, policy.idleMinutes);
+  await Promise.all([
+    setSetting(env, "session_max_hours", String(clean.maxHours)),
+    setSetting(env, "session_idle_minutes", String(clean.idleMinutes)),
+  ]);
+  return clean;
+}
+
 export function validatePassword(password: string, policy: PasswordPolicy): string | null {
   if (password.length < policy.minLength) return `Password must be at least ${policy.minLength} characters.`;
   if (policy.requireUppercase && !/[A-Z]/.test(password)) return "Password must contain an uppercase letter.";
