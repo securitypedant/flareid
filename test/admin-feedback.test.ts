@@ -169,12 +169,24 @@ describe("API key activity in the log", () => {
 });
 
 describe("admin console navigation and pages", () => {
-  it("has an Overview link and a page per integration, with the old paths redirecting", async () => {
-    const { cookie } = await adminSession();
+  it("has an Overview link, an Integrations summary and a page per integration, with the old paths redirecting", async () => {
+    const { apiKey, cookie } = await adminSession();
     const get = (path: string) => SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie }, redirect: "manual" });
 
     const overview = await (await get("/admin")).text();
     expect(overview).toMatch(/<a href="\/admin" class="active">Overview<\/a>/);
+    // Integrations' own pages are listed only inside Integrations.
+    expect(overview).not.toContain('class="sub');
+
+    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Cloudflare Access", redirect_uris: ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"] } });
+    const summary = await get("/admin/integrations");
+    expect(summary.status).toBe(200);
+    const summaryHtml = await summary.text();
+    expect(summaryHtml).toContain('href="/admin/integrations" class="sub active">Overview');
+    expect(summaryHtml).toContain("Cloudflare Access");
+    expect(summaryHtml).toContain("1 registered");
+    expect(summaryHtml).toContain("test-suite"); // the bootstrap helper's admin key
+    expect(summaryHtml).toContain("Not configured"); // SCIM
 
     for (const [path, title] of [
       ["/admin/integrations/oidc", "OIDC clients"],
@@ -189,7 +201,6 @@ describe("admin console navigation and pages", () => {
       expect(html).toContain(`href="${path}" class="sub active"`);
     }
 
-    expect((await get("/admin/integrations")).headers.get("Location")).toBe("/admin/integrations/oidc");
     expect((await get("/admin/scim?x=1")).headers.get("Location")).toBe("/admin/integrations/scim?x=1");
     expect((await get("/admin/clients")).headers.get("Location")).toBe("/admin/integrations/oidc");
   });

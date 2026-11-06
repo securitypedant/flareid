@@ -26,8 +26,10 @@ may break things.
 ### Changed
 
 - **Integrations split into four pages** - OIDC clients, SAML apps, API keys
-  and SCIM provisioning - listed under Integrations in the admin sidebar.
-  `/admin/integrations`, `/admin/clients` and `/admin/scim` redirect.
+  and SCIM provisioning - listed under Integrations in the admin sidebar while
+  you are in that section. `/admin/integrations` is now an overview summarising
+  every configured client, app, key and the SCIM connection; `/admin/clients`
+  and `/admin/scim` redirect.
 - The admin sidebar has an **Overview** link to the dashboard.
 - **A backup code can disable MFA**, so someone who lost their authenticator
   and signed in with a backup code can enrol a new one.

@@ -100,8 +100,14 @@ function layout(
   const appName = c.get("appName");
   const crumbHtml = crumbs ? breadcrumbs(crumbs) : "";
   const section = active ?? (crumbs?.[1] ? (CRUMB_SECTIONS[crumbs[1].label] ?? "") : crumbs?.length === 1 ? "overview" : "");
-  // Inside Integrations, the third crumb names the page (see integrationCrumb).
-  const sub = section === "integrations" ? (INTEGRATION_PAGES.find((p) => p.label === crumbs?.[2]?.label)?.key ?? "") : "";
+  // Inside Integrations, the third crumb names the page (see integrationCrumb);
+  // with no third crumb it is the section's own overview.
+  const sub =
+    section !== "integrations"
+      ? ""
+      : crumbs?.length === 2
+        ? "overview"
+        : (INTEGRATION_PAGES.find((p) => p.label === crumbs?.[2]?.label)?.key ?? "");
   return page(
     `${title}`,
     `<div class="admin-shell">
@@ -167,10 +173,11 @@ function adminNav(active: string, sub = "") {
   return items
     .map(([key, href, label]) => {
       const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
-      if (key !== "integrations") return link;
-      const children = INTEGRATION_PAGES.map(
-        (p) => `<a href="/admin/integrations/${p.key}" class="sub${sub === p.key ? " active" : ""}">${p.label}</a>`
-      ).join("");
+      // A section's pages are listed only while you are in that section.
+      if (key !== "integrations" || active !== "integrations") return link;
+      const children = [{ key: "overview", label: "Overview", href: "/admin/integrations" }, ...INTEGRATION_PAGES.map((p) => ({ ...p, href: `/admin/integrations/${p.key}` }))]
+        .map((p) => `<a href="${p.href}" class="sub${sub === p.key ? " active" : ""}">${p.label}</a>`)
+        .join("");
       return link + children;
     })
     .join("");
@@ -1763,10 +1770,9 @@ document.addEventListener("click", async function (e) {
 // One section, because they are all how other systems connect to this
 // directory - configuring Cloudflare Access means registering a client and
 // then setting up SCIM, and that should not be a hunt across the nav. Each
-// kind has its own page, listed under Integrations in the sidebar;
-// /admin/integrations lands on the first. The older single-page paths still
-// resolve so existing links and bookmarks survive.
-admin.get("/admin/integrations", (c) => c.redirect("/admin/integrations/oidc", 302));
+// kind has its own page, listed under Integrations in the sidebar while you are
+// in the section; /admin/integrations is an overview of all four. The older
+// single-page paths still resolve so existing links and bookmarks survive.
 admin.get("/admin/clients", (c) => c.redirect("/admin/integrations/oidc", 302));
 admin.get("/admin/scim", (c) => c.redirect(`/admin/integrations/scim${new URL(c.req.url).search}`, 302));
 
@@ -1777,6 +1783,95 @@ function integrationIntro(description: string, action?: { href: string; label: s
     ${action ? `<a href="${escapeHtml(action.href)}"><button class="primary" type="button">${escapeHtml(action.label)}</button></a>` : ""}
   </div>`;
 }
+
+/** One overview card: a heading with a count, up to five rows, and a link to the full page. */
+function summaryCard(opts: { title: string; count: string; rows: string[]; empty: string; manage: IntegrationPage; extra?: string }): string {
+  const page = INTEGRATION_PAGES.find((p) => p.key === opts.manage)!;
+  const shown = opts.rows.slice(0, 5);
+  return cardSection(`
+    <div class="row between" style="margin:0 0 10px 0;">
+      <h2 style="margin:0;">${escapeHtml(opts.title)}</h2>
+      <span class="muted">${opts.count}</span>
+    </div>
+    ${opts.extra ?? ""}
+    ${
+      shown.length === 0
+        ? `<p class="muted">${opts.empty}</p>`
+        : `<table><tbody>${shown.join("")}</tbody></table>${opts.rows.length > shown.length ? `<p class="muted" style="margin:8px 0 0;">and ${opts.rows.length - shown.length} more</p>` : ""}`
+    }
+    <div style="margin-top:12px;"><a href="/admin/integrations/${page.key}">Manage ${escapeHtml(page.label)} &rarr;</a></div>
+  `);
+}
+
+admin.get("/admin/integrations", async (c) => {
+  const [{ results: clients }, { results: sps }, apiKeys, scim, scope] = await Promise.all([
+    c.env.DB.prepare("SELECT id, name, client_id FROM oauth_clients ORDER BY name").all<Pick<OAuthClientRow, "id" | "name" | "client_id">>(),
+    c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers ORDER BY name").all<Pick<SamlServiceProviderRow, "id" | "name" | "entity_id">>(),
+    listApiKeys(c.env),
+    getScimConfig(c.env),
+    getScimScope(c.env),
+  ]);
+  const activeKeys = apiKeys.filter((k) => !k.revoked_at);
+  const revokedKeys = apiKeys.length - activeKeys.length;
+  const scimConfigured = Boolean(scim.endpoint && scim.secret);
+  let scimHost = "";
+  try {
+    scimHost = scim.endpoint ? new URL(scim.endpoint).host : "";
+  } catch {
+    scimHost = scim.endpoint;
+  }
+
+  return c.html(
+    layout(
+      c,
+      "Integrations",
+      `
+      <p class="muted" style="margin:-6px 0 16px;">Everything that connects to this directory: apps that sign users in, keys that automate it, and where users are provisioned.</p>
+      <div class="two-col">
+        ${summaryCard({
+          title: "OIDC clients",
+          count: `${clients.length} registered`,
+          rows: clients.map((cl) => `<tr><td><a href="/admin/clients/${cl.id}">${escapeHtml(cl.name)}</a></td><td><code>${escapeHtml(cl.client_id)}</code></td></tr>`),
+          empty: "No clients registered yet.",
+          manage: "oidc",
+        })}
+        ${summaryCard({
+          title: "SAML apps",
+          count: `${sps.length} registered`,
+          rows: sps.map((sp) => `<tr><td><a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></td><td><code>${escapeHtml(sp.entity_id)}</code></td></tr>`),
+          empty: "No service providers registered yet.",
+          manage: "saml",
+        })}
+      </div>
+      <div class="two-col">
+        ${summaryCard({
+          title: "API keys",
+          count: `${activeKeys.length} active${revokedKeys ? ` &middot; ${revokedKeys} revoked` : ""}`,
+          rows: activeKeys.map(
+            (k) =>
+              `<tr><td>${escapeHtml(k.name)}</td><td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td><td class="muted">${k.last_used_at ? `used ${escapeHtml(k.last_used_at.slice(0, 16).replace("T", " "))}` : "never used"}</td></tr>`
+          ),
+          empty: "No active API keys.",
+          manage: "api-keys",
+        })}
+        ${summaryCard({
+          title: "SCIM provisioning",
+          count: `<span class="badge ${scimConfigured ? "badge-active" : "badge-disabled"}">${scimConfigured ? "Configured" : "Not configured"}</span>`,
+          rows: scimConfigured
+            ? [
+                `<tr><td>Endpoint</td><td><code>${escapeHtml(scimHost)}</code></td></tr>`,
+                `<tr><td>Scope</td><td>${scope.mode === "all" ? "All groups" : `${scope.groupIds.length} selected group${scope.groupIds.length === 1 ? "" : "s"}`}</td></tr>`,
+              ]
+            : [],
+          empty: "Users and groups are not being pushed anywhere.",
+          manage: "scim",
+        })}
+      </div>
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Integrations" }]
+    )
+  );
+});
 
 admin.get("/admin/integrations/oidc", async (c) => {
   const { results: clients } = await c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>();
