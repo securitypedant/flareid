@@ -4,7 +4,7 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [2.0.1] - 2026-11-05
 
 ### Security
 
