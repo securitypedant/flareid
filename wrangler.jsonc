@@ -69,6 +69,15 @@
       "binding": "SESSIONS_KV",
       "id": "af20f3a4a88e40329062d78a2fc86f99"
     }
+  ],
+  // Edge flood control for anonymous routes (src/lib/edge-limit.ts), counted in
+  // memory per Cloudflare location - no storage writes. Per client IP, per
+  // minute; generous on purpose, because the brute-force control is the
+  // per-account throttle, not this. namespace_id is account-wide: pick values
+  // no other Worker in the account uses, or they will share counters.
+  "ratelimits": [
+    { "name": "AUTH_LIMITER", "namespace_id": "7341", "simple": { "limit": 120, "period": 60 } },
+    { "name": "API_LIMITER", "namespace_id": "7342", "simple": { "limit": 600, "period": 60 } }
   ]
   // Secrets, set with `wrangler secret put` rather than stored here:
   //   SIGNING_KEY_PKCS8     - PKCS8 PEM of the RS256 private key that signs

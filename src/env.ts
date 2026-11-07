@@ -47,4 +47,9 @@ export interface Env {
    * of either kind keep verifying whichever is set. See src/lib/password.ts.
    */
   PASSWORD_HASHER?: string;
+
+  /** Edge flood control for the browser sign-in routes (see edge-limit.ts). Optional. */
+  AUTH_LIMITER?: RateLimit;
+  /** Edge flood control for the API, token, introspection, userinfo and SCIM endpoints. Optional. */
+  API_LIMITER?: RateLimit;
 }

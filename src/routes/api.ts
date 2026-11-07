@@ -25,6 +25,7 @@ import {
   getAppName,
   getCursorTrail,
   getSessionPolicy,
+  isHexColor,
   isSetupCompleted,
   setCursorTrail,
   setSessionPolicy,
@@ -146,6 +147,10 @@ api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
   // before anything is applied so a rejected request has no partial effects.
   if (body.admin?.username && !hasScope(actor.scopes, "admin")) {
     return c.json({ error: "forbidden", message: 'Creating an administrator requires the "admin" scope.' }, 403);
+  }
+  // Validated with everything else, before anything is applied.
+  if (body.login_gradient !== undefined && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) {
+    return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
   }
   const applied: string[] = [];
 
@@ -758,12 +763,25 @@ api.post("/api/v1/api-keys", requireScope("admin"), async (c) => {
   const requested = Array.isArray(body.scopes) ? body.scopes.map(String) : ["admin"];
   const invalid = requested.filter((s) => !isApiScope(s));
   if (invalid.length > 0) return c.json(badRequest(`Unknown scope(s): ${invalid.join(", ")}.`), 400);
+  // An explicit empty list used to be stored as admin while the response and
+  // the audit entry said "no scopes". Omit `scopes` to mean admin; [] is an error.
+  if (requested.length === 0) return c.json(badRequest("scopes cannot be empty. Omit it for an admin key, or list the scopes the key needs."), 400);
+
+  // An unparseable expiry used to be stored as-is, and NaN never compares as
+  // expired - so a typo produced a key that lives forever.
+  let expiresAt: string | null = null;
+  if (body.expires_at !== undefined && body.expires_at !== null) {
+    const when = Date.parse(String(body.expires_at));
+    if (!Number.isFinite(when)) return c.json(badRequest("expires_at must be an ISO 8601 date-time."), 400);
+    if (when <= Date.now()) return c.json(badRequest("expires_at must be in the future."), 400);
+    expiresAt = new Date(when).toISOString();
+  }
 
   const created = await createApiKey(c.env, {
     name,
     scopes: requested as ApiScope[],
     createdBy: c.get("apiActor").label,
-    expiresAt: body.expires_at ?? null,
+    expiresAt,
   });
 
   await logAudit(c.env, auditActor(c.get("apiActor")), "api_key.created", name, { scopes: requested }, c.req.raw);

@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
-import { upgradePasswordHashIfNeeded, verifyPassword } from "../lib/password.js";
+import { hashPassword, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
   deleteLoginFlow,
   deletePendingMfa,
   getLoginFlow,
   getPendingMfa,
+  sealLoginFlow,
   storeLoginFlow,
   storePendingMfa,
   type LoginFlow,
@@ -27,14 +28,46 @@ import { isDeviceTrusted, trustDevice } from "../lib/trusted-devices.js";
 
 export const login = new Hono<{ Bindings: Env }>();
 
+/**
+ * Where a direct login may send the browser afterwards: a path on this origin,
+ * nothing else. "//evil.test" and "/\\evil.test" are protocol-relative to
+ * browsers, so a leading slash alone is not enough. Capped in length, since it
+ * rides inside the sealed flow.
+ */
+export function safeNextPath(next: string | undefined): string {
+  if (!next || next.length > 512 || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return "/account";
+  if (/[\u0000-\u001f\u007f]/.test(next)) return "/account";
+  return next;
+}
+
+/**
+ * A hash of a random password with the deployment's current hasher, verified
+ * against on every miss. Computed once per isolate and per hasher: it is a
+ * constant, not request state, and hashing it per request would double the
+ * cost of every failed sign-in.
+ */
+const dummyHashes = new Map<string, Promise<StoredPassword>>();
+function dummyPasswordHash(env: Env): Promise<StoredPassword> {
+  const key = env.PASSWORD_HASHER ?? "scrypt";
+  if (!dummyHashes.has(key)) {
+    dummyHashes.set(
+      key,
+      hashPassword(crypto.randomUUID(), env).then((h) => ({ password_hash: h.hash, password_salt: h.salt, password_iterations: h.iterations }))
+    );
+  }
+  return dummyHashes.get(key)!;
+}
+
 /** Direct login entry point for /account and /admin - not tied to an OIDC request. */
 login.get("/login", async (c) => {
-  const next = c.req.query("next") ?? "/account";
+  const next = safeNextPath(c.req.query("next"));
 
   const existingUserId = await getSessionUserId(c.req.raw, c.env);
   if (existingUserId) return c.redirect(next, 302);
 
-  const flowId = await storeLoginFlow(c.env, { kind: "direct", next });
+  // Sealed rather than stored: this page is anonymous, and a KV write per page
+  // load let anyone spend the deployment's write quota (see sealLoginFlow).
+  const flowId = await sealLoginFlow(c.env, { kind: "direct", next });
   return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });
 
@@ -42,6 +75,9 @@ login.post("/logout", async (c) => {
   const session = await getSession(c.req.raw, c.env);
   if (session) await revokeSession(c.env, session.id);
   c.header("Set-Cookie", clearSessionCookie());
+  // Drop anything the browser kept from the signed-in pages (back/forward
+  // cache included). Not "cookies": that would also forget remembered devices.
+  c.header("Clear-Site-Data", '"cache"');
   return c.redirect("/login", 302);
 });
 
@@ -82,13 +118,15 @@ async function completeLoginFlow(
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
 
-  if (flow.kind === "direct") return { outcome: { type: "redirect", to: flow.next }, setCookie };
+  if (flow.kind === "direct") return { outcome: { type: "redirect", to: safeNextPath(flow.next) }, setCookie };
 
   if (flow.kind === "saml") {
     const sp = await getSpById(env, flow.request.spId);
     const fullUser = await getUserById(env, userId);
     if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookie };
     const issued = await issueSamlResponse(env, sp, flow.request, fullUser, sessionId, new Date());
+    // Already answered (a replayed request): the sign-in still stands, but no second response.
+    if (!issued) return { outcome: { type: "redirect", to: "/account" }, setCookie };
     await logAudit(env, fullUser, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId }, request);
     return { outcome: { type: "saml-post", ...issued }, setCookie };
   }
@@ -122,7 +160,11 @@ login.post("/login", async (c) => {
     );
   }
 
-  const valid = user && user.status === "active" && (await verifyPassword(password, user));
+  // An unknown or disabled account still costs one real hash verification, so
+  // the response time no longer tells an attacker which usernames exist
+  // (previously ~70 ms for a real account against ~5 ms for a miss).
+  const valid =
+    user && user.status === "active" ? await verifyPassword(password, user) : (await verifyPassword(password, await dummyPasswordHash(c.env)), false);
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);

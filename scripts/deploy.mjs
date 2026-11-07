@@ -36,7 +36,8 @@
 //   Zone > Zone > Read                   } only for the custom domain
 //   Zone > DNS > Edit                    }
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { ROOT, WRANGLER_CONFIG } from "./lib/paths.mjs";
@@ -168,19 +169,26 @@ async function main() {
     reason: "re-run with it deleted to mint a new one",
   });
 
+  // Private keys are generated into a private temporary directory outside the
+  // repository and removed on every exit path - including the process.exit()
+  // calls in setSecret/patch, which skip finally blocks, hence the exit hook.
+  // They used to be written to the repo root and deleted only on success, so a
+  // failed deploy could leave the live SAML signing key in the working tree.
+  const keyDir = mkdtempSync(join(tmpdir(), "flareid-keys-"));
+  const removeKeys = () => rmSync(keyDir, { recursive: true, force: true });
+  process.on("exit", removeKeys);
+
   if (rotateSigningKey || !(await hasSecret(ROOT, "SIGNING_KEY_PKCS8"))) {
     detail("generating an RS256 signing keypair...");
-    await runOrExit("node", ["scripts/gen-secrets-for-deploy.mjs", "."], { cwd: ROOT }, "signing key generation");
+    await runOrExit("node", ["scripts/gen-secrets-for-deploy.mjs", keyDir], { cwd: ROOT }, "signing key generation");
 
-    const keyPath = join(ROOT, ".signing-key.pem");
-    const jwkPath = join(ROOT, ".signing-public-jwk.txt");
+    const keyPath = join(keyDir, ".signing-key.pem");
+    const jwkPath = join(keyDir, ".signing-public-jwk.txt");
     await setSecret(ROOT, "SIGNING_KEY_PKCS8", readFileSync(keyPath, "utf8"));
     // Arrives pre-escaped as a JSON string literal, which patchJsonField uses
     // verbatim when it is already quoted.
     patch("SIGNING_PUBLIC_JWK", readFileSync(jwkPath, "utf8").trim());
     patch("SIGNING_KEY_ID", "flareid-key-1");
-    rmSync(keyPath, { force: true });
-    rmSync(jwkPath, { force: true });
   } else {
     detail("SIGNING_KEY_PKCS8 already set, leaving it (FORCE_ROTATE_SIGNING_KEY=true to rotate)");
   }
@@ -190,15 +198,20 @@ async function main() {
   // and left alone afterwards - rotating breaks SAML logins until every SP is
   // updated, so there is deliberately no FORCE_ROTATE flag here.
   if (!(await hasSecret(ROOT, "SAML_SIGNING_KEY_PKCS8"))) {
+    // Checked before a key exists: storing the secret and then failing to
+    // record the matching certificate left a live key with no certificate (and,
+    // before keys moved out of the repo, the key file in the working tree).
+    if (!readFileSync(WRANGLER_CONFIG, "utf8").includes('"SAML_SIGNING_CERT"')) {
+      error('wrangler.jsonc has no vars.SAML_SIGNING_CERT field to record the certificate in. Add `"SAML_SIGNING_CERT": ""` under vars (see the shipped wrangler.jsonc) and re-run.');
+      process.exit(1);
+    }
     detail("generating a SAML signing certificate (RSA-3072, 10y)...");
-    await runOrExit("node", ["scripts/generate-saml-cert.mjs", "--out-dir", "."], { cwd: ROOT }, "SAML certificate generation");
+    await runOrExit("node", ["scripts/generate-saml-cert.mjs", "--out-dir", keyDir], { cwd: ROOT }, "SAML certificate generation");
 
-    const samlKeyPath = join(ROOT, ".saml-key.pem");
-    const samlCertPath = join(ROOT, ".saml-cert.pem");
+    const samlKeyPath = join(keyDir, ".saml-key.pem");
+    const samlCertPath = join(keyDir, ".saml-cert.pem");
     await setSecret(ROOT, "SAML_SIGNING_KEY_PKCS8", readFileSync(samlKeyPath, "utf8"));
     patch("SAML_SIGNING_CERT", readFileSync(samlCertPath, "utf8").trim());
-    rmSync(samlKeyPath, { force: true });
-    rmSync(samlCertPath, { force: true });
   } else {
     detail("SAML_SIGNING_KEY_PKCS8 already set, leaving it");
   }

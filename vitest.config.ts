@@ -18,6 +18,18 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.test.jsonc" },
       miniflare: {
+        // A stand-in SCIM server at https://scim.test, so the provisioning paths
+        // can be exercised without the network. Creates answer with an id and
+        // everything else succeeds; any other host is passed through.
+        outboundService: async (request: Request) => {
+          const url = new URL(request.url);
+          if (url.hostname !== "scim.test") return fetch(request);
+          if (request.method === "POST") {
+            return new Response(JSON.stringify({ id: crypto.randomUUID() }), { status: 201, headers: { "Content-Type": "application/scim+json" } });
+          }
+          if (request.method === "DELETE") return new Response(null, { status: 204 });
+          return new Response(JSON.stringify({ Resources: [], totalResults: 0 }), { status: 200, headers: { "Content-Type": "application/scim+json" } });
+        },
         bindings: {
           TEST_MIGRATIONS: migrations,
           // Set here rather than in wrangler.test.jsonc because these are

@@ -13,6 +13,7 @@ import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, veri
 import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession } from "../lib/sessions.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
+import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 
 export const account = new Hono<{ Bindings: Env }>();
@@ -414,7 +415,7 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number): 
 
   if (flow.kind === "direct") {
     await deleteLoginFlow(env, resumeFlowId);
-    return flow.next;
+    return safeNextPath(flow.next);
   }
 
   // A SAML flow can't finish here - it ends in a POST form, not a URL. The

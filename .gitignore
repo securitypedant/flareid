@@ -6,3 +6,6 @@ dist/
 .DS_Store
 .signing-key.pem
 .signing-public-jwk.txt
+# Deploy-time key material (now generated outside the repo; ignored in case of an older script)
+.saml-key.pem
+.saml-cert.pem

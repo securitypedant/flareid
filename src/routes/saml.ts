@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
-import { deleteLoginFlow, getFlowBinding, getLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
+import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
 import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
@@ -25,6 +25,12 @@ export const saml = new Hono<{ Bindings: Env }>();
 
 const REQUEST_ID_TTL_SECONDS = 600;
 
+const ALREADY_ANSWERED = {
+  title: "This sign-in was already completed",
+  message: "That sign-in request has already been answered. Go back to the app and start again.",
+  action: null,
+};
+
 /**
  * Issues the signed response and returns the fields for the auto-POST form.
  *
@@ -39,7 +45,13 @@ export async function issueSamlResponse(
   user: UserRow,
   sessionId: string,
   authnInstant: Date
-): Promise<{ acsUrl: string; samlResponse: string; relayState: string | null }> {
+): Promise<{ acsUrl: string; samlResponse: string; relayState: string | null } | null> {
+  // Single-use, enforced here rather than when the request arrives: marking at
+  // receipt made every anonymous AuthnRequest a KV write. An ID that has already
+  // been answered gets nothing new to post (null), even if it verifies.
+  const replayKey = `saml:req:${request.requestId}`;
+  if (await env.SESSIONS_KV.get(replayKey)) return null;
+  await env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
   const xml = await buildSignedResponse(env, {
     sp,
     user,
@@ -118,12 +130,12 @@ saml.get("/saml/sso", async (c) => {
   }
 
   // Single-use: an AuthnRequest ID may only ever mint one response, so a
-  // replayed request - even one that verifies - gets nothing new to post.
+  // replayed request - even one that verifies - gets nothing new to post. This
+  // is a read; the ID is marked used when the response is issued.
   if (await c.env.SESSIONS_KV.get(`saml:req:${request.id}`)) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "replayed_request_id" }, c.req.raw);
-    return renderAuthMessage(c, 400, { title: "This sign-in was already completed", message: "That sign-in request has already been answered. Go back to the app and start again.", action: null });
+    return renderAuthMessage(c, 400, ALREADY_ANSWERED);
   }
-  await c.env.SESSIONS_KV.put(`saml:req:${request.id}`, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
 
   let relayState: string | null = null;
   if (raw.RelayState !== undefined) {
@@ -149,6 +161,7 @@ saml.get("/saml/sso", async (c) => {
         return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
       }
       const issued = await issueSamlResponse(c.env, sp, pending, user, session.id, new Date(session.createdAt));
+      if (!issued) return renderAuthMessage(c, 400, ALREADY_ANSWERED);
       await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: request.id, sso: true }, c.req.raw);
       return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
     }
@@ -158,7 +171,7 @@ saml.get("/saml/sso", async (c) => {
     return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
-  const flowId = await storeLoginFlow(c.env, { kind: "saml", request: pending });
+  const flowId = await sealLoginFlow(c.env, { kind: "saml", request: pending });
   return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });
 
@@ -196,6 +209,7 @@ saml.get("/saml/complete", async (c) => {
 
   await deleteLoginFlow(c.env, flowId);
   const issued = await issueSamlResponse(c.env, sp, flow.request, user, session.id, new Date(session.createdAt));
+  if (!issued) return renderAuthMessage(c, 400, ALREADY_ANSWERED);
   await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId, sso: true }, c.req.raw);
   return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
 });

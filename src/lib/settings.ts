@@ -209,12 +209,20 @@ export interface LoginGradient {
 
 const DEFAULT_LOGIN_GRADIENT: LoginGradient = { from: "#f7b733", to: "#f6821f" };
 
-export async function getLoginGradient(env: Env): Promise<LoginGradient> {
-  const [from, to] = await Promise.all([getSetting(env, "login_gradient_from"), getSetting(env, "login_gradient_to")]);
-  return { from: from || DEFAULT_LOGIN_GRADIENT.from, to: to || DEFAULT_LOGIN_GRADIENT.to };
+/** The only colour syntax accepted: these values are interpolated into the sign-in page's <style>. */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
+export async function getLoginGradient(env: Env): Promise<LoginGradient> {
+  const [from, to] = await Promise.all([getSetting(env, "login_gradient_from"), getSetting(env, "login_gradient_to")]);
+  // A value stored before validation existed falls back rather than reaching the page.
+  return { from: isHexColor(from) ? from : DEFAULT_LOGIN_GRADIENT.from, to: isHexColor(to) ? to : DEFAULT_LOGIN_GRADIENT.to };
+}
+
+/** Throws unless both are #rrggbb: a colour like `red;}</style><script>` would otherwise break out of the stylesheet. */
 export async function setLoginGradient(env: Env, gradient: LoginGradient): Promise<void> {
+  if (!isHexColor(gradient.from) || !isHexColor(gradient.to)) throw new RangeError("Gradient colours must be #rrggbb hex values.");
   await Promise.all([
     setSetting(env, "login_gradient_from", gradient.from),
     setSetting(env, "login_gradient_to", gradient.to),

@@ -5,7 +5,9 @@ import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId } from "./schemas.js";
 import { parseRule } from "./groups.js";
-import { revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
+import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
+import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups } from "./scim-client.js";
+import type { GroupRow, UserRow } from "./types.js";
 
 /**
  * Bulk directory import.
@@ -81,6 +83,8 @@ export interface ImportResult {
   generated_passwords: Record<string, string>;
   managers_resolved: number;
   errors: { username?: string; group?: string; message: string }[];
+  /** Present when SCIM is configured: what was pushed to, or removed from, the SCIM server. */
+  scim?: { users_pushed: number; users_removed: number; groups_pushed: number; groups_removed: number; errors: number };
 }
 
 export class ImportValidationError extends Error {}
@@ -152,33 +156,23 @@ async function ensureDomain(env: Env, domain: string): Promise<void> {
  * directory, not for locking yourself out of it. A caller that genuinely wants
  * an empty instance can delete the administrators afterwards.
  */
-async function replaceExistingDirectory(env: Env): Promise<void> {
+async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; groups: GroupRow[] }> {
   const { results: doomed } = await env.DB.prepare(
-    `SELECT id FROM users
+    `SELECT * FROM users
       WHERE id NOT IN (
         SELECT user_id FROM group_members WHERE group_id = (SELECT id FROM groups WHERE name = ?)
       )`
   )
     .bind(SUPER_ADMINS_GROUP)
-    .all<{ id: number }>();
+    .all<UserRow>();
+  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name != ?").bind(SUPER_ADMINS_GROUP).all<GroupRow>();
 
-  const ids = doomed.map((r) => r.id);
-  if (ids.length > 0) {
-    const placeholders = ids.map(() => "?").join(",");
-    await env.DB.batch([
-      env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).bind(...ids),
-    ]);
-  }
-
+  if (doomed.length > 0) await env.DB.batch(deleteUserStatements(env, ...doomed.map((r) => r.id)));
   await env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP).run();
+
+  // Returned so the caller can remove them from the SCIM server too: once the
+  // rows are gone, their scim_ids are the only way to find them there.
+  return { users: doomed.filter((u) => u.scim_id), groups: doomedGroups.filter((g) => g.scim_id) };
 }
 
 export interface ImportOptions {
@@ -234,7 +228,8 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   };
 
   await ensureDomain(env, domain);
-  if (mode === "replace") await replaceExistingDirectory(env);
+  const removed = mode === "replace" ? await replaceExistingDirectory(env) : { users: [], groups: [] };
+  const touchedUserIds: number[] = [];
 
   // --- Groups -------------------------------------------------------------
   // Every name the bundle mentions, whether in `groups` or only as a user's
@@ -387,6 +382,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         }
 
         userId = existing.id;
+        touchedUserIds.push(userId);
         externalIdByUsername.set(username, existing.external_id);
         result.users.updated++;
       } else {
@@ -432,6 +428,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
 
         if (!inserted) throw new Error("insert returned no row");
         userId = inserted.id;
+        touchedUserIds.push(userId);
         externalIdByUsername.set(username, externalId);
         if (generated) result.generated_passwords[upn] = password;
         result.users.created++;
@@ -501,6 +498,35 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     } catch (err) {
       result.errors.push({ username, message: `Setting manager failed: ${String(err)}` });
     }
+  }
+
+  // --- SCIM -----------------------------------------------------------------
+  // The admin console pushes every change it makes; an import has to as well,
+  // or users it disables (or replace mode deletes) stay active downstream - in
+  // Cloudflare Access, say - for good. Best-effort, like the console: a SCIM
+  // failure is counted and reported, never a reason to undo the import.
+  if (await isScimConfigured(env)) {
+    const scim = { users_pushed: 0, users_removed: 0, groups_pushed: 0, groups_removed: 0, errors: 0 };
+    for (const user of removed.users) {
+      const r = await deleteUserScim(env, user);
+      r.ok ? scim.users_removed++ : scim.errors++;
+    }
+    for (const group of removed.groups) {
+      const r = await deleteGroupScim(env, group);
+      r.ok ? scim.groups_removed++ : scim.errors++;
+    }
+    for (const id of touchedUserIds) {
+      const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+      if (!user) continue;
+      // pushUser sends active:false for a disabled user - deprovisioning, not deletion.
+      const r = await pushUser(env, user);
+      r.ok ? scim.users_pushed++ : scim.errors++;
+    }
+    // Memberships (dynamic ones included) may have changed for any group.
+    const { groups, groupErrors } = await syncGroups(env);
+    scim.groups_pushed = groups - groupErrors;
+    scim.errors += groupErrors;
+    result.scim = scim;
   }
 
   return result;

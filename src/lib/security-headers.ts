@@ -60,6 +60,9 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   return next();
 };
 
+/** Public documents relying parties fetch and may cache; everything else is no-store. */
+const PUBLIC_CACHEABLE = new Set(["/.well-known/openid-configuration", "/jwks.json", "/saml/metadata", "/saml/cert.pem", "/health"]);
+
 /** Security response headers, on every response. */
 export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   await next();
@@ -75,6 +78,14 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   h.set("Referrer-Policy", "same-origin");
   h.set("Cross-Origin-Opener-Policy", "same-origin");
   h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+
+  // Nothing dynamic may be cached by the browser or anything between: pages
+  // carry an MFA seed, a SCIM secret, a freshly minted API key, a signed SAML
+  // response, and /token responses carry tokens (RFC 6749 requires no-store).
+  // Only the published, public documents are left cacheable.
+  if (!h.has("Cache-Control") && !PUBLIC_CACHEABLE.has(new URL(c.req.url).pathname)) {
+    h.set("Cache-Control", "no-store");
+  }
 
   // Content-Security-Policy. Pages may run only the inline scripts FlareID
   // itself renders (allowed by hash - see scriptTag in html.ts); there are no

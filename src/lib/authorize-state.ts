@@ -61,12 +61,78 @@ export async function storeLoginFlow(env: Env, flow: LoginFlow): Promise<string>
   return flowId;
 }
 
+/**
+ * Sealed (stateless) login flows, for the anonymous entry points.
+ *
+ * GET /login, /authorize and /saml/sso are reachable by anyone, and storing a
+ * flow in KV for each meant every anonymous page load was a KV write - an easy
+ * way to burn a plan's write quota (1,000 a day on the Free plan) and break
+ * sign-in for everyone. A sealed flow carries its own state in the form instead:
+ * the flow and an expiry, MACed with a key derived from the deployment's
+ * signing key, so a client can neither forge nor alter one - an OIDC flow's
+ * redirect_uri was checked against the client's allowlist when it was sealed,
+ * and must not be changeable afterwards.
+ *
+ * Sealed ids start "s." (KV ids are hex). Flows created after a completed
+ * login - the forced-enrolment resume, /saml/complete's binding - stay in KV:
+ * those writes need a correct password first.
+ */
+const SEALED_PREFIX = "s.";
+
+async function flowSealKey(env: Env): Promise<CryptoKey | null> {
+  const material = env.SIGNING_KEY_PKCS8 ?? env.COOKIE_ENCRYPTION_KEY;
+  if (!material) return null;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`flareid login-flow seal v1\n${material}`));
+  return crypto.subtle.importKey("raw", digest, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+
+function b64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromB64url(s: string): Uint8Array {
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+}
+
+/** A flow id for an anonymous entry point: sealed when the deployment has key material, a KV flow otherwise. */
+export async function sealLoginFlow(env: Env, flow: LoginFlow): Promise<string> {
+  const key = await flowSealKey(env);
+  if (!key) return storeLoginFlow(env, flow);
+  const payload = b64url(new TextEncoder().encode(JSON.stringify({ f: flow, exp: Date.now() + FLOW_TTL_SECONDS * 1000 })));
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+  return `${SEALED_PREFIX}${payload}.${b64url(mac)}`;
+}
+
+async function openSealedFlow(env: Env, flowId: string): Promise<LoginFlow | null> {
+  const key = await flowSealKey(env);
+  const [payload, mac] = flowId.slice(SEALED_PREFIX.length).split(".");
+  if (!key || !payload || !mac) return null;
+  try {
+    const ok = await crypto.subtle.verify("HMAC", key, fromB64url(mac) as BufferSource, new TextEncoder().encode(payload));
+    if (!ok) return null;
+    const { f, exp } = JSON.parse(new TextDecoder().decode(fromB64url(payload))) as { f: LoginFlow; exp: number };
+    return Date.now() < exp ? f : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isSealedFlowId(flowId: string): boolean {
+  return flowId.startsWith(SEALED_PREFIX);
+}
+
 export async function getLoginFlow(env: Env, flowId: string): Promise<LoginFlow | null> {
+  if (isSealedFlowId(flowId)) return openSealedFlow(env, flowId);
   const raw = await env.SESSIONS_KV.get(`flow:${flowId}`);
   return raw ? (JSON.parse(raw) as LoginFlow) : null;
 }
 
 export async function deleteLoginFlow(env: Env, flowId: string): Promise<void> {
+  // A sealed flow has nothing stored to delete (and a KV delete is a write).
+  if (isSealedFlowId(flowId)) return;
   await env.SESSIONS_KV.delete(`flow:${flowId}`);
 }
 

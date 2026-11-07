@@ -89,7 +89,7 @@ export async function hashPassword(password: string, env?: Pick<Env, "PASSWORD_H
   return { hash: `$scrypt$ln=${SCRYPT.ln},r=${SCRYPT.r},p=${SCRYPT.p}$${b64(salt)}$${b64(key)}`, salt: "", iterations: 0 };
 }
 
-type StoredPassword = { password_hash: string; password_salt: string; password_iterations: number };
+export type StoredPassword = { password_hash: string; password_salt: string; password_iterations: number };
 
 export async function verifyPassword(password: string, stored: StoredPassword): Promise<boolean> {
   const phc = parseScrypt(stored.password_hash);

@@ -13,11 +13,14 @@ import { api } from "./routes/api.js";
 import { getAppName } from "./lib/settings.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
+import { edgeRateLimit } from "./lib/edge-limit.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
 // Every response, the API included.
 app.use("*", securityHeaders);
+// Flood control for anonymous routes, before any handler can write anything.
+app.use("*", edgeRateLimit);
 
 app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
 

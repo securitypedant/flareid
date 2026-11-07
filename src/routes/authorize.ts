@@ -3,7 +3,7 @@ import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
-import { storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
+import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSessionAmr, getSessionUserId } from "../lib/sessions.js";
 import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 
@@ -109,6 +109,6 @@ authorize.get("/authorize", async (c) => {
     return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
-  const flowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
+  const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
   return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
 });

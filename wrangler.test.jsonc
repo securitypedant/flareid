@@ -37,5 +37,11 @@
       "binding": "SESSIONS_KV",
       "id": "sessions-test"
     }
+  ],
+  // High enough that the suite's many sign-ins from one address never trip
+  // them; the refusal path is tested by injecting a limiter that says no.
+  "ratelimits": [
+    { "name": "AUTH_LIMITER", "namespace_id": "1", "simple": { "limit": 100000, "period": 60 } },
+    { "name": "API_LIMITER", "namespace_id": "2", "simple": { "limit": 100000, "period": 60 } }
   ]
 }

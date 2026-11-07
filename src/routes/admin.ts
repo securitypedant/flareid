@@ -44,7 +44,7 @@ import {
 } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
-import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
+import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
@@ -1310,22 +1310,15 @@ admin.post("/admin/users/:id/delete", async (c) => {
   if (!user) return c.text("Not found", 404);
   if (id === c.get("user").id) return c.text("You cannot delete your own account.", 400);
 
+  // Local first, in one batch, and only then the remote delete. The other way
+  // round, a local failure (a trusted_devices row the batch didn't cover, once)
+  // left the user deleted downstream but alive here.
+  await c.env.DB.batch(deleteUserStatements(c.env, id));
+
   if (await scimConfigured(c.env)) {
     const result = await deleteUserScim(c.env, user);
     if (!result.ok) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", user.upn, { action: "delete", error: result.error }, c.req.raw);
   }
-
-  await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM refresh_tokens WHERE user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM auth_codes WHERE user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM mfa_backup_codes WHERE user_id = ?").bind(id),
-    // Detach (but keep) audit history referencing this user, so the FK doesn't block deletion.
-    c.env.DB.prepare("UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
-  ]);
 
   await logAudit(c.env, c.get("user"), "user.deleted", user.upn, undefined, c.req.raw);
 
@@ -2095,7 +2088,9 @@ admin.post("/admin/api-keys", async (c) => {
   const requested = (Array.isArray(body.scopes) ? body.scopes : body.scopes ? [body.scopes] : [])
     .map(String)
     .filter(isApiScope);
-  const scopes: ApiScope[] = requested.length > 0 ? requested : ["admin"];
+  // Unticking every box used to mint an admin key. It now asks again.
+  if (requested.length === 0) return c.text("Choose at least one scope for the key.", 400);
+  const scopes: ApiScope[] = requested;
 
   const created = await createApiKey(c.env, { name, scopes, createdBy: c.get("user").upn });
   await logAudit(c.env, c.get("user"), "api_key.created", name, { scopes }, c.req.raw);

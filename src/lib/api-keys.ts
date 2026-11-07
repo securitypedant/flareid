@@ -104,7 +104,11 @@ export async function verifyApiKey(env: Env, token: string): Promise<ApiKeyRow |
   const row = await env.DB.prepare("SELECT * FROM api_keys WHERE key_hash = ?").bind(keyHash).first<ApiKeyRow>();
   if (!row) return null;
   if (row.revoked_at) return null;
-  if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return null;
+  // Fail closed on an expiry that does not parse (stored before validation existed).
+  if (row.expires_at) {
+    const expires = new Date(row.expires_at).getTime();
+    if (!Number.isFinite(expires) || expires < Date.now()) return null;
+  }
 
   return row;
 }

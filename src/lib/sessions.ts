@@ -116,6 +116,28 @@ export async function revokeTokensForUser(env: Env, userId: number): Promise<voi
   ]);
 }
 
+/**
+ * Every statement needed to delete a user, for one D1 batch: each table with a
+ * users(id) foreign key, then the row. Shared by the admin delete and the
+ * directory import's replace mode, so the two cannot drift - a table added
+ * later goes here once.
+ */
+export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStatement[] {
+  const ph = ids.map(() => "?").join(",");
+  return [
+    env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (${ph})`).bind(...ids),
+    // Audit history is kept, detached from the account.
+    env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM users WHERE id IN (${ph})`).bind(...ids),
+  ];
+}
+
 /** Revokes a session by its own id (e.g. on logout, or "sign out this device"). */
 export async function revokeSession(env: Env, sessionId: string): Promise<void> {
   await env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();

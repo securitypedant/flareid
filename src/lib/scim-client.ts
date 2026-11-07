@@ -232,6 +232,12 @@ export async function syncAll(env: Env): Promise<{ users: number; userErrors: nu
     if (!result.ok) userErrors++;
   }
 
+  const { groups, groupErrors } = await syncGroups(env);
+  return { users: users.length, userErrors, groups, groupErrors };
+}
+
+/** Pushes every group with its resolved members (dynamic ones included). */
+export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number }> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
   for (const group of groups) {
@@ -248,5 +254,10 @@ export async function syncAll(env: Env): Promise<{ users: number; userErrors: nu
     if (!result.ok) groupErrors++;
   }
 
-  return { users: users.length, userErrors, groups: groups.length, groupErrors };
+  return { groups: groups.length, groupErrors };
+}
+
+export async function isScimConfigured(env: Env): Promise<boolean> {
+  const { endpoint, secret } = await getScimConfig(env);
+  return !!endpoint && !!secret;
 }
