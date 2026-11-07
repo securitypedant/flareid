@@ -29,7 +29,7 @@ function routeGroup(method: string, path: string): Group | null {
   if (path.startsWith("/scim/v2/")) return "api";
   if (method === "POST" && (path === "/forgot-password" || path.startsWith("/reset-password") || path.startsWith("/invite/"))) return "auth";
   if (path === "/forgot-password" || path.startsWith("/reset-password/") || path.startsWith("/invite/")) return "auth";
-  if (path === "/logout" || path === "/oidc/logout" || path === "/saml/slo") return "auth";
+  if (path === "/logout" || path.startsWith("/oidc/logout") || path === "/saml/slo" || path.startsWith("/consent/")) return "auth";
   return null;
 }
 

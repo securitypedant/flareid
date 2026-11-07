@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex, randomToken } from "../lib/tokens.js";
-import { signIdToken } from "../lib/jwt.js";
+import { atHash, signIdToken } from "../lib/jwt.js";
+import { acrFor, effectiveClaimGroups } from "../lib/oidc.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
@@ -26,7 +27,9 @@ token.post("/token", async (c) => {
   const body = await c.req.parseBody();
   const grantType = String(body.grant_type ?? "");
 
-  const client = await authenticateClient(c.env, body, c.req.header("Authorization"));
+  // Public clients authenticate by client_id alone here; PKCE (required for
+  // them at /authorize) is what binds the code to the app that started it.
+  const client = await authenticateClient(c.env, body, c.req.header("Authorization"), { allowPublic: true });
   if (!client) return c.json({ error: "invalid_client" }, 401);
 
   if (grantType === "authorization_code") {
@@ -45,6 +48,8 @@ token.post("/token", async (c) => {
       code_challenge_method: string | null;
       expires_at: string;
       amr: string;
+      auth_time: number | null;
+      sid: string | null;
     }>();
 
     if (!authCode || authCode.client_id !== client.client_id || authCode.redirect_uri !== redirectUri) {
@@ -70,7 +75,11 @@ token.post("/token", async (c) => {
     if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(authCode.amr || '["pwd"]');
-    return issueTokenResponse(c.env, client, user.id, authCode.scope, amr, authCode.nonce ?? undefined);
+    return issueTokenResponse(c.env, client, user.id, authCode.scope, amr, {
+      nonce: authCode.nonce ?? undefined,
+      authTime: authCode.auth_time ?? Math.floor(Date.now() / 1000),
+      sid: authCode.sid,
+    });
   }
 
   if (grantType === "refresh_token") {
@@ -108,7 +117,11 @@ token.post("/token", async (c) => {
     if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(row.amr || '["pwd"]');
-    return issueTokenResponse(c.env, client, user.id, row.scope, amr, undefined, { refreshFamily: row.family_id ?? row.token_hash });
+    return issueTokenResponse(c.env, client, user.id, row.scope, amr, {
+      authTime: row.auth_time ?? Math.floor(new Date(row.created_at).getTime() / 1000),
+      sid: row.sid,
+      refreshFamily: row.family_id ?? row.token_hash,
+    });
   }
 
   return c.json({ error: "unsupported_grant_type" }, 400);
@@ -123,6 +136,9 @@ interface RefreshTokenRow {
   rotated_at: string | null;
   expires_at: string | null;
   family_id: string | null;
+  created_at: string;
+  auth_time: number | null;
+  sid: string | null;
 }
 
 async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
@@ -135,6 +151,8 @@ async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
  * @param opts.refreshFamily - set when answering a refresh grant: a new token
  *   is always issued in that family (rotation). Without it, a refresh token is
  *   issued only if offline_access was granted, as the head of a new family.
+ * @param opts.authTime - when the user authenticated (epoch seconds), carried
+ *   unchanged through refreshes so auth_time keeps meaning "last login".
  */
 async function issueTokenResponse(
   env: Env,
@@ -142,8 +160,7 @@ async function issueTokenResponse(
   userId: number,
   scope: string,
   amr: string[],
-  nonce?: string,
-  opts?: { refreshFamily?: string }
+  opts: { nonce?: string; authTime: number; sid: string | null; refreshFamily?: string }
 ) {
   const user = await getUserById(env, userId);
   if (!user) return Response.json({ error: "server_error" }, { status: 500 });
@@ -163,13 +180,13 @@ async function issueTokenResponse(
     .run();
 
   let refreshToken: string | undefined;
-  if (opts?.refreshFamily || scope.split(" ").includes("offline_access")) {
+  if (opts.refreshFamily || scope.split(" ").includes("offline_access")) {
     refreshToken = randomToken(32);
     const refreshTokenHash = await sha256Hex(refreshToken);
     const now = Date.now();
     await env.DB.prepare(
-      `INSERT INTO refresh_tokens (token_hash, client_id, user_id, scope, created_at, amr, expires_at, family_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO refresh_tokens (token_hash, client_id, user_id, scope, created_at, amr, expires_at, family_id, auth_time, sid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         refreshTokenHash,
@@ -179,26 +196,35 @@ async function issueTokenResponse(
         new Date(now).toISOString(),
         amrJson,
         new Date(now + REFRESH_TOKEN_TTL_SECONDS * 1000).toISOString(),
-        opts?.refreshFamily ?? refreshTokenHash
+        opts.refreshFamily ?? refreshTokenHash,
+        opts.authTime,
+        opts.sid
       )
       .run();
   }
 
-  const idToken = await signIdToken(env, client.client_id, {
-    sub: String(user.id),
-    id: user.external_id,
-    email: user.upn,
-    name: user.display_name,
-    givenName: user.given_name,
-    familyName: user.family_name,
-    groups,
-    amr,
-    jobTitle: user.job_title,
-    department: user.department,
-    managerEmail,
-    customAttributes: parseCustomAttributes(user.custom_attributes),
-    nonce,
-  });
+  const idToken = await signIdToken(
+    env,
+    client.client_id,
+    {
+      sub: String(user.id),
+      id: user.external_id,
+      email: user.upn,
+      name: user.display_name,
+      givenName: user.given_name,
+      familyName: user.family_name,
+      username: user.username,
+      groups,
+      amr,
+      jobTitle: user.job_title,
+      department: user.department,
+      managerEmail,
+      customAttributes: parseCustomAttributes(user.custom_attributes),
+      nonce: opts.nonce,
+    },
+    effectiveClaimGroups(client, scope),
+    { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ?? undefined, atHash: await atHash(accessToken) }
+  );
 
   return Response.json({
     access_token: accessToken,

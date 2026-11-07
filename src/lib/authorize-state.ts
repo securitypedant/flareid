@@ -9,6 +9,10 @@ export interface PendingAuthorizeRequest {
   nonce?: string;
   codeChallenge?: string;
   codeChallengeMethod?: string;
+  /** OIDC `prompt`, space-separated: none, login, consent. */
+  prompt?: string;
+  /** OIDC `max_age`, seconds: an older session must re-authenticate. */
+  maxAge?: number;
 }
 
 export interface PendingSamlRequest {

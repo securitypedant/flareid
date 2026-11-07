@@ -69,6 +69,13 @@ export interface OAuthClientRow {
   name: string;
   redirect_uris: string; // JSON-encoded string[]
   created_at: string;
+  /** "public" clients (SPAs, native apps) have no secret and must use PKCE. */
+  client_type: "confidential" | "public";
+  /** 1 = first-party, no consent screen. */
+  trusted: number;
+  /** JSON array of ClaimGroup; NULL = every group (the pre-v3 behaviour). */
+  allowed_claims: string | null;
+  post_logout_redirect_uris: string; // JSON-encoded string[]
 }
 
 export interface SamlServiceProviderRow {

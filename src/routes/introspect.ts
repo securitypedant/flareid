@@ -76,7 +76,8 @@ introspect.post("/introspect", async (c) => {
  */
 introspect.post("/revoke", async (c) => {
   const body = await c.req.parseBody();
-  const client = await authenticateClient(c.env, body, c.req.header("Authorization"));
+  // Public clients may revoke their own tokens (RFC 7009 section 2.1); introspection stays confidential-only.
+  const client = await authenticateClient(c.env, body, c.req.header("Authorization"), { allowPublic: true });
   if (!client) return c.json({ error: "invalid_client" }, 401);
 
   const token = String(body.token ?? "");

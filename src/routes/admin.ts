@@ -49,6 +49,7 @@ import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
+import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, parseAllowedClaims } from "../lib/oidc.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -2217,6 +2218,35 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
   return c.redirect("/admin/integrations/api-keys?saved=1", 302);
 });
 
+/** The v3 client settings, shared by the new and edit forms. */
+function clientSettingsFields(client?: OAuthClientRow): string {
+  const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
+  const logoutUris: string[] = client ? JSON.parse(client.post_logout_redirect_uris || "[]") : [];
+  const trusted = client ? client.trusted === 1 : true;
+  return `
+    <label for="post_logout_redirect_uris">Post-logout redirect URIs (one per line)</label>
+    <textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" rows="2" placeholder="https://app.example.com/signed-out">${escapeHtml(logoutUris.join("\n"))}</textarea>
+    <p class="muted" style="margin-top:-8px;">Where RP-initiated logout (<code>/oidc/logout</code>) may send the browser afterwards. Anything else is refused.</p>
+    <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
+    <label style="margin-top:12px;">Claims this app may receive</label>
+    <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
+    ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}`;
+}
+
+function readClientSettings(body: Record<string, string | File | (string | File)[]>) {
+  const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(String);
+  return {
+    trusted: body.trusted ? 1 : 0,
+    allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => list(body.allowed_claims).includes(g))),
+    postLogoutRedirectUris: JSON.stringify(
+      String(body.post_logout_redirect_uris ?? "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    ),
+  };
+}
+
 admin.get("/admin/clients/new", async (c) => {
   return c.html(
     layout(
@@ -2228,6 +2258,10 @@ admin.get("/admin/clients/new", async (c) => {
           <input type="text" id="name" name="name" placeholder="Cloudflare Access" required />
           <label for="redirect_uris">Redirect URIs (one per line)</label>
           <textarea id="redirect_uris" name="redirect_uris" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback"></textarea>
+          <label>Client type</label>
+          <label style="font-weight:400;"><input type="radio" name="client_type" value="confidential" checked style="width:auto; display:inline; margin-right:6px;" /> Confidential &mdash; a server that can keep a secret (Cloudflare Access, a web backend)</label>
+          <label style="font-weight:400;"><input type="radio" name="client_type" value="public" style="width:auto; display:inline; margin-right:6px;" /> Public &mdash; a single-page or native app: no secret, PKCE required, loopback redirects on any port</label>
+          ${clientSettingsFields()}
           <div class="form-actions end">${cancelLink("/admin/integrations/oidc")}<button class="primary" type="submit">Create client</button></div>
         </form>
       `),
@@ -2237,7 +2271,9 @@ admin.get("/admin/clients/new", async (c) => {
 });
 
 admin.post("/admin/clients", async (c) => {
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
+  const isPublic = body.client_type === "public";
+  const settings = readClientSettings(body);
   const name = String(body.name ?? "").trim();
   const redirectUris = String(body.redirect_uris ?? "")
     .split("\n")
@@ -2263,13 +2299,15 @@ admin.post("/admin/clients", async (c) => {
   const seeded = seededId !== "" && seededSecret.length >= 24;
 
   const clientId = seeded ? seededId : `flareid_${randomToken(8)}`;
-  const clientSecret = seeded ? seededSecret : randomToken(24);
-  const clientSecretHash = await sha256Hex(clientSecret);
+  // A public client has no secret at all - an empty hash never matches.
+  const clientSecret = isPublic ? "" : seeded ? seededSecret : randomToken(24);
+  const clientSecretHash = isPublic ? "" : await sha256Hex(clientSecret);
 
   const result = await c.env.DB.prepare(
-    "INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?)"
+    `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString())
+    .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris)
     .run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.created", name, undefined, c.req.raw);
@@ -2279,8 +2317,8 @@ admin.post("/admin/clients", async (c) => {
       c,
       "Client created",
       cardSection(`
-        <p class="success">Created "${escapeHtml(name)}".</p>
-        ${secretBlock("Client secret", clientSecret)}
+        <p class="success">Created "${escapeHtml(name)}"${isPublic ? " as a public client: it has no secret, and must use PKCE (S256)" : ""}.</p>
+        ${isPublic ? "" : secretBlock("Client secret", clientSecret)}
         ${oidcEndpointsBlock(c.env, clientId)}
         <a href="/admin/clients/${result.meta.last_row_id}"><button class="primary" type="button">Continue</button></a>
       `),
@@ -2307,12 +2345,18 @@ admin.get("/admin/clients/:id", async (c) => {
           <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
           <label for="redirect_uris">Redirect URIs (one per line)</label>
           <textarea id="redirect_uris" name="redirect_uris" rows="3">${escapeHtml(JSON.parse(client.redirect_uris).join("\n"))}</textarea>
+          <p class="muted" style="margin-top:-8px;">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
+          ${clientSettingsFields(client)}
           <div class="form-actions end">${cancelLink(`/admin/clients/${id}`)}<button class="primary" type="submit">Save</button></div>
         </form>
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          <form method="POST" action="/admin/clients/${id}/rotate-secret">
+          ${
+            client.client_type === "public"
+              ? ""
+              : `<form method="POST" action="/admin/clients/${id}/rotate-secret">
             <button class="secondary" type="submit">Rotate secret</button>
-          </form>
+          </form>`
+          }
           <form method="POST" action="/admin/clients/${id}/delete" ${confirmAttrs(`Anything still using this client_id will stop working immediately.`, { title: `Delete the OIDC client "${client.name}"?`, action: "Delete client", danger: true })}>
             <button class="danger" type="submit">Delete client</button>
           </form>
@@ -2326,15 +2370,16 @@ admin.get("/admin/clients/:id", async (c) => {
 
 admin.post("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
+  const settings = readClientSettings(body);
   const name = String(body.name ?? "").trim();
   const redirectUris = String(body.redirect_uris ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  await c.env.DB.prepare("UPDATE oauth_clients SET name = ?, redirect_uris = ? WHERE id = ?")
-    .bind(name, JSON.stringify(redirectUris), id)
+  await c.env.DB.prepare("UPDATE oauth_clients SET name = ?, redirect_uris = ?, trusted = ?, allowed_claims = ?, post_logout_redirect_uris = ? WHERE id = ?")
+    .bind(name, JSON.stringify(redirectUris), settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris, id)
     .run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.updated", name, undefined, c.req.raw);
@@ -2346,6 +2391,7 @@ admin.post("/admin/clients/:id/rotate-secret", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
   if (!client) return c.text("Not found", 404);
+  if (client.client_type === "public") return c.text("Public clients have no secret.", 400);
 
   const clientSecret = randomToken(24);
   const clientSecretHash = await sha256Hex(clientSecret);
@@ -2378,6 +2424,7 @@ admin.post("/admin/clients/:id/delete", async (c) => {
     c.env.DB.prepare("DELETE FROM auth_codes WHERE client_id = ?").bind(client.client_id),
     c.env.DB.prepare("DELETE FROM access_tokens WHERE client_id = ?").bind(client.client_id),
     c.env.DB.prepare("DELETE FROM refresh_tokens WHERE client_id = ?").bind(client.client_id),
+    c.env.DB.prepare("DELETE FROM oauth_consents WHERE client_id = ?").bind(client.client_id),
     c.env.DB.prepare("DELETE FROM oauth_clients WHERE id = ?").bind(id),
   ]);
 

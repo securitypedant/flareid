@@ -4,6 +4,7 @@ import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from ".
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { isEmailConfigured, recipientFor } from "../lib/email.js";
+import { CLAIM_GROUPS } from "../lib/oidc.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
@@ -563,7 +564,27 @@ api.get("/api/v1/clients", requireScope("directory:read"), async (c) => {
  * to explain why - so now it is a 400.
  */
 api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
-  const body = await readJson<{ name?: string; redirect_uris?: string[]; client_id?: string; client_secret?: string }>(c);
+  const body = await readJson<{
+    name?: string;
+    redirect_uris?: string[];
+    client_id?: string;
+    client_secret?: string;
+    client_type?: "confidential" | "public";
+    trusted?: boolean;
+    allowed_claims?: string[] | null;
+    post_logout_redirect_uris?: string[];
+  }>(c);
+  const isPublic = body.client_type === "public";
+  if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
+    return c.json(badRequest('client_type must be "confidential" or "public".'), 400);
+  }
+  if (isPublic && body.client_secret) return c.json(badRequest("A public client has no secret; omit client_secret."), 400);
+  const badClaim = (body.allowed_claims ?? []).find((g) => !(CLAIM_GROUPS as readonly string[]).includes(g));
+  if (badClaim) return c.json(badRequest(`Unknown claim group "${badClaim}". Valid: ${CLAIM_GROUPS.join(", ")}.`), 400);
+  const trusted = body.trusted === false ? 0 : 1;
+  // null/omitted = every group (the pre-v3 behaviour); a list = exactly those.
+  const allowedClaims = Array.isArray(body.allowed_claims) ? JSON.stringify(CLAIM_GROUPS.filter((g) => body.allowed_claims!.includes(g))) : null;
+  const postLogout = JSON.stringify((body.post_logout_redirect_uris ?? []).map((u) => String(u).trim()).filter(Boolean));
   const name = String(body.name ?? "").trim();
   if (!name) return c.json(badRequest("name is required."), 400);
 
@@ -574,7 +595,7 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
 
   const seededId = String(body.client_id ?? "").trim();
   const seededSecret = String(body.client_secret ?? "").trim();
-  if ((seededId === "") !== (seededSecret === "")) {
+  if (!isPublic && (seededId === "") !== (seededSecret === "")) {
     return c.json(badRequest("client_id and client_secret must be supplied together, or neither."), 400);
   }
   if (seededSecret !== "" && seededSecret.length < 24) {
@@ -586,23 +607,26 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
     : null;
 
   const clientId = seededId || `flareid_${randomToken(8)}`;
-  const clientSecret = seededSecret || randomToken(24);
-  const clientSecretHash = await sha256Hex(clientSecret);
+  const clientSecret = isPublic ? "" : seededSecret || randomToken(24);
+  const clientSecretHash = isPublic ? "" : await sha256Hex(clientSecret);
 
   // Idempotent on the seeded id: re-running provisioning should converge, not
   // collide on the unique index.
   if (existing) {
-    await c.env.DB.prepare("UPDATE oauth_clients SET name = ?, redirect_uris = ?, client_secret_hash = ? WHERE id = ?")
-      .bind(name, JSON.stringify(redirectUris), clientSecretHash, existing.id)
+    await c.env.DB.prepare(
+      "UPDATE oauth_clients SET name = ?, redirect_uris = ?, client_secret_hash = ?, client_type = ?, trusted = ?, allowed_claims = ?, post_logout_redirect_uris = ? WHERE id = ?"
+    )
+      .bind(name, JSON.stringify(redirectUris), clientSecretHash, isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout, existing.id)
       .run();
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris });
   }
 
   const result = await c.env.DB.prepare(
-    "INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?)"
+    `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString())
+    .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout)
     .run();
 
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
@@ -614,7 +638,8 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
     client_id: clientId,
     // Returned once, and only when we generated it - a caller that supplied its
     // own already has it.
-    ...(seededSecret ? {} : { client_secret: clientSecret }),
+    ...(seededSecret || isPublic ? {} : { client_secret: clientSecret }),
+    client_type: isPublic ? "public" : "confidential",
     redirect_uris: redirectUris,
   });
 });

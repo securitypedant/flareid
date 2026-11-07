@@ -131,7 +131,7 @@ async function completeLoginFlow(
     return { outcome: { type: "saml-post", ...issued }, setCookie };
   }
 
-  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr);
+  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
   return { outcome: { type: "redirect", to: redirectTo }, setCookie };
 }
 

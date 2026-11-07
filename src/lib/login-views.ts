@@ -21,6 +21,7 @@ function gradientStyles(gradient: LoginGradient): string {
     .center-wrap form .row button, .auth-actions button { width: 100%; padding: 10px 16px; font-size: 0.9375rem; }
     .auth-actions { margin-top: 4px; }
     .auth-alt { text-align: center; margin: 14px 0 0; font-size: 0.875rem; }
+    .consent-list { margin: 0 0 18px; padding-left: 20px; line-height: 1.7; }
     .auth-foot { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--fi-line); text-align: center; }
     #cursor-fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   `;

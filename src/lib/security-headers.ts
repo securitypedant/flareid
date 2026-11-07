@@ -24,7 +24,11 @@ import { inlineScriptHashes } from "./html.js";
  * (mounted ahead of this middleware). POST /saml/sso only ever answers with a
  * refusal.
  */
-const EXEMPT = new Set(["/token", "/introspect", "/revoke", "/saml/sso"]);
+// /oidc/logout: relying parties may POST the logout request (OIDC RP-Initiated
+// Logout 1.0, section 2). It signs the browser out only with a valid
+// id_token_hint for the current session; otherwise it shows a confirmation
+// whose own form posts to /oidc/logout/confirm, which is CSRF-checked.
+const EXEMPT = new Set(["/token", "/introspect", "/revoke", "/saml/sso", "/oidc/logout"]);
 
 function originOf(value: string | null | undefined): string | null {
   if (!value || value === "null") return null;

@@ -133,6 +133,7 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
     env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (${ph})`).bind(...ids),
     env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (${ph})`).bind(...ids),
     env.DB.prepare(`DELETE FROM account_tokens WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM oauth_consents WHERE user_id IN (${ph})`).bind(...ids),
     // Audit history is kept, detached from the account.
     env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (${ph})`).bind(...ids),
     env.DB.prepare(`DELETE FROM users WHERE id IN (${ph})`).bind(...ids),

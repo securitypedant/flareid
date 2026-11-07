@@ -283,6 +283,8 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
       user.id,
       client.client_id
     ),
+    // Revoking access withdraws consent too: the app has to ask again.
+    c.env.DB.prepare("DELETE FROM oauth_consents WHERE user_id = ? AND client_id = ?").bind(user.id, client.client_id),
   ]);
   await logAudit(c.env, user, "user.app_access_revoked_self", client.name, undefined, c.req.raw);
 
@@ -403,13 +405,13 @@ account.post("/account/mfa/setup", async (c) => {
   await logAudit(c.env, user, "user.mfa_enabled", user.upn, undefined, c.req.raw);
 
   const codes = await generateBackupCodes(c.env, user.id);
-  const continueTo = resume ? await resumeLoginFlow(c.env, resume, user.id) : "/account";
+  const continueTo = resume ? await resumeLoginFlow(c.env, resume, user.id, c.get("sessionId")) : "/account";
 
   return c.html(layout(c, "MFA enabled", backupCodesPage(codes, continueTo)));
 });
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
-async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number): Promise<string> {
+async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string): Promise<string> {
   const flow = await getLoginFlow(env, resumeFlowId);
   if (!flow) return "/account";
 
@@ -428,7 +430,7 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number): 
   }
 
   await deleteLoginFlow(env, resumeFlowId);
-  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, ["pwd", "mfa"]);
+  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, ["pwd", "mfa"], sessionId);
   return redirectTo;
 }
 
