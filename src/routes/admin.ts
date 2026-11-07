@@ -69,6 +69,7 @@ import {
   attributesLostOnMove,
   createSchema,
   saveSchemaAttributes,
+  userEditableAttributeNames,
   applySchemaToAll,
   countConforming,
   attributeInput,
@@ -1578,6 +1579,13 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
   const dynamic = !superAdmins && String(body.membership ?? "static") === "dynamic";
   const rule = dynamic ? ruleFromForm(list(body.rule_schema), list(body.rule_field), list(body.rule_op), list(body.rule_value)) : "";
   if (dynamic && !rule) throw new Error("A dynamic group needs at least one condition.");
+  if (dynamic) {
+    // The reverse of the schema-side check: a rule on a field users can set
+    // themselves would let anyone choose their own groups.
+    const editable = await userEditableAttributeNames(c.env);
+    const clash = (parseRule(rule)?.all ?? []).map((cond) => cond.field.replace(/^custom\./, "")).find((f) => editable.has(f));
+    if (clash) throw new Error(`"${clash}" is user-editable in a schema, so it cannot drive group membership. Turn off "User can edit" for it first.`);
+  }
   const userIds = dynamic ? [] : list(body.user_ids).map(Number).filter(Boolean);
 
   const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
@@ -2686,15 +2694,17 @@ const ATTRIBUTE_TYPE_OPTIONS: [string, string][] = [
   ["reference", "Person (reference)"],
 ];
 
-type AttributeInput = { name: string; label: string; type: string; required: boolean; ref_object: string | null };
+type AttributeInput = { name: string; label: string; type: string; required: boolean; ref_object: string | null; user_editable: boolean };
 
-function attributeRowHtml(a?: { name: string; label: string; type: string; required: number }): string {
+function attributeRowHtml(a?: { name: string; label: string; type: string; required: number; user_editable?: number }): string {
   const required = a?.required ? 1 : 0;
+  const editable = a?.user_editable ? 1 : 0;
   return `<div class="attr-row">
     <input type="text" name="attr_name" value="${escapeHtml(a?.name ?? "")}" placeholder="name (e.g. cost_center)" pattern="[a-z][a-z0-9_]*" title="lowercase letters, digits and underscores, starting with a letter" />
     <input type="text" name="attr_label" value="${escapeHtml(a?.label ?? "")}" placeholder="Label (e.g. Cost center)" />
     <select name="attr_type">${ATTRIBUTE_TYPE_OPTIONS.map(([v, l]) => `<option value="${v}" ${(a?.type ?? "string") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
     <label><input type="hidden" name="attr_required" value="${required}" /><input type="checkbox" ${required ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> Required</label>
+    <label title="Users can change this themselves on their account page"><input type="hidden" name="attr_user_editable" value="${editable}" /><input type="checkbox" ${editable ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> User can edit</label>
     <button type="button" class="secondary" data-remove-closest=".attr-row" aria-label="Remove attribute">&times;</button>
   </div>`;
 }
@@ -2706,6 +2716,7 @@ function readAttributeRows(body: Record<string, unknown>): AttributeInput[] {
   const labels = list(body.attr_label);
   const types = list(body.attr_type);
   const required = list(body.attr_required);
+  const editable = list(body.attr_user_editable);
   const seen = new Set<string>();
   const out: AttributeInput[] = [];
   names.forEach((raw, i) => {
@@ -2715,7 +2726,7 @@ function readAttributeRows(body: Record<string, unknown>): AttributeInput[] {
     if (seen.has(name)) throw new Error(`The attribute "${name}" is listed twice.`);
     seen.add(name);
     const type = ATTRIBUTE_TYPE_OPTIONS.some(([v]) => v === types[i]) ? types[i]! : "string";
-    out.push({ name, label: (labels[i] ?? "").trim() || name, type, required: required[i] === "1", ref_object: type === "reference" ? "user" : null });
+    out.push({ name, label: (labels[i] ?? "").trim() || name, type, required: required[i] === "1", ref_object: type === "reference" ? "user" : null, user_editable: editable[i] === "1" });
   });
   return out;
 }
@@ -2833,7 +2844,7 @@ admin.get("/admin/schemas/:id", async (c) => {
           <h2>Attributes</h2>
           <p class="muted" style="margin-top:-4px;">${columnNote} Identity fields (names and UPN) are on every ${schema.object_type} and don't need listing.</p>
           <div class="attr-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
-            <span>Name</span><span>Label</span><span>Type</span><span></span><span></span>
+            <span>Name</span><span>Label</span><span>Type</span><span></span><span></span><span></span>
           </div>
           <div id="attr-rows">${(attributes.length ? attributes : [undefined]).map((a) => attributeRowHtml(a)).join("")}</div>
           <template id="attr-row-template">${attributeRowHtml()}</template>
@@ -2887,8 +2898,14 @@ admin.post("/admin/schemas/:id", async (c) => {
     return c.text(e instanceof Error ? e.message : "Invalid attributes.", 400);
   }
 
+  try {
+    // Checked before anything is written: a refused permission changes nothing.
+    await saveSchemaAttributes(c.env, id, attributes);
+  } catch (e) {
+    if (e instanceof RangeError) return c.text(e.message, 400);
+    throw e;
+  }
   await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description || null, id).run();
-  await saveSchemaAttributes(c.env, id, attributes);
   await logAudit(c.env, c.get("user"), "schema.updated", `${schema.object_type}:${name}`, { attributes: attributes.length }, c.req.raw);
   return c.redirect(`/admin/schemas/${id}?saved=1`, 302);
 });

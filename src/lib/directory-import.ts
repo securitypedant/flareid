@@ -3,7 +3,7 @@ import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
-import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId } from "./schemas.js";
+import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups } from "./scim-client.js";
@@ -241,6 +241,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   // membership, so a bundle does not have to declare the same thing twice.
   const described = new Map<string, string | null>();
   const ruleByName = new Map<string, string>();
+  const editableAttrs = await userEditableAttributeNames(env);
   for (const group of groups) {
     const name = cleanString(group.name);
     described.set(name, cleanString(group.description) || null);
@@ -249,6 +250,8 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     // can edit an attribute grant themselves the console.
     if (name === SUPER_ADMINS_GROUP) result.errors.push({ group: name, message: `${SUPER_ADMINS_GROUP} cannot be a dynamic group - rule ignored.` });
     else if (!parseRule(group.rule)) result.errors.push({ group: name, message: "Rule is not valid rule JSON - rule ignored." });
+    else if ((parseRule(group.rule)?.all ?? []).some((cond) => editableAttrs.has(cond.field.replace(/^custom\./, ""))))
+      result.errors.push({ group: name, message: "Rule matches on a user-editable attribute, which would let users choose their own groups - rule ignored." });
     else ruleByName.set(name, group.rule);
   }
   for (const user of users) {

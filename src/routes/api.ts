@@ -475,7 +475,7 @@ api.post("/api/v1/schemas", requireScope("settings:write"), async (c) => {
     object_type?: string;
     name?: string;
     description?: string;
-    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string }[];
+    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string; user_editable?: boolean }[];
   }>(c);
   const objectType = body.object_type === "group" ? "group" : "user";
   const name = String(body.name ?? "").trim();
@@ -483,7 +483,7 @@ api.post("/api/v1/schemas", requireScope("settings:write"), async (c) => {
   if (await findSchema(c.env, objectType, name)) return c.json({ error: "conflict", message: `A ${objectType} schema named "${name}" already exists.` }, 409);
 
   const id = await createSchema(c.env, objectType, name, String(body.description ?? "").trim());
-  if (body.attributes) await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object })));
+  if (body.attributes) await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object, user_editable: a.user_editable })));
   await logAudit(c.env, auditActor(c.get("apiActor")), "schema.created", `${objectType}:${name}`, undefined, c.req.raw);
   return c.json({ id }, 201);
 });
@@ -495,14 +495,14 @@ api.patch("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
   const body = await readJson<{
     name?: string;
     description?: string;
-    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string }[];
+    attributes?: { name: string; label?: string; type?: string; required?: boolean; ref_object?: string; user_editable?: boolean }[];
   }>(c);
   const name = String(body.name ?? schema.name).trim();
   const description = body.description === undefined ? schema.description : String(body.description).trim() || null;
 
   await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description, id).run();
   if (body.attributes) {
-    await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object })));
+    await saveSchemaAttributes(c.env, id, body.attributes.map((a) => ({ name: a.name, label: a.label ?? a.name, type: a.type ?? "string", required: a.required, ref_object: a.ref_object, user_editable: a.user_editable })));
   }
   await logAudit(c.env, auditActor(c.get("apiActor")), "schema.updated", `${schema.object_type}:${name}`, undefined, c.req.raw);
   return c.json({ ok: true });
@@ -901,6 +901,9 @@ api.post("/api/v1/recovery/admin-reset", async (c) => {
 
 api.onError((err, c) => {
   if (err instanceof ImportValidationError) return c.json(badRequest(err.message), 400);
+  // Validation refusals from the settings/schema layer (e.g. a user-editable
+  // attribute that a dynamic group's rule depends on).
+  if (err instanceof RangeError) return c.json(badRequest(err.message), 400);
   console.error(err);
   return c.json({ error: "server_error", message: "Unexpected error." }, 500);
 });

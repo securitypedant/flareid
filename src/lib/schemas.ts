@@ -39,6 +39,8 @@ export interface SchemaAttributeRow {
   required: number;
   ref_object: string | null;
   position: number;
+  /** 1 = the user may change this on their own account page (see account.ts). */
+  user_editable: number;
 }
 
 /** User columns a schema attribute can name to map onto the fixed field. */
@@ -195,16 +197,44 @@ export async function createSchema(env: Env, objectType: "user" | "group", name:
 export async function saveSchemaAttributes(
   env: Env,
   schemaId: number,
-  attributes: { name: string; label: string; type: string; required?: boolean; ref_object?: string | null }[]
+  attributes: { name: string; label: string; type: string; required?: boolean; ref_object?: string | null; user_editable?: boolean }[]
 ): Promise<void> {
+  const ruleFields = await ruleAttributeNames(env);
+  for (const a of attributes) {
+    if (!a.user_editable) continue;
+    if (a.type === "reference") throw new RangeError(`"${a.name}" is a reference to another person, which users cannot set for themselves.`);
+    if (ruleFields.has(a.name)) throw new RangeError(`"${a.name}" is used by a dynamic group's rule, so letting users edit it would let them choose their own groups.`);
+  }
   await env.DB.prepare("DELETE FROM schema_attributes WHERE schema_id = ?").bind(schemaId).run();
   if (attributes.length === 0) return;
   await env.DB.batch(
     attributes.map((a, i) =>
-      env.DB.prepare("INSERT INTO schema_attributes (schema_id, name, label, type, required, ref_object, position) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .bind(schemaId, a.name, a.label || a.name, a.type || "string", a.required ? 1 : 0, a.ref_object ?? null, (i + 1) * 10)
+      env.DB.prepare("INSERT INTO schema_attributes (schema_id, name, label, type, required, ref_object, position, user_editable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(schemaId, a.name, a.label || a.name, a.type || "string", a.required ? 1 : 0, a.ref_object ?? null, (i + 1) * 10, a.user_editable ? 1 : 0)
     )
   );
+}
+
+/** Every attribute name some dynamic group's rule matches on (bare or as custom.<name>). */
+export async function ruleAttributeNames(env: Env): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT rule FROM groups WHERE rule != ''").all<{ rule: string }>();
+  const names = new Set<string>();
+  for (const { rule } of results) {
+    try {
+      for (const cond of (JSON.parse(rule) as { all?: { field?: string }[] }).all ?? []) {
+        if (typeof cond.field === "string") names.add(cond.field.replace(/^custom\./, ""));
+      }
+    } catch {
+      // an unparseable rule matches nothing (see parseRule)
+    }
+  }
+  return names;
+}
+
+/** Attribute names any schema lets users edit - a rule may not match on these. */
+export async function userEditableAttributeNames(env: Env): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT DISTINCT name FROM schema_attributes WHERE user_editable = 1").all<{ name: string }>();
+  return new Set(results.map((r) => r.name));
 }
 
 /**

@@ -5,7 +5,10 @@ import { requireSession } from "../lib/middleware.js";
 import { attr, attrGrid, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, successBanner } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
-import { getUserGroupNames } from "../lib/db.js";
+import { getUserById, getUserGroupNames } from "../lib/db.js";
+import { attributeInput, getSchemaAttributes, parseCustomAttributes, ruleAttributeNames, splitUserAttributes, userAttributeValue, type SchemaAttributeRow } from "../lib/schemas.js";
+import { isScimConfigured, pushUser } from "../lib/scim-client.js";
+import type { UserRow } from "../lib/types.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
@@ -41,6 +44,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
  * same pattern, keyed so each action can say what actually happened.
  */
 const SAVED_MESSAGES: Record<string, string> = {
+  profile: "Your details have been saved.",
   password: "Your password has been changed.",
   "mfa-disabled": "Two-factor authentication is now disabled.",
   "sessions-others": "Every other session has been signed out.",
@@ -70,8 +74,16 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/** The attributes this user may edit: their schema's user-editable ones, minus anything a rule now matches on. */
+async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttributeRow[]> {
+  if (!user.schema_id) return [];
+  const [attrs, ruleFields] = await Promise.all([getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env)]);
+  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && !ruleFields.has(a.name));
+}
+
 account.get("/account", async (c) => {
   const user = c.get("user");
+  const editable = await editableAttributes(c.env, user);
   const groups = await getUserGroupNames(c.env, user.id);
   const remainingBackupCodes = user.mfa_enabled ? await countRemainingBackupCodes(c.env, user.id) : 0;
   const currentSessionId = c.get("sessionId");
@@ -117,6 +129,21 @@ account.get("/account", async (c) => {
           attr("Created", new Date(user.created_at).toLocaleString()),
         ])}
       `)}
+
+      ${
+        editable.length
+          ? cardSection(`
+        <h2>Edit your details</h2>
+        <p class="muted">Your administrator lets you keep these up to date yourself.</p>
+        <form method="POST" action="/account/profile">
+          <div class="form-grid">
+            ${editable.map((a) => `<div><label for="attr_${escapeHtml(a.name)}">${escapeHtml(a.label)}</label>${attributeInput(a, userAttributeValue(user, a))}</div>`).join("")}
+          </div>
+          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save my details</button></div>
+        </form>
+      `)
+          : ""
+      }
 
       ${cardSection(`
         <h2>Groups</h2>
@@ -240,6 +267,34 @@ account.get("/account", async (c) => {
       user.upn
     )
   );
+});
+
+account.post("/account/profile", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  // Only what the schema allows, checked here again - the form is just a form.
+  const editable = await editableAttributes(c.env, user);
+  if (editable.length === 0) return c.redirect("/account", 302);
+  const values = Object.fromEntries(editable.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim().slice(0, 500)]));
+  const missing = editable.find((a) => a.required && !values[a.name]);
+  if (missing) return c.html(errorRedirectPage(c, `${missing.label} is required.`));
+
+  const { columns, custom } = splitUserAttributes(editable, values);
+  const mergedCustom: Record<string, string> = { ...parseCustomAttributes(user.custom_attributes), ...custom };
+  // A cleared custom field is removed, not kept at its old value.
+  for (const a of editable) if (!values[a.name] && !(a.name in columns)) delete mergedCustom[a.name];
+  const columnNames = Object.keys(columns).filter((k) => /^[a-z_]+$/.test(k));
+  await c.env.DB.prepare(
+    `UPDATE users SET ${[...columnNames.map((k) => `${k} = ?`), "custom_attributes = ?", "updated_at = ?"].join(", ")} WHERE id = ?`
+  )
+    .bind(...columnNames.map((k) => columns[k] ?? ""), JSON.stringify(mergedCustom), new Date().toISOString(), user.id)
+    .run();
+  await logAudit(c.env, user, "user.profile_updated_self", user.upn, { fields: editable.map((a) => a.name) }, c.req.raw);
+  if (await isScimConfigured(c.env)) {
+    const fresh = await getUserById(c.env, user.id);
+    if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).then(() => undefined));
+  }
+  return c.redirect("/account?saved=profile", 302);
 });
 
 account.post("/account/devices/:id/revoke", async (c) => {
