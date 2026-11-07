@@ -58,6 +58,8 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
     // window_start is epoch milliseconds, not an ISO string: compared with
     // text, SQLite sorts every integer lower, which deleted every counter.
     env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 7 * day),
+    // After the counted statements above: the result indexes below are positional.
+    env.DB.prepare("DELETE FROM account_tokens WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)").bind(iso(now), iso(now - day)),
   ]);
 
   const [authCodes, accessTokens, refreshTokens, sessions, trustedDevices, auditLog] = results.map((r) => Number(r.meta.changes ?? 0));

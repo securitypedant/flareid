@@ -59,6 +59,8 @@ export interface DirectoryUser {
   /** Another user's `username`, resolved to their external_id in a second pass. */
   manager?: string | null;
   status?: "active" | "disabled";
+  /** Where email for the account goes, when not the UPN. Omit to leave as is; "" to clear. */
+  email?: string;
   super_admin?: boolean;
   /** Schema name (e.g. "FlareID HR") the user should conform to; defaults to the deployment's Bare schema. */
   schema?: string;
@@ -129,6 +131,9 @@ export function validateBundle(bundle: DirectoryBundle): { users: DirectoryUser[
     if (seen.has(username)) throw new ImportValidationError(`Duplicate username "${username}" in the same bundle.`);
     seen.add(username);
 
+    if (user.email !== undefined && user.email !== "" && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(String(user.email))) {
+      throw new ImportValidationError(`User "${username}" has an invalid email "${user.email}".`);
+    }
     if (user.status !== undefined && user.status !== "active" && user.status !== "disabled") {
       throw new ImportValidationError(`User "${username}" has status "${user.status}"; expected "active" or "disabled".`);
     }
@@ -432,6 +437,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         externalIdByUsername.set(username, externalId);
         if (generated) result.generated_passwords[upn] = password;
         result.users.created++;
+      }
+
+      if (user.email !== undefined) {
+        await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(cleanString(user.email).toLowerCase() || null, userId).run();
       }
 
       // --- Membership ---

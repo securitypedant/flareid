@@ -261,11 +261,19 @@ export interface LoginAppearance {
   gradient: LoginGradient;
   subtitle: string;
   cursorTrail: CursorTrail;
+  /** Whether "Forgot your password?" is offered: email is configured (see email.ts). */
+  recoveryEnabled: boolean;
 }
 
 export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
-  const [gradient, subtitle, cursorTrail] = await Promise.all([getLoginGradient(env), getLoginSubtitle(env), getCursorTrail(env)]);
-  return { gradient, subtitle, cursorTrail };
+  const [gradient, subtitle, cursorTrail, fromAddress] = await Promise.all([
+    getLoginGradient(env),
+    getLoginSubtitle(env),
+    getCursorTrail(env),
+    getSetting(env, "email_from_address"),
+  ]);
+  // Same rule as isEmailConfigured() in email.ts, inlined: email.ts imports this module.
+  return { gradient, subtitle, cursorTrail, recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) };
 }
 
 /**
@@ -311,6 +319,18 @@ export async function setSessionPolicy(env: Env, policy: SessionPolicy): Promise
     setSetting(env, "session_idle_minutes", String(clean.idleMinutes)),
   ]);
   return clean;
+}
+
+/** "At least 12 characters, with an uppercase letter and a number." - the policy as a sentence, shown next to password fields. */
+export function passwordPolicySummary(policy: PasswordPolicy): string {
+  const needs = [
+    policy.requireUppercase && "an uppercase letter",
+    policy.requireLowercase && "a lowercase letter",
+    policy.requireNumber && "a number",
+    policy.requireSymbol && "a symbol",
+  ].filter(Boolean) as string[];
+  const list = needs.length > 1 ? `${needs.slice(0, -1).join(", ")} and ${needs[needs.length - 1]}` : needs[0];
+  return `At least ${policy.minLength} characters${list ? `, with ${list}` : ""}.`;
 }
 
 export function validatePassword(password: string, policy: PasswordPolicy): string | null {

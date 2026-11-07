@@ -3,6 +3,8 @@ import type { Env } from "../env.js";
 import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from "../lib/api-auth.js";
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
+import { isEmailConfigured, recipientFor } from "../lib/email.js";
+import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
   listSchemas,
@@ -351,6 +353,29 @@ api.post("/api/v1/directory/import", requireScope("directory:write"), async (c) 
   return c.json(result);
 });
 
+/**
+ * Emails a user a single-use link: an invitation (choosing a password
+ * activates the account) or, for an active account, a password reset link.
+ * Needs email configured (Admin -> Integrations -> Email).
+ */
+api.post("/api/v1/users/:username/invite", requireScope("directory:write"), async (c) => {
+  if (!(await isEmailConfigured(c.env))) return c.json({ error: "email_not_configured", message: "Set a From address in Admin -> Integrations -> Email first." }, 409);
+  const username = (c.req.param("username") ?? "").toLowerCase();
+  const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
+  if (!user) return c.json({ error: "not_found", message: `No user "${username}".` }, 404);
+  // Same rule as /directory/import: Super Admin accounts are admin authority.
+  if (!hasScope(c.get("apiActor").scopes, "admin") && (await c.env.DB.prepare(
+    "SELECT 1 FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = ? AND g.name = ?"
+  ).bind(user.id, SUPER_ADMINS_GROUP).first())) {
+    return c.json({ error: "forbidden", message: "Emailing a Super Admin a credential link requires the \"admin\" scope." }, 403);
+  }
+  const kind = user.status === "active" ? "reset" : "invite";
+  const result = kind === "invite" ? await sendInvitation(c.env, user) : await sendPasswordReset(c.env, user);
+  await logAudit(c.env, auditActor(c.get("apiActor")), kind === "invite" ? "user.invitation_sent" : "user.password_reset_link_sent", user.upn, { to: recipientFor(user), sent: result.ok }, c.req.raw);
+  if (!result.ok) return c.json({ error: "send_failed", message: result.error }, 502);
+  return c.json({ ok: true, kind, to: recipientFor(user) });
+});
+
 /** The "remove the sample directory" wipe, as an API call. Keeps the built-in groups and the administrators. */
 api.post("/api/v1/directory/reset", requireScope("directory:write"), async (c) => {
   const result = await importDirectory(c.env, { version: 1, mode: "replace", users: [], groups: [] }, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
@@ -365,7 +390,7 @@ api.get("/api/v1/users", requireScope("directory:read"), async (c) => {
   // Explicit column list, not SELECT *: password_hash, password_salt and
   // totp_secret live in this table and must never leave it.
   const { results } = await c.env.DB.prepare(
-    `SELECT u.id, u.upn, u.username, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
+    `SELECT u.id, u.upn, u.username, u.email, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
             u.mfa_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
             u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
             (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,

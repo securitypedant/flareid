@@ -58,6 +58,15 @@ async function recordAttempt(env: Env, key: string, windowMs: number): Promise<n
   return row?.count ?? 1;
 }
 
+/**
+ * A general fixed-window counter for anything that is not a sign-in (password
+ * recovery, invitations): records one attempt and reports whether the key is
+ * now over `max` within the window.
+ */
+export async function recordRateAttempt(env: Env, key: string, max: number, windowMinutes: number): Promise<boolean> {
+  return (await recordAttempt(env, key, windowMinutes * 60_000)) > max;
+}
+
 export function getClientIp(request: Request): string {
   return request.headers.get("CF-Connecting-IP") ?? request.headers.get("X-Forwarded-For") ?? "unknown";
 }

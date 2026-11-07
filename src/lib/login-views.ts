@@ -20,6 +20,7 @@ function gradientStyles(gradient: LoginGradient): string {
     .center-wrap form .row { margin-top: 20px; }
     .center-wrap form .row button, .auth-actions button { width: 100%; padding: 10px 16px; font-size: 0.9375rem; }
     .auth-actions { margin-top: 4px; }
+    .auth-alt { text-align: center; margin: 14px 0 0; font-size: 0.875rem; }
     .auth-foot { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--fi-line); text-align: center; }
     #cursor-fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   `;
@@ -119,7 +120,7 @@ function cursorFx(trail: CursorTrail): string {
 }
 
 /** Shared frame for the auth-flow pages: brand, gradient and cursor trail. */
-function authPage(title: string, appName: string, appearance: LoginAppearance, body: string): string {
+export function authPage(title: string, appName: string, appearance: LoginAppearance, body: string): string {
   return page(title, `${authBrand(appName)}${body}`, appName, false, "", gradientStyles(appearance.gradient), cursorFx(appearance.cursorTrail));
 }
 
@@ -140,6 +141,7 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
       <input type="password" id="password" name="password" required />
       <div class="row"><button class="primary" type="submit">Sign in</button></div>
     </form>
+    ${appearance.recoveryEnabled ? '<p class="auth-alt"><a href="/forgot-password">Forgot your password?</a></p>' : ""}
     <div class="auth-foot"><span class="muted">Protected by ${escapeHtml(appName)} single sign-on</span></div>
     `
   );
@@ -210,6 +212,6 @@ export function appConfigError(reason: string): AuthMessage {
 }
 
 /** Renders an auth-flow error with the configured branding, for use straight from a route. */
-export async function renderAuthMessage(c: Context<{ Bindings: Env }>, status: 400 | 403 | 503, msg: AuthMessage) {
+export async function renderAuthMessage(c: Context<{ Bindings: Env }>, status: 200 | 400 | 403 | 503, msg: AuthMessage) {
   return c.html(authMessagePage(c.get("appName"), await getLoginAppearance(c.env), msg), status);
 }

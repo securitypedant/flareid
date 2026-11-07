@@ -48,6 +48,13 @@ export interface Env {
    */
   PASSWORD_HASHER?: string;
 
+  /**
+   * Cloudflare Email Sending (`send_email` binding). Optional: without it, or
+   * without a From address in Admin -> Integrations -> Email, recovery and
+   * invitations are switched off and admins hand out passwords as before.
+   */
+  EMAIL?: SendEmail;
+
   /** Edge flood control for the browser sign-in routes (see edge-limit.ts). Optional. */
   AUTH_LIMITER?: RateLimit;
   /** Edge flood control for the API, token, introspection, userinfo and SCIM endpoints. Optional. */

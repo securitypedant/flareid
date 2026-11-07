@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
@@ -29,6 +29,7 @@ import {
   setAuditRetentionDays,
 } from "../lib/settings.js";
 import {
+  passwordPolicySummary,
   CURSOR_TRAIL_MAX_CHARACTERS,
   getCursorTrail,
   getLoginGradient,
@@ -43,6 +44,8 @@ import {
   setSessionPolicy,
 } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
+import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, sendEmail, setEmailSettings } from "../lib/email.js";
+import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
@@ -149,6 +152,7 @@ const INTEGRATION_PAGES = [
   { key: "saml", label: "SAML apps" },
   { key: "api-keys", label: "API keys" },
   { key: "scim", label: "SCIM provisioning" },
+  { key: "email", label: "Email" },
 ] as const;
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
 
@@ -860,6 +864,15 @@ admin.post("/admin/users", async (c) => {
         ${secretBlock("Temporary password - share with the user securely", tempPassword)}
         <a href="/admin/users/${userId}"><button class="primary" type="button">Keep this password and continue</button></a>
       `)}
+      ${
+        (await isEmailConfigured(c.env))
+          ? cardSection(`
+        <h2>Or email them an invitation</h2>
+        <p class="muted" style="margin-top:-6px;">They choose their own password from a link sent to <strong>${escapeHtml(upn)}</strong>, and that activates the account. The temporary password above stops mattering.</p>
+        <form method="POST" action="/admin/users/${userId}/invite"><button class="primary" type="submit">Send invitation</button></form>
+      `)
+          : ""
+      }
       ${cardSection(`
         <h2>Or set a password of your own</h2>
         <p class="muted" style="margin-top:-6px;">Replaces the temporary password above.</p>
@@ -874,6 +887,7 @@ admin.get("/admin/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return c.text("Not found", 404);
+  const emailOn = await isEmailConfigured(c.env);
 
   const { results: groups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
   const { results: memberships } = await c.env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?")
@@ -926,6 +940,9 @@ admin.get("/admin/users/:id", async (c) => {
       user.display_name,
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("sent") === "invite" ? successBanner(`Invitation sent to ${recipientFor(user)}.`) : ""}
+      ${c.req.query("sent") === "reset" ? successBanner(`Password reset link sent to ${recipientFor(user)}.`) : ""}
+      ${c.req.query("send_error") ? `<p class="error">The email could not be sent: ${escapeHtml(c.req.query("send_error") ?? "")}</p>` : ""}
       <form method="POST" action="/admin/users/${id}" id="user-form">
         ${cardSection(`
           <h2>Identity</h2>
@@ -1007,6 +1024,19 @@ admin.get("/admin/users/:id", async (c) => {
             <button class="secondary" type="submit">Reset password</button>
           </form>
         </div>
+        ${
+          emailOn
+            ? `<div class="sec-row">
+          <div>
+            <h3>Email link</h3>
+            <p class="muted">${user.status === "active" ? "Send a link that lets them choose a new password themselves." : "Send an invitation: they choose a password, and that activates the account."} Goes to ${escapeHtml(recipientFor(user))}.</p>
+          </div>
+          <form method="POST" action="/admin/users/${id}/${user.status === "active" ? "send-reset" : "invite"}">
+            <button class="secondary" type="submit">${user.status === "active" ? "Send reset link" : "Send invitation"}</button>
+          </form>
+        </div>`
+            : ""
+        }
         <div class="sec-row">
           <div>
             <h3>Multi-factor authentication <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enrolled" : "Not enrolled"}</span></h3>
@@ -1189,6 +1219,19 @@ admin.post("/admin/users/:id", async (c) => {
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
+/** Invitation (activates on acceptance) or reset link, by email. Back to the user page with what happened. */
+async function emailUserLink(c: Context<{ Bindings: Env }>, kind: "invite" | "reset") {
+  const id = Number(c.req.param("id"));
+  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  if (!user) return c.text("Not found", 404);
+  const result = kind === "invite" ? await sendInvitation(c.env, user) : await sendPasswordReset(c.env, user);
+  await logAudit(c.env, c.get("user"), kind === "invite" ? "user.invitation_sent" : "user.password_reset_link_sent", user.upn, { to: recipientFor(user), sent: result.ok, ...(result.ok ? {} : { error: result.error }) }, c.req.raw);
+  return c.redirect(`/admin/users/${id}?${result.ok ? `sent=${kind}` : `send_error=${encodeURIComponent(result.error)}`}`, 302);
+}
+
+admin.post("/admin/users/:id/invite", (c) => emailUserLink(c, "invite"));
+admin.post("/admin/users/:id/send-reset", (c) => emailUserLink(c, "reset"));
+
 admin.post("/admin/users/:id/reset-mfa", async (c) => {
   const id = Number(c.req.param("id"));
   await c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, updated_at = ? WHERE id = ?")
@@ -1200,17 +1243,6 @@ admin.post("/admin/users/:id/reset-mfa", async (c) => {
   return c.redirect(`/admin/users/${id}`, 302);
 });
 
-/** "At least 12 characters, with an uppercase letter and a number." - the policy as a sentence, shown next to password fields. */
-function passwordPolicySummary(policy: Awaited<ReturnType<typeof getPasswordPolicy>>): string {
-  const needs = [
-    policy.requireUppercase && "an uppercase letter",
-    policy.requireLowercase && "a lowercase letter",
-    policy.requireNumber && "a number",
-    policy.requireSymbol && "a symbol",
-  ].filter(Boolean) as string[];
-  const list = needs.length > 1 ? `${needs.slice(0, -1).join(", ")} and ${needs[needs.length - 1]}` : needs[0];
-  return `At least ${policy.minLength} characters${list ? `, with ${list}` : ""}.`;
-}
 
 /** Form that sets a password of the admin's choosing - posts to reset-password, which enforces the policy. */
 function choosePasswordForm(userId: number, policy: Awaited<ReturnType<typeof getPasswordPolicy>>, error?: string): string {
@@ -1864,6 +1896,71 @@ admin.get("/admin/integrations", async (c) => {
       [{ label: "Admin", href: "/admin" }, { label: "Integrations" }]
     )
   );
+});
+
+admin.get("/admin/integrations/email", async (c) => {
+  const settings = await getEmailSettings(c.env);
+  const hasBinding = Boolean(c.env.EMAIL);
+  const ready = hasBinding && Boolean(settings.fromAddress);
+  const notice = c.req.query("test");
+  return c.html(
+    layout(
+      c,
+      "Email",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${notice === "sent" ? successBanner(`Test email sent to ${c.get("user").email || c.get("user").upn}.`) : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error") ?? "")}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro("Outbound email through Cloudflare Email Sending, for password recovery and invitations. With email set up, the sign-in page offers &ldquo;Forgot your password?&rdquo; and user pages can send invitation and reset links instead of an administrator relaying a password.")}
+        <table style="margin-bottom:14px;"><tbody>
+          <tr><th style="width:180px;">Worker binding</th><td>${hasBinding ? '<span class="badge badge-active">EMAIL bound</span>' : '<span class="badge badge-disabled">Missing</span> &mdash; add <code>"send_email": [{ "name": "EMAIL" }]</code> to wrangler.jsonc and redeploy'}</td></tr>
+          <tr><th>Status</th><td>${ready ? '<span class="badge badge-active">Sending</span>' : '<span class="badge badge-disabled">Off</span>'}</td></tr>
+        </tbody></table>
+        <form method="POST" action="/admin/email">
+          <div class="field-row">
+            <div>
+              <label for="from_address">From address</label>
+              <input type="email" id="from_address" name="from_address" value="${escapeHtml(settings.fromAddress)}" placeholder="no-reply@yourdomain.com" />
+            </div>
+            <div>
+              <label for="from_name">From name</label>
+              <input type="text" id="from_name" name="from_name" value="${escapeHtml(settings.fromName)}" maxlength="80" placeholder="${escapeHtml(c.get("appName"))}" />
+            </div>
+          </div>
+          <p class="muted" style="margin-top:-4px;">The address must be on a domain onboarded to Cloudflare Email Sending (<code>wrangler email sending enable yourdomain.com</code>). Leave it empty to switch email off.</p>
+          <div class="row" style="justify-content:flex-start; gap:10px;">
+            <button class="primary" type="submit">Save</button>
+            ${ready ? '<button class="secondary" type="submit" formaction="/admin/email/test">Send a test email to me</button>' : ""}
+          </div>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "Email" }]
+    )
+  );
+});
+
+admin.post("/admin/email", async (c) => {
+  const body = await c.req.parseBody();
+  const fromAddress = String(body.from_address ?? "").trim();
+  if (fromAddress && !isEmailAddress(fromAddress)) return c.redirect(`/admin/integrations/email?error=${encodeURIComponent("That is not a valid email address.")}`, 302);
+  const saved = await setEmailSettings(c.env, { fromAddress, fromName: String(body.from_name ?? "") });
+  await logAudit(c.env, c.get("user"), "settings.email_changed", saved.fromAddress || undefined, { ...saved }, c.req.raw);
+  return c.redirect("/admin/integrations/email?saved=1", 302);
+});
+
+admin.post("/admin/email/test", async (c) => {
+  const me = c.get("user");
+  const appName = c.get("appName");
+  const result = await sendEmail(c.env, {
+    to: recipientFor(me),
+    subject: `${appName} test email`,
+    text: `This is a test email from ${appName}. Email delivery is working.`,
+    html: `<p>This is a test email from <strong>${escapeHtml(appName)}</strong>. Email delivery is working.</p>`,
+  });
+  await logAudit(c.env, me, "settings.email_test_sent", recipientFor(me), { sent: result.ok, ...(result.ok ? {} : { error: result.error }) }, c.req.raw);
+  return c.redirect(result.ok ? "/admin/integrations/email?test=sent" : `/admin/integrations/email?error=${encodeURIComponent(result.error)}`, 302);
 });
 
 admin.get("/admin/integrations/oidc", async (c) => {

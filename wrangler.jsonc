@@ -70,6 +70,10 @@
       "id": "af20f3a4a88e40329062d78a2fc86f99"
     }
   ],
+  // Outbound email (Cloudflare Email Sending) for password recovery and
+  // invitations. Sending also needs a From address set in Admin -> Integrations
+  // -> Email, on a domain onboarded with `wrangler email sending enable`.
+  "send_email": [{ "name": "EMAIL" }],
   // Edge flood control for anonymous routes (src/lib/edge-limit.ts), counted in
   // memory per Cloudflare location - no storage writes. Per client IP, per
   // minute; generous on purpose, because the brute-force control is the
