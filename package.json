@@ -31,7 +31,8 @@
     "db:migrations:local": "wrangler d1 migrations apply flareid-db --local",
     "db:migrations:remote": "wrangler d1 migrations apply flareid-db --remote",
     "keygen": "node scripts/generate-keypair.mjs",
-    "saml:keygen": "node scripts/generate-saml-cert.mjs"
+    "saml:keygen": "node scripts/generate-saml-cert.mjs",
+    "test-data": "node scripts/generate-test-directory.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.12",

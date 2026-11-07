@@ -9,3 +9,5 @@ dist/
 # Deploy-time key material (now generated outside the repo; ignored in case of an older script)
 .saml-key.pem
 .saml-cert.pem
+# Generated load-test directories (scripts/generate-test-directory.mjs)
+test-data/
