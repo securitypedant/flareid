@@ -92,6 +92,9 @@ export async function hashPassword(password: string, env?: Pick<Env, "PASSWORD_H
 export type StoredPassword = { password_hash: string; password_salt: string; password_iterations: number };
 
 export async function verifyPassword(password: string, stored: StoredPassword): Promise<boolean> {
+  // "!" marks an account created without a usable password (bulk import): it
+  // waits for an invitation or reset, and nothing verifies against it.
+  if (stored.password_hash.startsWith("!")) return false;
   const phc = parseScrypt(stored.password_hash);
   if (phc) return equalBytes(await scryptBytes(password, phc.salt, phc), phc.hash);
   if (stored.password_hash.startsWith("$")) return false; // a format this build doesn't know - fail closed

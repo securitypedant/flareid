@@ -28,6 +28,9 @@ import type { GroupRow, UserRow } from "./types.js";
  * does not list it.
  */
 
+/** No password can ever verify against this (see verifyPassword): the account waits for an invitation or reset. */
+const UNUSABLE_PASSWORD = { hash: "!", salt: "", iterations: 0 };
+
 /** Per-request cap. PBKDF2 is ~30-60ms per new user, so this bounds CPU time; callers chunk. */
 export const MAX_USERS_PER_IMPORT = 100;
 
@@ -71,6 +74,13 @@ export interface DirectoryUser {
 export interface DirectoryBundle {
   version?: number;
   mode?: "merge" | "replace";
+  /**
+   * For new users with no `password`: "default" (the new-account password
+   * setting - generated or shared) or "none" - no usable password at all, so
+   * the account is activated by an invitation or an admin reset. "none" costs
+   * no hashing, which is what makes a 10,000-row CSV import feasible.
+   */
+  passwords?: "default" | "none";
   domain?: string;
   groups?: DirectoryGroup[];
   users?: DirectoryUser[];
@@ -395,10 +405,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         result.users.updated++;
       } else {
         const supplied = typeof user.password === "string" && user.password !== "" ? user.password : null;
+        const noPassword = !supplied && bundle.passwords === "none";
         const { password, generated } = supplied
           ? { password: supplied, generated: false }
-          : await resolveNewAccountPassword(env);
-        const { hash, salt, iterations } = await hashOnce(password);
+          : noPassword
+            ? { password: "", generated: false }
+            : await resolveNewAccountPassword(env);
+        const { hash, salt, iterations } = noPassword ? UNUSABLE_PASSWORD : await hashOnce(password);
         const externalId = crypto.randomUUID();
 
         const inserted = await env.DB.prepare(

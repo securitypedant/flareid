@@ -225,3 +225,21 @@ describe("admin console navigation and pages", () => {
     expect(future).toContain("0 entries match");
   });
 });
+
+describe("CSV import endpoint", () => {
+  it("imports a chunk with passwords=none: active accounts that cannot sign in until a reset", async () => {
+    const { cookie } = await adminSession();
+    const res = await SELF.fetch(`${BASE}/admin/users/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE, Cookie: cookie },
+      body: JSON.stringify({ version: 1, passwords: "none", groups: [{ name: "Ops" }], users: [{ username: "csv.one", status: "active", groups: ["Ops"] }] }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { users: { created: number }; generated_passwords: Record<string, string> };
+    expect(body.users.created).toBe(1);
+    expect(body.generated_passwords).toEqual({});
+    expect((await env.DB.prepare("SELECT password_hash FROM users WHERE username = 'csv.one'").first<{ password_hash: string }>())?.password_hash).toBe("!");
+    const attempt = await signIn("csv.one@horizon.test", "");
+    expect(attempt.res.headers.get("Set-Cookie")).toBeNull();
+  });
+});

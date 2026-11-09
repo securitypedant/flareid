@@ -44,6 +44,7 @@ import {
   setSessionPolicy,
 } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
+import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, sendEmail, setEmailSettings } from "../lib/email.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
@@ -689,6 +690,7 @@ admin.get("/admin/users", async (c) => {
               <input type="hidden" name="page" value="1" />
               ${pageSizeSelect(pageSize)}
             </div>
+            <a href="/admin/users/import"><button class="secondary" type="button">Import CSV</button></a>
             <a href="/admin/users/new"><button class="primary" type="button">+ New user</button></a>
           </div>
         </form>
@@ -728,6 +730,159 @@ admin.get("/admin/users", async (c) => {
       [{ label: "Admin", href: "/admin" }, { label: "Users" }]
     )
   );
+});
+
+// ---------- CSV import ----------
+//
+// The browser parses the files and sends the directory in chunks, so a 10,000
+// row CSV never has to fit in one request (or one Worker's CPU and D1 query
+// budget). Groups go first, then users ordered so every manager arrives before
+// their reports, then the server does exactly what /api/v1/directory/import
+// does with each chunk. See docs/csv-import.md for the columns.
+
+const CSV_IMPORT_SCRIPT = `
+(function () {
+  var form = document.getElementById("csv-import");
+  if (!form) return;
+  var log = document.getElementById("csv-log");
+  var bar = document.getElementById("csv-progress");
+  function say(t) { log.textContent += t + "\\n"; log.scrollTop = log.scrollHeight; }
+
+  // RFC 4180: quoted fields, doubled quotes, commas and newlines inside quotes.
+  function parseCsv(text) {
+    var rows = [], row = [], field = "", q = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+        else field += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ",") { row.push(field); field = ""; }
+      else if (ch === "\\n" || ch === "\\r") {
+        if (ch === "\\r" && text[i + 1] === "\\n") i++;
+        row.push(field); field = ""; if (row.length > 1 || row[0] !== "") rows.push(row); row = [];
+      } else field += ch;
+    }
+    if (field !== "" || row.length) { row.push(field); rows.push(row); }
+    if (!rows.length) return [];
+    var head = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+    return rows.slice(1).map(function (r) { var o = {}; head.forEach(function (h, j) { o[h] = (r[j] || "").trim(); }); return o; });
+  }
+
+  var KNOWN = ["username","given_name","family_name","display_name","email","job_title","department","employee_number","hire_date","employment_status","employment_type","location","manager","status","groups","password","schema"];
+  function toUser(r) {
+    var u = { username: r.username };
+    KNOWN.forEach(function (k) { if (k !== "username" && k !== "groups" && r[k] !== undefined && r[k] !== "") u[k] = r[k]; });
+    if (r.groups !== undefined) u.groups = r.groups ? r.groups.split(";").map(function (g) { return g.trim(); }).filter(Boolean) : [];
+    var extra = {};
+    Object.keys(r).forEach(function (k) { if (KNOWN.indexOf(k) === -1 && r[k] !== "") extra[k] = r[k]; });
+    if (Object.keys(extra).length) u.attributes = extra;
+    return u;
+  }
+  // Managers before their reports, so each manager reference resolves.
+  function managerFirst(users) {
+    var byName = {}, out = [], seen = {};
+    users.forEach(function (u) { byName[u.username] = u; });
+    function visit(u, depth) {
+      if (seen[u.username] || depth > 50) return;
+      if (u.manager && byName[u.manager] && !seen[u.manager]) visit(byName[u.manager], depth + 1);
+      if (!seen[u.username]) { seen[u.username] = 1; out.push(u); }
+    }
+    users.forEach(function (u) { visit(u, 0); });
+    return out;
+  }
+  async function post(bundle) {
+    var res = await fetch("/admin/users/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(bundle) });
+    var body = await res.json().catch(function () { return { error: "HTTP " + res.status }; });
+    if (!res.ok) throw new Error(body.message || body.error || ("HTTP " + res.status));
+    return body;
+  }
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var btn = form.querySelector("button[type=submit]");
+    btn.disabled = true; log.textContent = "";
+    var passwords = form.querySelector("input[name=passwords]:checked").value;
+    var totals = { created: 0, updated: 0, skipped: 0, errors: 0 };
+    try {
+      var gFile = form.querySelector("#groups_csv").files[0];
+      var uFile = form.querySelector("#users_csv").files[0];
+      if (!gFile && !uFile) { say("Choose a groups CSV, a users CSV, or both."); return; }
+      if (gFile) {
+        var groups = parseCsv(await gFile.text()).filter(function (g) { return g.name; }).map(function (g) { var o = { name: g.name }; if (g.description) o.description = g.description; if (g.rule) o.rule = g.rule; return o; });
+        say("Importing " + groups.length + " groups...");
+        var gr = await post({ version: 1, groups: groups, users: [] });
+        say("Groups: " + gr.groups.created + " created, " + gr.groups.updated + " updated" + (gr.errors.length ? ", " + gr.errors.length + " issue(s)" : ""));
+        gr.errors.slice(0, 20).forEach(function (er) { say("  " + (er.group || er.username || "") + ": " + er.message); });
+      }
+      if (uFile) {
+        var users = managerFirst(parseCsv(await uFile.text()).filter(function (r) { return r.username; }).map(toUser));
+        var CHUNK = 50, started = Date.now();
+        say("Importing " + users.length + " users in chunks of " + CHUNK + "...");
+        for (var i = 0; i < users.length; i += CHUNK) {
+          var r = await post({ version: 1, passwords: passwords, users: users.slice(i, i + CHUNK) });
+          totals.created += r.users.created; totals.updated += r.users.updated; totals.skipped += r.users.skipped; totals.errors += r.errors.length;
+          r.errors.slice(0, 5).forEach(function (er) { say("  " + (er.username || er.group || "") + ": " + er.message); });
+          var done = Math.min(i + CHUNK, users.length);
+          bar.value = done / users.length;
+          if (done % 1000 === 0 || done === users.length) say(done + " / " + users.length + " (" + Math.round((Date.now() - started) / 1000) + "s)");
+        }
+        say("Users: " + totals.created + " created, " + totals.updated + " updated, " + totals.skipped + " skipped, " + totals.errors + " issue(s).");
+      }
+      say("Done.");
+    } catch (err) {
+      say("Stopped: " + err.message + ". Rows already sent were imported; fix the problem and run the import again - it converges.");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+`;
+
+admin.get("/admin/users/import", async (c) => {
+  const emailOn = await isEmailConfigured(c.env);
+  return c.html(
+    layout(
+      c,
+      "Import users from CSV",
+      `${cardSection(`
+        <p class="muted" style="margin-top:0;">Upload a groups CSV, a users CSV, or both. The import is idempotent by username and group name, so running it again updates rather than duplicates. Columns are described in <code>docs/csv-import.md</code>; <code>npm run test-data</code> generates a 10,000-person example.</p>
+        <form id="csv-import">
+          <div class="field-row">
+            <div><label for="groups_csv">Groups CSV <span class="muted">(name, description, rule)</span></label><input type="file" id="groups_csv" accept=".csv,text/csv" /></div>
+            <div><label for="users_csv">Users CSV <span class="muted">(username, given_name, ... groups)</span></label><input type="file" id="users_csv" accept=".csv,text/csv" /></div>
+          </div>
+          <label>Passwords for new users without a <code>password</code> column</label>
+          <label style="font-weight:400;"><input type="radio" name="passwords" value="none" checked style="width:auto; display:inline; margin-right:6px;" /> None &mdash; they activate from ${emailOn ? "an invitation email or " : ""}an admin password reset (fast)</label>
+          <label style="font-weight:400;"><input type="radio" name="passwords" value="default" style="width:auto; display:inline; margin-right:6px;" /> The new-account password setting (each one is hashed: slow for thousands)</label>
+          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Import</button></div>
+        </form>
+        <progress id="csv-progress" value="0" max="1" style="width:100%; margin-top:12px;"></progress>
+        <pre id="csv-log" style="max-height:320px; overflow:auto; background:#f9fafb; border-radius:8px; padding:10px; font-size:0.8125rem; white-space:pre-wrap;"></pre>
+        ${scriptTag(CSV_IMPORT_SCRIPT)}
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "Import CSV" }]
+    )
+  );
+});
+
+admin.post("/admin/users/import", async (c) => {
+  let bundle: DirectoryBundle;
+  try {
+    bundle = (await c.req.json()) as DirectoryBundle;
+  } catch {
+    return c.json({ error: "invalid_request", message: "Body must be JSON." }, 400);
+  }
+  // The console is Super Admin authority already; replace mode is not offered here.
+  bundle.mode = "merge";
+  try {
+    const result = await importDirectory(c.env, bundle, { allowPrivileged: true });
+    await logAudit(c.env, c.get("user"), "directory.imported", result.domain, { via: "csv", users: result.users, groups: result.groups, errors: result.errors.length }, c.req.raw);
+    return c.json(result);
+  } catch (e) {
+    if (e instanceof ImportValidationError) return c.json({ error: "invalid_request", message: e.message }, 400);
+    throw e;
+  }
 });
 
 admin.get("/admin/users/new", async (c) => {
@@ -1361,6 +1516,12 @@ admin.post("/admin/users/:id/delete", async (c) => {
 
 // ---------- Groups ----------
 
+/**
+ * A dynamic group's page lists at most this many of its computed members: the
+ * 10,000-user load test put 8,153 people in "All Employees" and a 3 MB page.
+ */
+const MEMBER_PREVIEW_LIMIT = 200;
+
 /** Identity attributes every user has regardless of schema - offered under every schema in the rule builder. */
 const IDENTITY_RULE_ATTRIBUTES: { name: string; label: string }[] = [
   { name: "username", label: "Username" },
@@ -1534,8 +1695,12 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
                 ${
                   matched.length > 0
                     ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th></tr></thead><tbody>
-                        ${matched.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${u.status}">${u.status}</span></td></tr>`).join("")}
-                      </tbody></table>`
+                        ${matched
+                          .slice(0, MEMBER_PREVIEW_LIMIT)
+                          .map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${u.status}">${u.status}</span></td></tr>`)
+                          .join("")}
+                      </tbody></table>
+                      ${matched.length > MEMBER_PREVIEW_LIMIT ? `<p class="muted" style="margin-top:8px;">Showing the first ${MEMBER_PREVIEW_LIMIT} of ${matched.length}. The full list is in <code>GET /api/v1/users</code> (each user's <code>groups</code>).</p>` : ""}`
                     : '<p class="muted">Nobody matches these rules yet.</p>'
                 }`
               : ""
