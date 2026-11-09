@@ -12,6 +12,7 @@ import { userinfo } from "./routes/userinfo.js";
 import { account } from "./routes/account.js";
 import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
+import { scimServer } from "./routes/scim-server.js";
 import { getAppName } from "./lib/settings.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
@@ -30,6 +31,8 @@ app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
 // render a page, and they include the only routes that work on an instance with
 // no users in it at all.
 app.route("/", api);
+// Inbound SCIM 2.0 (machine callers, bearer API keys), mounted with the API.
+app.route("/", scimServer);
 
 // Resolves the admin-configurable display name once per request so every
 // downstream handler/view can read it synchronously via c.get("appName").

@@ -43,7 +43,7 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   const method = c.req.method;
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
   const url = new URL(c.req.url);
-  if (EXEMPT.has(url.pathname) || url.pathname.startsWith("/api/")) return next();
+  if (EXEMPT.has(url.pathname) || url.pathname.startsWith("/api/") || url.pathname.startsWith("/scim/v2/")) return next();
 
   // Our own origin, as configured and as actually requested (they differ in
   // local development, where ISSUER_URL is the deployed hostname).
