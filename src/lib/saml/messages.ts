@@ -1,3 +1,4 @@
+import { encryptAssertion } from "./encrypt.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { sha256Hex } from "../tokens.js";
@@ -126,8 +127,10 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
     inner
   );
 
-  if (!sp.sign_assertion) return unsigned;
-  return insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, assertionId));
+  const finished = sp.sign_assertion ? insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, assertionId)) : unsigned;
+  // Sign, then encrypt: the SP decrypts and then verifies the assertion's own signature.
+  if (sp.encrypt_assertions && sp.encryption_cert) return encryptAssertion(finished, sp.encryption_cert);
+  return finished;
 }
 
 /**

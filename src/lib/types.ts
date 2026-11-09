@@ -90,6 +90,8 @@ export interface SamlServiceProviderRow {
   sign_assertion: number;
   want_authn_requests_signed: number;
   signing_certs: string; // JSON array of PEM strings
+  /** Where LogoutResponses go (HTTP-Redirect); NULL = no Single Logout. */
+  slo_url: string | null;
   encrypt_assertions: number;
   encryption_cert: string | null;
   metadata_url: string | null;
