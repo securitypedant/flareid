@@ -79,3 +79,34 @@ export function parseSpMetadata(xml: string): ParsedSpMetadata {
     wantAuthnRequestsSigned: sp.getAttribute("AuthnRequestsSigned") === "true",
   };
 }
+
+/** Creates or updates (by entityID) an SP registry row from parsed metadata. Returns its id. */
+export async function upsertSpFromMetadata(env: import("../../env.js").Env, meta: ParsedSpMetadata, name?: string): Promise<number> {
+  const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT id FROM saml_service_providers WHERE entity_id = ?").bind(meta.entityId).first<{ id: number }>();
+  const fields = [
+    JSON.stringify(meta.acsUrls),
+    meta.defaultAcsUrl,
+    meta.nameIdFormat ?? "transient",
+    meta.wantAuthnRequestsSigned && meta.signingCerts.length > 0 ? 1 : 0,
+    JSON.stringify(meta.signingCerts),
+    meta.sloUrl,
+    meta.encryptionCert,
+    meta.encryptionCert ? 1 : 0,
+  ];
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE saml_service_providers SET acs_urls = ?, default_acs_url = ?, nameid_format = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ?${name ? ", name = ?" : ""} WHERE id = ?`
+    )
+      .bind(...fields, now, ...(name ? [name] : []), existing.id)
+      .run();
+    return existing.id;
+  }
+  const row = await env.DB.prepare(
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, attribute_map, sign_response, sign_assertion, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, 1, ?, ?) RETURNING id`
+  )
+    .bind(meta.entityId, name || meta.entityId, ...fields, now, now)
+    .first<{ id: number }>();
+  return row!.id;
+}

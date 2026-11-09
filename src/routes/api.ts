@@ -47,6 +47,7 @@ import {
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
+import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -791,6 +792,25 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
 
 // Keyed on the numeric row id, not entity_id: entity IDs are URLs, and a
 // URL full of slashes cannot ride inside a path segment.
+/**
+ * Registers (or updates, keyed on entityID) a service provider from its SAML
+ * metadata XML: ACS URLs, signing and encryption certificates, the Single
+ * Logout URL and the NameID format. Body: { "xml": "<md:EntityDescriptor ...>" }.
+ */
+api.post("/api/v1/saml/service-providers/import-metadata", requireScope("clients:write"), async (c) => {
+  const body = await readJson<{ xml?: string; name?: string }>(c);
+  let meta: ParsedSpMetadata;
+  try {
+    meta = parseSpMetadata(String(body.xml ?? ""));
+  } catch (e) {
+    if (e instanceof SpMetadataError) return c.json(badRequest(e.message), 400);
+    throw e;
+  }
+  const id = await upsertSpFromMetadata(c.env, meta, body.name);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.metadata_imported", meta.entityId, { acs_urls: meta.acsUrls.length }, c.req.raw);
+  return c.json({ ok: true, id, entity_id: meta.entityId, acs_urls: meta.acsUrls, slo_url: meta.sloUrl, encryption: Boolean(meta.encryptionCert) });
+});
+
 api.delete("/api/v1/saml/service-providers/:id", requireScope("clients:write"), async (c) => {
   const id = Number(c.req.param("id"));
   const existing = await c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ id: number; name: string; entity_id: string }>();
