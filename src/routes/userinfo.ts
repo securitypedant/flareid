@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex } from "../lib/tokens.js";
@@ -9,10 +9,16 @@ import { parseCustomAttributes } from "../lib/schemas.js";
 
 export const userinfo = new Hono<{ Bindings: Env }>();
 
+/** RFC 6750 section 3: a refused bearer token says why, in WWW-Authenticate as well as the body. */
+function invalidToken(c: Context<{ Bindings: Env }>, missing = false) {
+  c.header("WWW-Authenticate", missing ? 'Bearer realm="flareid"' : 'Bearer realm="flareid", error="invalid_token"');
+  return c.json({ error: "invalid_token" }, 401);
+}
+
 userinfo.get("/userinfo", async (c) => {
   const header = c.req.header("Authorization");
   const token = header?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!token) return c.json({ error: "invalid_token" }, 401);
+  if (!token) return invalidToken(c, true);
 
   const tokenHash = await sha256Hex(token);
   const row = await c.env.DB.prepare("SELECT * FROM access_tokens WHERE token_hash = ?").bind(tokenHash).first<{
@@ -24,11 +30,11 @@ userinfo.get("/userinfo", async (c) => {
   }>();
 
   if (!row || new Date(row.expires_at).getTime() < Date.now()) {
-    return c.json({ error: "invalid_token" }, 401);
+    return invalidToken(c);
   }
 
   const user = await getUserById(c.env, row.user_id);
-  if (!user || user.status !== "active") return c.json({ error: "invalid_token" }, 401);
+  if (!user || user.status !== "active") return invalidToken(c);
 
   const groups = await getUserGroupNames(c.env, user.id);
   const managerEmail = await getManagerEmail(c.env, user.manager_external_id);
