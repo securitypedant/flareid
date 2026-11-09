@@ -51,6 +51,7 @@ import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, parseAllowedClaims } from "../lib/oidc.js";
+import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -2662,6 +2663,9 @@ interface SpFormValues {
   signAssertion: boolean;
   wantSigned: boolean;
   signingCerts: string[];
+  sloUrl: string;
+  encryptionCert: string;
+  encryptAssertions: boolean;
 }
 
 /** Parses and validates the new/edit SP form. Returns the values, or a message for the admin. */
@@ -2704,6 +2708,13 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     return "Requiring signed requests needs at least one SP signing certificate.";
   }
 
+  const sloUrl = String(body.slo_url ?? "").trim();
+  if (sloUrl && !/^https:\/\//.test(sloUrl)) return "The Single Logout URL must be https.";
+  const rawEnc = String(body.encryption_cert ?? "").trim();
+  const encryptionCert = rawEnc ? normalizeCertPem(rawEnc) : "";
+  if (rawEnc && !encryptionCert) return "The encryption certificate could not be parsed.";
+  if (body.encrypt_assertions && !encryptionCert) return "Encrypting assertions needs the SP's encryption certificate.";
+
   return {
     name,
     entityId,
@@ -2715,6 +2726,9 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     signAssertion: !!body.sign_assertion,
     wantSigned: !!body.want_authn_requests_signed,
     signingCerts: certs,
+    sloUrl,
+    encryptionCert: encryptionCert ?? "",
+    encryptAssertions: !!body.encrypt_assertions,
   };
 }
 
@@ -2749,6 +2763,12 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
       <label style="font-weight:400;"><input type="checkbox" name="sign_response" value="1" ${v.signResponse !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Response</label>
       <label style="font-weight:400;"><input type="checkbox" name="sign_assertion" value="1" ${v.signAssertion !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Assertion</label>
       <label style="font-weight:400;"><input type="checkbox" name="want_authn_requests_signed" value="1" ${v.wantSigned ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require signed AuthnRequests from this SP</label>
+      <label for="slo_url" style="margin-top:12px;">Single Logout URL (HTTP-Redirect; leave empty to turn SLO off)</label>
+      <input type="text" id="slo_url" name="slo_url" value="${escapeHtml(v.sloUrl ?? "")}" placeholder="https://sp.example.com/saml/slo" />
+      <p class="muted" style="margin:-8px 0 14px;">LogoutRequests must be signed with one of the signing certificates above.</p>
+      <label for="encryption_cert">SP encryption certificate (PEM)</label>
+      <textarea id="encryption_cert" name="encryption_cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----">${escapeHtml(v.encryptionCert ?? "")}</textarea>
+      <label style="font-weight:400;"><input type="checkbox" name="encrypt_assertions" value="1" ${v.encryptAssertions ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Encrypt assertions (AES-256-GCM, RSA-OAEP)</label>
       <div class="form-actions end">${cancelLink("/admin/integrations/saml")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
@@ -2758,10 +2778,35 @@ admin.get("/admin/saml/new", async (c) => {
     layout(
       c,
       "New SAML service provider",
-      `${samlIdpBlock(c.env)}${cardSection(spForm({}, "/admin/saml", "Create service provider"))}`,
+      `${samlIdpBlock(c.env)}
+      ${cardSection(`
+        <h2>Import from SP metadata</h2>
+        <p class="muted">Paste the service provider's metadata XML. ACS URLs, certificates, Single Logout and NameID format are filled in; an SP with the same entity ID is updated.</p>
+        <form method="POST" action="/admin/saml/import-metadata">
+          <label for="sp_name">Name (optional)</label>
+          <input type="text" id="sp_name" name="name" />
+          <label for="metadata_xml">Metadata XML</label>
+          <textarea id="metadata_xml" name="xml" rows="8" placeholder="&lt;md:EntityDescriptor entityID=&quot;...&quot;&gt;" required></textarea>
+          <div class="form-actions end"><button class="primary" type="submit">Import metadata</button></div>
+        </form>
+      `)}
+      ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider")}`)}`,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: "New service provider" }]
     )
   );
+});
+
+admin.post("/admin/saml/import-metadata", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    const meta = parseSpMetadata(String(body.xml ?? ""));
+    const id = await upsertSpFromMetadata(c.env, meta, String(body.name ?? "").trim() || undefined);
+    await logAudit(c.env, c.get("user"), "saml_sp.metadata_imported", meta.entityId, { acs_urls: meta.acsUrls.length }, c.req.raw);
+    return c.redirect(`/admin/saml/${id}?saved=1`, 302);
+  } catch (e) {
+    if (e instanceof SpMetadataError) return c.text(e.message, 400);
+    throw e;
+  }
 });
 
 admin.post("/admin/saml", async (c) => {
@@ -2770,10 +2815,10 @@ admin.post("/admin/saml", async (c) => {
 
   const now = new Date().toISOString();
   const result = await c.env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), now, now)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, now, now)
     .run();
 
   await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId }, c.req.raw);
@@ -2805,6 +2850,9 @@ admin.get("/admin/saml/:id", async (c) => {
             signAssertion: !!sp.sign_assertion,
             wantSigned: !!sp.want_authn_requests_signed,
             signingCerts: JSON.parse(sp.signing_certs),
+            sloUrl: sp.slo_url ?? "",
+            encryptionCert: sp.encryption_cert ?? "",
+            encryptAssertions: !!sp.encrypt_assertions,
           },
           `/admin/saml/${id}`,
           "Save"
@@ -2830,9 +2878,9 @@ admin.post("/admin/saml/:id", async (c) => {
   if (typeof v === "string") return c.text(v, 400);
 
   await c.env.DB.prepare(
-    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, updated_at = ? WHERE id = ?`
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ? WHERE id = ?`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), new Date().toISOString(), id)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, new Date().toISOString(), id)
     .run();
 
   await logAudit(c.env, c.get("user"), "saml_sp.updated", v.name, { entity_id: v.entityId }, c.req.raw);

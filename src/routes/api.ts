@@ -695,6 +695,9 @@ function spJson(sp: SamlServiceProviderRow) {
     sign_assertion: sp.sign_assertion === 1,
     want_authn_requests_signed: sp.want_authn_requests_signed === 1,
     signing_certs: JSON.parse(sp.signing_certs) as string[],
+    slo_url: sp.slo_url,
+    encryption_cert: sp.encryption_cert,
+    encrypt_assertions: sp.encrypt_assertions === 1,
     created_at: sp.created_at,
     updated_at: sp.updated_at,
   };
@@ -716,6 +719,9 @@ interface SpUpsertBody {
   sign_assertion?: boolean;
   want_authn_requests_signed?: boolean;
   signing_certs?: string[];
+  slo_url?: string | null;
+  encryption_cert?: string | null;
+  encrypt_assertions?: boolean;
 }
 
 /**
@@ -754,6 +760,13 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
     return c.json(badRequest("want_authn_requests_signed needs at least one signing certificate."), 400);
   }
 
+  const sloUrl = body.slo_url !== undefined ? (body.slo_url ? String(body.slo_url).trim() : null) : (existing?.slo_url ?? null);
+  if (sloUrl && !sloUrl.startsWith("https://")) return c.json(badRequest("slo_url must be https."), 400);
+  const encryptionCert = body.encryption_cert !== undefined ? (body.encryption_cert ? normalizeCertPem(body.encryption_cert) : null) : (existing?.encryption_cert ?? null);
+  if (body.encryption_cert && !encryptionCert) return c.json(badRequest("encryption_cert could not be parsed."), 400);
+  const encrypt = body.encrypt_assertions ?? existing?.encrypt_assertions === 1;
+  if (encrypt && !encryptionCert) return c.json(badRequest("encrypt_assertions needs an encryption_cert."), 400);
+
   const name = String(body.name ?? existing?.name ?? entityId).trim();
   const now = new Date().toISOString();
   const values = [
@@ -767,11 +780,14 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
     (body.sign_assertion ?? (existing ? existing.sign_assertion === 1 : true)) ? 1 : 0,
     wantSigned ? 1 : 0,
     JSON.stringify(signingCerts),
+    sloUrl,
+    encryptionCert,
+    encrypt ? 1 : 0,
   ];
 
   if (existing) {
     await c.env.DB.prepare(
-      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, updated_at = ? WHERE id = ?`
+      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ? WHERE id = ?`
     )
       .bind(...values, now, existing.id)
       .run();
@@ -780,8 +796,8 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
   }
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(...values, now, now)
     .run();

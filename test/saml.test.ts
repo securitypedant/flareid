@@ -417,3 +417,83 @@ describe("provisioning API", () => {
     expect(response.status).toBe(400);
   });
 });
+
+describe("SAML v3: metadata import, encryption, Single Logout", () => {
+  const spCertB64 = TEST_SAML_SP_CERT_PEM.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  const metadata = (extra = "") =>
+    `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="${SP_ENTITY_ID}">` +
+    `<md:SPSSODescriptor AuthnRequestsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` +
+    `<md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>${spCertB64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>` +
+    `<md:KeyDescriptor use="encryption"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>${spCertB64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>` +
+    `<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://sp.test/slo"/>` +
+    `<md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>` +
+    `<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${SP_ACS}" index="0" isDefault="true"/>` +
+    extra +
+    `</md:SPSSODescriptor></md:EntityDescriptor>`;
+
+  it("imports SP metadata: ACS, certificates, SLO URL, NameID format and encryption", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const res = await apiCall("/api/v1/saml/service-providers/import-metadata", { token: apiKey, body: { xml: metadata(), name: "Metadata SP" } });
+    expect(res.status).toBe(200);
+    const sp = (await apiCall("/api/v1/saml/service-providers", { token: apiKey })).body.service_providers[0];
+    expect(sp.acs_urls).toEqual([SP_ACS]);
+    expect(sp.slo_url).toBe("https://sp.test/slo");
+    expect(sp.nameid_format).toBe("emailAddress");
+    expect(sp.want_authn_requests_signed).toBe(true);
+    expect(sp.encrypt_assertions).toBe(true);
+    expect(sp.signing_certs).toHaveLength(1);
+
+    const bad = await apiCall("/api/v1/saml/service-providers/import-metadata", { token: apiKey, body: { xml: `<!DOCTYPE x [<!ENTITY a "b">]>${metadata()}` } });
+    expect(bad.status).toBe(400);
+  });
+
+  it("encrypts the assertion to the SP's certificate, and the SP's key decrypts it", async () => {
+    const { upn } = await seedServiceProvider({ encrypt_assertions: true, encryption_cert: TEST_SAML_SP_CERT_PEM });
+    const { query } = await ssoQuery(authnRequestXml());
+    const { html } = await ssoViaLogin(query, upn);
+    const xml = decodeResponse(postFormFields(html).samlResponse!);
+    expect(xml).toContain("<saml:EncryptedAssertion>");
+    expect(xml).not.toContain("<saml:Assertion");
+    expect(xml).not.toContain(upn);
+
+    const values = [...xml.matchAll(/<xenc:CipherValue>([^<]+)<\/xenc:CipherValue>/g)].map((m) => b64decode(m[1]!));
+    const der = b64decode(TEST_SAML_SP_KEY_PKCS8.replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""));
+    const rsa = await crypto.subtle.importKey("pkcs8", der as BufferSource, { name: "RSA-OAEP", hash: "SHA-1" }, false, ["decrypt"]);
+    const cek = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, rsa, values[0] as BufferSource);
+    const aes = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["decrypt"]);
+    const data = values[1]!;
+    const plain = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: data.slice(0, 12), tagLength: 128 }, aes, data.slice(12) as BufferSource));
+    expect(plain).toMatch(/^<saml:Assertion /);
+    expect(plain).toContain("<ds:Signature");
+  });
+
+  it("Single Logout: a signed LogoutRequest for this session ends it and returns a signed LogoutResponse", async () => {
+    const { upn } = await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM], slo_url: "https://sp.test/slo" });
+    const { query } = await ssoQuery(authnRequestXml());
+    const { html, sessionCookie } = await ssoViaLogin(query, upn);
+    const sessionIndex = /SessionIndex="([^"]+)"/.exec(decodeResponse(postFormFields(html).samlResponse!))![1]!;
+
+    const logoutXml = (index: string) =>
+      `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_lo1" Version="2.0" IssueInstant="${new Date().toISOString()}" Destination="${BASE}/saml/slo">` +
+      `<saml:Issuer>${SP_ENTITY_ID}</saml:Issuer><saml:NameID>x</saml:NameID><samlp:SessionIndex>${index}</samlp:SessionIndex></samlp:LogoutRequest>`;
+
+    const unsigned = await SELF.fetch(`${BASE}/saml/slo?${(await ssoQuery(logoutXml(sessionIndex))).query}`, { redirect: "manual", headers: { Cookie: sessionCookie! } });
+    expect(unsigned.status).toBe(400);
+
+    const signed = await ssoQuery(logoutXml(sessionIndex), { sign: "sp", relayState: "back" });
+    const res = await SELF.fetch(`${BASE}/saml/slo?${signed.query}`, { redirect: "manual", headers: { Cookie: sessionCookie! } });
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.origin + loc.pathname).toBe("https://sp.test/slo");
+    expect(loc.searchParams.get("RelayState")).toBe("back");
+    expect(loc.searchParams.get("Signature")).toBeTruthy();
+    const account = await SELF.fetch(`${BASE}/account`, { redirect: "manual", headers: { Cookie: sessionCookie! } });
+    expect(account.status).toBe(302);
+  });
+
+  it("IdP metadata advertises the Single Logout endpoint", async () => {
+    await seedServiceProvider();
+    const xml = await (await SELF.fetch(`${BASE}/saml/metadata`)).text();
+    expect(xml).toContain(`<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${BASE}/saml/slo"`);
+  });
+});

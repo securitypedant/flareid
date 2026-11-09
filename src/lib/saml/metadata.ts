@@ -33,6 +33,7 @@ export function idpMetadataXml(env: Env, appName: string): string {
         el("ds:X509Data", {}, el("ds:X509Certificate", {}, idpCertBase64(env)))
       )
     ) +
+      el("md:SingleLogoutService", { Binding: BINDING_REDIRECT, Location: `${entityId}/saml/slo` }) +
       el("md:NameIDFormat", {}, NAMEID_TRANSIENT) +
       el("md:NameIDFormat", {}, NAMEID_EMAIL) +
       el("md:NameIDFormat", {}, NAMEID_PERSISTENT) +

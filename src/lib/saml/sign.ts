@@ -17,7 +17,7 @@ export function idpCertBase64(env: Env): string {
   return pemToBase64Der(env.SAML_SIGNING_CERT ?? "");
 }
 
-async function signingKey(env: Env): Promise<CryptoKey> {
+export async function signingKey(env: Env): Promise<CryptoKey> {
   if (!env.SAML_SIGNING_KEY_PKCS8) {
     throw new Error("SAML_SIGNING_KEY_PKCS8 is not configured - run `npm run saml:keygen` and set the secret");
   }
