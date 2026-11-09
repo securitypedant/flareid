@@ -50,7 +50,7 @@ import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
-import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, parseAllowedClaims } from "../lib/oidc.js";
+import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
@@ -225,9 +225,9 @@ async function syncGroupBestEffort(c: { env: Env; get: (k: "user") => UserRow; r
   const memberIds = await resolveGroupMemberUserIds(c.env, group);
   const { results: memberRows } = memberIds.length
     ? await c.env.DB.prepare(
-        `SELECT scim_id as scimId, upn FROM users WHERE id IN (${memberIds.map(() => "?").join(",")}) AND scim_id IS NOT NULL`
+        `SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL`
       )
-        .bind(...memberIds)
+        .bind(JSON.stringify(memberIds))
         .all<{ scimId: string; upn: string }>()
     : { results: [] as { scimId: string; upn: string }[] };
 
@@ -577,22 +577,20 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
   const sampleGroupIds = sampleGroups.map((g) => g.id);
 
   if (sampleUserIds.length > 0) {
-    const placeholders = sampleUserIds.map(() => "?").join(",");
     await c.env.DB.batch([
-      c.env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (${placeholders})`).bind(...sampleUserIds),
-      c.env.DB.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).bind(...sampleUserIds),
+      c.env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
+      c.env.DB.prepare(`DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
     ]);
   }
 
   if (sampleGroupIds.length > 0) {
-    const placeholders = sampleGroupIds.map(() => "?").join(",");
-    await c.env.DB.prepare(`DELETE FROM groups WHERE id IN (${placeholders})`).bind(...sampleGroupIds).run();
+    await c.env.DB.prepare(`DELETE FROM groups WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleGroupIds)).run();
   }
 }
 
@@ -1445,6 +1443,7 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
   // A reset is a compromise response too: every existing session ends, same
   // as the self-service change keeps only its own.
   await revokeAllSessionsForUser(c.env, id);
+  await revokeTokensForUser(c.env, id);
 
   await logAudit(c.env, c.get("user"), "user.password_reset", user.upn, { chosen: Boolean(chosen) }, c.req.raw);
 
@@ -1902,6 +1901,13 @@ admin.post("/admin/groups/:id", async (c) => {
   if (await c.env.DB.prepare("SELECT id FROM groups WHERE name = ? AND id != ?").bind(form.name, id).first()) {
     return c.text(`A group named "${form.name}" already exists.`, 409);
   }
+  // Console authority is membership of the group with exactly this name, so
+  // the built-in group keeps it: renamed away, the name would be free for any
+  // directory writer (SCIM, import) to claim for a group it controls.
+  const current = await c.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(id).first<{ name: string }>();
+  if ((current?.name === SUPER_ADMINS_GROUP) !== (form.name === SUPER_ADMINS_GROUP)) {
+    return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be renamed, and no other group can take its name.`, 400);
+  }
 
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(
@@ -1925,6 +1931,7 @@ admin.post("/admin/groups/:id", async (c) => {
 admin.post("/admin/groups/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
+  if (group?.name === SUPER_ADMINS_GROUP) return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be deleted.`, 400);
 
   if (group && (await scimConfigured(c.env))) {
     const result = await deleteGroupScim(c.env, group);
@@ -2412,11 +2419,12 @@ function readClientSettings(body: Record<string, string | File | (string | File)
   return {
     trusted: body.trusted ? 1 : 0,
     allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => list(body.allowed_claims).includes(g))),
+    // Unusable entries are dropped rather than stored: /oidc/logout follows only exact, valid matches.
     postLogoutRedirectUris: JSON.stringify(
       String(body.post_logout_redirect_uris ?? "")
         .split("\n")
         .map((s) => s.trim())
-        .filter(Boolean)
+        .filter((u) => u && isValidPostLogoutUri(u))
     ),
   };
 }

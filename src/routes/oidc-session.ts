@@ -3,7 +3,7 @@ import type { Env } from "../env.js";
 import { authPage, renderAuthMessage } from "../lib/login-views.js";
 import { escapeHtml } from "../lib/html.js";
 import { getClientByClientId } from "../lib/db.js";
-import { clearSessionCookie, getSession, revokeSession } from "../lib/sessions.js";
+import { clearSessionCookie, getSession, oidcSid, revokeSession } from "../lib/sessions.js";
 import { getLoginAppearance } from "../lib/settings.js";
 import { authorizeErrorRedirect, CLAIM_GROUP_LABELS, effectiveClaimGroups, recordConsent } from "../lib/oidc.js";
 import { verifyOwnIdToken } from "../lib/jwt.js";
@@ -136,13 +136,20 @@ async function logoutEntry(c: Context<{ Bindings: Env }>) {
   if ("error" in resolved) return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: resolved.error!, action: null });
 
   const session = await getSession(c.req.raw, c.env);
-  if (!session) return signOut(c, resolved.redirect, resolved.client?.name);
+  // No session on this request - including a cross-site POST, which carries
+  // no SameSite=Lax cookie - means nothing to end: no Set-Cookie either.
+  if (!session) {
+    if (resolved.redirect) return c.redirect(resolved.redirect, 302);
+    return renderAuthMessage(c, 200, { title: "You're signed out", message: "You are not signed in to this sign-in service.", action: { href: "/login", label: "Sign in" } });
+  }
 
   // A hint for this very session (or this user) is proof the app is the one
   // the user signed in to: sign out straight away. Anything less asks first,
   // so a link on another site cannot sign people out.
   const hint = resolved.hint;
-  const sameSession = hint && (hint.sid ? hint.sid === session.id : hint.sub === String(session.userId));
+  // A hint without sid could be any token ever issued to this user, so only a
+  // sid for this very session signs out without asking.
+  const sameSession = hint && typeof hint.sid === "string" && hint.sid === (await oidcSid(session.id));
   if (sameSession) return signOut(c, resolved.redirect, resolved.client?.name);
 
   const hidden = (k: string, v?: string) => (v ? `<input type="hidden" name="${k}" value="${escapeHtml(v)}" />` : "");

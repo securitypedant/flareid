@@ -1,3 +1,4 @@
+import { sha256Hex } from "./tokens.js";
 import type { Env } from "../env.js";
 import { randomToken } from "./tokens.js";
 import { getClientIp } from "./rate-limit.js";
@@ -39,6 +40,16 @@ function readSessionIdFromCookie(request: Request): string | null {
 }
 
 /** Creates a server-tracked session row (so it can later be listed/revoked) and returns the Set-Cookie header for it. */
+/**
+ * The OIDC `sid` claim for a session: a one-way derivation, never the session
+ * id itself - that is the __Host-flareid_session cookie, a bearer credential,
+ * and an id_token is handed to relying parties. Distinct from the SAML
+ * SessionIndex derivation (saml/messages.ts) so the two cannot be correlated.
+ */
+export async function oidcSid(sessionId: string): Promise<string> {
+  return `_${await sha256Hex(`flareid oidc sid v1\n${sessionId}`)}`;
+}
+
 export async function createSession(
   env: Env,
   userId: number,
@@ -106,13 +117,20 @@ export async function getSessionAmr(request: Request, env: Env): Promise<string[
  * immediately; revoking the grants directly means it does not depend on every
  * consumer (/token, /userinfo, /introspect, RPs' caches) re-checking status.
  */
+/**
+ * Ends every credential derived from the account other than sessions: OAuth
+ * access and refresh tokens, unredeemed authorization codes, and outstanding
+ * invitation/reset links. Called on deactivation and on every password
+ * change - otherwise a refresh token, or an old invitation that re-activates
+ * the account, outlives the compromise response.
+ */
 export async function revokeTokensForUser(env: Env, userId: number): Promise<void> {
+  const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ?").bind(userId),
-    env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(
-      new Date().toISOString(),
-      userId
-    ),
+    env.DB.prepare("DELETE FROM auth_codes WHERE user_id = ?").bind(userId),
+    env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(now, userId),
+    env.DB.prepare("UPDATE account_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL").bind(now, userId),
   ]);
 }
 
@@ -123,20 +141,21 @@ export async function revokeTokensForUser(env: Env, userId: number): Promise<voi
  * later goes here once.
  */
 export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStatement[] {
-  const ph = ids.map(() => "?").join(",");
+  // One JSON parameter, not one per id: D1 allows at most 100 bound parameters per query.
+  const idList = JSON.stringify(ids);
   return [
-    env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM account_tokens WHERE user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM oauth_consents WHERE user_id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM account_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM oauth_consents WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     // Audit history is kept, detached from the account.
-    env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (${ph})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM users WHERE id IN (${ph})`).bind(...ids),
+    env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))`).bind(idList),
   ];
 }
 

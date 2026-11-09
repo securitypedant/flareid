@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
-import { getClientIp } from "./rate-limit.js";
+import { getClientIp, rateLimitAddress } from "./rate-limit.js";
 
 /**
  * The first line of defence for every route anyone can reach without signing
@@ -34,12 +34,14 @@ function routeGroup(method: string, path: string): Group | null {
 }
 
 export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
-  const path = new URL(c.req.url).pathname;
+  // c.req.path is the decoded path Hono routes on: classifying the raw
+  // pathname would let /log%69n reach /login unlimited.
+  const path = c.req.path;
   const group = routeGroup(c.req.method, path);
   const limiter = group === "auth" ? c.env.AUTH_LIMITER : group === "api" ? c.env.API_LIMITER : undefined;
   if (!group || !limiter) return next();
 
-  const { success } = await limiter.limit({ key: `${group}:${getClientIp(c.req.raw)}` });
+  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(getClientIp(c.req.raw))}` });
   if (success) return next();
 
   // No audit entry here on purpose: logging every refusal would be the very

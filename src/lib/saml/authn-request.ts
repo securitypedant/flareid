@@ -129,7 +129,7 @@ export function parseAuthnRequestXml(xml: string): ParsedAuthnRequest {
     id,
     issuer,
     acsUrl: root.getAttribute("AssertionConsumerServiceURL")?.trim() || null,
-    forceAuthn: root.getAttribute("ForceAuthn") === "true",
+    forceAuthn: ["true", "1"].includes((root.getAttribute("ForceAuthn") ?? "").trim()),
     nameIdFormat: policyEls.length > 0 ? policyEls[0]!.getAttribute("Format") : null,
     destination: root.getAttribute("Destination")?.trim() || null,
   };

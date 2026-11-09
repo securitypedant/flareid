@@ -57,15 +57,19 @@ export function ruleFields(user: UserRow, custom: Record<string, string>): Recor
   };
 }
 
+/** Every rule is loaded and parsed on each authenticated request, so its size is bounded. */
+export const MAX_RULE_BYTES = 4096;
+const MAX_RULE_CONDITIONS = 20;
+
 export function parseRule(raw: string | null | undefined): GroupRule | null {
-  if (!raw) return null;
+  if (!raw || raw.length > MAX_RULE_BYTES) return null;
   try {
     const parsed = JSON.parse(raw) as GroupRule;
     if (!parsed || !Array.isArray(parsed.all)) return null;
     const all = parsed.all
       .filter((c) => c && typeof c.field === "string" && c.field && typeof c.value === "string" && (c.op === "eq" || c.op === "ne"))
       .map((c) => ({ ...(typeof c.schema === "string" && c.schema ? { schema: c.schema } : {}), field: c.field, op: c.op, value: c.value }));
-    return all.length > 0 ? { all } : null;
+    return all.length > 0 && all.length <= MAX_RULE_CONDITIONS ? { all } : null;
   } catch {
     return null;
   }

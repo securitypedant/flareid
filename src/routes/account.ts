@@ -13,8 +13,8 @@ import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
-import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession } from "../lib/sessions.js";
-import { bindFlowToUser, deleteLoginFlow, getLoginFlow } from "../lib/authorize-state.js";
+import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
+import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
@@ -78,7 +78,7 @@ function relativeTime(iso: string): string {
 async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttributeRow[]> {
   if (!user.schema_id) return [];
   const [attrs, ruleFields] = await Promise.all([getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env)]);
-  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && !ruleFields.has(a.name));
+  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && a.name !== "manager" && !ruleFields.has(a.name));
 }
 
 account.get("/account", async (c) => {
@@ -377,6 +377,7 @@ account.post("/account/password", async (c) => {
   // A password change is a compromise response: end every other session,
   // keeping only the one that just proved knowledge of the old password.
   await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
+  await revokeTokensForUser(c.env, user.id);
 
   await logAudit(c.env, user, "user.password_changed_self", user.upn, undefined, c.req.raw);
 
@@ -392,10 +393,10 @@ account.get("/account/mfa/setup", async (c) => {
   const resume = c.req.query("resume") ?? "";
   if (user.mfa_enabled) return c.redirect("/account", 302);
 
-  let secret = await getPendingEnrollment(c.env, user.id);
+  let secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) {
     secret = generateBase32Secret();
-    await storePendingEnrollment(c.env, user.id, secret);
+    await storePendingEnrollment(c.env, c.get("sessionId"), secret);
   }
 
   const otpauthUri = buildOtpAuthUri({ secret, upn: user.upn, issuer: c.get("appName") });
@@ -441,7 +442,7 @@ account.post("/account/mfa/setup", async (c) => {
   const code = String(body.code ?? "");
   const resume = String(body.resume ?? "");
 
-  const secret = await getPendingEnrollment(c.env, user.id);
+  const secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) return c.text("Enrollment session expired, please start again.", 400);
 
   const counter = await matchTotpCounter(secret, code);
@@ -456,7 +457,11 @@ account.post("/account/mfa/setup", async (c) => {
   )
     .bind(secret, counter, new Date().toISOString(), user.id)
     .run();
-  await deletePendingEnrollment(c.env, user.id);
+  await deletePendingEnrollment(c.env, c.get("sessionId"));
+  // Every other session predates the second factor (a password-only session
+  // from the forced-enrolment login, say): end them, as a password change does.
+  await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(["pwd", "mfa"]), c.get("sessionId")).run();
   await logAudit(c.env, user, "user.mfa_enabled", user.upn, undefined, c.req.raw);
 
   const codes = await generateBackupCodes(c.env, user.id);
@@ -467,8 +472,11 @@ account.post("/account/mfa/setup", async (c) => {
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
 async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string): Promise<string> {
+  // Only a flow this user parked after authenticating: never a sealed
+  // anonymous one, which would let enrolment stand in for a fresh login.
+  if (isSealedFlowId(resumeFlowId)) return "/account";
   const flow = await getLoginFlow(env, resumeFlowId);
-  if (!flow) return "/account";
+  if (!flow || flow.resumeFor !== userId) return "/account";
 
   if (flow.kind === "direct") {
     await deleteLoginFlow(env, resumeFlowId);

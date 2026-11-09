@@ -1,3 +1,4 @@
+import { oidcSid } from "../lib/sessions.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
@@ -68,8 +69,9 @@ token.post("/token", async (c) => {
       }
     }
 
-    // Single use.
-    await c.env.DB.prepare("DELETE FROM auth_codes WHERE code = ?").bind(code).run();
+    // Single use, atomically: of two concurrent redemptions only one deletes the row.
+    const claimed = await c.env.DB.prepare("DELETE FROM auth_codes WHERE code = ?").bind(code).run();
+    if (claimed.meta.changes !== 1) return c.json({ error: "invalid_grant" }, 400);
 
     const user = await getUserById(c.env, authCode.user_id);
     if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
@@ -223,7 +225,7 @@ async function issueTokenResponse(
       nonce: opts.nonce,
     },
     effectiveClaimGroups(client, scope),
-    { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ?? undefined, atHash: await atHash(accessToken) }
+    { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ? await oidcSid(opts.sid) : undefined, atHash: await atHash(accessToken) }
   );
 
   return Response.json({

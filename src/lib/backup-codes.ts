@@ -39,16 +39,14 @@ export async function generateBackupCodes(env: Env, userId: number): Promise<str
 /** Verifies and, if valid, consumes (marks used) a backup code. Returns whether it was valid. */
 export async function verifyAndConsumeBackupCode(env: Env, userId: number, code: string): Promise<boolean> {
   const hash = await sha256Hex(normalizeCode(code));
-  const row = await env.DB.prepare(
-    "SELECT id FROM mfa_backup_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL"
+  // One conditional UPDATE: two concurrent submissions of the same code
+  // cannot both see it unused (the same claim pattern as TOTP counters).
+  const result = await env.DB.prepare(
+    "UPDATE mfa_backup_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL"
   )
-    .bind(userId, hash)
-    .first<{ id: number }>();
-
-  if (!row) return false;
-
-  await env.DB.prepare("UPDATE mfa_backup_codes SET used_at = ? WHERE id = ?").bind(new Date().toISOString(), row.id).run();
-  return true;
+    .bind(new Date().toISOString(), userId, hash)
+    .run();
+  return result.meta.changes === 1;
 }
 
 export async function countRemainingBackupCodes(env: Env, userId: number): Promise<number> {

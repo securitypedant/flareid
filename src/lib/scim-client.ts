@@ -16,9 +16,8 @@ export interface ScimResult {
 async function isUserInScimScope(env: Env, scope: ScimScope, userId: number): Promise<boolean> {
   if (scope.mode === "all") return true;
   if (scope.groupIds.length === 0) return false;
-  const placeholders = scope.groupIds.map(() => "?").join(",");
-  const row = await env.DB.prepare(`SELECT 1 FROM group_members WHERE user_id = ? AND group_id IN (${placeholders})`)
-    .bind(userId, ...scope.groupIds)
+  const row = await env.DB.prepare(`SELECT 1 FROM group_members WHERE user_id = ? AND group_id IN (SELECT value FROM json_each(?))`)
+    .bind(userId, JSON.stringify(scope.groupIds))
     .first();
   return !!row;
 }
@@ -237,6 +236,17 @@ export async function syncAll(env: Env): Promise<{ users: number; userErrors: nu
 }
 
 /** Pushes every group with its resolved members (dynamic ones included). */
+/** Pushes one group with its current resolved members (for writers that change a single group). */
+export async function pushGroupCurrent(env: Env, group: GroupRow): Promise<ScimResult> {
+  const memberIds = await resolveGroupMemberUserIds(env, group);
+  const { results } = memberIds.length
+    ? await env.DB.prepare("SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL")
+        .bind(JSON.stringify(memberIds))
+        .all<{ scimId: string; upn: string }>()
+    : { results: [] as { scimId: string; upn: string }[] };
+  return pushGroup(env, group, results);
+}
+
 export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number }> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
@@ -244,9 +254,9 @@ export async function syncGroups(env: Env): Promise<{ groups: number; groupError
     const memberIds = await resolveGroupMemberUserIds(env, group);
     const { results: memberRows } = memberIds.length
       ? await env.DB.prepare(
-          `SELECT scim_id as scimId, upn FROM users WHERE id IN (${memberIds.map(() => "?").join(",")}) AND scim_id IS NOT NULL`
+          `SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL`
         )
-          .bind(...memberIds)
+          .bind(JSON.stringify(memberIds))
           .all<{ scimId: string; upn: string }>()
       : { results: [] as { scimId: string; upn: string }[] };
 

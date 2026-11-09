@@ -14,6 +14,7 @@ import { logAudit } from "../lib/audit.js";
 const NS_SAMLP = "urn:oasis:names:tc:SAML:2.0:protocol";
 const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
 const SIGALG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+const SLO_MAX_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * SAML Single Logout, SP-initiated, HTTP-Redirect binding (SAML Profiles 4.4).
@@ -63,6 +64,8 @@ samlSlo.get("/saml/slo", async (c) => {
   const requestId = req.getAttribute("ID") ?? "";
   const sessionIndexes = Array.from(req.getElementsByTagNameNS(NS_SAMLP, "SessionIndex")).map((e) => e.textContent?.trim() ?? "");
   const notOnOrAfter = req.getAttribute("NotOnOrAfter");
+  const issueInstant = Date.parse(req.getAttribute("IssueInstant") ?? "");
+  const destination = req.getAttribute("Destination");
 
   const sp = issuer ? await getSpByEntityId(c.env, issuer) : null;
   if (!sp || !sp.slo_url) return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "This app is not registered for Single Logout.", action: null });
@@ -70,15 +73,31 @@ samlSlo.get("/saml/slo", async (c) => {
   if ((await verifyRedirectSignature(sp, raw)) !== "ok") {
     return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "The LogoutRequest must be signed with the app's registered certificate.", action: null });
   }
-  if (!/^[A-Za-z_][\w.-]{0,255}$/.test(requestId) || (notOnOrAfter && Date.parse(notOnOrAfter) < Date.now() - 60_000)) {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "The LogoutRequest is malformed or expired.", action: null });
+  // A signature proves the SP sent it once - not that it is fresh, meant for
+  // this IdP, or unused. Without these a captured request is a reusable
+  // sign-out link.
+  const fresh = Number.isFinite(issueInstant) && Math.abs(Date.now() - issueInstant) <= SLO_MAX_SKEW_MS;
+  if (
+    !/^[A-Za-z_][\w.-]{0,255}$/.test(requestId) ||
+    !fresh ||
+    (notOnOrAfter && Date.parse(notOnOrAfter) < Date.now() - 60_000) ||
+    (destination !== null && destination !== `${c.env.ISSUER_URL}/saml/slo`)
+  ) {
+    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "The LogoutRequest is malformed, expired or addressed elsewhere.", action: null });
   }
+  const replayKey = `saml:slo:${await sha256Hex(`${sp.id}\n${requestId}`)}`;
+  if (await c.env.SESSIONS_KV.get(replayKey)) {
+    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "This LogoutRequest was already used.", action: null });
+  }
+  await c.env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: Math.ceil((2 * SLO_MAX_SKEW_MS) / 1000) + 60 });
 
   const session = await getSession(c.req.raw, c.env);
   let status = "urn:oasis:names:tc:SAML:2.0:status:Success";
   if (session) {
     const ours = `_${await sha256Hex(session.id)}`;
-    if (sessionIndexes.length === 0 || sessionIndexes.includes(ours)) {
+    // Only the session the SP names: a request without SessionIndex could be
+    // replayed against whoever opens it.
+    if (sessionIndexes.includes(ours)) {
       await revokeSession(c.env, session.id);
       c.header("Set-Cookie", clearSessionCookie());
       await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.saml_slo", sp.name, undefined, c.req.raw);

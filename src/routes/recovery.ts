@@ -8,8 +8,8 @@ import { consumeAccountToken, peekAccountToken, revokeAccountTokens, type Accoun
 import { sendPasswordReset } from "../lib/account-email.js";
 import { isEmailConfigured } from "../lib/email.js";
 import { getLoginAppearance, getPasswordPolicy, passwordPolicySummary, validatePassword } from "../lib/settings.js";
-import { revokeAllSessionsForUser } from "../lib/sessions.js";
-import { clearLoginAttempts, getClientIp, recordRateAttempt } from "../lib/rate-limit.js";
+import { revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
+import { clearLoginAttempts, getClientIp, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
 import { logAudit } from "../lib/audit.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { UserRow } from "../lib/types.js";
@@ -81,7 +81,7 @@ recovery.post("/forgot-password", async (c) => {
   // response, so neither its content nor its timing says.
   c.executionCtx.waitUntil(
     (async () => {
-      if (await recordRateAttempt(c.env, `recovery:ip:${ip}`, RESETS_PER_IP_PER_HOUR, 60)) return;
+      if (await recordRateAttempt(c.env, `recovery:ip:${rateLimitAddress(ip)}`, RESETS_PER_IP_PER_HOUR, 60)) return;
       const user = identifier ? await getUserByLoginIdentifier(c.env, identifier) : null;
       if (!user || user.status !== "active") return;
       if (await recordRateAttempt(c.env, `recovery:user:${user.id}`, RESETS_PER_ACCOUNT_PER_HOUR, 60)) {
@@ -161,7 +161,7 @@ async function acceptPassword(c: Context<{ Bindings: Env }>, purpose: AccountTok
     .run();
   // Whoever had the old password, or an older link, is out.
   await revokeAllSessionsForUser(c.env, user.id);
-  await revokeAccountTokens(c.env, user.id);
+  await revokeTokensForUser(c.env, user.id);
   await clearLoginAttempts(c.env, user.upn.toLowerCase());
   return { user: { ...user, status: "active" } };
 }

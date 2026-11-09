@@ -4,7 +4,7 @@ import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from ".
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { isEmailConfigured, recipientFor } from "../lib/email.js";
-import { CLAIM_GROUPS } from "../lib/oidc.js";
+import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
@@ -328,6 +328,12 @@ api.post("/api/v1/domains/:domain/apply-to-all", requireScope("directory:write")
   const row = (await listDomains(c.env)).find((d) => d.domain === domain);
   if (!row) return c.json({ error: "not_found", message: `No such domain "${domain}".` }, 404);
 
+  // Rewriting every UPN includes Super Admins, and recovery mail follows the
+  // UPN: moving an admin onto a domain the caller registered would hand it
+  // their reset link. Admin authority only, as in the console.
+  if (!hasScope(c.get("apiActor").scopes, "admin")) {
+    return c.json({ error: "forbidden", message: 'Applying a domain to every user (Super Admins included) requires the "admin" scope.' }, 403);
+  }
   const { updated, conflicts } = await applyDomainToAllUsers(c.env, domain);
   await logAudit(c.env, auditActor(c.get("apiActor")), "domain.applied_to_all", domain, { updated, conflicts }, c.req.raw);
   return c.json({ ok: true, updated, conflicts });
@@ -585,7 +591,10 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
   const trusted = body.trusted === false ? 0 : 1;
   // null/omitted = every group (the pre-v3 behaviour); a list = exactly those.
   const allowedClaims = Array.isArray(body.allowed_claims) ? JSON.stringify(CLAIM_GROUPS.filter((g) => body.allowed_claims!.includes(g))) : null;
-  const postLogout = JSON.stringify((body.post_logout_redirect_uris ?? []).map((u) => String(u).trim()).filter(Boolean));
+  const postLogoutList = (body.post_logout_redirect_uris ?? []).map((u) => String(u).trim()).filter(Boolean);
+  const badLogout = postLogoutList.find((u) => !isValidPostLogoutUri(u));
+  if (badLogout) return c.json(badRequest(`post_logout_redirect_uri "${badLogout}" must be https (or http on a loopback host).`), 400);
+  const postLogout = JSON.stringify(postLogoutList);
   const name = String(body.name ?? "").trim();
   if (!name) return c.json(badRequest("name is required."), 400);
 

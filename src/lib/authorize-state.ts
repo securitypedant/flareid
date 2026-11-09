@@ -34,10 +34,19 @@ export interface PendingSamlRequest {
  *  - "direct": triggered by someone visiting /account or /admin directly in a
  *    browser with no active session - on success we just redirect to `next`.
  */
-export type LoginFlow =
+export type LoginFlow = (
   | { kind: "oidc"; request: PendingAuthorizeRequest }
   | { kind: "saml"; request: PendingSamlRequest }
-  | { kind: "direct"; next: string };
+  | { kind: "direct"; next: string }
+) & {
+  /**
+   * Set only when a flow is parked for forced MFA enrolment after the user
+   * authenticated (login.ts, authorize.ts, saml.ts). The resume path accepts
+   * nothing else: a flow minted at an anonymous entry point - including one
+   * carrying ForceAuthn, prompt=login or max_age - still needs a fresh login.
+   */
+  resumeFor?: number;
+};
 
 const FLOW_TTL_SECONDS = 600;
 const MFA_TTL_SECONDS = 300;

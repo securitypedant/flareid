@@ -63,7 +63,7 @@ export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
   return {
     ...attributes,
     amr: claims.amr,
-    ...(release.has("custom") ? { custom: { ...attributes, ...(claims.customAttributes ?? {}) } } : {}),
+    ...(release.has("custom") ? { custom: { ...(claims.customAttributes ?? {}), ...attributes } } : {}),
   };
 }
 

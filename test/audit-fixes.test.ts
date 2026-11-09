@@ -1,3 +1,4 @@
+import { sha256Hex } from "../src/lib/tokens.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
@@ -238,9 +239,9 @@ describe("mandatory MFA", () => {
     expect(early.status).toBe(400);
 
     // Enrol: the page creates the pending secret; the POST confirms it.
-    const uid = await userId("bob.smith");
     await SELF.fetch(`${BASE}/account/mfa/setup?resume=${resumeId}`, { headers: { Cookie: cookie } });
-    const secret = await env.SESSIONS_KV.get(`enroll:${uid}`);
+    // The pending secret belongs to this session (mfa-enrollment.ts).
+    const secret = await env.SESSIONS_KV.get(`enroll:${await sha256Hex(cookie.split("=")[1]!)}`);
     expect(secret).toBeTruthy();
     const enrol = await SELF.fetch(`${BASE}/account/mfa/setup`, {
       method: "POST",

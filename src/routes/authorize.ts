@@ -146,7 +146,7 @@ authorize.get("/authorize", async (c) => {
     // setup; resumeLoginFlow finishes the code issue afterwards.
     if (!user.mfa_enabled && (await isMfaRequired(c.env))) {
       if (prompts.has("none")) return fail("interaction_required", "Multi-factor enrolment is required.");
-      const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
+      const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest, resumeFor: user.id });
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
     }
     const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);

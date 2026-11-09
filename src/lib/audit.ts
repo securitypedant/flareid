@@ -24,7 +24,7 @@ export async function logAudit(
       actor?.id ?? null,
       actor?.upn ?? null,
       action,
-      target ?? null,
+      target == null ? null : target.slice(0, 256),
       details ? JSON.stringify(details) : null,
       request ? getClientIp(request) : null,
       request?.headers.get("User-Agent") ?? null

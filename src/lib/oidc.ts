@@ -70,6 +70,16 @@ function isLoopback(url: URL): boolean {
  * address picks its port at runtime, so for public clients a registered
  * loopback URI matches the same URI on any port.
  */
+/** A post-logout redirect URI must be an absolute https URL, or http on a loopback host (RFC 8252 native apps). */
+export function isValidPostLogoutUri(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || (u.protocol === "http:" && isLoopback(u));
+  } catch {
+    return false;
+  }
+}
+
 export function redirectUriAllowed(client: Pick<OAuthClientRow, "redirect_uris" | "client_type">, redirectUri: string): boolean {
   const registered: string[] = JSON.parse(client.redirect_uris);
   if (registered.includes(redirectUri)) return true;

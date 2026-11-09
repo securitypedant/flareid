@@ -119,7 +119,7 @@ describe("prompt and max_age", () => {
   it("prompt=login and an exceeded max_age show the login form despite a session", async () => {
     const { upn, clientId } = await setup();
     const { cookie } = await signInVia(authorizeUrl(clientId), upn);
-    for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
+    for (const extra of [{ prompt: "login" }, { max_age: "0" }] as Record<string, string>[]) {
       await env.DB.prepare("UPDATE sessions SET created_at = ?").bind(new Date(Date.now() - 5000).toISOString()).run();
       const res = await SELF.fetch(authorizeUrl(clientId, extra), { redirect: "manual", headers: { Cookie: cookie } });
       expect(res.status).toBe(200);

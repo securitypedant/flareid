@@ -72,6 +72,25 @@ export function getClientIp(request: Request): string {
 }
 
 /**
+ * The address a per-client budget is keyed on. An IPv6 client normally holds a
+ * whole /64, so keying the full address would hand it 2^64 fresh budgets;
+ * IPv4 stays as is.
+ */
+export function rateLimitAddress(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head, tail = ""] = ip.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${groups.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
+/** A successful step gives its unit back to the shared per-IP bucket, so that bucket counts failures only. */
+async function refundIpAttempt(env: Env, ip: string): Promise<void> {
+  await env.DB.prepare("UPDATE rate_limits SET count = MAX(count - 1, 0) WHERE key = ?").bind(`login:ip:${rateLimitAddress(ip)}`).run();
+}
+
+/**
  * The identifier a bucket binds to: the resolved account's canonical UPN when
  * the submitted name matches a user, else the normalized submission - so
  * spelling variants (" admin", "admin@x", whitespace tricks) share one budget
@@ -92,14 +111,15 @@ export async function recordLoginAttempt(env: Env, accountKey: string, ip: strin
   const windowMs = policy.windowMinutes * 60_000;
   const [byAccount, byIp] = await Promise.all([
     recordAttempt(env, `login:upn:${accountKey}`, windowMs),
-    recordAttempt(env, `login:ip:${ip}`, windowMs),
+    recordAttempt(env, `login:ip:${rateLimitAddress(ip)}`, windowMs),
   ]);
   return byAccount > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
 }
 
 /** Clears the account bucket after a successful password step. */
-export async function clearLoginAttempts(env: Env, accountKey: string): Promise<void> {
+export async function clearLoginAttempts(env: Env, accountKey: string, ip?: string): Promise<void> {
   await env.DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(`login:upn:${accountKey}`).run();
+  if (ip) await refundIpAttempt(env, ip);
 }
 
 /**
@@ -111,12 +131,13 @@ export async function recordMfaAttempt(env: Env, userId: number, ip: string): Pr
   const windowMs = policy.windowMinutes * 60_000;
   const [byUser, byIp] = await Promise.all([
     recordAttempt(env, `login:mfa:${userId}`, windowMs),
-    recordAttempt(env, `login:ip:${ip}`, windowMs),
+    recordAttempt(env, `login:ip:${rateLimitAddress(ip)}`, windowMs),
   ]);
   return byUser > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
 }
 
 /** Clears the account's MFA bucket after a successful second factor. */
-export async function clearMfaAttempts(env: Env, userId: number): Promise<void> {
+export async function clearMfaAttempts(env: Env, userId: number, ip?: string): Promise<void> {
   await env.DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(`login:mfa:${userId}`).run();
+  if (ip) await refundIpAttempt(env, ip);
 }

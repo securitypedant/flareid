@@ -114,7 +114,7 @@ async function completeLoginFlow(
   // original destination, whether that's a direct /account visit or an OIDC
   // login to a relying party.
   if (!user.mfa_enabled && (await isMfaRequired(env))) {
-    const resumeFlowId = await storeLoginFlow(env, flow);
+    const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
 
@@ -138,8 +138,10 @@ async function completeLoginFlow(
 login.post("/login", async (c) => {
   const body = await c.req.parseBody();
   const flowId = String(body.flow_id ?? "");
-  const upn = String(body.upn ?? "");
-  const password = String(body.password ?? "");
+  // Bounded like the recovery form: the identifier becomes a rate-limit key
+  // and an audit target, so its size must not be the caller's choice.
+  const upn = String(body.upn ?? "").slice(0, 254);
+  const password = String(body.password ?? "").slice(0, 1024);
   const ip = getClientIp(c.req.raw);
 
   const flow = await getLoginFlow(c.env, flowId);
@@ -163,15 +165,17 @@ login.post("/login", async (c) => {
   // An unknown or disabled account still costs one real hash verification, so
   // the response time no longer tells an attacker which usernames exist
   // (previously ~70 ms for a real account against ~5 ms for a miss).
-  const valid =
-    user && user.status === "active" ? await verifyPassword(password, user) : (await verifyPassword(password, await dummyPasswordHash(c.env)), false);
+  // An account with no usable password (imported, awaiting an invitation)
+  // costs the same, too - its "!" hash would otherwise fail instantly.
+  const usable = user && user.status === "active" && !user.password_hash.startsWith("!");
+  const valid = usable ? await verifyPassword(password, user) : (await verifyPassword(password, await dummyPasswordHash(c.env)), false);
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
     return c.html(loginForm(c.get("appName"), flowId, appearance, "Incorrect username/UPN or password."));
   }
 
-  await clearLoginAttempts(c.env, rateKey);
+  await clearLoginAttempts(c.env, rateKey, ip);
   // Legacy PBKDF2 hashes move to scrypt now, while the password is in hand.
   if (await upgradePasswordHashIfNeeded(c.env, user, password)) {
     await logAudit(c.env, null, "user.password_rehashed", user.upn, undefined, c.req.raw);
@@ -246,7 +250,7 @@ login.post("/login/mfa", async (c) => {
     await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
   }
 
-  await clearMfaAttempts(c.env, user.id);
+  await clearMfaAttempts(c.env, user.id, ip);
 
   const flow = await getLoginFlow(c.env, pending.flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);

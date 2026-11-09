@@ -1,3 +1,4 @@
+import { parseRule } from "./groups.js";
 import type { Env } from "../env.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -201,7 +202,11 @@ export async function saveSchemaAttributes(
 ): Promise<void> {
   const ruleFields = await ruleAttributeNames(env);
   for (const a of attributes) {
+    // The same name rule as the admin form, for every writer (the API too).
+    if (!/^[a-z][a-z0-9_]*$/.test(a.name)) throw new RangeError(`"${a.name}" is not a valid attribute name - use lowercase letters, digits and underscores, starting with a letter.`);
     if (!a.user_editable) continue;
+    // "manager" maps onto the manager reference column by name, whatever its type.
+    if (a.name === "manager") throw new RangeError(`"manager" refers to another person, which users cannot set for themselves.`);
     if (a.type === "reference") throw new RangeError(`"${a.name}" is a reference to another person, which users cannot set for themselves.`);
     if (ruleFields.has(a.name)) throw new RangeError(`"${a.name}" is used by a dynamic group's rule, so letting users edit it would let them choose their own groups.`);
   }
@@ -219,13 +224,13 @@ export async function saveSchemaAttributes(
 export async function ruleAttributeNames(env: Env): Promise<Set<string>> {
   const { results } = await env.DB.prepare("SELECT rule FROM groups WHERE rule != ''").all<{ rule: string }>();
   const names = new Set<string>();
+  // The same parser the evaluator uses, so the guard sees every condition it
+  // enforces; both the bare and the custom.-stripped field are reserved,
+  // because ruleFields (groups.ts) answers to either spelling.
   for (const { rule } of results) {
-    try {
-      for (const cond of (JSON.parse(rule) as { all?: { field?: string }[] }).all ?? []) {
-        if (typeof cond.field === "string") names.add(cond.field.replace(/^custom\./, ""));
-      }
-    } catch {
-      // an unparseable rule matches nothing (see parseRule)
+    for (const cond of parseRule(rule)?.all ?? []) {
+      names.add(cond.field);
+      names.add(cond.field.replace(/^custom\./, ""));
     }
   }
   return names;

@@ -262,7 +262,9 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     else if (!parseRule(group.rule)) result.errors.push({ group: name, message: "Rule is not valid rule JSON - rule ignored." });
     else if ((parseRule(group.rule)?.all ?? []).some((cond) => editableAttrs.has(cond.field.replace(/^custom\./, ""))))
       result.errors.push({ group: name, message: "Rule matches on a user-editable attribute, which would let users choose their own groups - rule ignored." });
-    else ruleByName.set(name, group.rule);
+    // Stored normalised - the parsed conditions only - so every later reader
+    // (rule guards, evaluators) sees exactly what is evaluated.
+    else ruleByName.set(name, JSON.stringify(parseRule(group.rule)));
   }
   for (const user of users) {
     for (const name of user.groups ?? []) {
@@ -397,6 +399,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
           )
             .bind(hash, salt, iterations, existing.id)
             .run();
+          // A password set by import is a reset like any other: whoever held
+          // the old one - a session, a refresh token, a link - is out.
+          await revokeAllSessionsForUser(env, existing.id);
+          await revokeTokensForUser(env, existing.id);
         }
 
         userId = existing.id;
