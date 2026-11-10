@@ -50,7 +50,7 @@ import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, send
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision } from "../lib/scim-client.js";
+import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision, syncGroups } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
@@ -3562,10 +3562,21 @@ admin.post("/admin/scim/scope", async (c) => {
 
   await setScimScope(c.env, { mode, groupIds });
   await logAudit(c.env, c.get("user"), "settings.scim_scope_changed", undefined, { mode, groupIds }, c.req.raw);
-  // Users already pushed are re-evaluated against the new scope (out of scope = deactivated downstream).
+  // Everything already pushed is re-evaluated against the new scope: users
+  // out of scope are deactivated, groups out of scope removed (pushGroup).
+  // Failures are audited, as for every other SCIM writer.
   if (await scimConfigured(c.env)) {
+    const actor = c.get("user");
     const { results } = await c.env.DB.prepare("SELECT id FROM users WHERE scim_id IS NOT NULL").all<{ id: number }>();
-    c.executionCtx.waitUntil(pushUsersById(c.env, results.map((r) => r.id)));
+    c.executionCtx.waitUntil(
+      (async () => {
+        const users = await pushUsersById(c.env, results.map((r) => r.id));
+        const groups = await syncGroups(c.env);
+        if (!users.ok || groups.groupErrors) {
+          await logAudit(c.env, actor, "scim.user_sync_failed", undefined, { action: "scope_changed", error: users.error, group_errors: groups.groupErrors });
+        }
+      })()
+    );
   }
 
   return c.redirect("/admin/integrations/scim?saved=1", 302);
