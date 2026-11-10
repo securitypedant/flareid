@@ -96,8 +96,11 @@ async function refundIpAttempt(env: Env, ip: string): Promise<void> {
  * spelling variants (" admin", "admin@x", whitespace tricks) share one budget
  * instead of each claiming a fresh one.
  */
-export function loginRateKey(identifier: string, user: { upn: string } | null): string {
-  return (user?.upn ?? identifier).trim().toLowerCase();
+export function loginRateKey(identifier: string, user: { username: string } | null): string {
+  // The username part, whether or not the account exists: "alice" and
+  // "alice@domain" must share a bucket for unknown names exactly as they do
+  // for real ones, or the lockout message tells which accounts exist.
+  return (user?.username ?? identifier.trim().split("@")[0]!).trim().toLowerCase();
 }
 
 /**

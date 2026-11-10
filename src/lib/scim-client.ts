@@ -224,6 +224,7 @@ export async function testScimConnection(env: Env): Promise<ScimResult> {
 
 /** Pushes every user, then every group (with resolved member scim_ids). Best-effort; returns a summary. */
 export async function syncAll(env: Env): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number }> {
+  await drainScimDeprovisionQueue(env);
   const { results: users } = await env.DB.prepare("SELECT * FROM users").all<UserRow>();
   let userErrors = 0;
   for (const user of users) {
@@ -245,6 +246,42 @@ export async function pushGroupCurrent(env: Env, group: GroupRow): Promise<ScimR
         .all<{ scimId: string; upn: string }>()
     : { results: [] as { scimId: string; upn: string }[] };
   return pushGroup(env, group, results);
+}
+
+/** Remote objects still to delete per invocation: keeps each request inside the Workers subrequest budget. */
+const DEPROVISION_BATCH = 25;
+
+/**
+ * Sends queued downstream DELETEs (scim_deprovision_queue), at most
+ * DEPROVISION_BATCH per call. A success - or a 404, already gone - removes the
+ * entry; a failure stays queued for the next drain.
+ */
+export async function drainScimDeprovisionQueue(env: Env): Promise<{ removed: number; removedUsers: number; removedGroups: number; failed: number; remaining: number }> {
+  let removedUsers = 0;
+  let removedGroups = 0;
+  let failed = 0;
+  if (await isScimConfigured(env)) {
+    const { results } = await env.DB.prepare("SELECT kind, scim_id, label FROM scim_deprovision_queue ORDER BY attempts, queued_at LIMIT ?")
+      .bind(DEPROVISION_BATCH)
+      .all<{ kind: "user" | "group"; scim_id: string; label: string }>();
+    for (const item of results) {
+      const r = item.kind === "user"
+        ? await deleteUserScim(env, { scim_id: item.scim_id } as UserRow)
+        : await deleteGroupScim(env, { scim_id: item.scim_id } as GroupRow);
+      if (r.ok) {
+        if (item.kind === "user") removedUsers++;
+        else removedGroups++;
+        await env.DB.prepare("DELETE FROM scim_deprovision_queue WHERE kind = ? AND scim_id = ?").bind(item.kind, item.scim_id).run();
+      } else {
+        failed++;
+        await env.DB.prepare("UPDATE scim_deprovision_queue SET attempts = attempts + 1, last_error = ? WHERE kind = ? AND scim_id = ?")
+          .bind(String(r.error ?? r.status ?? "failed").slice(0, 500), item.kind, item.scim_id)
+          .run();
+      }
+    }
+  }
+  const remaining = (await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue").first<{ n: number }>())?.n ?? 0;
+  return { removed: removedUsers + removedGroups, removedUsers, removedGroups, failed, remaining };
 }
 
 export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number }> {

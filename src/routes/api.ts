@@ -388,7 +388,7 @@ api.post("/api/v1/users/:username/invite", requireScope("directory:write"), asyn
 api.post("/api/v1/directory/reset", requireScope("directory:write"), async (c) => {
   const result = await importDirectory(c.env, { version: 1, mode: "replace", users: [], groups: [] }, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
   await logAudit(c.env, auditActor(c.get("apiActor")), "directory.reset", undefined, undefined, c.req.raw);
-  return c.json({ ok: true, domain: result.domain });
+  return c.json({ ok: true, domain: result.domain, ...(result.scim ? { scim: result.scim } : {}) });
 });
 
 api.get("/api/v1/users", requireScope("directory:read"), async (c) => {

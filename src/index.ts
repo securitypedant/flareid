@@ -1,3 +1,4 @@
+import { drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
 import { discovery } from "./routes/discovery.js";
@@ -77,6 +78,13 @@ export default {
       purgeExpiredState(env).then(
         (removed) => console.log(JSON.stringify({ event: "cleanup", removed })),
         (err) => console.error(JSON.stringify({ event: "cleanup_failed", error: String(err) }))
+      )
+    );
+    // Retry queued downstream SCIM deletions (replace-mode import, reset).
+    ctx.waitUntil(
+      drainScimDeprovisionQueue(env).then(
+        (r) => r.removed + r.failed > 0 && console.log(JSON.stringify({ event: "scim_deprovision", ...r })),
+        (err) => console.error(JSON.stringify({ event: "scim_deprovision_failed", error: String(err) }))
       )
     );
   },

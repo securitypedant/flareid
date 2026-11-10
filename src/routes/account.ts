@@ -12,6 +12,7 @@ import type { UserRow } from "../lib/types.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
+import { getRateLimitPolicy, recordRateAttempt } from "../lib/rate-limit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from "../lib/authorize-state.js";
@@ -160,6 +161,8 @@ account.get("/account", async (c) => {
             user.mfa_enabled
               ? `<p class="muted" style="margin-top:8px;">${remainingBackupCodes} backup code(s) remaining.</p>
                  <form method="POST" action="/account/mfa/backup-codes/regenerate" style="margin-bottom:14px;" ${confirmAttrs("Your existing backup codes stop working immediately, and you will be shown a new set once.", { title: "Generate new backup codes?", action: "Regenerate" })}>
+                   <label for="regen_code">Enter a current code from your authenticator (or a backup code)</label>
+                   <input type="text" id="regen_code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px" />
                    <button class="secondary" type="submit">Regenerate backup codes</button>
                  </form>
                  <form method="POST" action="/account/mfa/disable" ${confirmAttrs("Your authenticator and backup codes are removed, and every remembered device is forgotten.", { title: "Disable two-factor authentication?", action: "Disable MFA", danger: true })}>
@@ -346,14 +349,35 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
   return c.redirect("/account?saved=app", 302);
 });
 
+/**
+ * Step-up checks inside a session (current password, a second factor) get the
+ * same per-account budget as the sign-in form: a stolen session must not be
+ * an unlimited oracle for the password or the TOTP. Failures are audited.
+ */
+async function stepUpBudgetExceeded(c: Context<{ Bindings: Env }>): Promise<boolean> {
+  const policy = await getRateLimitPolicy(c.env);
+  return recordRateAttempt(c.env, `account:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
+}
+
+/** A current TOTP (claimed, so it cannot be replayed) or an unused backup code. */
+async function secondFactorOk(c: Context<{ Bindings: Env }>, code: string): Promise<"totp" | "backup_code" | null> {
+  const user = c.get("user");
+  const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+  if (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) return "totp";
+  if (await verifyAndConsumeBackupCode(c.env, user.id, code)) return "backup_code";
+  return null;
+}
+
 account.post("/account/password", async (c) => {
   const user = c.get("user");
   const body = await c.req.parseBody();
+  if (await stepUpBudgetExceeded(c)) return c.html(errorRedirectPage(c, "Too many attempts. Please wait a few minutes before trying again."));
   const currentPassword = String(body.current_password ?? "");
   const newPassword = String(body.new_password ?? "");
   const confirmPassword = String(body.confirm_password ?? "");
 
   if (!(await verifyPassword(currentPassword, user))) {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "password_change" }, c.req.raw);
     return c.html(errorRedirectPage(c, "Current password is incorrect."));
   }
 
@@ -517,6 +541,13 @@ function backupCodesPage(codes: string[], continueTo = "/account"): string {
 account.post("/account/mfa/backup-codes/regenerate", async (c) => {
   const user = c.get("user");
   if (!user.mfa_enabled) return c.redirect("/account", 302);
+  // New codes are a second factor: issuing them needs one, as disabling MFA does.
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many", 302);
+  const factor = await secondFactorOk(c, String((await c.req.parseBody()).code ?? ""));
+  if (!factor) {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "backup_codes_regenerate" }, c.req.raw);
+    return c.redirect("/account?error=mfa-code", 302);
+  }
 
   const codes = await generateBackupCodes(c.env, user.id);
   await logAudit(c.env, user, "user.mfa_backup_codes_regenerated", user.upn, undefined, c.req.raw);
@@ -536,10 +567,11 @@ account.post("/account/mfa/disable", async (c) => {
   // A backup code works too. It is the only factor left to someone who lost
   // their authenticator and signed in with one - and without it they could
   // never disable MFA to enrol a new device.
-  const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
-  const totpOk = counter !== null && (await claimTotpCounter(c.env, user.id, counter));
-  const backupOk = !totpOk && (await verifyAndConsumeBackupCode(c.env, user.id, code));
-  if (!totpOk && !backupOk) {
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many", 302);
+  const factor = await secondFactorOk(c, code);
+  const backupOk = factor === "backup_code";
+  if (!factor) {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "mfa_disable" }, c.req.raw);
     return c.redirect("/account?error=mfa-code", 302);
   }
 

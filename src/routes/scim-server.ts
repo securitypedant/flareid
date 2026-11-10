@@ -10,6 +10,7 @@ import { defaultSchemaId } from "../lib/schemas.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
+import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, isScimConfigured, pushGroupCurrent, pushUser, type ScimResult } from "../lib/scim-client.js";
 
 /**
@@ -234,6 +235,9 @@ async function applyColumns(env: Env, userId: number, cols: Record<string, strin
   if (cols.status === "disabled") {
     await revokeAllSessionsForUser(env, userId);
     await revokeTokensForUser(env, userId);
+  } else if ("email" in cols) {
+    // A link already sent to the previous address must not outlive the correction.
+    await revokeAccountTokens(env, userId);
   }
 }
 

@@ -467,7 +467,7 @@ describe("login rate limiting", () => {
     const flowIds = await Promise.all(Array.from({ length: 10 }, () => getFlowId("/login")));
     await Promise.all(flowIds.map((flowId) => postLogin({ flowId, upn, password: "wrong", ip: "203.0.113.9" })));
 
-    const row = await env.DB.prepare("SELECT count FROM rate_limits WHERE key = ?").bind(`login:upn:${upn}`).first<{ count: number }>();
+    const row = await env.DB.prepare("SELECT count FROM rate_limits WHERE key = ?").bind(`login:upn:${upn.split("@")[0]}`).first<{ count: number }>();
     expect(row?.count).toBe(10);
   });
 

@@ -201,3 +201,48 @@ describe("edges and inputs", () => {
     expect((decodeJwt(tok.id_token!).custom as Record<string, string>).email).toBe(upn);
   });
 });
+
+describe("wave 2", () => {
+  it("backup-code regeneration needs a factor; step-up checks are budgeted", async () => {
+    await setup();
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
+    await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(id).run();
+    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const regen = await call("/account/mfa/backup-codes/regenerate", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "" });
+    expect(regen.headers.get("Location")).toBe("/account?error=mfa-code");
+    let limited = false;
+    for (let i = 0; i < 8 && !limited; i++) {
+      const r = await call("/account/mfa/disable", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "code=000000" });
+      limited = r.headers.get("Location") === "/account?error=too-many";
+    }
+    expect(limited).toBe(true);
+  });
+
+  it("the lockout message no longer tells which accounts exist", async () => {
+    await setup();
+    const sixth = async (name: string) => {
+      for (let i = 0; i < 5; i++) await login(name, "wrong");
+      return (await (await login(`${name}@horizon.test`, "wrong")).res.text()).includes("Too many attempts");
+    };
+    expect(await sixth("ola")).toBe(await sixth("zed"));
+  });
+
+  it("an email correction voids a link sent to the old address", async () => {
+    const { apiKey } = await setup();
+    await env.DB.prepare("UPDATE users SET email = 'wrong@outside.test' WHERE username = 'nina'").run();
+    await call("/api/v1/users/nina/invite", { method: "POST", headers: { Authorization: `Bearer ${apiKey}` } });
+    const link = /\/invite\/[0-9a-f]{64}/.exec(sent[0]!.text)![0];
+    const ext = (await env.DB.prepare("SELECT external_id FROM users WHERE username = 'nina'").first<{ external_id: string }>())!.external_id;
+    await apiCall(`/scim/v2/Users/${ext}`, { token: apiKey, method: "PATCH", body: { schemas: [PATCH], Operations: [{ op: "replace", path: "emails", value: [{ value: "nina@horizon.test", primary: true }] }] } });
+    expect((await call(link, { method: "POST", headers: FORM, body: "password=old-holder-pw-12&confirm=old-holder-pw-12" })).status).toBe(400);
+  });
+
+  it("directory reset queues downstream deletions instead of losing them", async () => {
+    const { apiKey } = await setup();
+    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE username = 'ola'").run();
+    const reset = await apiCall("/api/v1/directory/reset", { token: apiKey, body: {} });
+    expect(reset.status).toBe(200);
+    // SCIM is not configured here, so the entry stays queued for a later drain.
+    expect((await env.DB.prepare("SELECT label FROM scim_deprovision_queue WHERE scim_id = 'remote-ola'").first<{ label: string }>())?.label).toBe("ola@horizon.test");
+  });
+});

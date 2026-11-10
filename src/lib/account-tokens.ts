@@ -18,11 +18,8 @@ export async function issueAccountToken(env: Env, userId: number, purpose: Accou
   const token = randomToken(32);
   const now = new Date();
   await env.DB.batch([
-    env.DB.prepare("UPDATE account_tokens SET used_at = ? WHERE user_id = ? AND purpose = ? AND used_at IS NULL").bind(
-      now.toISOString(),
-      userId,
-      purpose
-    ),
+    // Every outstanding link, whatever its purpose: only the most recent email works.
+    env.DB.prepare("UPDATE account_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL").bind(now.toISOString(), userId),
     env.DB.prepare("INSERT INTO account_tokens (token_hash, user_id, purpose, created_at, expires_at) VALUES (?, ?, ?, ?, ?)").bind(
       await sha256Hex(token),
       userId,

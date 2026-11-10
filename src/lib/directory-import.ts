@@ -1,3 +1,4 @@
+import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
 import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
@@ -6,7 +7,7 @@ import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
-import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups } from "./scim-client.js";
+import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups, drainScimDeprovisionQueue } from "./scim-client.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 /**
@@ -182,8 +183,18 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
     .all<UserRow>();
   const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name != ?").bind(SUPER_ADMINS_GROUP).all<GroupRow>();
 
-  if (doomed.length > 0) await env.DB.batch(deleteUserStatements(env, ...doomed.map((r) => r.id)));
-  await env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP).run();
+  // The remote ids are queued in the same batch as the deletion: once the
+  // rows are gone they are the only way to find these objects downstream.
+  const now = new Date().toISOString();
+  const queue = [
+    ...doomed.filter((u) => u.scim_id).map((u) => env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES ('user', ?, ?, ?)").bind(u.scim_id, u.upn, now)),
+    ...doomedGroups.filter((g) => g.scim_id).map((g) => env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES ('group', ?, ?, ?)").bind(g.scim_id, g.name, now)),
+  ];
+  await env.DB.batch([
+    ...queue,
+    ...(doomed.length > 0 ? deleteUserStatements(env, ...doomed.map((r) => r.id)) : []),
+    env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP),
+  ]);
 
   // Returned so the caller can remove them from the SCIM server too: once the
   // rows are gone, their scim_ids are the only way to find them there.
@@ -330,9 +341,9 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     const upn = `${username}@${domain}`;
 
     try {
-      const existing = await env.DB.prepare("SELECT id, external_id, status FROM users WHERE username = ?")
+      const existing = await env.DB.prepare("SELECT id, external_id, status, upn FROM users WHERE username = ?")
         .bind(username)
-        .first<{ id: number; external_id: string; status: string }>();
+        .first<{ id: number; external_id: string; status: string; upn: string }>();
 
       const givenName = cleanString(user.given_name);
       const familyName = cleanString(user.family_name);
@@ -355,6 +366,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
           (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(existing.id).first<{ custom_attributes: string }>())?.custom_attributes
         );
         const mergedCustom = { ...existingCustom, ...attrCustom };
+        if (existing.upn !== upn) await revokeAccountTokens(env, existing.id);
         await env.DB.prepare(
           `UPDATE users SET upn = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?,
              employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?,
@@ -462,7 +474,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       }
 
       if (user.email !== undefined) {
-        await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(cleanString(user.email).toLowerCase() || null, userId).run();
+        const email = cleanString(user.email).toLowerCase() || null;
+        const changed = await env.DB.prepare("UPDATE users SET email = ? WHERE id = ? AND email IS NOT ?").bind(email, userId, email).run();
+        // A link sent to the previous address is void once the address changes.
+        if (changed.meta.changes > 0) await revokeAccountTokens(env, userId);
       }
 
       // --- Membership ---
@@ -538,13 +553,15 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   // failure is counted and reported, never a reason to undo the import.
   if (await isScimConfigured(env)) {
     const scim = { users_pushed: 0, users_removed: 0, groups_pushed: 0, groups_removed: 0, errors: 0 };
-    for (const user of removed.users) {
-      const r = await deleteUserScim(env, user);
-      r.ok ? scim.users_removed++ : scim.errors++;
-    }
-    for (const group of removed.groups) {
-      const r = await deleteGroupScim(env, group);
-      r.ok ? scim.groups_removed++ : scim.errors++;
+    // Replace-mode removals were queued with the deletion; send a bounded
+    // batch now. The rest (and any failure) drains on later syncs and the
+    // hourly cron, so nothing is orphaned downstream.
+    if (removed.users.length + removed.groups.length > 0) {
+      const drained = await drainScimDeprovisionQueue(env);
+      scim.users_removed = drained.removedUsers;
+      scim.groups_removed = drained.removedGroups;
+      scim.errors += drained.failed;
+      (scim as Record<string, number>).deprovision_pending = drained.remaining;
     }
     for (const id of touchedUserIds) {
       const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();

@@ -9,7 +9,7 @@ import { sendPasswordReset } from "../lib/account-email.js";
 import { isEmailConfigured } from "../lib/email.js";
 import { getLoginAppearance, getPasswordPolicy, passwordPolicySummary, validatePassword } from "../lib/settings.js";
 import { revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { clearLoginAttempts, getClientIp, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
+import { clearLoginAttempts, getClientIp, loginRateKey, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
 import { logAudit } from "../lib/audit.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { UserRow } from "../lib/types.js";
@@ -162,7 +162,7 @@ async function acceptPassword(c: Context<{ Bindings: Env }>, purpose: AccountTok
   // Whoever had the old password, or an older link, is out.
   await revokeAllSessionsForUser(c.env, user.id);
   await revokeTokensForUser(c.env, user.id);
-  await clearLoginAttempts(c.env, user.upn.toLowerCase());
+  await clearLoginAttempts(c.env, loginRateKey(user.upn, user));
   return { user: { ...user, status: "active" } };
 }
 

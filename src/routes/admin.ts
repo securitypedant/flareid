@@ -44,6 +44,7 @@ import {
   setSessionPolicy,
 } from "../lib/settings.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
+import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, sendEmail, setEmailSettings } from "../lib/email.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
@@ -1302,7 +1303,7 @@ admin.post("/admin/users/:id", async (c) => {
   const givenName = String(body.given_name ?? "").trim();
   const familyName = String(body.family_name ?? "").trim();
   const displayName = `${givenName} ${familyName}`.trim();
-  const existingRow = await c.env.DB.prepare("SELECT external_id, status FROM users WHERE id = ?").bind(id).first<{ external_id: string; status: string }>();
+  const existingRow = await c.env.DB.prepare("SELECT external_id, status, upn FROM users WHERE id = ?").bind(id).first<{ external_id: string; status: string; upn: string }>();
   if (!existingRow) return c.text("Not found", 404);
   const status = existingRow.status; // changed only through the account switch (/status)
 
@@ -1328,6 +1329,8 @@ admin.post("/admin/users/:id", async (c) => {
     return c.text(`Username "${username}" is already taken by another account (usernames must be unique across every domain).`, 409);
   }
 
+  // A rename moves the address recovery mail goes to: links sent to the old one are void.
+  if (existingRow.upn !== upn) await revokeAccountTokens(c.env, id);
   await c.env.DB.prepare(
     `UPDATE users SET upn = ?, username = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?, manager_external_id = ?,
      employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?, status = ?, schema_id = ?, custom_attributes = ?, updated_at = ? WHERE id = ?`

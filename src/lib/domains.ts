@@ -74,9 +74,12 @@ export async function applyDomainToAllUsers(env: Env, domain: string): Promise<{
   }
 
   if (updates.length > 0) {
-    await env.DB.batch(
-      updates.map((u) => env.DB.prepare("UPDATE users SET upn = ?, updated_at = ? WHERE id = ?").bind(u.newUpn, new Date().toISOString(), u.id))
-    );
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      ...updates.map((u) => env.DB.prepare("UPDATE users SET upn = ?, updated_at = ? WHERE id = ?").bind(u.newUpn, now, u.id)),
+      // Links went to the old UPNs; they are void once the identity moves.
+      env.DB.prepare("UPDATE account_tokens SET used_at = ? WHERE used_at IS NULL AND user_id IN (SELECT value FROM json_each(?))").bind(now, JSON.stringify(updates.map((u) => u.id))),
+    ]);
   }
 
   return { updated: updates.length, conflicts };
