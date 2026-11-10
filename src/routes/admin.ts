@@ -50,7 +50,7 @@ import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, send
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
+import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
@@ -1897,6 +1897,7 @@ admin.post("/admin/groups/:id", async (c) => {
   if ((current?.name === SUPER_ADMINS_GROUP) !== (form.name === SUPER_ADMINS_GROUP)) {
     return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be renamed, and no other group can take its name.`, 400);
   }
+  const { results: before } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
 
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(
@@ -1914,6 +1915,12 @@ admin.post("/admin/groups/:id", async (c) => {
 
   await logAudit(c.env, c.get("user"), "group.updated", form.name, form.rule ? { rule: form.rule } : undefined, c.req.raw);
   await syncGroupBestEffort(c, id);
+  // Members this edit removed are re-pushed: leaving a SCIM-scoped group can take them out of scope.
+  if (await scimConfigured(c.env)) {
+    const kept = new Set(form.rule ? [] : form.userIds);
+    const r = await pushUsersById(c.env, before.map((b) => b.user_id).filter((uid) => !kept.has(uid)));
+    if (!r.ok) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", form.name, { action: "membership_removed", error: r.error }, c.req.raw);
+  }
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
@@ -1922,12 +1929,17 @@ admin.post("/admin/groups/:id/delete", async (c) => {
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
   if (group?.name === SUPER_ADMINS_GROUP) return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be deleted.`, 400);
 
+  const { results: members } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
+  // Local first with the remote id queued in the same batch, as for users.
+  await c.env.DB.batch([
+    ...(group?.scim_id ? [queueScimDeprovision(c.env, "group", group.scim_id, group.name)] : []),
+    c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
+  ]);
   if (group && (await scimConfigured(c.env))) {
-    const result = await deleteGroupScim(c.env, group);
-    if (!result.ok) await logAudit(c.env, c.get("user"), "scim.group_sync_failed", group.name, { action: "delete", error: result.error }, c.req.raw);
+    const drained = await drainScimDeprovisionQueue(c.env);
+    const pushed = await pushUsersById(c.env, members.map((m) => m.user_id));
+    if (drained.failed || !pushed.ok) await logAudit(c.env, c.get("user"), "scim.group_sync_failed", group.name, { action: "delete", queued: drained.remaining, error: pushed.error }, c.req.raw);
   }
-
-  await c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "group.deleted", group?.name, undefined, c.req.raw);
   return c.redirect("/admin/groups", 302);
 });
@@ -3550,6 +3562,11 @@ admin.post("/admin/scim/scope", async (c) => {
 
   await setScimScope(c.env, { mode, groupIds });
   await logAudit(c.env, c.get("user"), "settings.scim_scope_changed", undefined, { mode, groupIds }, c.req.raw);
+  // Users already pushed are re-evaluated against the new scope (out of scope = deactivated downstream).
+  if (await scimConfigured(c.env)) {
+    const { results } = await c.env.DB.prepare("SELECT id FROM users WHERE scim_id IS NOT NULL").all<{ id: number }>();
+    c.executionCtx.waitUntil(pushUsersById(c.env, results.map((r) => r.id)));
+  }
 
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });

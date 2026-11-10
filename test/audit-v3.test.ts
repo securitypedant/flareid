@@ -271,3 +271,37 @@ describe("wave 3", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE scim_id = 'remote-ola'").first<{ n: number }>())!.n).toBe(1);
   });
 });
+
+describe("wave 4", () => {
+  it("a push working from a deleted user's row does not recreate it downstream", async () => {
+    const { pushUser } = await import("../src/lib/scim-client.js");
+    const { setScimConfig } = await import("../src/lib/settings.js");
+    await setup();
+    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x" });
+    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE username = 'ola'").run();
+    const stale = (await env.DB.prepare("SELECT * FROM users WHERE username = 'ola'").first<import("../src/lib/types.js").UserRow>())!;
+    await env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(stale.id).run();
+    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(stale.id).run();
+    const seen: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(i, init);
+      seen.push(`${req.method} ${new URL(req.url).pathname}`);
+      return req.method === "PUT" ? new Response("gone", { status: 404 }) : real(req);
+    }) as typeof fetch;
+    try {
+      expect((await pushUser(env, stale)).ok).toBe(true);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(seen.some((s) => s.startsWith("POST /scim/v2/Users"))).toBe(false);
+  });
+
+  it("deleting a single group queues its remote id", async () => {
+    const { apiKey } = await setup();
+    const g = await apiCall("/scim/v2/Groups", { token: apiKey, body: { displayName: "Vendors" } });
+    await env.DB.prepare("UPDATE groups SET scim_id = 'remote-vendors' WHERE id = ?").bind(Number(g.body.id)).run();
+    expect((await call(`/scim/v2/Groups/${g.body.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` } })).status).toBe(204);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE kind = 'group' AND scim_id = 'remote-vendors'").first<{ n: number }>())!.n).toBe(1);
+  });
+});

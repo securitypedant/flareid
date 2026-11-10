@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import { resolveGroupMemberUserIds } from "./groups.js";
+import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
 import { getScimConfig, getScimScope, type ScimScope } from "./settings.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -99,7 +99,10 @@ export async function pushUser(env: Env, user: UserRow): Promise<ScimResult> {
     // The remote resource we had on file is gone (e.g. the SCIM population was
     // reset) - self-heal by recreating it instead of failing forever.
     if (res.status === 404) {
-      await env.DB.prepare("UPDATE users SET scim_id = NULL WHERE id = ?").bind(user.id).run();
+      // Only for a user that still exists here: a push working from a row
+      // captured before a delete would otherwise resurrect the account.
+      const cleared = await env.DB.prepare("UPDATE users SET scim_id = NULL WHERE id = ?").bind(user.id).run();
+      if (cleared.meta.changes === 0) return { ok: true, status: 404 };
       return createScimUser(env, { ...user, scim_id: null }, body);
     }
 
@@ -113,7 +116,10 @@ async function createScimUser(env: Env, user: UserRow, body: string): Promise<Sc
   const res = await scimFetch(env, "/Users", { method: "POST", body });
   if (!res.ok) return { ok: false, status: res.status, error: await res.text() };
   const created = await res.json<{ id: string }>();
-  await env.DB.prepare("UPDATE users SET scim_id = ? WHERE id = ?").bind(created.id, user.id).run();
+  const linked = await env.DB.prepare("UPDATE users SET scim_id = ? WHERE id = ?").bind(created.id, user.id).run();
+  // Deleted locally while the POST was in flight: the new remote user has no
+  // local link, so it goes straight onto the deprovision queue.
+  if (linked.meta.changes === 0) await queueScimDeprovision(env, "user", created.id, user.upn).run();
   return { ok: true, status: res.status };
 }
 
@@ -185,7 +191,8 @@ export async function pushGroup(
 
     // Self-heal, same as pushUser: recreate if the remote resource is gone.
     if (res.status === 404) {
-      await env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id).run();
+      const cleared = await env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id).run();
+      if (cleared.meta.changes === 0) return { ok: true, status: 404 };
       return createScimGroup(env, { ...group, scim_id: null }, members);
     }
 
@@ -199,7 +206,8 @@ async function createScimGroup(env: Env, group: GroupRow, members: { scimId: str
   const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, members)) });
   if (!res.ok) return { ok: false, status: res.status, error: await res.text() };
   const created = await res.json<{ id: string }>();
-  await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ?").bind(created.id, group.id).run();
+  const linked = await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ?").bind(created.id, group.id).run();
+  if (linked.meta.changes === 0) await queueScimDeprovision(env, "group", created.id, group.name).run();
   return { ok: true, status: res.status };
 }
 
@@ -257,14 +265,39 @@ export function queueScimDeprovision(env: Env, kind: "user" | "group", scimId: s
   return env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES (?, ?, ?, ?)").bind(kind, scimId, label, new Date().toISOString());
 }
 
-/** Re-pushes every dynamic group: any attribute change can move a user in or out of a rule. */
-export async function pushDynamicGroups(env: Env): Promise<ScimResult> {
+/**
+ * Re-pushes the dynamic groups whose rule result differs between a user's old
+ * and new row (all of them a user could match when there is no old row). One
+ * failure does not skip the rest; failures are reported together.
+ */
+export async function pushChangedDynamicGroups(env: Env, before: UserRow | null, after: UserRow | null): Promise<ScimResult> {
   const { results } = await env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
+  const errors: string[] = [];
   for (const group of results) {
+    const rule = parseRule(group.rule);
+    if (!rule) continue;
+    const was = before ? userMatchesRule(before, rule) : false;
+    const now = after ? userMatchesRule(after, rule) : false;
+    if (was === now) continue;
     const r = await pushGroupCurrent(env, group);
-    if (!r.ok) return r;
+    if (!r.ok) errors.push(`${group.name}: ${r.error ?? r.status}`);
   }
-  return { ok: true };
+  return errors.length ? { ok: false, error: errors.join("; ").slice(0, 500) } : { ok: true };
+}
+
+/**
+ * Re-pushes users who were just removed from a group, so pushUser can
+ * re-evaluate their SCIM scope (and deactivate them downstream if they left it).
+ */
+export async function pushUsersById(env: Env, ids: number[]): Promise<ScimResult> {
+  const errors: string[] = [];
+  for (const id of ids) {
+    const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+    if (!user) continue;
+    const r = await pushUser(env, user);
+    if (!r.ok) errors.push(`${user.upn}: ${r.error ?? r.status}`);
+  }
+  return errors.length ? { ok: false, error: errors.join("; ").slice(0, 500) } : { ok: true };
 }
 
 /** Remote objects still to delete per invocation: keeps each request inside the Workers subrequest budget. */

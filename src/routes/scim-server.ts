@@ -11,7 +11,7 @@ import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } f
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
-import { deactivateUserScim, deleteGroupScim, drainScimDeprovisionQueue, isScimConfigured, pushDynamicGroups, pushGroupCurrent, pushUser, queueScimDeprovision, type ScimResult } from "../lib/scim-client.js";
+import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushChangedDynamicGroups, pushGroupCurrent, pushUser, pushUsersById, queueScimDeprovision, type ScimResult } from "../lib/scim-client.js";
 
 /**
  * SCIM 2.0 server (RFC 7643/7644) for inbound provisioning: an HR system or
@@ -57,9 +57,24 @@ function downstream(c: Context<{ Bindings: Env }>, work: () => Promise<ScimResul
 }
 
 /** The user, then every dynamic group: an attribute change can move them in or out of any rule. */
-async function pushUserAndRules(env: Env, user: UserRow): Promise<ScimResult> {
+async function pushUserAndRules(env: Env, before: UserRow | null, user: UserRow): Promise<ScimResult> {
   const r = user.status === "active" ? await pushUser(env, user) : await deactivateUserScim(env, user);
-  return r.ok ? pushDynamicGroups(env) : r;
+  const groups = await pushChangedDynamicGroups(env, before, user);
+  return r.ok ? groups : r;
+}
+
+/** Explicit members of a group now, to tell afterwards who a write removed. */
+async function explicitMembers(env: Env, groupId: number): Promise<number[]> {
+  const { results } = await env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(groupId).all<{ user_id: number }>();
+  return results.map((r) => r.user_id);
+}
+
+/** After a group write: push the group, then the members it lost (their SCIM scope may have changed). */
+async function pushGroupAndRemoved(env: Env, group: GroupRow, before: number[]): Promise<ScimResult> {
+  const after = new Set(await explicitMembers(env, group.id));
+  const g = await pushGroupCurrent(env, group);
+  const u = await pushUsersById(env, before.filter((id) => !after.has(id)));
+  return g.ok ? u : g;
 }
 
 class ScimError extends Error {
@@ -269,7 +284,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   await applyColumns(c.env, inserted!.id, await columnsFrom(c.env, body));
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
-  downstream(c, () => pushUserAndRules(c.env, user), "create", upn);
+  downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
   return c.json(await userResource(c.env, user), 201, { Location: `${base(c.env)}/Users/${externalId}` });
 });
 
@@ -285,7 +300,7 @@ scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) 
   await applyColumns(c.env, user.id, await columnsFrom(c.env, body));
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
-  downstream(c, () => pushUserAndRules(c.env, fresh), "update", fresh.upn);
+  downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
   return c.json(await userResource(c.env, fresh));
 });
 
@@ -322,7 +337,7 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   await applyColumns(c.env, user.id, await columnsFrom(c.env, patchToBody(body.Operations)));
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
-  downstream(c, () => pushUserAndRules(c.env, fresh), "update", fresh.upn);
+  downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
   return c.json(await userResource(c.env, fresh));
 });
 
@@ -418,6 +433,7 @@ scimServer.put("/scim/v2/Groups/:id", requireScope("directory:write"), async (c)
   const group = await loadGroup(c, true);
   const body = await c.req.json<{ displayName?: string; members?: { value?: string }[] }>();
   guardNewName(c, body.displayName);
+  const membersBefore = await explicitMembers(c.env, group.id);
   // Everything is resolved and checked before anything is written.
   const stmts: D1PreparedStatement[] = [];
   if (body.displayName && body.displayName !== group.name) stmts.push(c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(body.displayName.trim(), group.id));
@@ -425,7 +441,7 @@ scimServer.put("/scim/v2/Groups/:id", requireScope("directory:write"), async (c)
   if (stmts.length) await c.env.DB.batch(stmts);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.group_replaced", group.name, undefined, c.req.raw);
   const replaced = await loadGroup(c);
-  downstream(c, () => pushGroupCurrent(c.env, replaced), "update", replaced.name);
+  downstream(c, () => pushGroupAndRemoved(c.env, replaced, membersBefore), "update", replaced.name);
   return c.json(await groupResource(c.env, (await loadGroup(c))!));
 });
 
@@ -433,6 +449,7 @@ scimServer.patch("/scim/v2/Groups/:id", requireScope("directory:write"), async (
   const group = await loadGroup(c, true);
   const body = await c.req.json<{ schemas?: string[]; Operations?: { op?: string; path?: string; value?: unknown }[] }>();
   if (!body.schemas?.includes(PATCH_OP) || !Array.isArray(body.Operations)) throw new ScimError(400, "Expected a PatchOp message.", "invalidSyntax");
+  const membersBefore = await explicitMembers(c.env, group.id);
   const stmts: D1PreparedStatement[] = [];
   for (const op of body.Operations) {
     const kind = String(op.op ?? "").toLowerCase();
@@ -463,18 +480,25 @@ scimServer.patch("/scim/v2/Groups/:id", requireScope("directory:write"), async (
   if (stmts.length) await c.env.DB.batch(stmts);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.group_patched", group.name, { ops: body.Operations.length }, c.req.raw);
   const patched = await loadGroup(c);
-  downstream(c, () => pushGroupCurrent(c.env, patched), "update", patched.name);
+  downstream(c, () => pushGroupAndRemoved(c.env, patched, membersBefore), "update", patched.name);
   return c.json(await groupResource(c.env, await loadGroup(c)));
 });
 
 scimServer.delete("/scim/v2/Groups/:id", requireScope("directory:write"), async (c) => {
   const group = await loadGroup(c, true);
   if (group.name === SUPER_ADMINS_GROUP) throw new ScimError(400, `${SUPER_ADMINS_GROUP} cannot be deleted.`, "mutability");
+  const membersBefore = await explicitMembers(c.env, group.id);
+  // Queued with the deletion, like users: the remote id must survive a failed DELETE.
   await c.env.DB.batch([
+    ...(group.scim_id ? [queueScimDeprovision(c.env, "group", group.scim_id, group.name)] : []),
     c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(group.id),
     c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(group.id),
   ]);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.group_deleted", group.name, undefined, c.req.raw);
-  downstream(c, () => deleteGroupScim(c.env, group), "delete", group.name);
+  downstream(c, async () => {
+    const d = await drainScimDeprovisionQueue(c.env);
+    const u = await pushUsersById(c.env, membersBefore);
+    return d.failed ? { ok: false, error: `${d.remaining} queued` } : u;
+  }, "delete", group.name);
   return c.body(null, 204);
 });
