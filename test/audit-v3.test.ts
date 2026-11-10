@@ -246,3 +246,28 @@ describe("wave 2", () => {
     expect((await env.DB.prepare("SELECT label FROM scim_deprovision_queue WHERE scim_id = 'remote-ola'").first<{ label: string }>())?.label).toBe("ola@horizon.test");
   });
 });
+
+describe("wave 3", () => {
+  it("a SCIM group PATCH with a failing operation changes nothing", async () => {
+    const { apiKey } = await setup();
+    const ola = (await env.DB.prepare("SELECT external_id FROM users WHERE username = 'ola'").first<{ external_id: string }>())!.external_id;
+    const g = await apiCall("/scim/v2/Groups", { token: apiKey, body: { displayName: "Prod", members: [{ value: ola }] } });
+    const r = await apiCall(`/scim/v2/Groups/${g.body.id}`, { token: apiKey, method: "PATCH", body: { schemas: [PATCH], Operations: [{ op: "remove", path: `members[value eq "${ola}"]` }, { op: "add", path: "members", value: [{ value: "00000000-0000-4000-8000-000000000000" }] }] } });
+    expect(r.status).toBe(400);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM group_members WHERE group_id = ?").bind(Number(g.body.id)).first<{ n: number }>())!.n).toBe(1);
+  });
+
+  it("the setup sample wipe removes users with trusted devices and queues their remote ids", async () => {
+    await setup();
+    const ola = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
+    const now = new Date().toISOString();
+    await env.DB.prepare("INSERT INTO trusted_devices (id, user_id, created_at, last_used_at, expires_at) VALUES ('d1', ?, ?, ?, '2999-01-01T00:00:00Z')").bind(ola, now, now).run();
+    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE id = ?").bind(ola).run();
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const res = await call("/admin/setup", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "domain=horizon.test&sample_data=remove" });
+    expect(res.status).toBe(302);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE username = 'ola'").first<{ n: number }>())!.n).toBe(0);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE scim_id = 'remote-ola'").first<{ n: number }>())!.n).toBe(1);
+  });
+});

@@ -248,6 +248,25 @@ export async function pushGroupCurrent(env: Env, group: GroupRow): Promise<ScimR
   return pushGroup(env, group, results);
 }
 
+/**
+ * A queue entry for a remote object whose local row is being deleted - run it
+ * in the same batch as the deletion, then drain. The remote id survives a
+ * failed or budget-cut DELETE instead of vanishing with the row.
+ */
+export function queueScimDeprovision(env: Env, kind: "user" | "group", scimId: string, label: string): D1PreparedStatement {
+  return env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES (?, ?, ?, ?)").bind(kind, scimId, label, new Date().toISOString());
+}
+
+/** Re-pushes every dynamic group: any attribute change can move a user in or out of a rule. */
+export async function pushDynamicGroups(env: Env): Promise<ScimResult> {
+  const { results } = await env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
+  for (const group of results) {
+    const r = await pushGroupCurrent(env, group);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
 /** Remote objects still to delete per invocation: keeps each request inside the Workers subrequest budget. */
 const DEPROVISION_BATCH = 25;
 

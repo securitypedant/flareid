@@ -11,7 +11,7 @@ import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } f
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
-import { deactivateUserScim, deleteGroupScim, deleteUserScim, isScimConfigured, pushGroupCurrent, pushUser, type ScimResult } from "../lib/scim-client.js";
+import { deactivateUserScim, deleteGroupScim, drainScimDeprovisionQueue, isScimConfigured, pushDynamicGroups, pushGroupCurrent, pushUser, queueScimDeprovision, type ScimResult } from "../lib/scim-client.js";
 
 /**
  * SCIM 2.0 server (RFC 7643/7644) for inbound provisioning: an HR system or
@@ -54,6 +54,12 @@ function downstream(c: Context<{ Bindings: Env }>, work: () => Promise<ScimResul
       if (!result.ok) await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_failed", target, { action, error: result.error });
     })()
   );
+}
+
+/** The user, then every dynamic group: an attribute change can move them in or out of any rule. */
+async function pushUserAndRules(env: Env, user: UserRow): Promise<ScimResult> {
+  const r = user.status === "active" ? await pushUser(env, user) : await deactivateUserScim(env, user);
+  return r.ok ? pushDynamicGroups(env) : r;
 }
 
 class ScimError extends Error {
@@ -263,7 +269,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   await applyColumns(c.env, inserted!.id, await columnsFrom(c.env, body));
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
-  downstream(c, () => pushUser(c.env, user), "create", upn);
+  downstream(c, () => pushUserAndRules(c.env, user), "create", upn);
   return c.json(await userResource(c.env, user), 201, { Location: `${base(c.env)}/Users/${externalId}` });
 });
 
@@ -279,7 +285,7 @@ scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) 
   await applyColumns(c.env, user.id, await columnsFrom(c.env, body));
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
-  downstream(c, () => (fresh.status === "active" ? pushUser(c.env, fresh) : deactivateUserScim(c.env, fresh)), "update", fresh.upn);
+  downstream(c, () => pushUserAndRules(c.env, fresh), "update", fresh.upn);
   return c.json(await userResource(c.env, fresh));
 });
 
@@ -316,16 +322,16 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   await applyColumns(c.env, user.id, await columnsFrom(c.env, patchToBody(body.Operations)));
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
-  downstream(c, () => (fresh.status === "active" ? pushUser(c.env, fresh) : deactivateUserScim(c.env, fresh)), "update", fresh.upn);
+  downstream(c, () => pushUserAndRules(c.env, fresh), "update", fresh.upn);
   return c.json(await userResource(c.env, fresh));
 });
 
 scimServer.delete("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
-  await c.env.DB.batch(deleteUserStatements(c.env, user.id));
+  await c.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(c.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(c.env, user.id)]);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_deleted", user.upn, undefined, c.req.raw);
   // The row (and its scim_id) is gone now; the captured copy still names the remote user.
-  downstream(c, () => deleteUserScim(c.env, user), "delete", user.upn);
+  downstream(c, async () => { const r = await drainScimDeprovisionQueue(c.env); return r.failed ? { ok: false, error: `${r.remaining} queued` } : { ok: true }; }, "delete", user.upn);
   return c.body(null, 204);
 });
 
@@ -369,7 +375,12 @@ function guardNewName(c: Context<{ Bindings: Env }>, name: string | undefined) {
   if (name !== undefined && name.trim() === SUPER_ADMINS_GROUP) requireAdminFor(c, `Naming a group ${SUPER_ADMINS_GROUP}`);
 }
 
-async function setMembers(env: Env, group: GroupRow, add: number[], remove: number[] | "all", c?: Context<{ Bindings: Env }>) {
+/**
+ * The statements for one membership change, not yet run: a request commits all
+ * of its operations in one batch, so a later failing operation leaves nothing
+ * half-applied (RFC 7644 3.5.2 - PATCH is all or nothing).
+ */
+async function memberStatements(env: Env, group: GroupRow, add: number[], remove: number[] | "all", c?: Context<{ Bindings: Env }>): Promise<D1PreparedStatement[]> {
   if (group.rule) throw new ScimError(400, "This is a dynamic group: its membership is its rule.", "mutability");
   // Replacing or clearing the member list removes Super Admins too.
   if (remove === "all" && c && !hasScope(c.get("apiActor").scopes, "admin")) {
@@ -378,10 +389,15 @@ async function setMembers(env: Env, group: GroupRow, add: number[], remove: numb
     ).bind(group.id, SUPER_ADMINS_GROUP).first();
     if (admins) throw new ScimError(403, "Replacing the members of a group that contains a Super Admin requires an admin-scoped key.");
   }
-  const stmts = [];
+  const stmts: D1PreparedStatement[] = [];
   if (remove === "all") stmts.push(env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(group.id));
   else for (const id of remove) stmts.push(env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(group.id, id));
   for (const id of add) stmts.push(env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(group.id, id));
+  return stmts;
+}
+
+async function setMembers(env: Env, group: GroupRow, add: number[], remove: number[] | "all", c?: Context<{ Bindings: Env }>) {
+  const stmts = await memberStatements(env, group, add, remove, c);
   if (stmts.length) await env.DB.batch(stmts);
 }
 
@@ -402,8 +418,11 @@ scimServer.put("/scim/v2/Groups/:id", requireScope("directory:write"), async (c)
   const group = await loadGroup(c, true);
   const body = await c.req.json<{ displayName?: string; members?: { value?: string }[] }>();
   guardNewName(c, body.displayName);
-  if (body.displayName && body.displayName !== group.name) await c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(body.displayName.trim(), group.id).run();
-  if (body.members !== undefined) await setMembers(c.env, group, await memberIds(c, body.members), "all", c);
+  // Everything is resolved and checked before anything is written.
+  const stmts: D1PreparedStatement[] = [];
+  if (body.displayName && body.displayName !== group.name) stmts.push(c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(body.displayName.trim(), group.id));
+  if (body.members !== undefined) stmts.push(...(await memberStatements(c.env, group, await memberIds(c, body.members), "all", c)));
+  if (stmts.length) await c.env.DB.batch(stmts);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.group_replaced", group.name, undefined, c.req.raw);
   const replaced = await loadGroup(c);
   downstream(c, () => pushGroupCurrent(c.env, replaced), "update", replaced.name);
@@ -414,6 +433,7 @@ scimServer.patch("/scim/v2/Groups/:id", requireScope("directory:write"), async (
   const group = await loadGroup(c, true);
   const body = await c.req.json<{ schemas?: string[]; Operations?: { op?: string; path?: string; value?: unknown }[] }>();
   if (!body.schemas?.includes(PATCH_OP) || !Array.isArray(body.Operations)) throw new ScimError(400, "Expected a PatchOp message.", "invalidSyntax");
+  const stmts: D1PreparedStatement[] = [];
   for (const op of body.Operations) {
     const kind = String(op.op ?? "").toLowerCase();
     const path = op.path ?? "";
@@ -421,25 +441,26 @@ scimServer.patch("/scim/v2/Groups/:id", requireScope("directory:write"), async (
     if ((path === "displayName" || (!path && typeof value === "object" && value && "displayName" in value)) && kind === "replace") {
       const name = typeof value === "string" ? value : (value as { displayName?: string }).displayName;
       guardNewName(c, name);
-      if (name) await c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(name.trim(), group.id).run();
+      if (name) stmts.push(c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(name.trim(), group.id));
       continue;
     }
     if (path === "members" || (!path && typeof value === "object" && value && "members" in value)) {
       const list = Array.isArray(value) ? value : ((value as { members?: { value?: string }[] })?.members ?? []);
-      if (kind === "add") await setMembers(c.env, group, await memberIds(c, list), []);
-      else if (kind === "replace") await setMembers(c.env, group, await memberIds(c, list), "all", c);
-      else if (kind === "remove") await setMembers(c.env, group, [], list.length ? await memberIds(c, list) : "all", c);
+      if (kind === "add") stmts.push(...(await memberStatements(c.env, group, await memberIds(c, list), [])));
+      else if (kind === "replace") stmts.push(...(await memberStatements(c.env, group, await memberIds(c, list), "all", c)));
+      else if (kind === "remove") stmts.push(...(await memberStatements(c.env, group, [], list.length ? await memberIds(c, list) : "all", c)));
       else throw new ScimError(400, `Unsupported PATCH op "${op.op}".`, "invalidSyntax");
       continue;
     }
     // members[value eq "<id>"] - the form Azure AD and others use for removal.
     const one = /^members\[value eq "([^"]+)"\]$/.exec(path);
     if (one && kind === "remove") {
-      await setMembers(c.env, group, [], await memberIds(c, [{ value: one[1] }]));
+      stmts.push(...(await memberStatements(c.env, group, [], await memberIds(c, [{ value: one[1] }]))));
       continue;
     }
     throw new ScimError(400, `Unsupported PATCH path "${path}".`, "invalidPath");
   }
+  if (stmts.length) await c.env.DB.batch(stmts);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.group_patched", group.name, { ops: body.Operations.length }, c.req.raw);
   const patched = await loadGroup(c);
   downstream(c, () => pushGroupCurrent(c.env, patched), "update", patched.name);

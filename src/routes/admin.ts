@@ -50,7 +50,7 @@ import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, send
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection } from "../lib/scim-client.js";
+import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
@@ -568,31 +568,16 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
     .bind(SUPER_ADMINS_GROUP)
     .all<GroupRow>();
 
-  const scimEnabled = await scimConfigured(c.env);
-  if (scimEnabled) {
-    for (const user of sampleUsers) await deleteUserScim(c.env, user);
-    for (const group of sampleGroups) await deleteGroupScim(c.env, group);
-  }
-
+  // The shared deletion (every users(id)-referencing table), with the remote
+  // ids queued in the same batch; downstream DELETEs drain from the queue.
   const sampleUserIds = sampleUsers.map((u) => u.id);
-  const sampleGroupIds = sampleGroups.map((g) => g.id);
-
-  if (sampleUserIds.length > 0) {
-    await c.env.DB.batch([
-      c.env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-      c.env.DB.prepare(`DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleUserIds)),
-    ]);
-  }
-
-  if (sampleGroupIds.length > 0) {
-    await c.env.DB.prepare(`DELETE FROM groups WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(sampleGroupIds)).run();
-  }
+  await c.env.DB.batch([
+    ...sampleUsers.filter((u) => u.scim_id).map((u) => queueScimDeprovision(c.env, "user", u.scim_id!, u.upn)),
+    ...sampleGroups.filter((g) => g.scim_id).map((g) => queueScimDeprovision(c.env, "group", g.scim_id!, g.name)),
+    ...(sampleUserIds.length > 0 ? deleteUserStatements(c.env, ...sampleUserIds) : []),
+    c.env.DB.prepare("DELETE FROM groups WHERE name != ?").bind(SUPER_ADMINS_GROUP),
+  ]);
+  if (await scimConfigured(c.env)) await drainScimDeprovisionQueue(c.env);
 }
 
 // ---------- Users ----------
@@ -1505,11 +1490,12 @@ admin.post("/admin/users/:id/delete", async (c) => {
   // Local first, in one batch, and only then the remote delete. The other way
   // round, a local failure (a trusted_devices row the batch didn't cover, once)
   // left the user deleted downstream but alive here.
-  await c.env.DB.batch(deleteUserStatements(c.env, id));
+  await c.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(c.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(c.env, id)]);
 
   if (await scimConfigured(c.env)) {
-    const result = await deleteUserScim(c.env, user);
-    if (!result.ok) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", user.upn, { action: "delete", error: result.error }, c.req.raw);
+    // A failure stays queued and is retried by every sync and the hourly cron.
+    const result = await drainScimDeprovisionQueue(c.env);
+    if (result.failed) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", user.upn, { action: "delete", queued: result.remaining }, c.req.raw);
   }
 
   await logAudit(c.env, c.get("user"), "user.deleted", user.upn, undefined, c.req.raw);
