@@ -413,7 +413,7 @@ api.get("/api/v1/users", requireScope("directory:read"), async (c) => {
   // request and fold them into each user's groups.
   const { results: ruleGroups } = await c.env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
   const { results: pageUsers } = await c.env.DB.prepare("SELECT * FROM users ORDER BY id LIMIT ? OFFSET ?").bind(limit, offset).all<UserRow>();
-  const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => userMatchesRule(u, parseRule(g.rule)!)).map((g) => g.name)]));
+  const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => { const r = parseRule(g.rule); return r !== null && userMatchesRule(u, r); }).map((g) => g.name)]));
 
   const total = await c.env.DB.prepare("SELECT COUNT(*) as n FROM users").first<{ n: number }>();
 

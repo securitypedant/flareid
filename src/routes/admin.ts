@@ -1141,7 +1141,7 @@ admin.get("/admin/users/:id", async (c) => {
           ${
             dynamicGroups.length > 0
               ? `<div style="display:flex; flex-wrap:wrap; gap:6px;">${dynamicGroups
-                  .map((g) => `<a class="pill" href="/admin/groups/${g.id}" title="${escapeHtml(ruleDescription(parseRule(g.rule)!))}">${escapeHtml(g.name)}</a>`)
+                  .map((g) => `<a class="pill" href="/admin/groups/${g.id}" title="${escapeHtml(parseRule(g.rule) ? ruleDescription(parseRule(g.rule)!) : "invalid rule")}">${escapeHtml(g.name)}</a>`)
                   .join("")}</div>`
               : '<p class="muted">None.</p>'
           }

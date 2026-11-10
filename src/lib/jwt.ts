@@ -46,6 +46,9 @@ export interface IdTokenClaims {
  * Only the claim groups in `release` are included (see oidc.ts): what the
  * client asked for by scope, intersected with what it is allowed.
  */
+/** Names the IdP asserts itself: a schema attribute never takes them, released or not. */
+export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family_name", "preferred_username", "email", "email_verified", "groups", "job_title", "department", "manager", "sub", "amr", "acr", "custom"]);
+
 export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
   const attributes: Record<string, unknown> = {};
   if (release.has("profile")) {
@@ -63,7 +66,9 @@ export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
   return {
     ...attributes,
     amr: claims.amr,
-    ...(release.has("custom") ? { custom: { ...(claims.customAttributes ?? {}), ...attributes } } : {}),
+    ...(release.has("custom")
+      ? { custom: { ...Object.fromEntries(Object.entries(claims.customAttributes ?? {}).filter(([k]) => !RESERVED_CLAIM_NAMES.has(k))), ...attributes } }
+      : {}),
   };
 }
 

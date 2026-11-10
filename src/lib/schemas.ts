@@ -1,3 +1,4 @@
+import { RESERVED_CLAIM_NAMES } from "./jwt.js";
 import { parseRule } from "./groups.js";
 import type { Env } from "../env.js";
 import type { GroupRow, UserRow } from "./types.js";
@@ -203,6 +204,7 @@ export async function saveSchemaAttributes(
   const ruleFields = await ruleAttributeNames(env);
   for (const a of attributes) {
     // The same name rule as the admin form, for every writer (the API too).
+    if (RESERVED_CLAIM_NAMES.has(a.name) && !USER_COLUMN_ATTRIBUTES.has(a.name) && a.name !== "manager") throw new RangeError(`"${a.name}" is a claim the sign-in service asserts itself; choose another name.`);
     if (!/^[a-z][a-z0-9_]*$/.test(a.name)) throw new RangeError(`"${a.name}" is not a valid attribute name - use lowercase letters, digits and underscores, starting with a letter.`);
     if (!a.user_editable) continue;
     // "manager" maps onto the manager reference column by name, whatever its type.

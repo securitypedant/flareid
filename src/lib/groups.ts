@@ -59,7 +59,7 @@ export function ruleFields(user: UserRow, custom: Record<string, string>): Recor
 
 /** Every rule is loaded and parsed on each authenticated request, so its size is bounded. */
 export const MAX_RULE_BYTES = 4096;
-const MAX_RULE_CONDITIONS = 20;
+export const MAX_RULE_CONDITIONS = 20;
 
 export function parseRule(raw: string | null | undefined): GroupRule | null {
   if (!raw || raw.length > MAX_RULE_BYTES) return null;
@@ -91,7 +91,12 @@ export function ruleFromForm(schemas: string[], fields: string[], ops: string[],
     const schema = (schemas[i] ?? "").trim();
     all.push({ ...(schema ? { schema } : {}), field: f, op: ops[i] === "ne" ? "ne" : "eq", value });
   });
-  return all.length > 0 ? JSON.stringify({ all }) : "";
+  if (all.length === 0) return "";
+  const rule = JSON.stringify({ all });
+  // The same bounds every reader applies (parseRule): a rule the evaluator
+  // would refuse must not be stored.
+  if (!parseRule(rule)) throw new Error(`A rule may have at most ${MAX_RULE_CONDITIONS} conditions and ${MAX_RULE_BYTES} bytes.`);
+  return rule;
 }
 
 /** Human-readable rule, e.g. "FlareID HR › department = Sales AND employment_type != contractor". */
@@ -132,5 +137,10 @@ export async function resolveGroupMemberUserIds(env: Env, group: GroupRow): Prom
 /** Groups whose rule matches a user, for membership resolution everywhere claims need it. */
 export async function dynamicGroupNamesForUser(env: Env, user: UserRow): Promise<string[]> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
-  return groups.filter((g) => userMatchesRule(user, parseRule(g.rule)!)).map((g) => g.name);
+  // A stored rule the parser refuses (legacy, oversized) matches nobody - it
+  // must never break group resolution for every request.
+  return groups.filter((g) => {
+    const rule = parseRule(g.rule);
+    return rule !== null && userMatchesRule(user, rule);
+  }).map((g) => g.name);
 }

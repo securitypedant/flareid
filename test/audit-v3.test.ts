@@ -305,3 +305,25 @@ describe("wave 4", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE kind = 'group' AND scim_id = 'remote-vendors'").first<{ n: number }>())!.n).toBe(1);
   });
 });
+
+describe("phase 3 follow-ups", () => {
+  it("a stored rule the parser refuses never breaks signed-in requests", async () => {
+    const { upn } = await setup();
+    const big = JSON.stringify({ all: Array.from({ length: 25 }, (_, i) => ({ field: "department", op: "ne", value: `x${i}` })) });
+    await env.DB.prepare("INSERT INTO groups (name, rule) VALUES ('Legacy', ?)").bind(big).run();
+    const { cookie } = await login(upn);
+    expect((await call("/account", { headers: { Cookie: cookie } })).status).toBe(200);
+  });
+
+  it("reserved claim names are refused as attributes and never emitted inside custom", async () => {
+    const { apiKey, upn, clientId, clientSecret } = await setup();
+    expect((await apiCall("/api/v1/schemas", { token: apiKey, body: { object_type: "user", name: "R", attributes: [{ name: "groups", label: "Teams" }] } })).status).toBe(400);
+    await env.DB.prepare("UPDATE users SET custom_attributes = ? WHERE username = 'ola'").bind(JSON.stringify({ groups: "Super Admins", team: "red" })).run();
+    const { res } = await login(upn, PW, `/authorize?${new URLSearchParams({ client_id: clientId, redirect_uri: CB, response_type: "code", scope: "openid profile" })}`);
+    const code = new URL(res.headers.get("Location")!).searchParams.get("code")!;
+    const tok = (await (await call("/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: CB, client_id: clientId, client_secret: clientSecret }).toString() })).json()) as Record<string, string>;
+    const custom = decodeJwt(tok.id_token!).custom as Record<string, unknown>;
+    expect(custom.groups).toBeUndefined();
+    expect(custom.team).toBe("red");
+  });
+});
