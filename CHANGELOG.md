@@ -6,6 +6,42 @@ may break things.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-11
+
+Migration `0017` adds authentication policies. The old "Require MFA for every
+account" setting becomes the choice of default policy, so behaviour is unchanged
+on upgrade.
+
+### Added
+
+- **Authentication policies** (Admin → Security → Policies): "Password only"
+  and "Password and a second factor" to start, assigned to groups with a
+  priority, plus a default for everyone else. A passkey satisfies every policy.
+- **Factors** (Admin → Security → Factors): turn the authenticator app and
+  passkeys on or off, with enrolment counts; Duo, email one-time codes and
+  security questions are listed as planned.
+- **A passkey as the second factor.** Someone with only a passkey who signs in
+  with their password is asked for the passkey, not sent to set up an
+  authenticator app; forced enrolment offers a passkey too.
+- **Performance dashboard** (Overview → Performance): requests, latency (p50,
+  p95) and 5xx graphs over the last hour, day or week, per endpoint, from
+  Workers Analytics Engine.
+- **OIDC:** `POST /authorize` and `POST /userinfo` (with the token in the
+  header or a form body), as OpenID Connect Core requires; request objects are
+  refused with `request_not_supported` instead of being ignored. Found by the
+  OpenID Foundation's suite.
+- Security → Settings shows the edge flood limits.
+- `website/guides/CLOUDFLARE.md`: connecting FlareID to Cloudflare One with
+  OIDC and SCIM.
+
+### Changed
+
+- **My account** is grouped into Security (MFA, password, passkeys) and
+  Sessions and devices (sessions, remembered devices, connected apps).
+- The "use these values" panels on the OIDC client and SAML SP pages follow
+  the theme (they stayed light in dark mode).
+- "Sync all now" continues an unfinished large SCIM sync instead of restarting.
+
 ## [3.2.0] - 2026-11-11
 
 Migrations `0013` to `0016`. Applying `0013` forgets remembered devices once

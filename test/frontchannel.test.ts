@@ -50,3 +50,30 @@ describe("front-channel logout", () => {
     expect(out.status).toBe(302);
   });
 });
+
+describe("conformance fixes", () => {
+  it("accepts POST at /authorize and /userinfo, and refuses request objects", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"] } });
+    const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, uid, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const params = { response_type: "code", client_id: "app", redirect_uri: "https://app.test/cb", scope: "openid email", state: "s1", nonce: "n1" };
+
+    const post = await SELF.fetch(`${BASE}/authorize`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: "https://app.test", Cookie: cookie }, body: new URLSearchParams(params).toString(), redirect: "manual" });
+    const loc = new URL(post.headers.get("Location")!);
+    expect(loc.origin + loc.pathname).toBe("https://app.test/cb");
+    expect(loc.searchParams.get("state")).toBe("s1");
+    const code = loc.searchParams.get("code")!;
+
+    const tok = (await (await SELF.fetch(`${BASE}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${btoa(`app:${"s".repeat(32)}`)}` }, body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: "https://app.test/cb" }).toString() })).json()) as { access_token: string };
+    const viaHeader = await SELF.fetch(`${BASE}/userinfo`, { method: "POST", headers: { Authorization: `Bearer ${tok.access_token}` } });
+    expect(viaHeader.status).toBe(200);
+    const viaBody = await SELF.fetch(`${BASE}/userinfo`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `access_token=${encodeURIComponent(tok.access_token)}` });
+    expect(((await viaBody.json()) as { sub: string }).sub).toBeTruthy();
+
+    const withRequest = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ ...params, request: "eyJhbGciOiJub25lIn0.e30." })}`, { headers: { Cookie: cookie }, redirect: "manual" });
+    const err = new URL(withRequest.headers.get("Location")!);
+    expect(err.searchParams.get("error")).toBe("request_not_supported");
+    expect(err.searchParams.get("state")).toBe("s1");
+  });
+});

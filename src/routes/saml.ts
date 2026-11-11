@@ -1,3 +1,4 @@
+import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
@@ -155,10 +156,12 @@ saml.get("/saml/sso", async (c) => {
   if (!request.forceAuthn) {
     const session = await getSession(c.req.raw, c.env);
     const user = session ? await getUserById(c.env, session.userId) : null;
-    if (session && user && user.status === "active") {
+    const gate = session && user ? await secondFactorGate(c.env, user, session.amr) : "ok";
+    // A session that did not use the second factor the user's policy needs is not reused: they sign in again.
+    if (session && user && user.status === "active" && gate !== "login") {
       // Same rule as /authorize: a password-only session minted before forced
       // enrolment parks the request and goes through MFA setup first.
-      if (!user.mfa_enabled && !session.amr.includes("hwk") && (await isMfaRequired(c.env))) {
+      if (gate === "enrol") {
         const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending, resumeFor: user.id });
         return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
       }

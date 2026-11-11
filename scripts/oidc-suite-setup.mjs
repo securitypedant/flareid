@@ -65,6 +65,8 @@ const login = {
         ["click", "css", "button[type=submit].primary"],
       ],
     },
+    // prompt=consent shows the consent screen even for a trusted client.
+    { task: "Consent", match: `${issuer}/consent/*`, optional: true, commands: [["click", "css", "button[name=decision][value=allow]"]] },
     { task: "Verify complete", match: `${base}callback*`, commands: [["wait", "id", "submission_complete", 10]] },
   ],
 };

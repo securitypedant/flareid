@@ -1,4 +1,5 @@
-import { Hono } from "hono";
+import { secondFactorGate } from "../lib/auth-policy.js";
+import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
@@ -86,8 +87,18 @@ export async function finishOidcAuthorize(
   return { redirectTo: redirect.toString() };
 }
 
-authorize.get("/authorize", async (c) => {
-  const url = new URL(c.req.url);
+// OpenID Connect Core 3.1.2.1: the authorization endpoint takes GET and POST
+// (form-encoded), with the same parameters.
+authorize.get("/authorize", (c) => authorizeEndpoint(c, new URL(c.req.url).searchParams));
+authorize.post("/authorize", async (c) => {
+  const body = await c.req.parseBody();
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(body)) if (typeof v === "string") params.set(k, v);
+  return authorizeEndpoint(c, params);
+});
+
+async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearchParams) {
+  const url = { searchParams: params };
   const clientId = url.searchParams.get("client_id");
   const redirectUri = url.searchParams.get("redirect_uri");
   const responseType = url.searchParams.get("response_type");
@@ -113,6 +124,10 @@ authorize.get("/authorize", async (c) => {
   // back to it (RFC 6749 4.1.2.1) rather than stranding the user on our page.
   const fail = (error: string, description: string) => c.redirect(authorizeErrorRedirect(redirectUri, error, state, description), 302);
   if (responseType !== "code") return fail("unsupported_response_type", "Only response_type=code is supported.");
+  // Request objects are not supported (discovery says so): refuse rather than
+  // silently ignore parameters the client put only inside one.
+  if (url.searchParams.has("request")) return fail("request_not_supported", "Request objects are not supported.");
+  if (url.searchParams.has("request_uri")) return fail("request_uri_not_supported", "request_uri is not supported.");
 
   // PKCE is S256 only. "plain" sends the verifier's equivalent in the clear, and
   // a challenge with no method defaults to plain (RFC 7636 §4.3), so both are
@@ -148,13 +163,17 @@ authorize.get("/authorize", async (c) => {
     // A password-only session minted before forced enrollment must not mint
     // credentials either: park this request and send the browser through MFA
     // setup; resumeLoginFlow finishes the code issue afterwards.
-    if (!user.mfa_enabled && !session.amr.includes("hwk") && (await isMfaRequired(c.env))) {
+    const gate = await secondFactorGate(c.env, user, session.amr);
+    if (gate === "login") {
+      if (prompts.has("none")) return fail("login_required", "This app needs a second factor; sign in again.");
+    } else if (gate === "enrol") {
       if (prompts.has("none")) return fail("interaction_required", "Multi-factor enrolment is required.");
       const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest, resumeFor: user.id });
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
+    } else {
+      const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);
+      return c.redirect(redirectTo, 302);
     }
-    const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);
-    return c.redirect(redirectTo, 302);
   }
 
   // prompt=none means "answer without showing anything": with no usable
@@ -167,4 +186,4 @@ authorize.get("/authorize", async (c) => {
 
   const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
   return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
-});
+}

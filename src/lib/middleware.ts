@@ -1,3 +1,4 @@
+import { secondFactorGate } from "./auth-policy.js";
 import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
 import { getSession } from "./sessions.js";
@@ -39,8 +40,11 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
   // (see login.ts), nothing else should be usable without MFA once it's required.
   const path = new URL(c.req.url).pathname;
   const exempt = path.startsWith("/account/mfa") || path === "/logout";
-  if (!exempt && !user.mfa_enabled && !session!.amr.includes("hwk") && (await isMfaRequired(c.env))) {
-    return c.redirect("/account/mfa/setup", 302);
+  if (!exempt && !path.startsWith("/account/passkeys")) {
+    const gate = await secondFactorGate(c.env, user, session!.amr);
+    if (gate === "enrol") return c.redirect("/account/mfa/setup", 302);
+    // The policy needs the second factor this session did not use: sign in again.
+    if (gate === "login") return c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
   }
 
   await next();

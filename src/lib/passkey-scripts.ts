@@ -25,7 +25,13 @@ export const PASSKEY_REGISTER_SCRIPT = `(function(){
         response:{clientDataJSON:bufToB64u(r.clientDataJSON),attestationObject:bufToB64u(r.attestationObject),transports:r.getTransports?r.getTransports():[]}}};
       return fetch("/account/passkeys",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     }).then(function(r){return r.json();}).then(function(j){
-      if(j.ok){location.href="/account?saved=passkey-added";} else {status.textContent=j.error||"The passkey was not added."; btn.disabled=false;}
+      if(!j.ok){status.textContent=j.error||"The passkey was not added."; btn.disabled=false; return;}
+      // On the enrolment page the passkey is the second factor: post on to finish the sign-in.
+      var done=btn.getAttribute("data-done");
+      if(!done){location.href="/account?saved=passkey-added"; return;}
+      var f=document.createElement("form"); f.method="POST"; f.action=done;
+      var i=document.createElement("input"); i.type="hidden"; i.name="resume"; i.value=btn.getAttribute("data-resume")||""; f.appendChild(i);
+      document.body.appendChild(f); f.submit();
     }).catch(function(e){status.textContent="The passkey was not added ("+(e&&e.name||"error")+")."; btn.disabled=false;});
   });
 })();`;
@@ -34,18 +40,20 @@ export const PASSKEY_LOGIN_SCRIPT = `(function(){
   ${HELPERS}
   var btn=document.querySelector("[data-passkey-login]"); if(!btn) return;
   if(!window.PublicKeyCredential){btn.style.display="none";return;}
-  var flow=btn.getAttribute("data-flow");
+  // data-param names the hidden field (flow_id for sign-in, mfa_id for the second step).
+  var param=btn.getAttribute("data-param")||"flow_id", flow=btn.getAttribute("data-flow");
+  var optionsUrl=btn.getAttribute("data-options")||"/login/passkey/options", postUrl=btn.getAttribute("data-post")||"/login/passkey";
   var status=document.getElementById("passkey-login-status");
   btn.addEventListener("click",function(){
     btn.disabled=true; if(status) status.textContent="";
-    fetch("/login/passkey/options?flow_id="+encodeURIComponent(flow),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(o){
+    fetch(optionsUrl+"?"+param+"="+encodeURIComponent(flow),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(o){
       var attempt=o.attempt; o=o.options; o.challenge=b64uToBuf(o.challenge);
       return navigator.credentials.get({publicKey:o}).then(function(cred){
         var r=cred.response;
         var resp={id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},
           response:{clientDataJSON:bufToB64u(r.clientDataJSON),authenticatorData:bufToB64u(r.authenticatorData),signature:bufToB64u(r.signature),userHandle:r.userHandle?bufToB64u(r.userHandle):undefined}};
-        var f=document.createElement("form"); f.method="POST"; f.action="/login/passkey";
-        [["flow_id",flow],["attempt",attempt],["response",JSON.stringify(resp)]].forEach(function(p){var i=document.createElement("input");i.type="hidden";i.name=p[0];i.value=p[1];f.appendChild(i);});
+        var f=document.createElement("form"); f.method="POST"; f.action=postUrl;
+        [[param,flow],["attempt",attempt],["response",JSON.stringify(resp)]].forEach(function(p){var i=document.createElement("input");i.type="hidden";i.name=p[0];i.value=p[1];f.appendChild(i);});
         document.body.appendChild(f); f.submit();
       });
     }).catch(function(e){btn.disabled=false; if(status) status.textContent="Passkey sign-in was cancelled or failed.";});

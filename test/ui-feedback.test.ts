@@ -24,6 +24,7 @@ describe("admin console feedback", () => {
     expect(html).toContain(`(v${VERSION})`);
     expect(html).toContain("data-theme-toggle");
     expect(html).toContain("IdP performance");
+    expect(await (await get("/admin/performance", await adminCookie())).text()).toContain("Turn on the performance dashboard");
     expect(html).toContain("Last 24 hours");
   });
 

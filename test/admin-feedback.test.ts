@@ -175,8 +175,9 @@ describe("admin console navigation and pages", () => {
 
     const overview = await (await get("/admin")).text();
     expect(overview).toMatch(/<a href="\/admin" class="active">Overview<\/a>/);
-    // Integrations' own pages are listed only inside Integrations.
-    expect(overview).not.toContain('class="sub');
+    // Integrations' own pages are listed only inside Integrations; Overview lists its own.
+    expect(overview).not.toContain('href="/admin/integrations/oidc" class="sub');
+    expect(overview).toContain('href="/admin/performance" class="sub">Performance');
 
     await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Cloudflare Access", redirect_uris: ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"] } });
     const summary = await get("/admin/integrations");

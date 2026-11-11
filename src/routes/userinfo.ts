@@ -15,9 +15,15 @@ function invalidToken(c: Context<{ Bindings: Env }>, missing = false) {
   return c.json({ error: "invalid_token" }, 401);
 }
 
-userinfo.get("/userinfo", async (c) => {
+// GET or POST (OpenID Connect Core 5.3.1); the token in the Authorization
+// header, or for POST in a form-encoded access_token field (RFC 6750 2.2).
+userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
   const header = c.req.header("Authorization");
-  const token = header?.match(/^Bearer\s+(.+)$/i)?.[1];
+  let token = header?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token && c.req.method === "POST" && (c.req.header("Content-Type") ?? "").includes("application/x-www-form-urlencoded")) {
+    const v = (await c.req.parseBody()).access_token;
+    token = typeof v === "string" && v ? v : undefined;
+  }
   if (!token) return invalidToken(c, true);
 
   const tokenHash = await sha256Hex(token);

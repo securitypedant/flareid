@@ -87,3 +87,47 @@ export async function readPerformance(env: Env, hours = 24): Promise<Performance
     return { configured: true, ok: false, error: String(e).slice(0, 200) };
   }
 }
+
+export interface SeriesPoint {
+  t: string;
+  requests: number;
+  errors: number;
+  p50: number;
+  p95: number;
+}
+
+export type SeriesResult = { configured: false } | { configured: true; ok: true; points: SeriesPoint[] } | { configured: true; ok: false; error: string };
+
+/** Requests, 5xx and latency percentiles per time bucket, oldest first (empty buckets filled with zeros). */
+export async function readPerformanceSeries(env: Env, hours: number, bucketMinutes: number, family?: string): Promise<SeriesResult> {
+  if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return { configured: false };
+  const h = Math.max(1, Math.min(168, Math.floor(hours)));
+  const b = Math.max(1, Math.min(1440, Math.floor(bucketMinutes)));
+  const fam = family && /^[a-z]+$/.test(family) ? ` AND blob1 = '${family}'` : "";
+  const sql = `SELECT toStartOfInterval(timestamp, INTERVAL '${b}' MINUTE) AS t, SUM(_sample_interval) AS requests,
+      SUM(IF(double2 >= 500, _sample_interval, 0)) AS errors,
+      quantileWeighted(0.5)(double1, _sample_interval) AS p50,
+      quantileWeighted(0.95)(double1, _sample_interval) AS p95
+    FROM ${DATASET} WHERE timestamp > NOW() - INTERVAL '${h}' HOUR${fam}
+    GROUP BY t ORDER BY t FORMAT JSON`;
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
+      body: sql,
+    });
+    if (!res.ok) return { configured: true, ok: false, error: `Analytics Engine answered ${res.status}` };
+    const body = (await res.json()) as { data?: Record<string, string | number>[] };
+    const got = new Map((body.data ?? []).map((r) => [new Date(String(r.t).replace(" ", "T") + (String(r.t).endsWith("Z") ? "" : "Z")).getTime(), r]));
+    const step = b * 60_000;
+    const end = Math.floor(Date.now() / step) * step;
+    const points: SeriesPoint[] = [];
+    for (let at = end - Math.ceil((h * 60) / b - 1) * step; at <= end; at += step) {
+      const r = got.get(at);
+      points.push({ t: new Date(at).toISOString(), requests: Number(r?.requests) || 0, errors: Number(r?.errors) || 0, p50: Math.round(Number(r?.p50) || 0), p95: Math.round(Number(r?.p95) || 0) });
+    }
+    return { configured: true, ok: true, points };
+  } catch (e) {
+    return { configured: true, ok: false, error: String(e).slice(0, 200) };
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "flareid",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "A small, standalone OpenID Connect identity provider for Cloudflare Workers and D1",
   "license": "Apache-2.0",
   "author": "Simon Thorpe",

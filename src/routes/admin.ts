@@ -1,8 +1,9 @@
-import { readPerformance } from "../lib/metrics.js";
+import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
+import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
@@ -112,7 +113,11 @@ function layout(
   // Inside Integrations, the third crumb names the page (see integrationCrumb);
   // with no third crumb it is the section's own overview.
   const sub =
-    section !== "integrations"
+    section === "overview"
+      ? (crumbs?.[1]?.label === "Performance" ? "performance" : "dashboard")
+      : section === "security"
+      ? ({ Policies: "policies", Factors: "factors" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
+      : section !== "integrations"
       ? ""
       : crumbs?.length === 2
         ? "overview"
@@ -133,12 +138,12 @@ function layout(
 }
 
 function copyableRow(label: string, value: string, widthStyle = ""): string {
-  return `<tr><th${widthStyle}>${escapeHtml(label)}</th><td><div style="display:flex; align-items:center; gap:8px;"><code>${escapeHtml(value)}</code>${copyButton(value)}</div></td></tr>`;
+  return `<tr><th${widthStyle}>${escapeHtml(label)}</th><td><div class="copy-value"><code>${escapeHtml(value)}</code>${copyButton(value)}</div></td></tr>`;
 }
 
 function oidcEndpointsBlock(env: Env, clientId: string) {
   return `
-    <div style="background:#f9fafb; border-radius:10px; padding:14px 16px; margin:12px 0;">
+    <div class="info-panel">
       <p class="muted" style="margin:0 0 8px 0;">Use these when configuring this client as an OIDC login method (e.g. Cloudflare Access's App ID / Client secret / Auth URL / Token URL / Certificate URL fields):</p>
       <table style="margin:0;">
         ${copyableRow("App ID / Client ID", clientId, ' style="width:140px;"')}
@@ -184,6 +189,16 @@ function adminNav(active: string, sub = "") {
     .map(([key, href, label]) => {
       const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
       // A section's pages are listed only while you are in that section.
+      if (key === "overview" && active === "overview") {
+        return link + [["dashboard", "/admin", "Dashboard"], ["performance", "/admin/performance", "Performance"]]
+          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "dashboard") === k ? " active" : ""}">${l}</a>`)
+          .join("");
+      }
+      if (key === "security" && active === "security") {
+        return link + [["settings", "/admin/security", "Settings"], ["policies", "/admin/security/policies", "Policies"], ["factors", "/admin/security/factors", "Factors"]]
+          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "settings") === k ? " active" : ""}">${l}</a>`)
+          .join("");
+      }
       if (key !== "integrations" || active !== "integrations") return link;
       const children = [{ key: "overview", label: "Overview", href: "/admin/integrations" }, ...INTEGRATION_PAGES.map((p) => ({ ...p, href: `/admin/integrations/${p.key}` }))]
         .map((p) => `<a href="${p.href}" class="sub${sub === p.key ? " active" : ""}">${p.label}</a>`)
@@ -340,6 +355,71 @@ function dayKey(offsetDays: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+const PERF_RANGES = {
+  "1h": { hours: 1, bucket: 5, label: "Last hour", fmt: (d: Date) => d.toISOString().slice(11, 16) },
+  "24h": { hours: 24, bucket: 60, label: "Last 24 hours", fmt: (d: Date) => d.toISOString().slice(11, 13) + "h" },
+  "7d": { hours: 168, bucket: 360, label: "Last 7 days", fmt: (d: Date) => d.toISOString().slice(5, 10) + " " + d.toISOString().slice(11, 13) + "h" },
+} as const;
+
+admin.get("/admin/performance", async (c) => {
+  const key = (c.req.query("range") ?? "24h") as keyof typeof PERF_RANGES;
+  const range = PERF_RANGES[key] ?? PERF_RANGES["24h"];
+  const rangeKey = PERF_RANGES[key] ? key : "24h";
+  const family = /^[a-z]+$/.test(c.req.query("endpoint") ?? "") ? c.req.query("endpoint")! : "";
+  const [series, totals] = await Promise.all([readPerformanceSeries(c.env, range.hours, range.bucket, family || undefined), readPerformance(c.env, range.hours)]);
+  const tabs = `<div class="range-tabs">${(Object.keys(PERF_RANGES) as (keyof typeof PERF_RANGES)[])
+    .map((k) => `<a href="/admin/performance?range=${k}${family ? `&endpoint=${family}` : ""}" class="${k === rangeKey ? "active" : ""}">${PERF_RANGES[k].label}</a>`)
+    .join("")}</div>`;
+  let body: string;
+  if (!series.configured || !totals.configured) {
+    body = cardSection(`<h2>Turn on the performance dashboard</h2>
+      <p>Every request already records a data point (route family, status, Worker time) in the Workers Analytics Engine dataset
+        <code>flareid_requests</code>, at no D1 or KV cost. Reading them back needs an API token:</p>
+      <ol>
+        <li>Create an API token with <strong>Account Analytics: Read</strong> for this account.</li>
+        <li><code>wrangler secret put CF_ANALYTICS_TOKEN</code></li>
+        <li>Deploy with the <code>CF_ACCOUNT_ID</code> var set (<code>wrangler deploy --var CF_ACCOUNT_ID:&lt;account id&gt;</code>).</li>
+      </ol>`);
+  } else if (!series.ok || !totals.ok) {
+    body = cardSection(`<p class="error">Could not read metrics: ${escapeHtml(!series.ok ? series.error : (totals as { error: string }).error)}</p>`);
+  } else {
+    const labels = series.points.map((p) => range.fmt(new Date(p.t)));
+    const total = series.points.reduce((s, p) => s + p.requests, 0);
+    const errors = series.points.reduce((s, p) => s + p.errors, 0);
+    const worstP95 = Math.max(0, ...series.points.map((p) => p.p95));
+    body = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="card"><h2>${total.toLocaleString("en")}</h2><p>Requests</p></div></div>
+        <div class="stat-card"><div class="card"><h2>${total ? ((errors / total) * 100).toFixed(2) : "0.00"}%</h2><p>Server errors (5xx)</p></div></div>
+        <div class="stat-card"><div class="card"><h2>${(totals.families.find((f) => !family || f.family === family)?.p50 ?? 0)} ms</h2><p>Median Worker time</p></div></div>
+        <div class="stat-card"><div class="card"><h2>${worstP95} ms</h2><p>Worst p95 in a bucket</p></div></div>
+      </div>
+      ${cardSection(`<div class="row between" style="margin-bottom:12px;"><h2 style="margin:0;">Requests</h2><span class="muted">per ${range.bucket >= 60 ? `${range.bucket / 60} h` : `${range.bucket} min`}</span></div>
+        ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.requests })))}`)}
+      <div class="two-col">
+        ${cardSection(`<h2>Latency</h2><p class="muted">Worker time per request, ms.</p>
+          ${lineChart(labels, [{ name: "p50", className: "s-p50", values: series.points.map((p) => p.p50) }, { name: "p95", className: "s-p95", values: series.points.map((p) => p.p95) }], { unit: "" })}
+          <div class="chart-legend"><span><span class="chart-swatch" style="background:var(--fi-accent);"></span>p50</span><span><span class="chart-swatch" style="background:var(--fi-faint);"></span>p95</span></div>`)}
+        ${cardSection(`<h2>Server errors</h2><p class="muted">Responses with status 500 and above.</p>
+          ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { barClass: "err" })}`)}
+      </div>
+      ${cardSection(`<h2>By endpoint</h2>
+        <table><thead><tr><th>Endpoint</th><th>Requests</th><th>5xx</th><th>p50 ms</th><th>p95 ms</th></tr></thead><tbody>
+          ${totals.families.map((f) => `<tr><td><a href="/admin/performance?range=${rangeKey}&endpoint=${escapeHtml(f.family)}">${escapeHtml(f.family)}</a></td><td>${f.requests.toLocaleString("en")}</td><td>${f.errors}</td><td>${f.p50}</td><td>${f.p95}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No requests recorded in this period.</td></tr>'}
+        </tbody></table>`)}`;
+  }
+  return c.html(
+    layout(
+      c,
+      family ? `Performance: ${family}` : "Performance",
+      body,
+      [{ label: "Admin", href: "/admin" }, { label: "Performance" }],
+      "overview",
+      `<div class="row" style="gap:10px;">${family ? `<a href="/admin/performance?range=${rangeKey}">All endpoints</a>` : ""}${tabs}</div>`
+    )
+  );
+});
+
 admin.get("/admin", async (c) => {
   const since = `${dayKey(-(DASHBOARD_DAYS - 1))}T00:00:00.000Z`;
 
@@ -428,21 +508,6 @@ admin.get("/admin", async (c) => {
   ]);
   const op = ops.map((r) => (r.results[0] as { n: number } | undefined)?.n ?? 0);
   const [samlApps, apiKeys, activeUsers, ok24, bad24, limited24, api24, apiBad24, scimFail24, scimQueue, refreshLive, stepUpBad24] = op;
-  const perfHtml = !perf.configured
-    ? `<p class="muted">Request volume, error rate and latency per endpoint come from Workers Analytics Engine. Data points are already
-        recorded on every request (the <code>METRICS</code> binding); to show them here, set the <code>CF_ACCOUNT_ID</code> var and a
-        <code>CF_ANALYTICS_TOKEN</code> secret (an API token with <em>Account Analytics: Read</em>).</p>`
-    : !perf.ok
-      ? `<p class="muted">Could not read metrics: ${escapeHtml(perf.error)}</p>`
-      : perf.families.length === 0
-        ? '<p class="muted">No requests recorded in the last 24 hours yet.</p>'
-        : `${attrGrid([
-            attr("Requests (24h)", perf.total.toLocaleString("en")),
-            attr("Server errors (5xx)", `${perf.errors} (${perf.total ? ((perf.errors / perf.total) * 100).toFixed(2) : "0"}%)`),
-          ])}
-          <table style="margin-top:12px;"><thead><tr><th>Endpoint</th><th>Requests</th><th>5xx</th><th>p50 ms</th><th>p95 ms</th></tr></thead><tbody>
-            ${perf.families.map((f) => `<tr><td>${escapeHtml(f.family)}</td><td>${f.requests.toLocaleString("en")}</td><td>${f.errors}</td><td>${f.p50}</td><td>${f.p95}</td></tr>`).join("")}
-          </tbody></table>`;
   const successTotal = loginsByDay.reduce((sum, r) => sum + (r.ok ?? 0), 0);
   const failedTotal = loginsByDay.reduce((sum, r) => sum + (r.bad ?? 0), 0);
   const users = userCount[0]?.n ?? 0;
@@ -481,8 +546,8 @@ admin.get("/admin", async (c) => {
           ])}
         `)}
         ${cardSection(`
-          <div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">IdP performance</h2><span class="muted">last 24 hours</span></div>
-          ${perfHtml}
+          <div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">IdP performance</h2><a href="/admin/performance">Open the performance dashboard &rarr;</a></div>
+          ${perf.configured && perf.ok ? attrGrid([attr("Requests (24h)", perf.total.toLocaleString("en")), attr("Server errors (5xx)", perf.errors)]) : '<p class="muted">Request volume, errors and latency for every endpoint, with graphs.</p>'}
         `)}
       </div>
 
@@ -2830,7 +2895,7 @@ function samlIdpBlock(env: Env) {
         : ` - expires ${escapeHtml(expiry.toISOString().slice(0, 10))}`
     : "";
   return `
-    <div style="background:#f9fafb; border-radius:10px; padding:14px 16px; margin:12px 0;">
+    <div class="info-panel">
       <p class="muted" style="margin:0 0 8px 0;">Use these when configuring this service provider (e.g. Cloudflare Access's SAML identity provider fields):</p>
       <table style="margin:0;">
         ${copyableRow("Entity ID / Issuer", entityId, ' style="width:140px;"')}
@@ -3516,12 +3581,20 @@ admin.get("/admin/security", async (c) => {
         </form>
       `)}
       ${cardSection(`
-        <h2>Multi-factor authentication</h2>
-        <p class="muted">When required, anyone without MFA enrolled is forced to set it up (with backup codes) the next time they sign in, before they can use anything else.</p>
-        <form method="POST" action="/admin/security/require-mfa">
-          <label><input type="checkbox" name="required" value="1" ${mfaRequired ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require MFA for every account</label>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
-        </form>
+        <div class="row between"><h2 style="margin:0;">Authentication policies</h2><a href="/admin/security/policies">Manage policies &rarr;</a></div>
+        <p class="muted">What people must present to sign in is set per group by <a href="/admin/security/policies">authentication policies</a>.
+          The default policy currently requires <strong>${mfaRequired ? "a password and a second factor (or a passkey)" : "a password (or a passkey)"}</strong>.
+          Second-factor methods are switched on and off under <a href="/admin/security/factors">Factors</a>.</p>
+      `)}
+      ${cardSection(`
+        <h2>Edge flood limits</h2>
+        <p class="muted">Every route reachable without signing in sits behind Workers Rate Limiting, counted in memory per Cloudflare location (no storage writes).
+          These are flood control, not the brute-force control: that is the per-account sign-in limit above. They are set at deploy time in
+          <code>wrangler.jsonc</code> (<code>ratelimits</code>), not here, because the runtime cannot change them.</p>
+        ${attrGrid([
+          attr("Sign-in pages (login, authorize, SAML SSO, recovery, logout)", c.env.AUTH_LIMITER ? "120 requests / minute per IP" : "not bound"),
+          attr("Machine endpoints (token, introspect, revoke, userinfo, API, SCIM)", c.env.API_LIMITER ? "600 requests / minute per IP and client" : "not bound"),
+        ])}
       `)}
       ${cardSection(`
         <h2>Session limits</h2>
@@ -3728,6 +3801,207 @@ admin.post("/admin/security/password-policy", async (c) => {
   });
   await logAudit(c.env, c.get("user"), "settings.password_policy_changed", undefined, undefined, c.req.raw);
   return c.redirect("/admin/security?saved=1", 302);
+});
+
+// ---------- Authentication policies and factors ----------
+
+const SECURITY_CRUMB: Breadcrumb = { label: "Security", href: "/admin/security" };
+
+admin.get("/admin/security/policies", async (c) => {
+  const [policies, groups] = await Promise.all([listPolicies(c.env), c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>()]);
+  const reqLabel = (r: string) => (r === "mfa" ? "Password + second factor (or a passkey)" : "Password (or a passkey)");
+  const row = (p: (typeof policies)[number]) => `
+    <tr>
+      <td><strong>${escapeHtml(p.name)}</strong>${p.is_default ? ' <span class="badge badge-active">Default</span>' : ""}<br /><span class="muted">${escapeHtml(p.description)}</span></td>
+      <td>${reqLabel(p.requirement)}</td>
+      <td>${p.is_default ? '<span class="muted">Everyone not matched by another policy</span>' : p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ") || '<span class="muted">No groups yet</span>'}</td>
+      <td>${p.is_default ? "&mdash;" : p.priority}</td>
+      <td style="text-align:right;"><a href="/admin/security/policies/${p.id}">Edit</a></td>
+    </tr>`;
+  return c.html(
+    layout(
+      c,
+      "Authentication policies",
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">A policy says what someone must present to sign in. Each person gets the policy of their highest-priority group (lowest number);
+          anyone not in a policy's groups gets the default. A passkey satisfies every policy: it is multi-factor on its own.</p>
+        <table><thead><tr><th>Policy</th><th>Requires</th><th>Applies to</th><th>Priority</th><th></th></tr></thead><tbody>${policies.map(row).join("")}</tbody></table>
+      `)}
+      ${cardSection(`
+        <h2>New policy</h2>
+        <form method="POST" action="/admin/security/policies">
+          <div class="field-row">
+            <div><label for="p_name">Name</label><input type="text" id="p_name" name="name" required maxlength="80" /></div>
+            <div><label for="p_req">Requires</label><select id="p_req" name="requirement"><option value="mfa">Password + second factor (or a passkey)</option><option value="password">Password (or a passkey)</option></select></div>
+          </div>
+          <label for="p_desc">Description</label><input type="text" id="p_desc" name="description" maxlength="200" />
+          <label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="10" style="max-width:120px;" />
+          ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set<number>(), "Search groups...")}
+          <div class="form-actions end"><button class="primary" type="submit">Create policy</button></div>
+        </form>
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Policies" }]
+    )
+  );
+});
+
+async function readPolicyForm(c: { req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }) {
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const name = String(body.name ?? "").trim().slice(0, 80);
+  if (!name) throw new Error("A policy name is required.");
+  return {
+    name,
+    description: String(body.description ?? "").trim().slice(0, 200),
+    requirement: String(body.requirement) === "password" ? "password" : "mfa",
+    priority: Math.min(1000, Math.max(1, Math.floor(Number(body.priority)) || 100)),
+    groupIds: list(body.group_ids).map(Number).filter(Boolean),
+    makeDefault: Boolean(body.make_default),
+  };
+}
+
+async function savePolicyGroups(env: Env, policyId: number, groupIds: number[]) {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(policyId),
+    env.DB.prepare("INSERT OR IGNORE INTO auth_policy_groups (policy_id, group_id) SELECT ?, g.id FROM groups g WHERE g.id IN (SELECT value FROM json_each(?))").bind(policyId, JSON.stringify(groupIds)),
+  ]);
+}
+
+admin.post("/admin/security/policies", async (c) => {
+  let f;
+  try {
+    f = await readPolicyForm(c);
+  } catch (e) {
+    return c.text((e as Error).message, 400);
+  }
+  if (await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ?").bind(f.name).first()) return c.text("A policy with that name already exists.", 400);
+  const row = await c.env.DB.prepare("INSERT INTO auth_policies (name, description, requirement, priority, is_default, created_at) VALUES (?, ?, ?, ?, 0, ?) RETURNING id")
+    .bind(f.name, f.description, f.requirement, f.priority, new Date().toISOString())
+    .first<{ id: number }>();
+  await savePolicyGroups(c.env, row!.id, f.groupIds);
+  await logAudit(c.env, c.get("user"), "auth_policy.created", f.name, { requirement: f.requirement, groups: f.groupIds.length }, c.req.raw);
+  return c.redirect("/admin/security/policies?saved=1", 302);
+});
+
+admin.get("/admin/security/policies/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const p = (await listPolicies(c.env)).find((x) => x.id === id);
+  if (!p) return c.text("Not found", 404);
+  const groups = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
+  return c.html(
+    layout(
+      c,
+      p.name,
+      cardSection(`
+        <form method="POST" action="/admin/security/policies/${p.id}">
+          <div class="field-row">
+            <div><label for="p_name">Name</label><input type="text" id="p_name" name="name" required maxlength="80" value="${escapeHtml(p.name)}" /></div>
+            <div><label for="p_req">Requires</label><select id="p_req" name="requirement">
+              <option value="mfa" ${p.requirement === "mfa" ? "selected" : ""}>Password + second factor (or a passkey)</option>
+              <option value="password" ${p.requirement === "password" ? "selected" : ""}>Password (or a passkey)</option></select></div>
+          </div>
+          <label for="p_desc">Description</label><input type="text" id="p_desc" name="description" maxlength="200" value="${escapeHtml(p.description)}" />
+          ${
+            p.is_default
+              ? '<p class="muted">This is the default policy: it applies to everyone no other policy matches, so it has no groups or priority.</p>'
+              : `<label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="${p.priority}" style="max-width:120px;" />
+                 ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
+                 <label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`
+          }
+          <div class="form-actions end">
+            ${p.is_default ? "" : `<button class="danger" type="submit" formaction="/admin/security/policies/${p.id}/delete" formnovalidate ${confirmAttrs("Its groups fall back to another matching policy or the default.", { title: `Delete the policy "${p.name}"?`, action: "Delete policy", danger: true })}>Delete policy</button>`}
+            ${cancelLink("/admin/security/policies")}
+            <button class="primary" type="submit">Save</button>
+          </div>
+        </form>
+      `),
+      [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Policies", href: "/admin/security/policies" }, { label: p.name }]
+    )
+  );
+});
+
+admin.post("/admin/security/policies/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const current = await c.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string }>();
+  if (!current) return c.text("Not found", 404);
+  let f;
+  try {
+    f = await readPolicyForm(c);
+  } catch (e) {
+    return c.text((e as Error).message, 400);
+  }
+  if (await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ? AND id != ?").bind(f.name, id).first()) return c.text("A policy with that name already exists.", 400);
+  await c.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, id).run();
+  if (!current.is_default) {
+    if (f.makeDefault) {
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id),
+        c.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id),
+      ]);
+    } else {
+      await savePolicyGroups(c.env, id, f.groupIds);
+    }
+  }
+  await logAudit(c.env, c.get("user"), "auth_policy.updated", f.name, { requirement: f.requirement, default: Boolean(current.is_default || f.makeDefault) }, c.req.raw);
+  return c.redirect("/admin/security/policies?saved=1", 302);
+});
+
+admin.post("/admin/security/policies/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const p = await c.env.DB.prepare("SELECT name, is_default FROM auth_policies WHERE id = ?").bind(id).first<{ name: string; is_default: number }>();
+  if (!p) return c.text("Not found", 404);
+  if (p.is_default) return c.text("The default policy cannot be deleted; make another policy the default first.", 400);
+  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id), c.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(id)]);
+  await logAudit(c.env, c.get("user"), "auth_policy.deleted", p.name, undefined, c.req.raw);
+  return c.redirect("/admin/security/policies?saved=1", 302);
+});
+
+admin.get("/admin/security/factors", async (c) => {
+  const states = await Promise.all(FACTORS.filter((f) => f.available).map(async (f) => [f.key, await isFactorEnabled(c.env, f.key as FactorKey)] as const));
+  const on = new Map(states);
+  const counts = await c.env.DB.batch([
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
+    c.env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials"),
+  ]);
+  const enrolled: Record<string, number> = { totp: (counts[0]!.results[0] as { n: number }).n, passkey: (counts[1]!.results[0] as { n: number }).n };
+  return c.html(
+    layout(
+      c,
+      "Factors",
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">The second-factor methods people can enrol and sign in with. A password is always available; turning a factor off stops it counting toward a policy and hides its enrolment.</p>
+        <table><thead><tr><th>Factor</th><th>Enrolled users</th><th>Status</th><th></th></tr></thead><tbody>
+          <tr><td><strong>Password</strong><br /><span class="muted">Always on; rules are under Security &rarr; Settings.</span></td><td>&mdash;</td><td><span class="badge badge-active">On</span></td><td></td></tr>
+          ${FACTORS.map((f) =>
+            f.available
+              ? `<tr><td><strong>${escapeHtml(f.label)}</strong><br /><span class="muted">${escapeHtml(f.description)}</span></td><td>${enrolled[f.key] ?? 0}</td>
+                  <td><span class="badge ${on.get(f.key) ? "badge-active" : "badge-disabled"}">${on.get(f.key) ? "On" : "Off"}</span></td>
+                  <td style="text-align:right;"><form method="POST" action="/admin/security/factors/${f.key}"><input type="hidden" name="enabled" value="${on.get(f.key) ? "0" : "1"}" /><button class="secondary" type="submit">${on.get(f.key) ? "Turn off" : "Turn on"}</button></form></td></tr>`
+              : `<tr><td><strong>${escapeHtml(f.label)}</strong><br /><span class="muted">${escapeHtml(f.description)}</span></td><td>&mdash;</td><td><span class="pill">Planned</span></td><td></td></tr>`
+          ).join("")}
+        </tbody></table>
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Factors" }]
+    )
+  );
+});
+
+admin.post("/admin/security/factors/:key", async (c) => {
+  const key = c.req.param("key") as FactorKey;
+  if (key !== "totp" && key !== "passkey") return c.text("Unknown factor.", 400);
+  const enabled = String((await c.req.parseBody()).enabled) === "1";
+  if (!enabled) {
+    const other: FactorKey = key === "totp" ? "passkey" : "totp";
+    const mfaPolicies = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>();
+    if (!(await isFactorEnabled(c.env, other)) && (mfaPolicies?.n ?? 0) > 0) {
+      return c.redirect(`/admin/security/factors?error=${encodeURIComponent("At least one second factor must stay on while a policy requires one.")}`, 302);
+    }
+  }
+  await setFactorEnabled(c.env, key, enabled);
+  await logAudit(c.env, c.get("user"), "auth_factor.changed", key, { enabled }, c.req.raw);
+  return c.redirect("/admin/security/factors?saved=1", 302);
 });
 
 admin.post("/admin/security/require-mfa", async (c) => {

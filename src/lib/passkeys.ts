@@ -99,8 +99,10 @@ export async function finishRegistration(env: Env, sessionId: string, userId: nu
  * Options for signing in with a passkey. Discoverable credentials: no user is
  * named, so the browser offers whatever passkeys it holds for this site.
  */
-export async function authenticationOptions(env: Env, attemptId: string) {
-  const options = await generateAuthenticationOptions({ rpID: rpId(env), userVerification: "required" });
+export async function authenticationOptions(env: Env, attemptId: string, forUserId?: number) {
+  // As a second step the user is already known, so only their passkeys are offered.
+  const allow = forUserId ? (await listPasskeys(env, forUserId)).map((c) => ({ id: c.id, transports: JSON.parse(c.transports) })) : undefined;
+  const options = await generateAuthenticationOptions({ rpID: rpId(env), userVerification: "required", ...(allow ? { allowCredentials: allow } : {}) });
   await env.SESSIONS_KV.put(await challengeKey(`auth:${attemptId}`), options.challenge, { expirationTtl: CHALLENGE_TTL_SECONDS });
   return options;
 }

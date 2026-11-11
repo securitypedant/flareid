@@ -154,7 +154,21 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
   );
 }
 
-export function mfaForm(appName: string, mfaId: string, appearance: LoginAppearance, error?: string): string {
+export function mfaForm(appName: string, mfaId: string, appearance: LoginAppearance, error?: string, factors: { totp: boolean; passkey: boolean } = { totp: true, passkey: false }): string {
+  const passkey = factors.passkey
+    ? `<div class="auth-passkey">
+        <button class="${factors.totp ? "secondary" : "primary"}" type="button" data-passkey-login data-param="mfa_id" data-flow="${escapeHtml(mfaId)}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey" style="width:100%;">Use a passkey</button>
+        <p class="muted" id="passkey-login-status" style="margin:6px 0 0; font-size:0.8125rem;"></p>
+      </div>
+      ${scriptTag(PASSKEY_LOGIN_SCRIPT)}`
+    : "";
+  if (!factors.totp) {
+    return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Two-step verification</h1>
+    <p class="sub">Confirm it's you with one of your passkeys.</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+    ${passkey}`);
+  }
   return authPage(
     "Two-factor authentication",
     appName,
@@ -172,6 +186,7 @@ export function mfaForm(appName: string, mfaId: string, appearance: LoginAppeara
       </label>
       <div class="row"><button class="primary" type="submit">Verify</button></div>
     </form>
+    ${passkey}
     `
   );
 }

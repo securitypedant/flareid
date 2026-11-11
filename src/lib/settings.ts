@@ -85,12 +85,16 @@ export async function setNewUserPasswordMode(env: Env, mode: NewUserPasswordMode
   await setSetting(env, "new_user_password_mode", mode);
 }
 
+/** Whether the default authentication policy requires a second factor (see auth-policy.ts). */
 export async function isMfaRequired(env: Env): Promise<boolean> {
-  return (await getSetting(env, "require_mfa")) === "true";
+  return (await env.DB.prepare("SELECT requirement FROM auth_policies WHERE is_default = 1 LIMIT 1").first<{ requirement: string }>())?.requirement === "mfa";
 }
 
+/** The legacy instance-wide switch: makes the first policy with that requirement the default. */
 export async function setMfaRequired(env: Env, required: boolean): Promise<void> {
   await setSetting(env, "require_mfa", required ? "true" : "false");
+  const target = await env.DB.prepare("SELECT id FROM auth_policies WHERE requirement = ? ORDER BY priority, id LIMIT 1").bind(required ? "mfa" : "password").first<{ id: number }>();
+  if (target) await env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(target.id).run();
 }
 
 export const AUDIT_RETENTION_DEFAULT_DAYS = 365;

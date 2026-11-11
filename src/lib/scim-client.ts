@@ -239,9 +239,10 @@ const SYNC_CURSOR_KEY = "scim_sync_cursor";
  * A full sync, in bounded batches. Each call pushes the next SYNC_BATCH users
  * after the stored cursor; when no users are left it pushes every group and
  * clears the cursor. `complete` says whether this call finished the sync; if
- * not, the next call (manual, or the cron via continueScimSync) picks it up.
+ * not, the next call (manual, or the cron via continueScimSync) picks it up;
+ * once a sync completes the cursor is cleared, so the next call starts afresh.
  */
-export async function syncAll(env: Env, opts: { restart?: boolean } = { restart: true }): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean }> {
+export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean }> {
   await drainScimDeprovisionQueue(env);
   const stored = opts.restart ? 0 : Number((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value) || 0;
   const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(stored, SYNC_BATCH).all<UserRow>();

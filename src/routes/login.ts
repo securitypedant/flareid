@@ -1,3 +1,4 @@
+import { hasSecondFactor, isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
@@ -122,8 +123,9 @@ async function completeLoginFlow(
   // gets forced through setup (with backup codes) before reaching their
   // original destination, whether that's a direct /account visit or an OIDC
   // login to a relying party.
-  // A passkey sign-in (amr "hwk") is already multi-factor.
-  if (!user.mfa_enabled && !amr.includes("hwk") && (await isMfaRequired(env))) {
+  // The user's authentication policy decides; a passkey sign-in (amr "hwk") is
+  // already multi-factor.
+  if ((await secondFactorGate(env, { id: userId, mfa_enabled: user.mfa_enabled }, amr)) !== "ok") {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
@@ -197,16 +199,21 @@ login.post("/login", async (c) => {
     );
   }
 
-  if (user.mfa_enabled && !(await isDeviceTrusted(c.env, c.req.raw, user.id))) {
+  // Second step: the authenticator app when enrolled (unless this device is
+  // remembered); otherwise a passkey when the user's policy needs a second factor.
+  const totp = Boolean(user.mfa_enabled) && (await isFactorEnabled(c.env, "totp"));
+  const passkey = (await isFactorEnabled(c.env, "passkey")) && (await userHasPasskey(c.env, user.id));
+  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : passkey && (await mfaRequiredFor(c.env, user.id));
+  if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance));
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, { totp, passkey }));
   }
 
-  const amr = user.mfa_enabled ? ["pwd", "mfa_remembered_device"] : ["pwd"];
+  const amr = totp ? ["pwd", "mfa_remembered_device"] : ["pwd"];
   await deleteLoginFlow(c.env, flowId);
   const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   c.header("Set-Cookie", setCookie);
-  if (user.mfa_enabled) await logAudit(c.env, user, "login.mfa_skipped_trusted_device", user.upn, undefined, c.req.raw);
+  if (totp) await logAudit(c.env, user, "login.mfa_skipped_trusted_device", user.upn, undefined, c.req.raw);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") {
     return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
@@ -245,6 +252,44 @@ login.post("/login/passkey", async (c) => {
   }
   const amr = ["hwk", "mfa"];
   await deleteLoginFlow(c.env, flowId);
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  c.header("Set-Cookie", setCookie);
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  return c.redirect(outcome.to, 302);
+});
+
+// The second step with a passkey instead of a code.
+login.get("/login/mfa/passkey/options", async (c) => {
+  const pending = await getPendingMfa(c.env, c.req.query("mfa_id") ?? "");
+  if (!pending) return c.json({ error: "expired" }, 400);
+  const attempt = randomToken(16);
+  return c.json({ attempt, options: await authenticationOptions(c.env, attempt, pending.userId) });
+});
+
+login.post("/login/mfa/passkey", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const flow = await getLoginFlow(c.env, pending.flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const appearance = await getLoginAppearance(c.env);
+  let response: unknown;
+  try {
+    response = JSON.parse(String(body.response ?? "").slice(0, 16_384));
+  } catch {
+    response = null;
+  }
+  const provedUser = response ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active" || provedUser !== pending.userId) {
+    await logAudit(c.env, null, "login.mfa_failed", user?.upn, { method: "passkey" }, c.req.raw);
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "That passkey could not confirm it's you.", { totp: Boolean(user?.mfa_enabled), passkey: true }));
+  }
+  await deletePendingMfa(c.env, mfaId);
+  await deleteLoginFlow(c.env, pending.flowId);
+  const amr = ["pwd", "hwk", "mfa"];
   const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);

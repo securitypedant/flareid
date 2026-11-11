@@ -1,3 +1,4 @@
+import { isFactorEnabled } from "../lib/auth-policy.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context } from "hono";
@@ -154,6 +155,7 @@ account.get("/account", async (c) => {
         ${groups.length > 0 ? groups.map((g) => `<span class="pill">${escapeHtml(g)}</span>`).join("") : '<p class="muted">No group memberships</p>'}
       `)}
 
+      <h2 class="section-title">Security</h2>
       <div class="two-col">
         ${cardSection(`
           <div class="row between">
@@ -196,6 +198,27 @@ account.get("/account", async (c) => {
       </div>
 
       ${cardSection(`
+        <h2>Passkeys</h2>
+        <p class="muted">Sign in with your device's fingerprint, face or PIN instead of a password and code.</p>
+        ${
+          passkeys.length
+            ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
+                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(new Date(p.created_at).toLocaleDateString())}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
+                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}><button class="link-button" type="submit">Remove</button></form></td></tr>`).join("")}
+              </tbody></table>`
+            : '<p class="muted">No passkeys yet.</p>'
+        }
+        <div class="row" style="justify-content:flex-start; gap:8px; margin-top:10px;">
+          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
+          <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
+        </div>
+        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
+        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}
+      `)}
+
+
+      <h2 class="section-title">Sessions and devices</h2>
+      ${cardSection(`
         <div class="row between">
           <h2 style="margin:0;">Active sessions</h2>
           ${sessions.length > 1 ? `<form method="POST" action="/account/sessions/revoke-others" ${confirmAttrs("Every session except this one will be signed out. Other devices will need to sign in again.", { title: "Sign out all other sessions?", action: "Sign out others" })}><button class="secondary" type="submit">Sign out all other sessions</button></form>` : ""}
@@ -224,25 +247,6 @@ account.get("/account", async (c) => {
       `)}
 
       <div class="two-col">
-      ${cardSection(`
-        <h2>Passkeys</h2>
-        <p class="muted">Sign in with your device's fingerprint, face or PIN instead of a password and code.</p>
-        ${
-          passkeys.length
-            ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
-                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(new Date(p.created_at).toLocaleDateString())}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
-                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}><button class="link-button" type="submit">Remove</button></form></td></tr>`).join("")}
-              </tbody></table>`
-            : '<p class="muted">No passkeys yet.</p>'
-        }
-        <div class="row" style="justify-content:flex-start; gap:8px; margin-top:10px;">
-          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
-          <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
-        </div>
-        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
-        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}
-      `)}
-
       ${cardSection(`
         <h2>Remembered devices</h2>
         <p class="muted">Devices you chose "Remember this device" on - MFA is skipped on these until they expire or you remove them.</p>
@@ -459,6 +463,7 @@ account.get("/account/mfa/setup", async (c) => {
   const user = c.get("user");
   const resume = c.req.query("resume") ?? "";
   if (user.mfa_enabled) return c.redirect("/account", 302);
+  const [totpOn, passkeyOn] = await Promise.all([isFactorEnabled(c.env, "totp"), isFactorEnabled(c.env, "passkey")]);
 
   let secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) {
@@ -473,8 +478,20 @@ account.get("/account/mfa/setup", async (c) => {
     layout(
       c,
       "Set up MFA",
-      cardSection(`
+      (passkeyOn
+        ? cardSection(`
+        <h2>Use a passkey</h2>
+        <p class="muted">Your device's fingerprint, face or PIN. A passkey counts as multi-factor on its own, and you can sign in with it without a password.</p>
+        <div class="row" style="justify-content:flex-start; gap:8px;">
+          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
+          <button class="primary" type="button" data-passkey-register data-done="/account/mfa/passkey-enrolled" data-resume="${escapeHtml(resume)}">Add a passkey</button>
+        </div>
+        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
+        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}`)
+        : "") +
+      (!totpOn ? "" : cardSection(`
         <div style="text-align:center;">
+          ${passkeyOn ? "<h2>Or use an authenticator app</h2>" : ""}
           ${resume ? '<p class="sub">Multi-factor authentication is required before you can continue.</p>' : ""}
           ${c.req.query("error") ? '<p class="error">Incorrect code, please try again.</p>' : ""}
           <p class="sub">Scan this with Google Authenticator, Authy, or any standard TOTP app.</p>
@@ -498,9 +515,24 @@ account.get("/account/mfa/setup", async (c) => {
             }
           </div>
         </div>
-      `)
+      `))
     )
   );
+});
+
+/** Forced enrolment finished with a passkey instead of an authenticator app. */
+account.post("/account/mfa/passkey-enrolled", async (c) => {
+  const user = c.get("user");
+  const resume = String((await c.req.parseBody()).resume ?? "");
+  // The passkey this session just registered (within the last ten minutes) is the new second factor.
+  const recent = await c.env.DB.prepare("SELECT 1 FROM webauthn_credentials WHERE user_id = ? AND created_at > ?")
+    .bind(user.id, new Date(Date.now() - 10 * 60 * 1000).toISOString())
+    .first();
+  if (!recent) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
+  await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(["pwd", "hwk", "mfa"]), c.get("sessionId")).run();
+  await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, c.get("sessionId")) : "/account?saved=passkey-added", 302);
 });
 
 account.post("/account/mfa/setup", async (c) => {
@@ -571,7 +603,7 @@ function backupCodesPage(codes: string[], continueTo = "/account"): string {
   return cardSection(`
     <p class="success">MFA is now enabled.</p>
     <p>Save these backup codes somewhere safe - each one can be used once to sign in if you lose access to your authenticator app. They won't be shown again.</p>
-    <div style="background:#f9fafb; border-radius:10px; padding:14px 16px; font-family:monospace; font-size:1rem; line-height:1.8;">
+    <div style="background:var(--fi-surface-2); border:1px solid var(--fi-line); border-radius:10px; padding:14px 16px; font-family:monospace; font-size:1rem; line-height:1.8;">
       ${codes.map(escapeHtml).join("<br/>")}
     </div>
     <div class="row" style="justify-content:flex-start; margin-top:12px;">

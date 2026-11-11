@@ -91,6 +91,27 @@ const STYLES = `
 
   .auth-passkey { margin-top: 12px; }
 
+  /* "Use these values" panels (OIDC client and SAML SP pages) */
+  .info-panel { background: var(--fi-surface-2); border: 1px solid var(--fi-line); border-radius: var(--fi-radius); padding: 14px 16px; margin: 12px 0 18px; }
+  .info-panel > p.muted { margin: 0 0 10px; }
+  .info-panel table { margin: 0; }
+  .info-panel th { width: 170px; background: transparent; color: var(--fi-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; white-space: nowrap; vertical-align: middle; }
+  .info-panel td { vertical-align: middle; }
+  .info-panel tr:last-child th, .info-panel tr:last-child td { border-bottom: none; }
+  .copy-value { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .copy-value code { overflow-wrap: anywhere; background: var(--fi-line-soft); color: var(--fi-ink); padding: 3px 8px; border-radius: 6px; }
+
+  .section-title { font-size: 1.0625rem; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--fi-line); }
+
+  .chart .line { stroke-width: 2; }
+  .chart .dot { stroke: none; }
+  .chart .s-p50 { stroke: var(--fi-accent); fill: var(--fi-accent); }
+  .chart .s-p95 { stroke: var(--fi-faint); fill: var(--fi-faint); }
+  .chart .bar.err { fill: var(--fi-red); }
+  .range-tabs { display: inline-flex; border: 1px solid var(--fi-line); border-radius: 8px; overflow: hidden; }
+  .range-tabs a { padding: 6px 12px; font-size: 0.8125rem; color: var(--fi-body); text-decoration: none; }
+  .range-tabs a.active { background: var(--fi-accent-soft); color: var(--fi-accent); font-weight: 600; }
+
   /* CSV import */
   .import-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
   @media (max-width: 980px) { .import-layout { grid-template-columns: 1fr; } }
@@ -827,7 +848,7 @@ function niceCeiling(max: number): number {
  * and no client-side data fetching, and a charting library would be a larger
  * dependency than everything else here combined.
  */
-export function barChart(points: ChartPoint[], opts: { height?: number; muteWeekends?: boolean } = {}): string {
+export function barChart(points: ChartPoint[], opts: { height?: number; muteWeekends?: boolean; barClass?: string } = {}): string {
   const width = 640;
   const height = opts.height ?? 180;
   const pad = { top: 14, right: 8, bottom: 26, left: 34 };
@@ -850,7 +871,7 @@ export function barChart(points: ChartPoint[], opts: { height?: number; muteWeek
       const h = max ? (p.value / max) * plotH : 0;
       const x = pad.left + i * band + (band - barW) / 2;
       const y = pad.top + plotH - h;
-      return `<rect class="bar" x="${x}" y="${y}" width="${barW}" height="${Math.max(0, h)}" rx="2">
+      return `<rect class="bar${opts.barClass ? ` ${opts.barClass}` : ""}" x="${x}" y="${y}" width="${barW}" height="${Math.max(0, h)}" rx="2">
                 <title>${escapeHtml(p.label)}: ${p.value}</title>
               </rect>`;
     })
@@ -870,6 +891,29 @@ export function barChart(points: ChartPoint[], opts: { height?: number; muteWeek
     ${gridlines}${bars}${labels}
     <line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" />
   </svg>`;
+}
+
+/** A server-rendered multi-series line chart (same conventions as barChart). */
+export function lineChart(labels: string[], series: { name: string; className: string; values: number[] }[], opts: { height?: number; unit?: string } = {}): string {
+  const width = 640;
+  const height = opts.height ?? 200;
+  const pad = { top: 14, right: 8, bottom: 26, left: 40 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const max = niceCeiling(Math.max(0, ...series.flatMap((s) => s.values)));
+  const x = (i: number) => pad.left + (labels.length <= 1 ? plotW / 2 : (i / (labels.length - 1)) * plotW);
+  const y = (v: number) => pad.top + plotH - (max ? (v / max) * plotH : 0);
+  const unit = opts.unit ?? "";
+  const grid = [0, 0.5, 1]
+    .map((t) => `<line class="gridline" x1="${pad.left}" y1="${y(max * t)}" x2="${width - pad.right}" y2="${y(max * t)}" /><text x="${pad.left - 6}" y="${y(max * t) + 3}" text-anchor="end">${Math.round(max * t)}${unit}</text>`)
+    .join("");
+  const lines = series
+    .map((s) => `<polyline class="line ${s.className}" fill="none" points="${s.values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}" />` +
+      s.values.map((v, i) => `<circle class="dot ${s.className}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2"><title>${escapeHtml(labels[i] ?? "")} ${escapeHtml(s.name)}: ${v}${unit}</title></circle>`).join(""))
+    .join("");
+  const step = Math.ceil(labels.length / 8) || 1;
+  const xl = labels.map((l, i) => (i % step === 0 ? `<text x="${x(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(l)}</text>` : "")).join("");
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Line chart">${grid}${lines}${xl}<line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
 }
 
 /** Ranked horizontal bars, for "top N" breakdowns. */
