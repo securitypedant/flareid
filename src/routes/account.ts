@@ -1,8 +1,10 @@
+import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
+import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context } from "hono";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, successBanner } from "../lib/html.js";
+import { attr, attrGrid, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, scriptTag, successBanner } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
@@ -90,6 +92,7 @@ account.get("/account", async (c) => {
   const currentSessionId = c.get("sessionId");
   const sessions = await listActiveSessionsForUser(c.env, user.id);
   const devices = await listTrustedDevices(c.env, user.id);
+  const passkeys = await listPasskeys(c.env, user.id);
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
      JOIN oauth_clients oc ON oc.client_id = at.client_id
@@ -221,6 +224,25 @@ account.get("/account", async (c) => {
       `)}
 
       <div class="two-col">
+      ${cardSection(`
+        <h2>Passkeys</h2>
+        <p class="muted">Sign in with your device's fingerprint, face or PIN instead of a password and code.</p>
+        ${
+          passkeys.length
+            ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
+                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(new Date(p.created_at).toLocaleDateString())}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
+                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}><button class="link-button" type="submit">Remove</button></form></td></tr>`).join("")}
+              </tbody></table>`
+            : '<p class="muted">No passkeys yet.</p>'
+        }
+        <div class="row" style="justify-content:flex-start; gap:8px; margin-top:10px;">
+          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
+          <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
+        </div>
+        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
+        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}
+      `)}
+
       ${cardSection(`
         <h2>Remembered devices</h2>
         <p class="muted">Devices you chose "Remember this device" on - MFA is skipped on these until they expire or you remove them.</p>
@@ -367,6 +389,27 @@ async function secondFactorOk(c: Context<{ Bindings: Env }>, code: string): Prom
   if (await verifyAndConsumeBackupCode(c.env, user.id, code)) return "backup_code";
   return null;
 }
+
+account.get("/account/passkeys/options", async (c) => {
+  const user = c.get("user");
+  return c.json(await registrationOptions(c.env, c.get("sessionId"), user));
+});
+
+account.post("/account/passkeys", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ response?: unknown; name?: string }>().catch(() => ({}) as { response?: unknown; name?: string });
+  const error = body.response ? await finishRegistration(c.env, c.get("sessionId"), user.id, body.response as never, String(body.name ?? "")) : "Missing response.";
+  if (error) return c.json({ ok: false, error }, 400);
+  await logAudit(c.env, user, "user.passkey_added", user.upn, { name: String(body.name ?? "").slice(0, 60) }, c.req.raw);
+  return c.json({ ok: true });
+});
+
+account.post("/account/passkeys/:id/remove", async (c) => {
+  const user = c.get("user");
+  await removePasskey(c.env, user.id, decodeURIComponent(c.req.param("id") ?? ""));
+  await logAudit(c.env, user, "user.passkey_removed", user.upn, undefined, c.req.raw);
+  return c.redirect("/account?saved=passkey-removed", 302);
+});
 
 account.post("/account/password", async (c) => {
   const user = c.get("user");

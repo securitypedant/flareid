@@ -89,6 +89,8 @@ const STYLES = `
   .list-toolbar select, .list-toolbar .searchselect { width: auto; margin: 0; }
   .list-toolbar-actions a { display: inline-flex; }
 
+  .auth-passkey { margin-top: 12px; }
+
   /* CSV import */
   .import-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
   @media (max-width: 980px) { .import-layout { grid-template-columns: 1fr; } }

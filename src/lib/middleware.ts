@@ -39,7 +39,7 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
   // (see login.ts), nothing else should be usable without MFA once it's required.
   const path = new URL(c.req.url).pathname;
   const exempt = path.startsWith("/account/mfa") || path === "/logout";
-  if (!exempt && !user.mfa_enabled && (await isMfaRequired(c.env))) {
+  if (!exempt && !user.mfa_enabled && !session!.amr.includes("hwk") && (await isMfaRequired(c.env))) {
     return c.redirect("/account/mfa/setup", 302);
   }
 

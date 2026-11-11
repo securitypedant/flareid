@@ -156,7 +156,7 @@ saml.get("/saml/sso", async (c) => {
     if (session && user && user.status === "active") {
       // Same rule as /authorize: a password-only session minted before forced
       // enrolment parks the request and goes through MFA setup first.
-      if (!user.mfa_enabled && (await isMfaRequired(c.env))) {
+      if (!user.mfa_enabled && !session.amr.includes("hwk") && (await isMfaRequired(c.env))) {
         const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending, resumeFor: user.id });
         return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
       }

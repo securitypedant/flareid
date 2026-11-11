@@ -1,3 +1,5 @@
+import { randomToken } from "../lib/tokens.js";
+import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage } from "../lib/login-views.js";
@@ -113,7 +115,8 @@ async function completeLoginFlow(
   // gets forced through setup (with backup codes) before reaching their
   // original destination, whether that's a direct /account visit or an OIDC
   // login to a relying party.
-  if (!user.mfa_enabled && (await isMfaRequired(env))) {
+  // A passkey sign-in (amr "hwk") is already multi-factor.
+  if (!user.mfa_enabled && !amr.includes("hwk") && (await isMfaRequired(env))) {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
@@ -201,6 +204,44 @@ login.post("/login", async (c) => {
   if (outcome.type === "saml-post") {
     return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   }
+  return c.redirect(outcome.to, 302);
+});
+
+// Passkey sign-in (discoverable credentials, no username typed).
+login.get("/login/passkey/options", async (c) => {
+  const flowId = c.req.query("flow_id") ?? "";
+  if (!(await getLoginFlow(c.env, flowId))) return c.json({ error: "expired" }, 400);
+  const attempt = randomToken(16);
+  return c.json({ attempt, options: await authenticationOptions(c.env, attempt) });
+});
+
+login.post("/login/passkey", async (c) => {
+  const body = await c.req.parseBody();
+  const flowId = String(body.flow_id ?? "");
+  const flow = await getLoginFlow(c.env, flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const appearance = await getLoginAppearance(c.env);
+  let response: unknown;
+  try {
+    response = JSON.parse(String(body.response ?? "").slice(0, 16_384));
+  } catch {
+    response = null;
+  }
+  const userId = response ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
+  const user = userId ? await getUserById(c.env, userId) : null;
+  if (!user || user.status !== "active") {
+    await logAudit(c.env, null, "login.passkey_failed", undefined, { ip: getClientIp(c.req.raw) }, c.req.raw);
+    return c.html(loginForm(c.get("appName"), flowId, appearance, "That passkey could not sign you in."));
+  }
+  if (!(await isSetupCompleted(c.env)) && !(await isSuperAdmin(c.env, user.id))) {
+    return c.html(loginForm(c.get("appName"), flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now."));
+  }
+  const amr = ["hwk", "mfa"];
+  await deleteLoginFlow(c.env, flowId);
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  c.header("Set-Cookie", setCookie);
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return c.redirect(outcome.to, 302);
 });
 

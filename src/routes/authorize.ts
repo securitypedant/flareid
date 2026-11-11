@@ -144,7 +144,7 @@ authorize.get("/authorize", async (c) => {
     // A password-only session minted before forced enrollment must not mint
     // credentials either: park this request and send the browser through MFA
     // setup; resumeLoginFlow finishes the code issue afterwards.
-    if (!user.mfa_enabled && (await isMfaRequired(c.env))) {
+    if (!user.mfa_enabled && !session.amr.includes("hwk") && (await isMfaRequired(c.env))) {
       if (prompts.has("none")) return fail("interaction_required", "Multi-factor enrolment is required.");
       const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest, resumeFor: user.id });
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);

@@ -151,6 +151,7 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
     env.DB.prepare(`DELETE FROM auth_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM mfa_backup_codes WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM trusted_devices WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM webauthn_credentials WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM account_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM oauth_consents WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     // Audit history is kept, detached from the account.

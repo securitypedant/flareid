@@ -1,3 +1,4 @@
+import { PASSKEY_LOGIN_SCRIPT } from "./passkey-scripts.js";
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import { escapeHtml, page, scriptTag } from "./html.js";
@@ -142,6 +143,11 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
       <input type="password" id="password" name="password" required />
       <div class="row"><button class="primary" type="submit">Sign in</button></div>
     </form>
+    <div class="auth-passkey">
+      <button class="secondary" type="button" data-passkey-login data-flow="${escapeHtml(flowId)}" style="width:100%;">Sign in with a passkey</button>
+      <p class="muted" id="passkey-login-status" style="margin:6px 0 0; font-size:0.8125rem;"></p>
+    </div>
+    ${scriptTag(PASSKEY_LOGIN_SCRIPT)}
     ${appearance.recoveryEnabled ? '<p class="auth-alt"><a href="/forgot-password">Forgot your password?</a></p>' : ""}
     <div class="auth-foot"><span class="muted">Protected by ${escapeHtml(appName)} single sign-on</span></div>
     `
