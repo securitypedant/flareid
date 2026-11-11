@@ -2208,10 +2208,24 @@ document.addEventListener("click", async function (e) {
   const p = document.createElement("p");
   p.style.marginTop = "12px";
   try {
-    const res = await fetch("/admin/scim/" + kind, { method: "POST" });
-    const data = await res.json();
-    p.className = data.ok ? "success" : "error";
-    p.textContent = data.message;
+    if (kind === "test") {
+      const data = await (await fetch("/admin/scim/test", { method: "POST" })).json();
+      p.className = data.ok ? "success" : "error";
+      p.textContent = data.message;
+    } else {
+      // A full sync runs in batches: keep asking until the server says it is complete.
+      status.appendChild(p);
+      p.className = "muted";
+      let users = 0, userErrors = 0, first = true, data;
+      do {
+        data = await (await fetch("/admin/scim/sync" + (first ? "?restart=1" : ""), { method: "POST" })).json();
+        first = false;
+        users += data.users; userErrors += data.userErrors;
+        p.textContent = data.complete ? "" : "Pushed " + users.toLocaleString() + " user(s), " + data.remainingUsers.toLocaleString() + " to go...";
+      } while (!data.complete);
+      p.className = userErrors || data.groupErrors ? "error" : "success";
+      p.textContent = "Pushed " + users.toLocaleString() + " user(s)" + (userErrors ? " (" + userErrors + " failed)" : "") + " and " + data.groups + " group(s)" + (data.groupErrors ? " (" + data.groupErrors + " failed)" : "") + ".";
+    }
   } catch (err) {
     p.className = "error";
     p.textContent = "Request failed: " + err;
@@ -4083,12 +4097,17 @@ admin.post("/admin/scim/test", async (c) => {
 });
 
 admin.post("/admin/scim/sync", async (c) => {
-  const summary = await syncAll(c.env);
-  await logAudit(c.env, c.get("user"), "scim.sync_all", undefined, summary, c.req.raw);
-
+  // One batch per request; the page calls again until `complete` (see SCIM_SCRIPT).
+  const summary = await syncAll(c.env, { restart: c.req.query("restart") === "1" });
+  if (summary.complete || summary.userErrors) await logAudit(c.env, c.get("user"), "scim.sync_all", undefined, summary, c.req.raw);
   return c.json({
     ok: summary.userErrors === 0 && summary.groupErrors === 0,
-    message: `Pushed ${summary.users} user(s)${summary.userErrors ? ` (${summary.userErrors} failed)` : ""} and ${summary.groups} group(s)${summary.groupErrors ? ` (${summary.groupErrors} failed)` : ""}.`,
+    complete: summary.complete,
+    users: summary.users,
+    userErrors: summary.userErrors,
+    groups: summary.groups,
+    groupErrors: summary.groupErrors,
+    remainingUsers: summary.remainingUsers,
   });
 });
 

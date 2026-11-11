@@ -450,6 +450,10 @@ Scope: `settings:write`.
 }
 ```
 
+`POST /scim/sync` runs a full sync in batches of 200 users per call, then the
+groups. The response carries `complete` and `remainingUsers`: call it again
+until `complete` is `true` (the hourly cron also carries an unfinished sync on).
+
 ### SCIM 2.0 server (`/scim/v2`)
 
 FlareID also *accepts* provisioning: an HR system or upstream IdP can manage

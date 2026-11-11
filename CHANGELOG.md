@@ -6,6 +6,16 @@ may break things.
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-11-11
+
+### Fixed
+
+- **"Sync all now" pushed only the first 200 users and no groups** on a large
+  directory: a full sync runs in batches, and the rest waited for the hourly
+  job. The button now runs every batch in turn, showing progress, and finishes
+  with the groups. `POST /api/v1/scim/sync` reports `complete` and
+  `remainingUsers` so scripts can do the same.
+
 ## [3.3.0] - 2026-11-11
 
 Migration `0017` adds authentication policies. The old "Require MFA for every

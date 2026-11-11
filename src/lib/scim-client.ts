@@ -242,7 +242,7 @@ const SYNC_CURSOR_KEY = "scim_sync_cursor";
  * not, the next call (manual, or the cron via continueScimSync) picks it up;
  * once a sync completes the cursor is cleared, so the next call starts afresh.
  */
-export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean }> {
+export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean; remainingUsers: number }> {
   await drainScimDeprovisionQueue(env);
   const stored = opts.restart ? 0 : Number((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value) || 0;
   const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(stored, SYNC_BATCH).all<UserRow>();
@@ -256,12 +256,15 @@ export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promi
       .bind(SYNC_CURSOR_KEY, v, new Date().toISOString())
       .run();
   if (users.length === SYNC_BATCH) {
-    await setCursor(String(users[users.length - 1]!.id));
-    return { users: users.length, userErrors, groups: 0, groupErrors: 0, complete: false };
+    const last = users[users.length - 1]!.id;
+    await setCursor(String(last));
+    const remaining = (await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE id > ?").bind(last).first<{ n: number }>())?.n ?? 0;
+    // Exactly a batch left nothing behind: carry straight on to the groups.
+    if (remaining > 0) return { users: users.length, userErrors, groups: 0, groupErrors: 0, complete: false, remainingUsers: remaining };
   }
   const { groups, groupErrors } = await syncGroups(env);
   await setCursor("");
-  return { users: users.length, userErrors, groups, groupErrors, complete: true };
+  return { users: users.length, userErrors, groups, groupErrors, complete: true, remainingUsers: 0 };
 }
 
 /** Cron: carries on a full sync that a previous invocation left unfinished. */
