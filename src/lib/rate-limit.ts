@@ -68,7 +68,9 @@ export async function recordRateAttempt(env: Env, key: string, max: number, wind
 }
 
 export function getClientIp(request: Request): string {
-  return request.headers.get("CF-Connecting-IP") ?? request.headers.get("X-Forwarded-For") ?? "unknown";
+  // Only the address Cloudflare's edge sets. X-Forwarded-For is client-supplied
+  // and would let a caller pick its own rate-limit bucket off the edge.
+  return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
 /**

@@ -231,17 +231,42 @@ export async function testScimConnection(env: Env): Promise<ScimResult> {
 }
 
 /** Pushes every user, then every group (with resolved member scim_ids). Best-effort; returns a summary. */
-export async function syncAll(env: Env): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number }> {
+/** Users pushed per invocation: a full sync of a large directory continues across invocations (the hourly cron). */
+const SYNC_BATCH = 200;
+const SYNC_CURSOR_KEY = "scim_sync_cursor";
+
+/**
+ * A full sync, in bounded batches. Each call pushes the next SYNC_BATCH users
+ * after the stored cursor; when no users are left it pushes every group and
+ * clears the cursor. `complete` says whether this call finished the sync; if
+ * not, the next call (manual, or the cron via continueScimSync) picks it up.
+ */
+export async function syncAll(env: Env, opts: { restart?: boolean } = { restart: true }): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean }> {
   await drainScimDeprovisionQueue(env);
-  const { results: users } = await env.DB.prepare("SELECT * FROM users").all<UserRow>();
+  const stored = opts.restart ? 0 : Number((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value) || 0;
+  const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(stored, SYNC_BATCH).all<UserRow>();
   let userErrors = 0;
   for (const user of users) {
     const result = await pushUser(env, user);
     if (!result.ok) userErrors++;
   }
-
+  const setCursor = (v: string) =>
+    env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .bind(SYNC_CURSOR_KEY, v, new Date().toISOString())
+      .run();
+  if (users.length === SYNC_BATCH) {
+    await setCursor(String(users[users.length - 1]!.id));
+    return { users: users.length, userErrors, groups: 0, groupErrors: 0, complete: false };
+  }
   const { groups, groupErrors } = await syncGroups(env);
-  return { users: users.length, userErrors, groups, groupErrors };
+  await setCursor("");
+  return { users: users.length, userErrors, groups, groupErrors, complete: true };
+}
+
+/** Cron: carries on a full sync that a previous invocation left unfinished. */
+export async function continueScimSync(env: Env): Promise<void> {
+  const cursor = (await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value;
+  if (cursor && (await isScimConfigured(env))) await syncAll(env, { restart: false });
 }
 
 /** Pushes every group with its resolved members (dynamic ones included). */

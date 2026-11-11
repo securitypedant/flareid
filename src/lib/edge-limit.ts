@@ -33,6 +33,27 @@ function routeGroup(method: string, path: string): Group | null {
   return null;
 }
 
+/**
+ * OAuth back-channel endpoints are keyed on the client as well as the address:
+ * relying parties that reach FlareID from a shared egress (other Workers,
+ * Cloudflare Access) must not share one budget, so one cannot throttle another.
+ */
+async function clientDimension(request: Request, path: string): Promise<string> {
+  if (path !== "/token" && path !== "/introspect" && path !== "/revoke") return "";
+  const basic = /^Basic\s+(.+)$/i.exec(request.headers.get("Authorization") ?? "");
+  let id = "";
+  if (basic) {
+    try {
+      id = decodeURIComponent(atob(basic[1]!).split(":")[0] ?? "");
+    } catch {
+      id = "";
+    }
+  } else if ((request.headers.get("Content-Type") ?? "").includes("application/x-www-form-urlencoded")) {
+    id = new URLSearchParams(await request.clone().text()).get("client_id") ?? "";
+  }
+  return id ? `:client:${id.slice(0, 128)}` : "";
+}
+
 export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   // c.req.path is the decoded path Hono routes on: classifying the raw
   // pathname would let /log%69n reach /login unlimited.
@@ -41,7 +62,7 @@ export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, nex
   const limiter = group === "auth" ? c.env.AUTH_LIMITER : group === "api" ? c.env.API_LIMITER : undefined;
   if (!group || !limiter) return next();
 
-  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(getClientIp(c.req.raw))}` });
+  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(getClientIp(c.req.raw))}${await clientDimension(c.req.raw, path)}` });
   if (success) return next();
 
   // No audit entry here on purpose: logging every refusal would be the very

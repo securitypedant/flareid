@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import { randomToken } from "./tokens.js";
+import { randomToken, sha256Hex } from "./tokens.js";
 import { getClientIp } from "./rate-limit.js";
 
 const TRUSTED_DEVICE_COOKIE = "__Host-flareid_trusted_device";
@@ -27,13 +27,16 @@ export async function isDeviceTrusted(env: Env, request: Request, userId: number
   const deviceId = readDeviceIdFromCookie(request);
   if (!deviceId) return false;
 
+  // Rows hold a hash of the cookie value, like every other bearer secret here:
+  // a database reader cannot mint a working "skip MFA" cookie.
+  const key = await sha256Hex(deviceId);
   const row = await env.DB.prepare("SELECT * FROM trusted_devices WHERE id = ? AND user_id = ?")
-    .bind(deviceId, userId)
+    .bind(key, userId)
     .first<TrustedDeviceRow>();
   if (!row) return false;
   if (new Date(row.expires_at).getTime() < Date.now()) return false;
 
-  await env.DB.prepare("UPDATE trusted_devices SET last_used_at = ? WHERE id = ?").bind(new Date().toISOString(), deviceId).run();
+  await env.DB.prepare("UPDATE trusted_devices SET last_used_at = ? WHERE id = ?").bind(new Date().toISOString(), key).run();
   return true;
 }
 
@@ -46,7 +49,7 @@ export async function trustDevice(env: Env, request: Request, userId: number): P
   await env.DB.prepare(
     "INSERT INTO trusted_devices (id, user_id, user_agent, ip, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(deviceId, userId, request.headers.get("User-Agent"), getClientIp(request), now, now, expiresAt)
+    .bind(await sha256Hex(deviceId), userId, request.headers.get("User-Agent"), getClientIp(request), now, now, expiresAt)
     .run();
 
   return `${TRUSTED_DEVICE_COOKIE}=${deviceId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${TRUSTED_DEVICE_TTL_DAYS * 24 * 60 * 60}`;

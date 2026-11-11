@@ -1,4 +1,4 @@
-import { drainScimDeprovisionQueue } from "./lib/scim-client.js";
+import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
 import { discovery } from "./routes/discovery.js";
@@ -83,6 +83,8 @@ export default {
         (err) => console.error(JSON.stringify({ event: "cleanup_failed", error: String(err) }))
       )
     );
+    // Carry on a full SCIM sync that did not fit in one invocation.
+    ctx.waitUntil(continueScimSync(env).catch((err) => console.error(JSON.stringify({ event: "scim_sync_continue_failed", error: String(err) }))));
     // Retry queued downstream SCIM deletions (replace-mode import, reset).
     ctx.waitUntil(
       drainScimDeprovisionQueue(env).then(

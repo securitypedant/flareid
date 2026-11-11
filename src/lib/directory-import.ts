@@ -1,3 +1,4 @@
+import { getPasswordPolicy, validatePassword } from "./settings.js";
 import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
 import { hashPassword, type PasswordHash } from "./password.js";
@@ -336,9 +337,18 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     return hashes.get(password)!;
   };
 
+  const passwordPolicy = await getPasswordPolicy(env);
   for (const user of users) {
     const username = cleanString(user.username).toLowerCase();
     const upn = `${username}@${domain}`;
+    // An explicit password meets the same policy as every other way of setting one.
+    if (typeof user.password === "string" && user.password !== "") {
+      const weak = validatePassword(user.password, passwordPolicy);
+      if (weak) {
+        result.errors.push({ username, message: `Password rejected: ${weak}` });
+        continue;
+      }
+    }
 
     try {
       const existing = await env.DB.prepare("SELECT id, external_id, status, upn FROM users WHERE username = ?")
