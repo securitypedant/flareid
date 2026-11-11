@@ -11,3 +11,4 @@ dist/
 .saml-cert.pem
 # Generated load-test directories (scripts/generate-test-directory.mjs)
 test-data/
+conformance/suite-config.json

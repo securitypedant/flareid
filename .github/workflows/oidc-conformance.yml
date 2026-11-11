@@ -1,0 +1,66 @@
+name: OIDC conformance
+
+# Runs the OpenID Foundation's conformance suite (the hosted instance at
+# certification.openid.net) against a deployed FlareID. The suite has to reach
+# the OP over the internet and drive its login page, so this targets a real
+# deployment rather than the CI runner.
+#
+# Needs, in the repository settings:
+#   secrets.CONFORMANCE_TOKEN            a permanent token from certification.openid.net/tokens.html
+#   secrets.FLAREID_CONFORMANCE_API_KEY  a FlareID API key with clients:write and directory:write
+#   vars.FLAREID_CONFORMANCE_ISSUER      the deployment to test (e.g. https://idp.tmesandbox.com)
+# The job seeds two clients and a "conformance" user there (idempotent).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CONFORMANCE_SERVER: https://www.certification.openid.net/
+      CONFORMANCE_SERVER_MTLS: https://www.certification.openid.net/
+      CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
+      FLAREID_ISSUER: ${{ vars.FLAREID_CONFORMANCE_ISSUER }}
+      FLAREID_API_KEY: ${{ secrets.FLAREID_CONFORMANCE_API_KEY }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      - name: Seed clients and the test user, write the plan config
+        run: node scripts/oidc-suite-setup.mjs
+
+      - name: Fetch the suite's runner (pinned release)
+        run: |
+          git clone --depth 1 --branch release-v5.3.4 https://gitlab.com/openid/conformance-suite.git /tmp/suite
+          pip install --quiet httpx pyparsing
+
+      - name: Basic OP, Config OP and RP-initiated logout plans
+        working-directory: /tmp/suite/scripts
+        run: |
+          python3 run-test-plan.py \
+            --expected-failures-file "$GITHUB_WORKSPACE/conformance/expected-failures.json" \
+            --expected-skips-file "$GITHUB_WORKSPACE/conformance/expected-skips.json" \
+            --export-dir "$GITHUB_WORKSPACE/conformance-results" \
+            "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-config-certification-test-plan" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
+
+      - name: Keep the suite's exported results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conformance-results
+          path: conformance-results
+          if-no-files-found: ignore
