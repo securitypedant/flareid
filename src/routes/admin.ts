@@ -53,7 +53,7 @@ import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision, syncGroups } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
-import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
+import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -2874,6 +2874,7 @@ interface SpFormValues {
   signingCerts: string[];
   sloUrl: string;
   encryptionCert: string;
+  subjectId: string;
   encryptAssertions: boolean;
 }
 
@@ -2938,6 +2939,7 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     sloUrl,
     encryptionCert: encryptionCert ?? "",
     encryptAssertions: !!body.encrypt_assertions,
+    subjectId: ["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "",
   };
 }
 
@@ -2978,6 +2980,11 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
       <label for="encryption_cert">SP encryption certificate (PEM)</label>
       <textarea id="encryption_cert" name="encryption_cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----">${escapeHtml(v.encryptionCert ?? "")}</textarea>
       <label style="font-weight:400;"><input type="checkbox" name="encrypt_assertions" value="1" ${v.encryptAssertions ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Encrypt assertions (AES-256-GCM, RSA-OAEP)</label>
+      <label for="subject_id" style="margin-top:12px;">Subject identifier attribute</label>
+      <select id="subject_id" name="subject_id">
+        ${[["", "None"], ["pairwise-id", "pairwise-id (different for every SP; recommended)"], ["subject-id", "subject-id (the same for every SP)"]].map(([val, label]) => `<option value="${val}" ${(v.subjectId ?? "") === val ? "selected" : ""}>${label}</option>`).join("")}
+      </select>
+      <p class="muted" style="margin:-8px 0 14px;">SAML V2.0 Subject Identifier Attributes Profile. Set automatically when the SP's metadata asks for one.</p>
       <div class="form-actions end">${cancelLink("/admin/integrations/saml")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
@@ -2994,8 +3001,11 @@ admin.get("/admin/saml/new", async (c) => {
         <form method="POST" action="/admin/saml/import-metadata">
           <label for="sp_name">Name (optional)</label>
           <input type="text" id="sp_name" name="name" />
+          <label for="metadata_url">Metadata URL</label>
+          <input type="text" id="metadata_url" name="url" placeholder="https://sp.example.com/saml/metadata" />
+          <p class="muted" style="margin-top:-8px;">Fetched now and re-read daily, so certificate rollovers and new endpoints are picked up. Or paste the XML instead:</p>
           <label for="metadata_xml">Metadata XML</label>
-          <textarea id="metadata_xml" name="xml" rows="8" placeholder="&lt;md:EntityDescriptor entityID=&quot;...&quot;&gt;" required></textarea>
+          <textarea id="metadata_xml" name="xml" rows="8" placeholder="&lt;md:EntityDescriptor entityID=&quot;...&quot;&gt;"></textarea>
           <div class="form-actions end"><button class="primary" type="submit">Import metadata</button></div>
         </form>
       `)}
@@ -3008,8 +3018,9 @@ admin.get("/admin/saml/new", async (c) => {
 admin.post("/admin/saml/import-metadata", async (c) => {
   const body = await c.req.parseBody();
   try {
-    const meta = parseSpMetadata(String(body.xml ?? ""));
-    const id = await upsertSpFromMetadata(c.env, meta, String(body.name ?? "").trim() || undefined);
+    const url = String(body.url ?? "").trim();
+    const meta = url ? await fetchSpMetadata(url) : parseSpMetadata(String(body.xml ?? ""));
+    const id = await upsertSpFromMetadata(c.env, meta, String(body.name ?? "").trim() || undefined, url || undefined);
     await logAudit(c.env, c.get("user"), "saml_sp.metadata_imported", meta.entityId, { acs_urls: meta.acsUrls.length }, c.req.raw);
     return c.redirect(`/admin/saml/${id}?saved=1`, 302);
   } catch (e) {
@@ -3030,6 +3041,7 @@ admin.post("/admin/saml", async (c) => {
     .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, now, now)
     .run();
 
+  await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
   await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId }, c.req.raw);
   return c.redirect(`/admin/saml/${result.meta.last_row_id}`, 302);
 });
@@ -3061,6 +3073,7 @@ admin.get("/admin/saml/:id", async (c) => {
             signingCerts: JSON.parse(sp.signing_certs),
             sloUrl: sp.slo_url ?? "",
             encryptionCert: sp.encryption_cert ?? "",
+            subjectId: sp.subject_id ?? "",
             encryptAssertions: !!sp.encrypt_assertions,
           },
           `/admin/saml/${id}`,
@@ -3092,6 +3105,7 @@ admin.post("/admin/saml/:id", async (c) => {
     .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, new Date().toISOString(), id)
     .run();
 
+  await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, id).run();
   await logAudit(c.env, c.get("user"), "saml_sp.updated", v.name, { entity_id: v.entityId }, c.req.raw);
   return c.redirect(`/admin/saml/${id}?saved=1`, 302);
 });

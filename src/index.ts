@@ -1,3 +1,4 @@
+import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
@@ -83,6 +84,8 @@ export default {
         (err) => console.error(JSON.stringify({ event: "cleanup_failed", error: String(err) }))
       )
     );
+    // Re-read SP metadata registered from a URL (daily per SP).
+    ctx.waitUntil(refreshSpMetadata(env).catch((err) => console.error(JSON.stringify({ event: "saml_metadata_refresh_error", error: String(err) }))));
     // Carry on a full SCIM sync that did not fit in one invocation.
     ctx.waitUntil(continueScimSync(env).catch((err) => console.error(JSON.stringify({ event: "scim_sync_continue_failed", error: String(err) }))));
     // Retry queued downstream SCIM deletions (replace-mode import, reset).

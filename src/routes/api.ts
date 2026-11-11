@@ -48,7 +48,7 @@ import {
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
-import { parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
+import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -724,6 +724,7 @@ api.get("/api/v1/saml/service-providers", requireScope("directory:read"), async 
 });
 
 interface SpUpsertBody {
+  subject_id?: "" | "subject-id" | "pairwise-id";
   entity_id?: string;
   name?: string;
   acs_urls?: string[];
@@ -806,7 +807,8 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
     )
       .bind(...values, now, existing.id)
       .run();
-    await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
+    if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
+  await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
     return c.json({ ok: true, created: false, id: existing.id, entity_id: entityId });
   }
 
@@ -817,6 +819,7 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
     .bind(...values, now, now)
     .run();
 
+  if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.created", name, { entity_id: entityId }, c.req.raw);
   return c.json({ ok: true, created: true, id: result.meta.last_row_id, entity_id: entityId });
 });
@@ -829,17 +832,18 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
  * Logout URL and the NameID format. Body: { "xml": "<md:EntityDescriptor ...>" }.
  */
 api.post("/api/v1/saml/service-providers/import-metadata", requireScope("clients:write"), async (c) => {
-  const body = await readJson<{ xml?: string; name?: string }>(c);
+  const body = await readJson<{ xml?: string; url?: string; name?: string }>(c);
   let meta: ParsedSpMetadata;
   try {
-    meta = parseSpMetadata(String(body.xml ?? ""));
+    // A URL is fetched now and re-read daily by the cron; pasted XML is a one-off.
+    meta = body.url ? await fetchSpMetadata(String(body.url)) : parseSpMetadata(String(body.xml ?? ""));
   } catch (e) {
     if (e instanceof SpMetadataError) return c.json(badRequest(e.message), 400);
     throw e;
   }
-  const id = await upsertSpFromMetadata(c.env, meta, body.name);
+  const id = await upsertSpFromMetadata(c.env, meta, body.name, body.url ? String(body.url) : undefined);
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.metadata_imported", meta.entityId, { acs_urls: meta.acsUrls.length }, c.req.raw);
-  return c.json({ ok: true, id, entity_id: meta.entityId, acs_urls: meta.acsUrls, slo_url: meta.sloUrl, encryption: Boolean(meta.encryptionCert) });
+  return c.json({ ok: true, id, entity_id: meta.entityId, acs_urls: meta.acsUrls, slo_url: meta.sloUrl, encryption: Boolean(meta.encryptionCert), subject_id: meta.subjectId, refresh: Boolean(body.url) });
 });
 
 api.delete("/api/v1/saml/service-providers/:id", requireScope("clients:write"), async (c) => {

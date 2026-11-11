@@ -1,3 +1,4 @@
+import { randomToken, sha256Hex } from "../tokens.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { getManagerEmail, getUserGroupNames } from "../db.js";
@@ -80,5 +81,32 @@ export async function resolveAttributes(
     if (values.length === 0) continue;
     attributes.push({ name: samlName, values });
   }
+  const subject = await subjectIdentifier(env, sp, user);
+  if (subject) attributes.push(subject);
   return attributes;
+}
+
+export const SUBJECT_ID = "urn:oasis:names:tc:SAML:attribute:subject-id";
+export const PAIRWISE_ID = "urn:oasis:names:tc:SAML:attribute:pairwise-id";
+
+/**
+ * subject-id: the user's immutable external id, scoped to their UPN domain.
+ * pairwise-id: a per-SP value (HMAC-style hash with an instance secret) so
+ * two SPs cannot correlate a user. Both scopes are published as shibmd:Scope.
+ */
+async function subjectIdentifier(env: Env, sp: SamlServiceProviderRow, user: UserRow): Promise<{ name: string; values: string[] } | null> {
+  if (sp.subject_id !== "subject-id" && sp.subject_id !== "pairwise-id") return null;
+  const scope = user.upn.split("@")[1]?.toLowerCase() ?? "";
+  if (!scope) return null;
+  if (sp.subject_id === "subject-id") return { name: SUBJECT_ID, values: [`${user.external_id.toLowerCase()}@${scope}`] };
+  const salt = await pairwiseSalt(env);
+  const value = await sha256Hex(`flareid pairwise-id v1\n${salt}\n${user.external_id}\n${sp.entity_id}`);
+  return { name: PAIRWISE_ID, values: [`${value}@${scope}`] };
+}
+
+async function pairwiseSalt(env: Env): Promise<string> {
+  const row = await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'saml_pairwise_salt'").first<{ value: string }>();
+  if (row?.value) return row.value;
+  await env.DB.prepare("INSERT OR IGNORE INTO idp_settings (key, value, updated_at) VALUES ('saml_pairwise_salt', ?, ?)").bind(randomToken(32), new Date().toISOString()).run();
+  return (await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'saml_pairwise_salt'").first<{ value: string }>())!.value;
 }

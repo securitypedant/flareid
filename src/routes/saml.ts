@@ -68,7 +68,9 @@ saml.get("/saml/metadata", async (c) => {
   if (!isSamlConfigured(c.env)) {
     return c.text("SAML is not configured on this deployment - set SAML_SIGNING_CERT and SAML_SIGNING_KEY_PKCS8.", 503);
   }
-  return new Response(idpMetadataXml(c.env, c.get("appName")), {
+  const { results: domains } = await c.env.DB.prepare("SELECT domain FROM domains ORDER BY domain").all<{ domain: string }>();
+  const contactEmail = (await c.env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'email_from_address'").first<{ value: string }>())?.value || null;
+  return new Response(idpMetadataXml(c.env, c.get("appName"), { scopes: domains.map((d) => d.domain), contactEmail }), {
     headers: { "Content-Type": "application/samlmetadata+xml" },
   });
 });

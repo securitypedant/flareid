@@ -99,6 +99,8 @@ export interface SamlServiceProviderRow {
   metadata_url: string | null;
   metadata_last_refreshed_at: string | null;
   metadata_valid_until: string | null;
+  /** '' | 'subject-id' | 'pairwise-id' (SAML Subject Identifier Attributes Profile). */
+  subject_id: string;
   created_at: string;
   updated_at: string;
 }
