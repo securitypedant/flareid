@@ -1,1 +1,137 @@
-[]
+[
+  {
+    "test-name": "oidcc-ensure-registered-redirect-uri",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "WebRunner",
+    "expected-result": "failure",
+    "comment": "FlareID correctly shows an error page for an unregistered redirect_uri; the suite wants a screenshot of it, which browser automation cannot provide."
+  },
+  {
+    "test-name": "oidcc-ensure-registered-redirect-uri",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "oidcc-ensure-registered-redirect-uri",
+    "expected-result": "failure",
+    "comment": "Same: the exception is the WebRunner not finding a login form on the error page."
+  },
+  {
+    "test-name": "oidcc-ensure-request-object-with-redirect-uri",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "WebRunner",
+    "expected-result": "failure",
+    "comment": "Request objects are not supported; FlareID shows an error page (screenshot test)."
+  },
+  {
+    "test-name": "oidcc-ensure-request-object-with-redirect-uri",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "oidcc-ensure-request-object-with-redirect-uri",
+    "expected-result": "failure",
+    "comment": "Same as above."
+  },
+  {
+    "test-name": "oidcc-scope-email",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+    "expected-result": "warning",
+    "comment": "FlareID puts email in the id_token deliberately: Cloudflare Access and most relying parties read it from there."
+  },
+  {
+    "test-name": "oidcc-alternate-happy-flow",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+    "expected-result": "warning",
+    "comment": "As above."
+  },
+  {
+    "test-name": "oidcc-scope-profile",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "VerifyScopesReturnedInUserInfoClaims",
+    "expected-result": "warning",
+    "comment": "FlareID releases only the profile claims it holds (name, given_name, family_name, preferred_username)."
+  },
+  {
+    "test-name": "oidcc-claims-essential",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "",
+    "condition": "EnsureUserInfoContainsName",
+    "expected-result": "warning",
+    "comment": "The claims request parameter is not supported yet; name is released by the profile scope."
+  },
+  {
+    "test-name": "oidcc-codereuse-30seconds",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json",
+    "current-block": "Testing if access token was revoked after authorization code reuse (the AS 'should' have revoked the access token)",
+    "condition": "EnsureHttpStatusCodeIs4xx",
+    "expected-result": "warning",
+    "comment": "SHOULD-level: tokens already issued for a reused code are not revoked yet (on the roadmap)."
+  }
+]

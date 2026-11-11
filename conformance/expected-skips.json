@@ -1,1 +1,46 @@
-[]
+[
+  {
+    "test-name": "oidcc-scope-address",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json"
+  },
+  {
+    "test-name": "oidcc-scope-phone",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json"
+  },
+  {
+    "test-name": "oidcc-scope-all",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json"
+  },
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": {
+      "client_auth_type": "client_secret_basic",
+      "server_metadata": "discovery",
+      "response_type": "code",
+      "response_mode": "default",
+      "client_registration": "static_client"
+    },
+    "configuration-filename": "*suite-config.json"
+  }
+]
