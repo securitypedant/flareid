@@ -16,28 +16,38 @@ happens to run on Cloudflare's platform.
 
 - **OIDC**: `/authorize`, `/token` (authorization_code + refresh_token, PKCE),
   `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`,
-  `/.well-known/openid-configuration`. Works with Cloudflare Access's Generic
-  OIDC integration, or any standards-compliant relying party.
+  `/.well-known/openid-configuration`, RP-initiated logout (`/oidc/logout`).
+  Confidential and public (PKCE-only) clients, a consent screen for clients not
+  marked trusted, a per-client claim allowlist, and `prompt`, `max_age`,
+  `auth_time`, `acr`, `at_hash`. Works with Cloudflare Access's Generic OIDC
+  integration, or any standards-compliant relying party.
 - **Authentication**: username (or full UPN) and password, with optional
   per-user TOTP MFA, backup codes, trusted devices, and a setting to require
-  MFA for everyone.
+  MFA for everyone. Email password recovery and invitations (Cloudflare Email
+  Sending), session lifetime limits, and edge rate limits on every anonymous
+  route.
 - **Directory**: users, flat groups (no nesting), multiple UPN domains, and
   HR-style attributes - job title, department, manager, employee number, hire
   date, employment status/type, location - exposed as claims so relying parties
   can write policy against them.
 - **SCIM 2.0 client**: pushes users and groups to an external SCIM server, such
   as the endpoint Cloudflare Access generates for an identity provider. Scoped
-  to all groups or a chosen set.
+  to all groups or a chosen set; deletions are queued and retried.
+- **SCIM 2.0 server** at `/scim/v2`: an HR system or upstream directory can
+  provision FlareID, and changes flow on to the outbound target.
 - **SAML 2.0**: Web Browser SSO, service-provider-initiated, HTTP-Redirect for
   requests and HTTP-POST for responses. Signed Response and Assertion,
   transient/persistent/emailAddress NameIDs, per-SP attribute mapping, IdP
-  metadata at `/saml/metadata`. Not implemented: HTTP-Artifact binding, SOAP
+  metadata at `/saml/metadata`, encrypted assertions, Single Logout
+  (`/saml/slo`), and SP metadata import. Not implemented: HTTP-Artifact binding, SOAP
   back-channel, ECP/PAOS, Name Identifier Management, Assertion Query/Request,
   embedded-signature AuthnRequests (see below).
-- **Admin UX** at `/admin`: users, groups, OIDC clients, SAML service
-  providers, API keys, domains, security settings, branding, and an audit log.
-- **Self-service** at `/account`: MFA enrolment, password change, active
-  sessions and connected applications.
+- **Admin UX** at `/admin`: users (with CSV import), groups, OIDC clients, SAML
+  service providers, API keys, SCIM, email, domains, security settings,
+  branding, and a filterable audit log.
+- **Self-service** at `/account`: MFA enrolment, password change, profile
+  editing for the attributes the user's schema allows, active sessions and
+  connected applications.
 - **Provisioning API** at `/api/v1`: everything above, without a browser. See
   [docs/api.md](docs/api.md).
 

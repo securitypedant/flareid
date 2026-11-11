@@ -239,6 +239,22 @@ ninety-nine still land.
 Scope: `directory:write`. `mode: "replace"` with an empty bundle - removes
 everything except the administrators and the two built-in groups.
 
+When outbound SCIM is configured, every removed user and group is queued for
+deletion at the SCIM target in the same transaction as the local delete, and a
+bounded batch is sent straight away; the rest (and any failure) is retried by
+every sync and the hourly cron. The response includes `scim` with the counts
+and `deprovision_pending`.
+
+### `POST /users/{username}/invite`
+
+Scope: `directory:write`. Emails the user a single-use link: an **invitation**
+(7 days; sets a password and activates the account) when the account is not
+active, otherwise a **password reset** link (1 hour). Sending a new link voids
+every earlier one for that user. Answers `{ "ok": true, "kind": "invite" |
+"reset", "to": "<address>" }`; `409` when email is not configured; `403` for a
+Super Admin target unless the key has the `admin` scope. The recipient is the
+user's `email` if set, otherwise their UPN.
+
 ### `GET /users`, `GET /groups`
 
 Scope: `directory:read`. `?limit=` (max 500) and `?offset=`. Users come back
@@ -260,8 +276,10 @@ not registered.
 
 ### `POST /domains/{domain}/apply-to-all`
 
-Scope: `directory:write`. Rewrites every user's UPN onto this domain, keeping
-the local part. Answers `{ "updated": n, "conflicts": [...] }`, where a
+Scope: **`admin`** (since v3: it rewrites Super Admin UPNs too, and recovery
+mail follows the UPN). Rewrites every user's UPN onto this domain, keeping
+the local part, and voids outstanding invitation and reset links for the
+moved accounts. Answers `{ "updated": n, "conflicts": [...] }`, where a
 conflict is two accounts whose local parts would collide.
 
 Rarely needed now that imports take the domain as a parameter, but kept for an
@@ -276,9 +294,26 @@ Scope: `directory:read` / `clients:write`.
   "name": "Cloudflare Access",
   "redirect_uris": ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"],
   "client_id": "optional",
-  "client_secret": "optional, at least 24 characters"
+  "client_secret": "optional, at least 24 characters",
+  "client_type": "confidential | public",
+  "trusted": true,
+  "allowed_claims": ["profile", "email", "groups"],
+  "post_logout_redirect_uris": ["https://app.example.com/signed-out"]
 }
 ```
+
+- `client_type: "public"` registers a native/SPA client with no secret (omit
+  `client_secret`); it must use PKCE (S256) and may redirect to any port on a
+  registered loopback URI (RFC 8252).
+- `trusted: false` shows the user a consent screen before the first code; a
+  user's consent is remembered per scope and withdrawn when they revoke the app.
+- `allowed_claims` limits which claim groups the client can ever receive
+  (`profile`, `email`, `groups`, `hr`, `custom`); the id_token and `/userinfo`
+  release the intersection of the requested scopes and this list. Omitted or
+  `null` means every group (the pre-v3 behaviour).
+- `post_logout_redirect_uris` are exact-match targets for RP-initiated logout
+  at `/oidc/logout` (the discovery document's `end_session_endpoint`); each
+  must be `https`, or `http` on a loopback host.
 
 Supplying `client_id` and `client_secret` is what makes a single-pass Terraform
 apply possible: Terraform needs the credential to create the Access identity
@@ -314,9 +349,22 @@ supplied keep their values.
   "sign_response": true,
   "sign_assertion": true,
   "want_authn_requests_signed": false,
-  "signing_certs": ["PEM blocks, or bare base64 DER"]
+  "signing_certs": ["PEM blocks, or bare base64 DER"],
+  "slo_url": "https://sp.example.com/saml/slo",
+  "encrypt_assertions": false,
+  "encryption_cert": "PEM, required when encrypt_assertions is true"
 }
 ```
+
+`slo_url` (https) enables SAML Single Logout at `/saml/slo` (HTTP-Redirect,
+signed LogoutRequests only, bound to the browser's session by SessionIndex).
+With `encrypt_assertions`, the signed assertion is encrypted to
+`encryption_cert` (AES-256-GCM, RSA-OAEP).
+
+`POST /saml/service-providers/import-metadata` with `{ "xml": "<EntityDescriptor ...>",
+"name": "optional" }` creates or updates the SP from its metadata: entity ID,
+HTTP-POST ACS URLs, SLO URL, signing and encryption certificates. Answers
+`{ "ok": true, "id", "entity_id", "acs_urls", "slo_url", "encryption" }`.
 
 `attribute_map` maps a SAML attribute name onto a user field; an empty object
 falls back to `{"email","name","given_name","family_name","groups"}`.
@@ -359,7 +407,15 @@ the default schema the same way.
 ```
 
 Attribute `type` is `string` (default), `number`, `date`, `boolean`, or
-`reference` (with `ref_object`, currently `user`). Attribute names matching
+`reference` (with `ref_object`, currently `user`). Names must match
+`^[a-z][a-z0-9_]*$` and may not be a claim the IdP asserts itself (`email`,
+`groups`, `id`, `name`, `preferred_username`, ...).
+
+`"user_editable": true` lets users change the attribute themselves on
+My account. It is refused for references, for `manager`, and for any attribute
+a dynamic group's rule matches on (otherwise users could choose their own
+groups); the reverse also holds - a rule may not match on an editable
+attribute. Attribute names matching
 built-in user fields (`job_title`, `department`, `employee_number`,
 `hire_date`, `employment_status`, `employment_type`, `location`, and the name
 fields) map onto those columns; anything else is stored as a custom
@@ -383,6 +439,17 @@ Scope: `settings:write`.
   "scope": { "mode": "all", "group_ids": [] }
 }
 ```
+
+### SCIM 2.0 server (`/scim/v2`)
+
+FlareID also *accepts* provisioning: an HR system or upstream IdP can manage
+users and groups over SCIM 2.0 at `/scim/v2` (`Users`, `Groups`,
+`ServiceProviderConfig`, `ResourceTypes`, `Schemas`), authenticated with an
+API key - `directory:read` for reads, `directory:write` for writes. Filters
+support `userName`/`externalId`/`displayName eq "..."`; `PATCH` follows
+RFC 7644 and is all-or-nothing. Super Admins (the users and their group
+memberships) need an `admin`-scoped key. Every inbound change is passed on to
+the outbound SCIM target when one is configured.
 
 ### `POST /api-keys`
 

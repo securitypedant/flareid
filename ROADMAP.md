@@ -12,7 +12,7 @@ deciding whether to point real traffic at this.
 - SAML 2.0 (v1 profile): SP-initiated Web Browser SSO, redirect binding in,
   POST binding out, signed Response + Assertion, SP registry, IdP metadata,
   request-signature verification, `ForceAuthn`
-- Password (PBKDF2) plus optional per-user TOTP MFA, backup codes, trusted
+- Password (scrypt; PBKDF2 legacy hashes upgrade on login) plus optional per-user TOTP MFA, backup codes, trusted
   devices, and an option to require MFA for everyone
 - Flat groups, each **static** (assigned members) or **dynamic** (attribute
   rules built in the admin UI, resolved everywhere membership matters),
@@ -36,7 +36,16 @@ deciding whether to point real traffic at this.
   has no users and no default password, and the first administrator is created
   over the API with a deploy-time bootstrap token
 - **A test suite** running inside the Workers runtime against the real
-  migrations, plus CI
+  migrations, plus CI (210 tests at v3.0.0)
+- **v3.0.0:** outbound email with self-service password recovery and
+  invitations; RP-initiated logout (`end_session_endpoint`); consent screen and
+  per-client trusted flag; public/native clients (PKCE-only); per-client claim
+  allowlist; `auth_time`, `acr`, `at_hash`, `prompt`, `max_age`; a scripted
+  OIDC conformance check (`npm run oidc:conformance`); SCIM 2.0 *server* for
+  inbound provisioning; CSV import in the admin console; self-service profile
+  editing with per-attribute permissions in the schema; SAML encrypted
+  assertions, Single Logout and SP metadata import; edge rate limits on every
+  anonymous route; and the fixes from the second (deep) security audit
 
 ## P0 - before pointing anything that matters at this
 
@@ -66,37 +75,19 @@ deciding whether to point real traffic at this.
 
 ## P1 - to call it a real identity provider
 
-9. **Outbound email** (Cloudflare Email Sending). Unblocks 10 and 11.
-10. **Self-service password recovery.** Today the only path is an
-    admin-initiated reset.
-11. **Invitation and activation flow**, instead of an admin relaying a
-    temporary password.
-12. **RP-initiated logout** (`end_session_endpoint`) and front-channel logout,
-    so a relying party can end the IdP session too.
-13. **Consent screen** for non-trusted clients, with a per-client trusted flag.
-14. **Public and native clients**: PKCE-only, no secret,
-    `token_endpoint_auth_method: none`.
-15. **Per-client claim and scope allowlist.** `buildClaims()` returns the same
-    full set - email, name, groups, job title, department, manager, amr - to
-    every client regardless of what it needs. A real data-minimisation gap.
-16. **SCIM 2.0 *server***, for inbound provisioning. FlareID is a SCIM client
-    only; anything calling itself an identity provider has to be provisionable
-    from an HR system or an upstream directory.
-17. **CSV import** in the admin UI, on top of the import API.
-18. **WebAuthn / passkeys.** Previously listed as out of scope; phishing
-    -resistant MFA is table stakes now.
-19. **OIDC conformance.** Run the OpenID Foundation Basic OP profile in CI.
-    Also fill the discovery gaps (`grant_types_supported`,
-    `response_modes_supported`, a complete `claims_supported`) and implement
-    `auth_time`, `at_hash`, `acr`, `prompt` and `max_age`, none of which are
-    present.
-20. **Self-service profile editing** for low-risk fields.
-21. **SAML 2.0, the rest of it.** The v1 profile in
-    [SAML-implementation.md](SAML-implementation.md) is done. Remaining: the
-    v1.5 items (encrypted assertions, Single Logout receipt, SP metadata
-    import) and the v2 saml2int items (metadata-driven SP registry,
-    `subject-id`/`pairwise-id`, multiple SP signing certs in metadata, the
-    full published-metadata requirements).
+Items 9-17, 19 (scripted check), 20 and most of 21 shipped in v3.0.0 (see Done).
+Still open:
+
+12. **Front-channel logout** to relying parties (RP-initiated logout is done).
+18. **WebAuthn / passkeys.** Phishing-resistant MFA is table stakes now.
+19. **The OpenID Foundation's official suite** in CI against a disposable
+    deployment (today: `npm run oidc:conformance`, a scripted check of the
+    Basic OP rules, run against `idp.tmesandbox.com` at 61/0).
+21. **SAML v2 saml2int items:** metadata-driven SP registry refresh,
+    `subject-id`/`pairwise-id`, the full published-metadata requirements.
+22. **Large-directory performance:** a group's member picker still lists every
+    user, and listing groups resolves each dynamic group with a full users scan
+    (bounded per request, flagged by the audit as needing validation at scale).
 
 ## P2 - operational maturity
 

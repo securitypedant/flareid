@@ -1,6 +1,6 @@
 {
   "name": "flareid",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "A small, standalone OpenID Connect identity provider for Cloudflare Workers and D1",
   "license": "Apache-2.0",
   "author": "Simon Thorpe",
@@ -32,7 +32,8 @@
     "db:migrations:remote": "wrangler d1 migrations apply flareid-db --remote",
     "keygen": "node scripts/generate-keypair.mjs",
     "saml:keygen": "node scripts/generate-saml-cert.mjs",
-    "test-data": "node scripts/generate-test-directory.mjs"
+    "test-data": "node scripts/generate-test-directory.mjs",
+    "oidc:conformance": "node scripts/oidc-conformance.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.12",

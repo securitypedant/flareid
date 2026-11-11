@@ -6,7 +6,80 @@ may break things.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-11
+
+Migrations `0008` to `0012` (account tokens, OIDC clients, self-service
+profile, SAML v3, SCIM deprovision queue). On deploy, **every live session is
+revoked once**: id_tokens issued before this release carried the raw session id
+(see Security). Users simply sign in again.
+
+### Security
+
+Fixes from the second, deep security audit (66 coverage units, 41 candidates
+independently verified - 36 confirmed, 5 needing deployment facts; report in
+the audit run directory). Each has a regression test (`test/audit-v3.test.ts`,
+`test/scim-scope.test.ts`).
+
+- **High - id_token `sid` was the session cookie.** It is now a one-way
+  derivation; RP-initiated logout matches the derivation.
+- **High - `directory:write` to Super Admin takeover.** Applying a domain to all
+  users (which rewrites Super Admin UPNs, and recovery mail follows the UPN)
+  now needs the `admin` scope.
+- Fresh-login requirements (`ForceAuthn`, `ForceAuthn="1"`, `prompt=login`,
+  `max_age`) can no longer be satisfied through the MFA-enrolment resume page.
+- MFA enrolment ends every other session; pending enrolment secrets are per
+  session; backup-code regeneration needs a current factor; account step-up
+  checks (current password, MFA disable/regenerate) share the login attempt
+  budget; backup and authorization codes are consumed atomically.
+- Every password change, admin reset, recovery reset and import password set
+  revokes OAuth tokens, codes and outstanding links; deactivation voids
+  invitation links; a new link voids all earlier ones, and changing a user's
+  email or UPN voids links sent to the old address.
+- SCIM: Super Admin memberships and the "Super Admins" name are guarded on the
+  SCIM server (the console can no longer rename or delete the group);
+  inbound changes reach the outbound target; group PATCH is all-or-nothing;
+  deletions are queued durably and retried; removed members and scope changes
+  are re-evaluated; a self-heal never recreates a deleted user.
+- SAML Single Logout requires SessionIndex, a fresh IssueInstant, the right
+  Destination, and refuses replays. `/oidc/logout` without a session sets no
+  cookie.
+- Rate limits: the edge limiter classifies the decoded path, IPv6 is keyed per
+  /64, the per-IP login bucket counts failures only, the lockout message no
+  longer reveals which accounts exist, sign-in inputs and audit targets are
+  bounded, and passwordless accounts cost the same verify time as misses.
+- Claim and schema hygiene: IdP-asserted claim names cannot be overridden or
+  reused as attributes; schema names are validated for every writer; `manager`
+  is never user-editable; dynamic-group rule guards share the evaluator's
+  parser; rules are normalised and size-capped, and an unparseable stored rule
+  matches nobody instead of breaking requests. Groups over 100 members work
+  (one `json_each` parameter instead of one per member).
+- Plus the remaining v2 audit items: same-origin `/login?next=`, empty or
+  malformed API-key scopes and expiry rejected, validated login gradient,
+  `Cache-Control: no-store` on dynamic pages, constant-time sign-in for unknown
+  accounts, import SCIM deprovisioning, and keys kept out of the repo on a
+  failed deploy. `npm audit` is clean.
+
 ### Added
+
+- **Outbound email** (Cloudflare Email Sending) with **password recovery**
+  ("Forgot your password?", one-hour single-use links) and **invitations**
+  that set a password and activate the account. Admin → Integrations → Email;
+  `POST /api/v1/users/{username}/invite`.
+- **OIDC:** per-client claim allowlist, consent screen for untrusted clients,
+  public/native clients (PKCE-only, loopback redirects), RP-initiated logout
+  (`end_session_endpoint`), `auth_time`, `acr`, `at_hash`, `prompt` and
+  `max_age`; `WWW-Authenticate` on `/userinfo` errors. A scripted conformance
+  check, `npm run oidc:conformance`.
+- **SCIM 2.0 server** at `/scim/v2` for inbound provisioning.
+- **CSV import** in the admin console (users and groups), load-tested with
+  10,000 users; `npm run test-data` generates a large test directory.
+- **Self-service profile editing**, with a per-attribute "User can edit"
+  permission in the schema.
+- **SAML:** encrypted assertions, Single Logout (`/saml/slo`), and SP metadata
+  import in the console and API.
+- **Edge rate limits** in front of every anonymous route, counted in memory so
+  a refused request costs no storage write; `GET /login`, `/authorize` and
+  `/saml/sso` no longer write to KV.
 
 - **Session limits** in Admin → Security (and `session_limits` on
   `POST /api/v1/setup`): a maximum session length (1-720 hours, default 12)
