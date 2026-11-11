@@ -1,3 +1,5 @@
+import { VERSION } from "../version.js";
+
 export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -36,7 +38,66 @@ const STYLES = `
     --fi-amber: #92400e;
     --fi-amber-soft: #fffbeb;
     --fi-radius: 10px;
+    --fi-line-strong: #cbd5e1;
+    --fi-faint: #94a3b8;
+    --fi-surface-2: #fbfcfd;
+    color-scheme: light;
   }
+
+  /* Dark theme: the system preference unless the user picked one (theme toggle,
+     stored per browser). Only the palette changes; structure is shared. */
+  :root[data-theme="dark"] {
+    --fi-accent-soft: #3a2614;
+    --fi-ink: #e8edf4;
+    --fi-body: #c3ccd8;
+    --fi-muted: #8b97a8;
+    --fi-line: #2a3342;
+    --fi-line-soft: #222a37;
+    --fi-canvas: #0f141c;
+    --fi-surface: #171d27;
+    --fi-surface-2: #1b2230;
+    --fi-line-strong: #3a4558;
+    --fi-faint: #6b7889;
+    --fi-green: #4ade80;
+    --fi-green-soft: #12291c;
+    --fi-red: #f87171;
+    --fi-red-soft: #2c1517;
+    --fi-amber: #fbbf24;
+    --fi-amber-soft: #2a2110;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --fi-accent-soft: #3a2614; --fi-ink: #e8edf4; --fi-body: #c3ccd8; --fi-muted: #8b97a8;
+      --fi-line: #2a3342; --fi-line-soft: #222a37; --fi-canvas: #0f141c; --fi-surface: #171d27;
+      --fi-surface-2: #1b2230; --fi-line-strong: #3a4558; --fi-faint: #6b7889; --fi-green: #4ade80;
+      --fi-green-soft: #12291c; --fi-red: #f87171; --fi-red-soft: #2c1517; --fi-amber: #fbbf24;
+      --fi-amber-soft: #2a2110; color-scheme: dark;
+    }
+  }
+  input, select, textarea { background-color: var(--fi-surface); color: var(--fi-ink); }
+  .theme-toggle { background: none; border: 1px solid var(--fi-line); border-radius: 6px; color: var(--fi-muted); cursor: pointer; font-size: 0.8125rem; padding: 4px 10px; }
+  .theme-toggle:hover { color: var(--fi-ink); background: var(--fi-line-soft); }
+  .brand-version { color: var(--fi-faint); font-weight: 500; margin-left: 4px; }
+
+  /* CSV import */
+  .import-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .import-layout { grid-template-columns: 1fr; } }
+  .drop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .drop-grid { grid-template-columns: 1fr; } }
+  .drop-zone {
+    display: flex; flex-direction: column; gap: 4px; padding: 16px; margin: 0;
+    border: 1.5px dashed var(--fi-line-strong); border-radius: var(--fi-radius); background: var(--fi-surface-2); cursor: pointer;
+  }
+  .drop-zone:hover, .drop-zone:focus-within { border-color: var(--fi-accent); }
+  .drop-zone .drop-title { font-weight: 650; color: var(--fi-ink); }
+  .drop-zone input[type=file] { margin: 8px 0 4px; font-size: 0.8125rem; }
+  .drop-zone .drop-hint { font-size: 0.8125rem; color: var(--fi-muted); font-weight: 400; }
+  .choice { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; padding: 10px 12px; border: 1px solid var(--fi-line); border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+  .choice input { width: auto; margin: 3px 0 0; }
+  .choice:has(input:checked) { border-color: var(--fi-accent); background: var(--fi-accent-soft); }
+  .import-progress { width: 100%; height: 8px; accent-color: var(--fi-accent); }
+  .import-log { max-height: 360px; min-height: 120px; overflow: auto; background: var(--fi-surface-2); border: 1px solid var(--fi-line); border-radius: 8px; padding: 10px; font-size: 0.8125rem; white-space: pre-wrap; color: var(--fi-body); }
 
   * { box-sizing: border-box; }
   body {
@@ -122,16 +183,16 @@ const STYLES = `
   .breadcrumbs a { color: var(--fi-muted); text-decoration: none; }
   .breadcrumbs a:hover { color: var(--fi-accent); text-decoration: underline; }
   .breadcrumbs span:last-child { color: var(--fi-body); font-weight: 500; }
-  .breadcrumb-sep { color: #cbd5e1; margin: 0 4px; }
+  .breadcrumb-sep { color: var(--fi-line-strong); margin: 0 4px; }
 
   /* ------------------------------------------------------------- forms */
   label { display: block; font-size: 0.8125rem; font-weight: 600; margin-bottom: 5px; color: var(--fi-ink); }
   input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea {
-    width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.875rem;
+    width: 100%; padding: 9px 12px; border: 1px solid var(--fi-line-strong); border-radius: 8px; font-size: 0.875rem;
     box-sizing: border-box; margin-bottom: 16px; font-family: inherit; color: var(--fi-ink); background: var(--fi-surface);
     transition: border-color 0.12s, box-shadow 0.12s;
   }
-  input::placeholder, textarea::placeholder { color: #94a3b8; }
+  input::placeholder, textarea::placeholder { color: var(--fi-faint); }
   input:focus, select:focus, textarea:focus {
     outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18);
   }
@@ -157,8 +218,8 @@ const STYLES = `
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   .primary { background: var(--fi-accent); color: #fff; }
   .primary:hover:not(:disabled) { background: var(--fi-accent-dark); }
-  .secondary { background: var(--fi-surface); color: var(--fi-body); border-color: #cbd5e1; }
-  .secondary:hover:not(:disabled) { background: var(--fi-line-soft); border-color: #94a3b8; }
+  .secondary { background: var(--fi-surface); color: var(--fi-body); border-color: var(--fi-line-strong); }
+  .secondary:hover:not(:disabled) { background: var(--fi-line-soft); border-color: var(--fi-faint); }
   .danger { background: var(--fi-surface); color: var(--fi-red); border-color: #fecaca; }
   .danger:hover:not(:disabled) { background: var(--fi-red-soft); border-color: #f87171; }
 
@@ -176,9 +237,9 @@ const STYLES = `
   th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--fi-line-soft); font-size: 0.875rem; }
   th {
     color: var(--fi-muted); text-transform: uppercase; font-size: 0.6875rem; letter-spacing: 0.05em;
-    font-weight: 650; background: #fbfcfd; border-bottom-color: var(--fi-line);
+    font-weight: 650; background: var(--fi-surface-2); border-bottom-color: var(--fi-line);
   }
-  tbody tr:hover { background: #fbfcfd; }
+  tbody tr:hover { background: var(--fi-surface-2); }
   tr:last-child td { border-bottom: none; }
 
   /* ------------------------------------------------------------- state */
@@ -219,10 +280,10 @@ const STYLES = `
   /* --------------------------------------------------------- section nav */
   /* The admin shell spans the window with the topbar's 24px gutter, so the menu
      sits directly under the logo at every width instead of floating inside a
-     centred column. The content column is capped so it doesn't sprawl. */
+     centred column. The content column uses the rest of the window. */
   .page-wrap:has(> .admin-shell) { max-width: none; padding-left: 24px; padding-right: 24px; }
   .admin-shell { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 36px; align-items: start; }
-  .admin-main { max-width: 1180px; }
+  .admin-main { min-width: 0; }
   /* Pull the menu left by its link padding so the label text lines up with the logo. */
   .admin-side { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 2px; margin-left: -14px; }
   .admin-side a {
@@ -254,7 +315,7 @@ const STYLES = `
   .rowmenu > button:hover { color: var(--fi-ink); }
   .rowmenu-items {
     display: none; position: absolute; right: 0; top: 100%; z-index: 30; min-width: 120px;
-    background: #fff; border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); padding: 4px;
+    background: var(--fi-surface); border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); padding: 4px;
   }
   .rowmenu.open .rowmenu-items { display: block; }
   .rowmenu-items a, .rowmenu-items button {
@@ -273,7 +334,7 @@ const STYLES = `
   }
   .switch .track::after {
     content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
-    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: left 0.15s;
+    background: var(--fi-surface); box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: left 0.15s;
   }
   .switch input:checked + .track { background: var(--fi-accent); }
   .switch input:checked + .track::after { left: 19px; }
@@ -284,16 +345,16 @@ const STYLES = `
   /* Styled to match a native <select> exactly - same border, height and chevron. */
   .searchselect .ss-toggle {
     width: 100%; height: 38px; text-align: left; display: flex; align-items: center;
-    padding: 0 32px 0 12px; border: 1px solid #cbd5e1; border-radius: 8px; color: var(--fi-ink);
+    padding: 0 32px 0 12px; border: 1px solid var(--fi-line-strong); border-radius: 8px; color: var(--fi-ink);
     font-size: 0.875rem; font-weight: 400; box-shadow: none; cursor: pointer;
     background: var(--fi-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
   }
-  .searchselect .ss-toggle:hover { border-color: #94a3b8; }
+  .searchselect .ss-toggle:hover { border-color: var(--fi-faint); }
   .searchselect.open .ss-toggle { border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18); }
   .searchselect .ss-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .searchselect .ss-menu {
     display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 25;
-    background: #fff; border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    background: var(--fi-surface); border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
     max-height: 240px; overflow: auto; padding: 6px;
   }
   .searchselect.open .ss-menu { display: block; }
@@ -326,10 +387,10 @@ const STYLES = `
 
   /* Copy-to-clipboard buttons */
   .copy-btn {
-    background: var(--fi-surface); color: var(--fi-body); border: 1px solid #cbd5e1; border-radius: 6px;
+    background: var(--fi-surface); color: var(--fi-body); border: 1px solid var(--fi-line-strong); border-radius: 6px;
     padding: 3px 10px; font-size: 0.75rem; cursor: pointer; white-space: nowrap; font-weight: 550;
   }
-  .copy-btn:hover { background: var(--fi-line-soft); border-color: #94a3b8; }
+  .copy-btn:hover { background: var(--fi-line-soft); border-color: var(--fi-faint); }
   .copy-btn.copied { background: var(--fi-green-soft); color: var(--fi-green); border-color: #86efac; }
 
   /* Prominent one-time secret display */
@@ -340,10 +401,10 @@ const STYLES = `
 
   /* Expandable audit log rows */
   .audit-row { cursor: pointer; }
-  .audit-row:hover { background: #fbfcfd; }
+  .audit-row:hover { background: var(--fi-surface-2); }
   .audit-detail { display: none; }
   .audit-detail.open { display: table-row; }
-  .audit-detail td { background: #fbfcfd; padding: 10px 12px 14px 12px; }
+  .audit-detail td { background: var(--fi-surface-2); padding: 10px 12px 14px 12px; }
   .audit-detail-content { font-size: 0.8125rem; color: var(--fi-body); display: flex; flex-direction: column; gap: 4px; }
   .audit-detail-content code { white-space: pre-wrap; word-break: break-all; }
 
@@ -374,7 +435,7 @@ const STYLES = `
     color: var(--fi-muted); font-weight: 650; margin-bottom: 2px;
   }
   .attr-value { font-size: 0.875rem; color: var(--fi-ink); word-break: break-word; }
-  .attr-value.empty { color: #94a3b8; }
+  .attr-value.empty { color: var(--fi-faint); }
 
   /* Dashboard charts (server-rendered SVG - no chart library, no fetch). */
   .chart { width: 100%; height: auto; display: block; overflow: visible; }
@@ -382,7 +443,7 @@ const STYLES = `
   .chart .gridline { stroke: var(--fi-line-soft); stroke-width: 1; }
   .chart .axis { stroke: var(--fi-line); stroke-width: 1; }
   .chart .bar { fill: var(--fi-accent); }
-  .chart .bar.muted-bar { fill: #cbd5e1; }
+  .chart .bar.muted-bar { fill: var(--fi-line-strong); }
   .chart .area { fill: rgba(246, 130, 31, 0.14); }
   .chart .line { stroke: var(--fi-accent); stroke-width: 2; fill: none; }
   .chart .dot { fill: var(--fi-accent); }
@@ -915,14 +976,33 @@ export function breadcrumbs(items: Breadcrumb[]): string {
   </div>`;
 }
 
+/** Applies the stored theme before first paint; "system" (nothing stored) follows prefers-color-scheme. */
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem("fi-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();`;
+
+/** The top-bar toggle cycles system -> dark -> light -> system. */
+const THEME_TOGGLE_SCRIPT = `(function(){
+  var b=document.querySelector("[data-theme-toggle]"); if(!b) return;
+  var order=["system","dark","light"];
+  function cur(){try{return localStorage.getItem("fi-theme")||"system";}catch(e){return "system";}}
+  function label(){b.textContent={system:"Theme: auto",dark:"Theme: dark",light:"Theme: light"}[cur()];}
+  b.addEventListener("click",function(){
+    var next=order[(order.indexOf(cur())+1)%order.length];
+    try{ if(next==="system") localStorage.removeItem("fi-theme"); else localStorage.setItem("fi-theme",next);}catch(e){}
+    if(next==="system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme",next);
+    label();
+  });
+  label();
+})();`;
+
 export function nav(appName: string, isAdmin: boolean): string {
   return `<header class="topbar">
     <a href="/" class="brand">
       <img src="/FlareID_Icon.png" alt="" class="brand-logo" data-hide-on-error />
       <span class="brand-name">${escapeHtml(appName)}</span>
-      <span class="brand-tagline">Open source, Cloudflare hosted IDP</span>
+      <span class="brand-tagline">Open source, Cloudflare hosted IDP <span class="brand-version">(v${VERSION})</span></span>
     </a>
     <nav>
+      <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme">Theme</button>
       <a href="/account">My account</a>
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
       <form method="POST" action="/logout" style="display:inline"><button class="link-button signout" type="submit">Sign out</button></form>
@@ -947,6 +1027,7 @@ export function page(
   <title>${escapeHtml(title)} - ${escapeHtml(appName)}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+  ${scriptTag(THEME_INIT_SCRIPT)}
   <style>${STYLES}</style>
   ${extraStyles ? `<style>${extraStyles}</style>` : ""}
 </head>
@@ -959,6 +1040,7 @@ export function page(
   ${scriptTag(COPY_SCRIPT)}
   ${scriptTag(CONFIRM_SCRIPT)}
   ${scriptTag(UI_SCRIPT)}
+  ${navHtml ? scriptTag(THEME_TOGGLE_SCRIPT) : ""}
 </body>
 </html>`;
 }

@@ -19,6 +19,7 @@ import { getAppName } from "./lib/settings.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 import { edgeRateLimit } from "./lib/edge-limit.js";
+import { recordRequestMetrics } from "./lib/metrics.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -26,6 +27,8 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", securityHeaders);
 // Flood control for anonymous routes, before any handler can write anything.
 app.use("*", edgeRateLimit);
+// Per-request performance data point (Analytics Engine; no-op without the binding).
+app.use("*", recordRequestMetrics);
 
 app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
 

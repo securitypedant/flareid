@@ -59,4 +59,9 @@ export interface Env {
   AUTH_LIMITER?: RateLimit;
   /** Edge flood control for the API, token, introspection, userinfo and SCIM endpoints. Optional. */
   API_LIMITER?: RateLimit;
+  /** Optional Analytics Engine dataset for per-request performance metrics (lib/metrics.ts). */
+  METRICS?: AnalyticsEngineDataset;
+  /** Account id and Account Analytics:Read token for reading those metrics back on the overview. */
+  CF_ACCOUNT_ID?: string;
+  CF_ANALYTICS_TOKEN?: string;
 }

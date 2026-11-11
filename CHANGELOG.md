@@ -6,6 +6,37 @@ may break things.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-11
+
+### Added
+
+- **Group members panel**: every group's page lists its current members
+  (assigned, or rule matches for a dynamic group) 30 per page, with a search
+  by name or UPN to check whether a person is in the group.
+- **Convert a dynamic group to static**, keeping today's matches as assigned
+  members. A group's type is otherwise fixed at creation: a static group cannot
+  become dynamic, so assigned members are never silently dropped.
+- **Overview**: active accounts, SAML apps, active API keys, live refresh
+  grants, and a last-24-hours panel (sign-ins, failures, rate-limited sign-ins,
+  failed step-up checks, API calls, rejected keys, SCIM failures and queued
+  deletions).
+- **IdP performance** on the overview: requests, 5xx rate and p50/p95 latency
+  per endpoint family, from Workers Analytics Engine. Every request now writes
+  one data point to the `METRICS` dataset (no D1 or KV write); reading them back
+  needs the `CF_ACCOUNT_ID` var and a `CF_ANALYTICS_TOKEN` secret (Account
+  Analytics: Read).
+- **Groups CSV import** at Admin → Groups → Import CSV.
+- **Dark mode**: follows the system setting, with a Theme toggle in the top
+  bar (auto, dark, light) remembered per browser.
+- The top bar shows the deployed version.
+
+### Changed
+
+- Admin pages use the full window width.
+- The CSV import page is laid out as file drop zones, password choices and a
+  progress panel.
+- README opens with a screenshot.
+
 ## [3.0.0] - 2026-11-11
 
 Migrations `0008` to `0012` (account tokens, OIDC clients, self-service

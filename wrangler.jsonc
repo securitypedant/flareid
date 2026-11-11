@@ -28,6 +28,7 @@
     // party - a mismatch is rejected by the relying party, usually without
     // explaining why. Set to the deployed hostname before going anywhere near a
     // real client; left as localhost so that `npm run dev` works untouched.
+    "CF_ACCOUNT_ID": "",
     "ISSUER_URL": "https://idp.tmesandbox.com",
     // Public half of the RS256 signing keypair. Not a secret - this is exactly
     // what /jwks.json publishes - but it must be the counterpart of the
@@ -62,6 +63,9 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Per-request performance data points (src/lib/metrics.ts); read back on the
+  // admin overview when CF_ANALYTICS_TOKEN is set as a secret.
+  "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "flareid_requests" }],
   "kv_namespaces": [
     {
       // Short-lived login-flow state, pending MFA challenges, and rate-limit

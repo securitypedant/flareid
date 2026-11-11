@@ -1,3 +1,4 @@
+import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -407,6 +408,41 @@ admin.get("/admin", async (c) => {
     value: byDay.get(day)?.ok ?? 0,
   }));
 
+  const day = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const [ops, perf] = await Promise.all([
+    c.env.DB.batch([
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM saml_service_providers"),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL"),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'active'"),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'login.success'").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND (action LIKE 'login.failed%' OR action LIKE 'login.mfa_failed%')").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'login.rate_limited'").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'api.request'").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'api.auth_failed'").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action LIKE 'scim.%failed'").bind(day),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue"),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM refresh_tokens WHERE revoked_at IS NULL AND rotated_at IS NULL AND expires_at > ?").bind(new Date().toISOString()),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'user.step_up_failed'").bind(day),
+    ]),
+    readPerformance(c.env, 24),
+  ]);
+  const op = ops.map((r) => (r.results[0] as { n: number } | undefined)?.n ?? 0);
+  const [samlApps, apiKeys, activeUsers, ok24, bad24, limited24, api24, apiBad24, scimFail24, scimQueue, refreshLive, stepUpBad24] = op;
+  const perfHtml = !perf.configured
+    ? `<p class="muted">Request volume, error rate and latency per endpoint come from Workers Analytics Engine. Data points are already
+        recorded on every request (the <code>METRICS</code> binding); to show them here, set the <code>CF_ACCOUNT_ID</code> var and a
+        <code>CF_ANALYTICS_TOKEN</code> secret (an API token with <em>Account Analytics: Read</em>).</p>`
+    : !perf.ok
+      ? `<p class="muted">Could not read metrics: ${escapeHtml(perf.error)}</p>`
+      : perf.families.length === 0
+        ? '<p class="muted">No requests recorded in the last 24 hours yet.</p>'
+        : `${attrGrid([
+            attr("Requests (24h)", perf.total.toLocaleString("en")),
+            attr("Server errors (5xx)", `${perf.errors} (${perf.total ? ((perf.errors / perf.total) * 100).toFixed(2) : "0"}%)`),
+          ])}
+          <table style="margin-top:12px;"><thead><tr><th>Endpoint</th><th>Requests</th><th>5xx</th><th>p50 ms</th><th>p95 ms</th></tr></thead><tbody>
+            ${perf.families.map((f) => `<tr><td>${escapeHtml(f.family)}</td><td>${f.requests.toLocaleString("en")}</td><td>${f.errors}</td><td>${f.p50}</td><td>${f.p95}</td></tr>`).join("")}
+          </tbody></table>`;
   const successTotal = loginsByDay.reduce((sum, r) => sum + (r.ok ?? 0), 0);
   const failedTotal = loginsByDay.reduce((sum, r) => sum + (r.bad ?? 0), 0);
   const users = userCount[0]?.n ?? 0;
@@ -422,6 +458,32 @@ admin.get("/admin", async (c) => {
         <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groupCount[0]?.n ?? 0}</h2><p>Groups</p></div></a>
         <a class="stat-card" href="/admin/clients"><div class="card"><h2>${clientCount[0]?.n ?? 0}</h2><p>OIDC Clients</p></div></a>
         <a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>
+      </div>
+      <div class="stat-grid">
+        <a class="stat-card" href="/admin/users"><div class="card"><h2>${activeUsers}</h2><p>Active accounts</p></div></a>
+        <a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>
+        <a class="stat-card" href="/admin/integrations/api-keys"><div class="card"><h2>${apiKeys}</h2><p>Active API keys</p></div></a>
+        <a class="stat-card" href="/admin/log"><div class="card"><h2>${refreshLive}</h2><p>Live refresh grants</p></div></a>
+      </div>
+
+      <div class="two-col">
+        ${cardSection(`
+          <h2>Last 24 hours</h2>
+          ${attrGrid([
+            attr("Sign-ins", ok24),
+            attr("Failed sign-ins", bad24),
+            attr("Rate-limited sign-ins", limited24),
+            attr("Failed step-up checks", stepUpBad24),
+            attr("API calls", api24),
+            attr("Rejected API keys", apiBad24),
+            attr("SCIM sync failures", scimFail24),
+            attr("SCIM deletions queued", scimQueue),
+          ])}
+        `)}
+        ${cardSection(`
+          <div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">IdP performance</h2><span class="muted">last 24 hours</span></div>
+          ${perfHtml}
+        `)}
       </div>
 
       ${cardSection(`
@@ -787,11 +849,13 @@ const CSV_IMPORT_SCRIPT = `
     e.preventDefault();
     var btn = form.querySelector("button[type=submit]");
     btn.disabled = true; log.textContent = "";
-    var passwords = form.querySelector("input[name=passwords]:checked").value;
+    var pw = form.querySelector("input[name=passwords]:checked");
+    var passwords = pw ? pw.value : "none";
     var totals = { created: 0, updated: 0, skipped: 0, errors: 0 };
     try {
-      var gFile = form.querySelector("#groups_csv").files[0];
-      var uFile = form.querySelector("#users_csv").files[0];
+      var gEl = form.querySelector("#groups_csv"), uEl = form.querySelector("#users_csv");
+      var gFile = gEl && gEl.files[0];
+      var uFile = uEl && uEl.files[0];
       if (!gFile && !uFile) { say("Choose a groups CSV, a users CSV, or both."); return; }
       if (gFile) {
         var groups = parseCsv(await gFile.text()).filter(function (g) { return g.name; }).map(function (g) { var o = { name: g.name }; if (g.description) o.description = g.description; if (g.rule) o.rule = g.rule; return o; });
@@ -824,32 +888,54 @@ const CSV_IMPORT_SCRIPT = `
 })();
 `;
 
-admin.get("/admin/users/import", async (c) => {
-  const emailOn = await isEmailConfigured(c.env);
-  return c.html(
-    layout(
-      c,
-      "Import users from CSV",
-      `${cardSection(`
-        <p class="muted" style="margin-top:0;">Upload a groups CSV, a users CSV, or both. The import is idempotent by username and group name, so running it again updates rather than duplicates. Columns are described in <code>docs/csv-import.md</code>; <code>npm run test-data</code> generates a 10,000-person example.</p>
+/** The CSV import page: users and groups, or groups only (from the groups list). */
+async function importPageHtml(env: Env, kind: "users" | "groups"): Promise<string> {
+  const emailOn = await isEmailConfigured(env);
+  const fileBox = (id: string, title: string, columns: string, hint: string) => `
+    <label class="drop-zone" for="${id}">
+      <span class="drop-title">${title}</span>
+      <span class="muted">${columns}</span>
+      <input type="file" id="${id}" accept=".csv,text/csv" />
+      <span class="drop-hint">${hint}</span>
+    </label>`;
+  return `
+    <div class="import-layout">
+      ${cardSection(`
         <form id="csv-import">
-          <div class="field-row">
-            <div><label for="groups_csv">Groups CSV <span class="muted">(name, description, rule)</span></label><input type="file" id="groups_csv" accept=".csv,text/csv" /></div>
-            <div><label for="users_csv">Users CSV <span class="muted">(username, given_name, ... groups)</span></label><input type="file" id="users_csv" accept=".csv,text/csv" /></div>
+          <h2>1. Choose ${kind === "users" ? "files" : "a file"}</h2>
+          <div class="${kind === "users" ? "drop-grid" : ""}">
+            ${fileBox("groups_csv", "Groups CSV", "name, description, rule", kind === "users" ? "Optional. Imported first, so users can reference these groups." : "Static groups have no rule; a rule makes the group dynamic.")}
+            ${kind === "users" ? fileBox("users_csv", "Users CSV", "username, given_name, family_name, ... groups", "Managers are imported before the people who report to them.") : ""}
           </div>
-          <label>Passwords for new users without a <code>password</code> column</label>
-          <label style="font-weight:400;"><input type="radio" name="passwords" value="none" checked style="width:auto; display:inline; margin-right:6px;" /> None &mdash; they activate from ${emailOn ? "an invitation email or " : ""}an admin password reset (fast)</label>
-          <label style="font-weight:400;"><input type="radio" name="passwords" value="default" style="width:auto; display:inline; margin-right:6px;" /> The new-account password setting (each one is hashed: slow for thousands)</label>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Import</button></div>
+          ${
+            kind === "users"
+              ? `<h2 style="margin-top:20px;">2. Passwords for new accounts</h2>
+                 <p class="muted" style="margin-top:0;">Used only for rows without a <code>password</code> column.</p>
+                 <label class="choice"><input type="radio" name="passwords" value="none" checked /> <span><strong>No password</strong><br /><span class="muted">They activate from ${emailOn ? "an invitation email or " : ""}an admin password reset. Fast for any size.</span></span></label>
+                 <label class="choice"><input type="radio" name="passwords" value="default" /> <span><strong>The new-account password setting</strong><br /><span class="muted">Each one is hashed, which is slow for thousands of users.</span></span></label>`
+              : ""
+          }
+          <div class="form-actions end" style="margin-top:18px;"><button class="primary" type="submit">Import</button></div>
         </form>
-        <progress id="csv-progress" value="0" max="1" style="width:100%; margin-top:12px;"></progress>
-        <pre id="csv-log" style="max-height:320px; overflow:auto; background:#f9fafb; border-radius:8px; padding:10px; font-size:0.8125rem; white-space:pre-wrap;"></pre>
-        ${scriptTag(CSV_IMPORT_SCRIPT)}
-      `)}`,
-      [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "Import CSV" }]
-    )
-  );
-});
+      `)}
+      ${cardSection(`
+        <h2>Progress</h2>
+        <progress id="csv-progress" value="0" max="1" class="import-progress"></progress>
+        <pre id="csv-log" class="import-log">Nothing imported yet.</pre>
+        <p class="muted" style="margin-bottom:0;">Idempotent by username and group name: running it again updates rather than duplicates.
+          Columns are described in <code>docs/csv-import.md</code>; <code>npm run test-data</code> generates a 10,000-person example.</p>
+      `)}
+    </div>
+    ${scriptTag(CSV_IMPORT_SCRIPT)}`;
+}
+
+admin.get("/admin/users/import", async (c) =>
+  c.html(layout(c, "Import users from CSV", await importPageHtml(c.env, "users"), [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "Import CSV" }]))
+);
+
+admin.get("/admin/groups/import", async (c) =>
+  c.html(layout(c, "Import groups from CSV", await importPageHtml(c.env, "groups"), [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: "Import CSV" }]))
+);
 
 admin.post("/admin/users/import", async (c) => {
   let bundle: DirectoryBundle;
@@ -1625,7 +1711,6 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
   const explicit = group
     ? new Set((await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(group.id).all<{ user_id: number }>()).results.map((m) => m.user_id))
     : new Set<number>();
-  const matched = rule ? users.filter((u) => userMatchesRule(u, rule)) : [];
 
   return `
     <form method="POST" action="${group ? `/admin/groups/${group.id}` : "/admin/groups"}">
@@ -1661,10 +1746,16 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
         ${
           isSuperAdmins
             ? `<input type="hidden" name="membership" value="static" /><p class="muted">Super Admins controls access to this console, so its membership is always assigned by hand.</p>`
-            : `<div class="row" style="justify-content:flex-start; gap:20px; margin-bottom:14px;">
-                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="static" ${isDynamic ? "" : "checked"} style="width:auto; margin:0;" /> Static - members are assigned</label>
-                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="dynamic" ${isDynamic ? "checked" : ""} style="width:auto; margin:0;" /> Dynamic - members match rules</label>
-              </div>`
+            : !group
+              ? `<div class="row" style="justify-content:flex-start; gap:20px; margin-bottom:14px;">
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="static" checked style="width:auto; margin:0;" /> Static - members are assigned</label>
+                <label style="font-weight:500; display:flex; align-items:center; gap:6px; margin:0;"><input type="radio" name="membership" value="dynamic" style="width:auto; margin:0;" /> Dynamic - members match rules</label>
+              </div>
+              <p class="muted" style="margin-top:-6px;">The type is chosen once. A dynamic group can later be frozen into a static one; a static group cannot become dynamic (create a new group instead, so assigned members are never silently dropped).</p>`
+              : isDynamic
+                ? `<input type="hidden" name="membership" value="dynamic" />
+                   <p class="muted" style="margin-top:0;"><strong>Dynamic</strong> - members match rules.</p>`
+                : `<input type="hidden" name="membership" value="static" /><p class="muted" style="margin-top:0;"><strong>Static</strong> - members are assigned.</p>`
         }
 
         <div id="dynamic-section" style="${isDynamic ? "" : "display:none;"}">
@@ -1678,22 +1769,6 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
             .map(([name, vals]) => `<datalist id="rv-${escapeHtml(name)}">${vals.map((v) => `<option value="${escapeHtml(v)}"></option>`).join("")}</datalist>`)
             .join("")}
           <script type="application/json" id="rule-data">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>
-          ${
-            group && isDynamic
-              ? `<h3 style="margin-top:20px;">Members (${matched.length})</h3>
-                ${
-                  matched.length > 0
-                    ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th></tr></thead><tbody>
-                        ${matched
-                          .slice(0, MEMBER_PREVIEW_LIMIT)
-                          .map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${u.status}">${u.status}</span></td></tr>`)
-                          .join("")}
-                      </tbody></table>
-                      ${matched.length > MEMBER_PREVIEW_LIMIT ? `<p class="muted" style="margin-top:8px;">Showing the first ${MEMBER_PREVIEW_LIMIT} of ${matched.length}. The full list is in <code>GET /api/v1/users</code> (each user's <code>groups</code>).</p>` : ""}`
-                    : '<p class="muted">Nobody matches these rules yet.</p>'
-                }`
-              : ""
-          }
         </div>
 
         <div id="static-section" style="${isDynamic ? "display:none;" : ""}">
@@ -1796,6 +1871,7 @@ admin.get("/admin/groups", async (c) => {
             <input type="hidden" name="page" value="1" />
             ${pageSizeSelect(pageSize)}
           </div>
+          <a href="/admin/groups/import"><button class="secondary" type="button">Import CSV</button></a>
           <a href="/admin/groups/new"><button class="primary" type="button">+ New group</button></a>
         </form>
       `)}
@@ -1858,17 +1934,94 @@ admin.post("/admin/groups", async (c) => {
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
+const MEMBERS_PER_PAGE = 30;
+
+/**
+ * The group's current members - assigned ones for a static group, rule matches
+ * for a dynamic one - searchable by name or UPN and paged, so "is this person
+ * in the group?" has an answer at any directory size.
+ */
+async function groupMembersPanel(env: Env, group: GroupRow, search: string, page: number): Promise<string> {
+  const rule = parseRule(group.rule);
+  const needle = search.trim().toLowerCase();
+  let total: number;
+  let rows: UserRow[];
+  if (rule) {
+    const { results } = await env.DB.prepare("SELECT * FROM users ORDER BY display_name").all<UserRow>();
+    const all = results.filter((u) => userMatchesRule(u, rule));
+    const hits = needle ? all.filter((u) => `${u.display_name} ${u.upn} ${u.username}`.toLowerCase().includes(needle)) : all;
+    total = hits.length;
+    rows = hits.slice((page - 1) * MEMBERS_PER_PAGE, page * MEMBERS_PER_PAGE);
+  } else {
+    const like = `%${needle}%`;
+    const where = "FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND (lower(u.display_name) LIKE ? OR lower(u.upn) LIKE ? OR u.username LIKE ?)";
+    total = (await env.DB.prepare(`SELECT COUNT(*) AS n ${where}`).bind(group.id, like, like, like).first<{ n: number }>())?.n ?? 0;
+    rows = (await env.DB.prepare(`SELECT u.* ${where} ORDER BY u.display_name LIMIT ? OFFSET ?`).bind(group.id, like, like, like, MEMBERS_PER_PAGE, (page - 1) * MEMBERS_PER_PAGE).all<UserRow>()).results;
+  }
+  const pages = Math.max(1, Math.ceil(total / MEMBERS_PER_PAGE));
+  const base = `/admin/groups/${group.id}?${search ? `msearch=${encodeURIComponent(search)}&` : ""}mpage=`;
+  return cardSection(`
+    <div class="card-head">
+      <h2>Members <span class="muted" style="font-weight:500;">(${total}${needle ? " matching" : ""})</span></h2>
+      <form method="GET" action="/admin/groups/${group.id}" class="inline-field" style="margin:0;">
+        <input type="search" name="msearch" value="${escapeHtml(search)}" placeholder="Find a person by name or UPN" style="margin:0; width:280px;" />
+        <button class="secondary" type="submit">Search</button>
+        ${search ? `<a href="/admin/groups/${group.id}">Clear</a>` : ""}
+      </form>
+    </div>
+    ${
+      rows.length
+        ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th></tr></thead><tbody>
+            ${rows.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td></tr>`).join("")}
+          </tbody></table>
+          ${pages > 1 ? `<div class="row" style="justify-content:space-between; margin-top:12px;">
+            <span class="muted">Page ${page} of ${pages}</span>
+            <span>${page > 1 ? `<a href="${base}${page - 1}">&larr; Previous</a>` : ""}${page > 1 && page < pages ? " &middot; " : ""}${page < pages ? `<a href="${base}${page + 1}">Next &rarr;</a>` : ""}</span>
+          </div>` : ""}`
+        : `<p class="muted">${needle ? `Nobody in this group matches "${escapeHtml(search)}".` : rule ? "Nobody matches these rules yet." : "No members yet."}</p>`
+    }
+    ${
+      rule
+        ? `<form method="POST" action="/admin/groups/${group.id}/freeze" style="margin-top:14px;" ${confirmAttrs(`The rule is removed and today's ${total && !needle ? total : "matching"} members become assigned members. Membership stops following attributes. This cannot be turned back into a dynamic group.`, { title: "Convert to a static group?", action: "Convert to static" })}>
+            <button class="secondary" type="submit">Convert to static (keep current members)</button>
+          </form>`
+        : ""
+    }
+  `);
+}
+
+admin.post("/admin/groups/:id/freeze", async (c) => {
+  const id = Number(c.req.param("id"));
+  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
+  const rule = group ? parseRule(group.rule) : null;
+  if (!group || !rule) return c.text("Only a dynamic group can be converted to static.", 400);
+  const { results } = await c.env.DB.prepare("SELECT * FROM users").all<UserRow>();
+  const ids = results.filter((u) => userMatchesRule(u, rule)).map((u) => u.id);
+  // Rule off and the matches written as assigned rows in one batch, so the
+  // group never has a moment with neither.
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE groups SET rule = '' WHERE id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id),
+    c.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) SELECT ?, value FROM json_each(?)").bind(id, JSON.stringify(ids)),
+  ]);
+  await logAudit(c.env, c.get("user"), "group.converted_to_static", group.name, { members: ids.length, rule: group.rule }, c.req.raw);
+  await syncGroupBestEffort(c, id);
+  return c.redirect(`/admin/groups/${id}?saved=1`, 302);
+});
+
 admin.get("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
   if (!group) return c.text("Not found", 404);
   const rule = parseRule(group.rule);
+  const msearch = (c.req.query("msearch") ?? "").slice(0, 100);
+  const mpage = Math.min(100_000, Math.max(1, Math.floor(Number(c.req.query("mpage")) || 1)));
 
   return c.html(
     layout(
       c,
       group.name,
-      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}`,
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupMembersPanel(c.env, group, msearch, mpage)}${await groupFormHtml(c, group, Number(c.req.query("schema")))}`,
       [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }],
       undefined,
       rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'
@@ -1893,7 +2046,11 @@ admin.post("/admin/groups/:id", async (c) => {
   // Console authority is membership of the group with exactly this name, so
   // the built-in group keeps it: renamed away, the name would be free for any
   // directory writer (SCIM, import) to claim for a group it controls.
-  const current = await c.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(id).first<{ name: string }>();
+  const current = await c.env.DB.prepare("SELECT name, rule FROM groups WHERE id = ?").bind(id).first<{ name: string; rule: string }>();
+  // The type is fixed at creation; dynamic -> static only via /freeze, which keeps the members.
+  if (current && (current.rule !== "") !== (form.rule !== "")) {
+    return c.text("A group's type cannot be changed here. A dynamic group can be converted to static from its page.", 400);
+  }
   if ((current?.name === SUPER_ADMINS_GROUP) !== (form.name === SUPER_ADMINS_GROUP)) {
     return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be renamed, and no other group can take its name.`, 400);
   }

@@ -1,5 +1,7 @@
 # FlareID
 
+![FlareID admin console](public/FlareID-screenshot-01.png)
+
 A small, standalone OpenID Connect identity provider that runs on Cloudflare
 Workers and D1. One Worker, no build step, no client-side framework: server
 -rendered HTML for login, MFA, self-service and admin, plus the OIDC endpoints.
