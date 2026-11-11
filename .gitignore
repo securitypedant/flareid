@@ -12,3 +12,9 @@ dist/
 # Generated load-test directories (scripts/generate-test-directory.mjs)
 test-data/
 conformance/suite-config.json
+
+# Local secrets (conformance suite credentials, etc.)
+openid.net.env
+*.env
+.env*
+!.env.example
