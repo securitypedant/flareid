@@ -512,8 +512,47 @@ function msSync(root) {
     opt.classList.toggle('selected', box.checked);
   });
 }
+// data-remote: options come from the server as you type (large directories),
+// keeping whatever is already ticked. data-max="1" makes it a single choice.
+function msBind(root, b) {
+  const input = root.querySelector('.multiselect-search');
+  b.addEventListener('change', () => {
+    if (root.dataset.max === '1' && b.checked) root.querySelectorAll('input[type=checkbox]').forEach(o => { if (o !== b) o.checked = false; });
+    msSync(root);
+    input.value = '';
+    root.querySelector('.multiselect-options').classList.remove('open');
+  });
+}
+const msTimers = new WeakMap();
+function msRemote(input) {
+  const root = input.closest('.multiselect');
+  const term = input.value.trim();
+  const optionsEl = root.querySelector('.multiselect-options');
+  clearTimeout(msTimers.get(root));
+  if (!term) { optionsEl.classList.remove('open'); return; }
+  msTimers.set(root, setTimeout(async () => {
+    const url = root.dataset.remote + (root.dataset.remote.includes('?') ? '&' : '?') + 'q=' + encodeURIComponent(term);
+    let items = [];
+    try { items = await (await fetch(url, { credentials: 'same-origin' })).json(); } catch (e) { items = []; }
+    if (input.value.trim() !== term) return;
+    optionsEl.querySelectorAll('.multiselect-option').forEach(o => { if (!o.querySelector('input').checked) o.remove(); else o.classList.add('hidden'); });
+    const have = new Set([...optionsEl.querySelectorAll('input')].map(i => i.value));
+    items.filter(it => !have.has(String(it.id))).forEach(it => {
+      const label = document.createElement('label');
+      label.className = 'multiselect-option';
+      const box = document.createElement('input');
+      box.type = 'checkbox'; box.name = root.dataset.name; box.value = String(it.id); box.dataset.label = it.label;
+      label.append(box, document.createTextNode(' ' + it.label));
+      optionsEl.appendChild(label);
+      msBind(root, box);
+    });
+    if (!items.length) { const none = document.createElement('div'); none.className = 'multiselect-option muted'; none.textContent = 'No matches'; optionsEl.querySelectorAll('.muted').forEach(n => n.remove()); optionsEl.appendChild(none); }
+    optionsEl.classList.add('open');
+  }, 200));
+}
 function msFilter(input) {
   const root = input.closest('.multiselect');
+  if (root.dataset.remote) return msRemote(input);
   const term = input.value.toLowerCase();
   const optionsEl = root.querySelector('.multiselect-options');
   optionsEl.classList.toggle('open', term.length > 0);
@@ -525,12 +564,7 @@ function msFilter(input) {
 document.addEventListener('input', (e) => { if (e.target.matches('.multiselect-search')) msFilter(e.target); });
 document.querySelectorAll('.multiselect').forEach(root => {
   msSync(root);
-  const input = root.querySelector('.multiselect-search');
-  root.querySelectorAll('input[type=checkbox]').forEach(b => b.addEventListener('change', () => {
-    msSync(root);
-    input.value = '';
-    root.querySelector('.multiselect-options').classList.remove('open');
-  }));
+  root.querySelectorAll('input[type=checkbox]').forEach(b => msBind(root, b));
   document.addEventListener('click', (e) => {
     if (!root.contains(e.target)) root.querySelector('.multiselect-options').classList.remove('open');
   });
@@ -984,6 +1018,25 @@ export function multiSelect(
                 `<label class="multiselect-option ${selectedIds.has(o.id) ? "selected" : ""}"><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(String(o.id))}" data-label="${escapeHtml(o.label)}" ${selectedIds.has(o.id) ? "checked" : ""} /> ${escapeHtml(o.label)}</label>`
             )
             .join("")}
+        </div>
+      </div>
+      <div class="multiselect-chips"></div>
+    </div>
+  `;
+}
+
+/**
+ * A multiSelect whose options are fetched from `url` (?q=...) as the user types:
+ * for pickers over the whole directory. `selected` is the current value(s).
+ * `single` allows one choice (posted as one field, or none when cleared).
+ */
+export function remoteMultiSelect(name: string, url: string, selected: { id: number | string; label: string }[], placeholder = "Search people...", single = false): string {
+  return `
+    <div class="multiselect" data-remote="${escapeHtml(url)}" data-name="${escapeHtml(name)}"${single ? ' data-max="1"' : ""}>
+      <div class="multiselect-field">
+        <input type="text" class="multiselect-search" placeholder="${escapeHtml(placeholder)}" autocomplete="off" />
+        <div class="multiselect-options">
+          ${selected.map((o) => `<label class="multiselect-option hidden"><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(String(o.id))}" data-label="${escapeHtml(o.label)}" checked /> ${escapeHtml(o.label)}</label>`).join("")}
         </div>
       </div>
       <div class="multiselect-chips"></div>

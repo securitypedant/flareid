@@ -3,7 +3,7 @@ import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
@@ -289,13 +289,19 @@ function employmentTypeSelect(current: string, name = "employment_type") {
 async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttributeRow[], values: Record<string, string>, excludeUserId: number | null): Promise<string> {
   if (attributes.length === 0) return '<p class="muted">This schema defines no attributes beyond identity.</p>';
 
-  const people = attributes.some((a) => a.type === "reference" && (a.ref_object ?? "user") === "user")
-    ? (
-        await c.env.DB.prepare("SELECT external_id, display_name, upn FROM users WHERE id != ? ORDER BY display_name")
-          .bind(excludeUserId ?? -1)
-          .all<{ external_id: string; display_name: string; upn: string }>()
-      ).results.map((u) => ({ value: u.external_id, label: `${u.display_name} (${u.upn})` }))
-    : [];
+  // References are picked by searching the directory on the server; only the
+  // people currently referenced are loaded here (a 10,000-person directory
+  // used to put every user in every picker).
+  const refValues = attributes.filter((a) => a.type === "reference").map((a) => values[a.name]).filter((v): v is string => Boolean(v));
+  const referenced = new Map(
+    refValues.length
+      ? (
+          await c.env.DB.prepare("SELECT external_id, display_name, upn FROM users WHERE external_id IN (SELECT value FROM json_each(?))")
+            .bind(JSON.stringify(refValues))
+            .all<{ external_id: string; display_name: string; upn: string }>()
+        ).results.map((u) => [u.external_id, `${u.display_name} (${u.upn})`])
+      : []
+  );
 
   const cells = attributes.map((attr) => {
     const value = values[attr.name] ?? "";
@@ -303,7 +309,8 @@ async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttri
     if (attr.name === "employment_status") return `<div>${label}${employmentStatusSelect(value, "attr_employment_status")}</div>`;
     if (attr.name === "employment_type") return `<div>${label}${employmentTypeSelect(value, "attr_employment_type")}</div>`;
     if (attr.type === "reference") {
-      return `<div>${label}${searchSelect(`attr_${attr.name}`, [{ value: "", label: "None" }, ...people], value, "None")}</div>`;
+      const current = value && referenced.has(value) ? [{ id: value, label: referenced.get(value)! }] : [];
+      return `<div>${label}${remoteMultiSelect(`attr_${attr.name}`, `/admin/users/lookup?key=external_id${excludeUserId ? `&exclude=${excludeUserId}` : ""}`, current, "Search people...", true)}</div>`;
     }
     return `<div>${attributeInput(attr, value)}</div>`;
   });
@@ -993,6 +1000,25 @@ async function importPageHtml(env: Env, kind: "users" | "groups"): Promise<strin
     </div>
     ${scriptTag(CSV_IMPORT_SCRIPT)}`;
 }
+
+/** Directory search for the console's pickers: up to 20 people matching ?q= by name, UPN or username. */
+admin.get("/admin/users/lookup", async (c) => {
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+  if (!q) return c.json([]);
+  const key = c.req.query("key") === "external_id" ? "external_id" : "id";
+  const exclude = Number(c.req.query("exclude")) || -1;
+  const notInGroup = Number(c.req.query("not_in_group")) || -1;
+  const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, external_id, display_name, upn FROM users
+      WHERE id != ? AND (lower(display_name) LIKE ? ESCAPE '\\' OR lower(upn) LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\')
+        AND id NOT IN (SELECT user_id FROM group_members WHERE group_id = ?)
+      ORDER BY (lower(display_name) LIKE ? ESCAPE '\\') DESC, display_name LIMIT 20`
+  )
+    .bind(exclude, like, like, like, notInGroup, `${q.replace(/[%_]/g, (m) => `\\${m}`)}%`)
+    .all<{ id: number; external_id: string; display_name: string; upn: string }>();
+  return c.json(results.map((u) => ({ id: key === "external_id" ? u.external_id : u.id, label: `${u.display_name} (${u.upn})` })));
+});
 
 admin.get("/admin/users/import", async (c) =>
   c.html(layout(c, "Import users from CSV", await importPageHtml(c.env, "users"), [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "Import CSV" }]))
@@ -1688,7 +1714,9 @@ async function ruleBuilderData(env: Env): Promise<RuleBuilderData> {
   }
 
   const names = new Set(schemas.flatMap((s) => s.attributes.map((a) => a.name)));
-  const { results: users } = await env.DB.prepare("SELECT * FROM users").all<UserRow>();
+  // Value suggestions only: a recent sample is plenty, and keeps the group
+  // page from reading the whole directory.
+  const { results: users } = await env.DB.prepare("SELECT * FROM users ORDER BY id DESC LIMIT 2000").all<UserRow>();
   const values: Record<string, string[]> = {};
   for (const name of names) {
     const distinct = new Set<string>();
@@ -1772,10 +1800,6 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
   const groupCustom = parseCustomAttributes(group?.custom_attributes);
   const reloadBase = group ? `/admin/groups/${group.id}` : "/admin/groups/new";
 
-  const { results: users } = await c.env.DB.prepare("SELECT * FROM users ORDER BY display_name").all<UserRow>();
-  const explicit = group
-    ? new Set((await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(group.id).all<{ user_id: number }>()).results.map((m) => m.user_id))
-    : new Set<number>();
 
   return `
     <form method="POST" action="${group ? `/admin/groups/${group.id}` : "/admin/groups"}">
@@ -1840,14 +1864,9 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
           ${
             group
               ? `<label>Add members</label>
-                 ${multiSelect(
-                   "add_user_ids",
-                   users.filter((u) => !explicit.has(u.id)).map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })),
-                   new Set<number>(),
-                   "Search people to add..."
-                 )}
+                 ${remoteMultiSelect("add_user_ids", `/admin/users/lookup?not_in_group=${group.id}`, [], "Search people to add...")}
                  <p class="muted" style="margin-top:-8px;">Current members are listed below, where they can be removed.</p>`
-              : multiSelect("user_ids", users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })), explicit, "Search people...")
+              : remoteMultiSelect("user_ids", "/admin/users/lookup", [], "Search people...")
           }
         </div>
 

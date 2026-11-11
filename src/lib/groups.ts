@@ -134,6 +134,25 @@ export async function resolveGroupMemberUserIds(env: Env, group: GroupRow): Prom
   return users.filter((u) => userMatchesRule(u, rule)).map((u) => u.id);
 }
 
+/**
+ * Member ids for many groups at once: one load of the directory for all the
+ * dynamic groups, instead of one per group (211 groups x 10,000 users made the
+ * SCIM groups step scan two million rows).
+ */
+export async function resolveManyGroupMemberUserIds(env: Env, groups: GroupRow[]): Promise<Map<number, number[]>> {
+  const out = new Map<number, number[]>();
+  const dynamic = groups.map((g) => [g, parseRule(g.rule)] as const).filter(([, r]) => r);
+  const users = dynamic.length ? (await env.DB.prepare("SELECT * FROM users").all<UserRow>()).results : [];
+  for (const [g, rule] of dynamic) out.set(g.id, users.filter((u) => userMatchesRule(u, rule!)).map((u) => u.id));
+  const staticIds = groups.filter((g) => !parseRule(g.rule)).map((g) => g.id);
+  if (staticIds.length) {
+    const { results } = await env.DB.prepare("SELECT group_id, user_id FROM group_members WHERE group_id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(staticIds)).all<{ group_id: number; user_id: number }>();
+    for (const id of staticIds) out.set(id, []);
+    for (const r of results) out.get(r.group_id)!.push(r.user_id);
+  }
+  return out;
+}
+
 /** Groups whose rule matches a user, for membership resolution everywhere claims need it. */
 export async function dynamicGroupNamesForUser(env: Env, user: UserRow): Promise<string[]> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();

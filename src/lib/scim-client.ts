@@ -1,3 +1,4 @@
+import { resolveManyGroupMemberUserIds } from "./groups.js";
 import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
 import { getScimConfig, getScimScope, type ScimScope } from "./settings.js";
@@ -390,15 +391,13 @@ export async function syncGroups(env: Env): Promise<{ groups: number; groupError
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
   const failures: { name: string; result: ScimResult }[] = [];
+  const members = await resolveManyGroupMemberUserIds(env, groups);
+  // SCIM ids for every user once, rather than a query per group.
+  const { results: synced } = await env.DB.prepare("SELECT id, scim_id, upn FROM users WHERE scim_id IS NOT NULL").all<{ id: number; scim_id: string; upn: string }>();
+  const byId = new Map(synced.map((u) => [u.id, { scimId: u.scim_id, upn: u.upn }]));
   for (const group of groups) {
-    const memberIds = await resolveGroupMemberUserIds(env, group);
-    const { results: memberRows } = memberIds.length
-      ? await env.DB.prepare(
-          `SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL`
-        )
-          .bind(JSON.stringify(memberIds))
-          .all<{ scimId: string; upn: string }>()
-      : { results: [] as { scimId: string; upn: string }[] };
+    const memberIds = members.get(group.id) ?? [];
+    const memberRows = memberIds.map((id) => byId.get(id)).filter((m): m is { scimId: string; upn: string } => Boolean(m));
 
     const result = await pushGroup(env, group, memberRows);
     if (!result.ok) {

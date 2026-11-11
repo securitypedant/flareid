@@ -114,3 +114,21 @@ describe("admin console feedback 2", () => {
     expect(out.headers.get("Clear-Site-Data")).toBeNull();
   });
 });
+
+describe("large-directory pickers", () => {
+  it("searches people on the server and keeps existing members out of the add list", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "Crew" }], users: [{ username: "nina.okafor", given_name: "Nina", family_name: "Okafor", status: "active", groups: ["Crew"] }, { username: "nils.berg", given_name: "Nils", family_name: "Berg", status: "active" }] } });
+    const gid = (await env.DB.prepare("SELECT id FROM groups WHERE name = 'Crew'").first<{ id: number }>())!.id;
+    const cookie = await adminCookie();
+    const all = (await (await get("/admin/users/lookup?q=ni", cookie)).json()) as { id: number; label: string }[];
+    expect(all.map((u) => u.label).join()).toContain("Nina Okafor");
+    expect(all.map((u) => u.label).join()).toContain("Nils Berg");
+    const add = (await (await get(`/admin/users/lookup?q=ni&not_in_group=${gid}`, cookie)).json()) as { label: string }[];
+    expect(add.map((u) => u.label)).toContain("Nils Berg (nils.berg@horizon.test)");
+    expect(add.map((u) => u.label).join()).not.toContain("Nina Okafor");
+    const page = await (await get(`/admin/groups/${gid}`, cookie)).text();
+    expect(page).toContain(`data-remote="/admin/users/lookup?not_in_group=${gid}"`);
+    expect(page).not.toContain('value="' + (await env.DB.prepare("SELECT id FROM users WHERE username = 'nils.berg'").first<{ id: number }>())!.id + '" data-label');
+  });
+});
