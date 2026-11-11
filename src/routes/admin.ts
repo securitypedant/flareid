@@ -1785,15 +1785,16 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
               : multiSelect("user_ids", users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })), explicit, "Search people...")
           }
         </div>
-        ${
-          group && isDynamic
-            ? `<button class="secondary" type="submit" formaction="/admin/groups/${group.id}/freeze" formnovalidate style="margin-top:14px;"
-                ${confirmAttrs("The rule is removed and today's matching members become assigned members. Membership stops following attributes. This cannot be turned back into a dynamic group.", { title: "Convert to a static group?", action: "Convert to static" })}>Convert to static (keep current members)</button>`
-            : ""
-        }
+
       `)}
 
       <div class="form-actions end" style="margin-bottom:18px;">
+        ${
+          group && isDynamic
+            ? `<button class="secondary" type="submit" formaction="/admin/groups/${group.id}/freeze" formnovalidate
+                ${confirmAttrs("The rule is removed and today's matching members become assigned members. Membership stops following attributes. This cannot be turned back into a dynamic group.", { title: "Convert to a static group?", action: "Convert to static" })}>Convert to static</button>`
+            : ""
+        }
         ${
           group
             ? `<button class="danger" type="submit" formaction="/admin/groups/${group.id}/delete" formnovalidate

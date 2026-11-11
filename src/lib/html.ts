@@ -196,7 +196,7 @@ const STYLES = `
 
   /* ------------------------------------------------------------- forms */
   label { display: block; font-size: 0.8125rem; font-weight: 600; margin-bottom: 5px; color: var(--fi-ink); }
-  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea {
+  input[type=text], input[type=search], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea {
     width: 100%; padding: 9px 12px; border: 1px solid var(--fi-line-strong); border-radius: 8px; font-size: 0.875rem;
     box-sizing: border-box; margin-bottom: 16px; font-family: inherit; color: var(--fi-ink); background: var(--fi-surface);
     transition: border-color 0.12s, box-shadow 0.12s;
@@ -206,7 +206,7 @@ const STYLES = `
     outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18);
   }
   /* One height for every single-line control, so date pickers and selects line up with text inputs in a grid. */
-  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select { height: 38px; }
+  input[type=text], input[type=search], input[type=email], input[type=password], input[type=number], input[type=date], select { height: 38px; }
   input[type=date] { padding-right: 8px; }
   input[type=date]::-webkit-calendar-picker-indicator {
     cursor: pointer; padding: 5px; margin-left: 6px; border-radius: 6px; opacity: 0.5;

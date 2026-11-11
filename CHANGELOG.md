@@ -6,6 +6,14 @@ may break things.
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-11-11
+
+### Changed
+
+- The group members search box uses the same field styling as the rest of the
+  console (it was an unstyled search input).
+- "Convert to static" sits with Delete group, Cancel and Save.
+
 ## [3.1.1] - 2026-11-11
 
 ### Changed
