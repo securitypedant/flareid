@@ -6,6 +6,33 @@ may break things.
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-11
+
+Migration `0018`.
+
+### Added
+
+- **Email on/off switch** (Admin → Integrations → Email): stops all sending
+  and hides recovery and invitations, keeping the From address and name.
+- **The OIDC `claims` request parameter** (Core 5.5): claims asked for the
+  id_token or /userinfo are released there, within the client's allowlist.
+
+### Security
+
+- **Reusing an authorization code revokes the tokens it issued** (RFC 6749
+  4.1.2): redeemed codes are kept, marked used, until they expire.
+
+### Changed
+
+- **Large directories:** people pickers (group members, manager and other
+  references) search on the server as you type instead of loading every user;
+  a 10,000-user group page went from about 2 MB to under 80 KB. SCIM group
+  sync resolves all groups from one load of the directory.
+- OpenID Foundation Basic OP plan: all conditions pass except the two
+  screenshot-only error-page tests, the email-in-id_token and profile-claims
+  warnings (kept deliberately, see `conformance/expected-failures.json`), and
+  the two re-login tests that need screenshots uploaded by hand.
+
 ## [3.3.2] - 2026-11-11
 
 ### Added

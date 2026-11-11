@@ -4,7 +4,7 @@ import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex, randomToken } from "../lib/tokens.js";
 import { atHash, signIdToken } from "../lib/jwt.js";
-import { acrFor, effectiveClaimGroups } from "../lib/oidc.js";
+import { acrFor, effectiveClaimGroups, parseRequestedClaims } from "../lib/oidc.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
@@ -95,7 +95,7 @@ token.post("/token", async (c) => {
       authTime: authCode.auth_time ?? Math.floor(Date.now() / 1000),
       sid: authCode.sid,
       codeHash,
-      claimGroups: authCode.claims ? (JSON.parse(authCode.claims) as string[]) : [],
+      claims: authCode.claims,
     });
   }
 
@@ -138,7 +138,7 @@ token.post("/token", async (c) => {
       authTime: row.auth_time ?? Math.floor(new Date(row.created_at).getTime() / 1000),
       sid: row.sid,
       refreshFamily: row.family_id ?? row.token_hash,
-      claimGroups: row.claims ? (JSON.parse(row.claims) as string[]) : [],
+      claims: row.claims,
     });
   }
 
@@ -179,7 +179,7 @@ async function issueTokenResponse(
   userId: number,
   scope: string,
   amr: string[],
-  opts: { nonce?: string; authTime: number; sid: string | null; refreshFamily?: string; codeHash?: string; claimGroups?: string[] }
+  opts: { nonce?: string; authTime: number; sid: string | null; refreshFamily?: string; codeHash?: string; claims?: string | null }
 ) {
   const user = await getUserById(env, userId);
   if (!user) return Response.json({ error: "server_error" }, { status: 500 });
@@ -187,7 +187,7 @@ async function issueTokenResponse(
   const groups = await getUserGroupNames(env, userId);
   const managerEmail = await getManagerEmail(env, user.manager_external_id);
   const amrJson = JSON.stringify(amr);
-  const claimsJson = opts.claimGroups?.length ? JSON.stringify(opts.claimGroups) : null;
+  const claimsJson = opts.claims ?? null;
 
   const accessToken = randomToken(32);
   const accessTokenHash = await sha256Hex(accessToken);
@@ -244,7 +244,7 @@ async function issueTokenResponse(
       customAttributes: parseCustomAttributes(user.custom_attributes),
       nonce: opts.nonce,
     },
-    effectiveClaimGroups(client, scope, opts.claimGroups),
+    effectiveClaimGroups(client, scope, parseRequestedClaims(opts.claims).id_token),
     { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ? await oidcSid(opts.sid) : undefined, atHash: await atHash(accessToken) }
   );
 

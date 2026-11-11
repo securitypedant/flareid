@@ -75,7 +75,7 @@ export async function finishOidcAuthorize(
       JSON.stringify(amr),
       authTime,
       sid,
-      req.claimGroups?.length ? JSON.stringify(req.claimGroups) : null
+      req.claimGroups ? JSON.stringify(req.claimGroups) : null
     )
     .run();
   // Remembered for front-channel logout: ending this session notifies this client.
@@ -145,7 +145,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   const claimGroups = claimGroupsFromParameter(url.searchParams.get("claims"));
   if (claimGroups === "invalid") return fail("invalid_request", "The claims parameter is not valid JSON.");
   const pendingRequest: PendingAuthorizeRequest = {
-    ...(claimGroups.length ? { claimGroups } : {}),
+    ...(claimGroups.id_token.length || claimGroups.userinfo.length ? { claimGroups } : {}),
     clientId,
     redirectUri,
     scope,

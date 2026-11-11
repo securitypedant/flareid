@@ -35,7 +35,7 @@ oidcSession.get("/consent/:id", async (c) => {
   const client = await getClientByClientId(c.env, found.pending.request.clientId);
   if (!client) return renderAuthMessage(c, 400, { title: "This app is no longer registered", message: "Ask your administrator.", action: null });
 
-  const groups = [...effectiveClaimGroups(client, found.pending.request.scope, found.pending.request.claimGroups)];
+  const groups = [...effectiveClaimGroups(client, found.pending.request.scope, [...(found.pending.request.claimGroups?.id_token ?? []), ...(found.pending.request.claimGroups?.userinfo ?? [])])];
   const offline = found.pending.request.scope.split(/\s+/).includes("offline_access");
   const appName = c.get("appName");
   return c.html(

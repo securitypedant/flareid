@@ -4,7 +4,7 @@ import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { buildClaims } from "../lib/jwt.js";
 import { getClientByClientId } from "../lib/db.js";
-import { effectiveClaimGroups } from "../lib/oidc.js";
+import { effectiveClaimGroups, parseRequestedClaims } from "../lib/oidc.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 
 export const userinfo = new Hono<{ Bindings: Env }>();
@@ -48,7 +48,7 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
   const amr: string[] = JSON.parse(row.amr || '["pwd"]');
   // The same release rule as the id_token: the token's scopes, within the client's allowlist.
   const client = await getClientByClientId(c.env, row.client_id);
-  const release = client ? effectiveClaimGroups(client, row.scope, row.claims ? (JSON.parse(row.claims) as string[]) : []) : new Set<never>();
+  const release = client ? effectiveClaimGroups(client, row.scope, parseRequestedClaims(row.claims).userinfo) : new Set<never>();
 
   return c.json({
     sub: String(user.id),

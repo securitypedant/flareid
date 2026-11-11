@@ -66,14 +66,28 @@ const CLAIM_NAME_GROUPS: Record<string, ClaimGroup> = {
   custom: "custom",
 };
 
+/** Claim groups asked for with the `claims` parameter, per target (Core 5.5). */
+export interface RequestedClaims {
+  id_token: string[];
+  userinfo: string[];
+}
+
+/** Reads what was stored for a code or token: the per-target object (or a legacy flat array, meaning both). */
+export function parseRequestedClaims(stored: string | null | undefined): RequestedClaims {
+  if (!stored) return { id_token: [], userinfo: [] };
+  const v = JSON.parse(stored) as unknown;
+  if (Array.isArray(v)) return { id_token: v.map(String), userinfo: v.map(String) };
+  const o = v as Partial<RequestedClaims>;
+  return { id_token: (o.id_token ?? []).map(String), userinfo: (o.userinfo ?? []).map(String) };
+}
+
 /**
- * Parses the OIDC `claims` request parameter (Core 5.5) into claim groups.
- * Both the id_token and userinfo members count: FlareID releases the same
- * groups in both. Unknown claims are ignored, as the spec allows; malformed
- * JSON is reported so /authorize can refuse it.
+ * Parses the OIDC `claims` request parameter (Core 5.5) into claim groups for
+ * the id_token and for /userinfo, separately. Unknown claims are ignored, as
+ * the spec allows; malformed JSON is reported so /authorize can refuse it.
  */
-export function claimGroupsFromParameter(raw: string | null): string[] | "invalid" {
-  if (!raw) return [];
+export function claimGroupsFromParameter(raw: string | null): RequestedClaims | "invalid" {
+  if (!raw) return { id_token: [], userinfo: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw.slice(0, 4096));
@@ -81,11 +95,12 @@ export function claimGroupsFromParameter(raw: string | null): string[] | "invali
     return "invalid";
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "invalid";
-  const names = ["id_token", "userinfo"].flatMap((m) => {
+  const groupsOf = (m: "id_token" | "userinfo") => {
     const member = (parsed as Record<string, unknown>)[m];
-    return member && typeof member === "object" && !Array.isArray(member) ? Object.keys(member) : [];
-  });
-  return [...new Set(names.map((n) => CLAIM_NAME_GROUPS[n]).filter((g): g is ClaimGroup => Boolean(g)))];
+    const names = member && typeof member === "object" && !Array.isArray(member) ? Object.keys(member) : [];
+    return [...new Set(names.map((n) => CLAIM_NAME_GROUPS[n]).filter((g): g is ClaimGroup => Boolean(g)))];
+  };
+  return { id_token: groupsOf("id_token"), userinfo: groupsOf("userinfo") };
 }
 
 /** The authentication context class, from how the user signed in. */

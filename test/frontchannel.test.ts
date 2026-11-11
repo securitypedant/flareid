@@ -103,8 +103,11 @@ describe("conformance fixes 2", () => {
     // scope=openid alone releases no profile; asking for name with `claims` does.
     const plain = (await (await redeem(await codeFor(cookie))).json()) as { access_token: string };
     expect(((await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${plain.access_token}` } })).json()) as Record<string, unknown>).name).toBeUndefined();
-    const asked = (await (await redeem(await codeFor(cookie, { claims: JSON.stringify({ userinfo: { name: { essential: true } } }) }))).json()) as { access_token: string };
+    const asked = (await (await redeem(await codeFor(cookie, { claims: JSON.stringify({ userinfo: { name: { essential: true } } }) }))).json()) as { access_token: string; id_token: string };
     expect(((await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${asked.access_token}` } })).json()) as Record<string, unknown>).name).toBeTruthy();
+    // Asked for in userinfo only: not in the id_token.
+    const idClaims = JSON.parse(atob(asked.id_token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))) as Record<string, unknown>;
+    expect(idClaims.name).toBeUndefined();
 
     const bad = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ response_type: "code", client_id: "app", redirect_uri: "https://app.test/cb", scope: "openid", state: "s", claims: "{nope" })}`, { headers: { Cookie: cookie }, redirect: "manual" });
     expect(new URL(bad.headers.get("Location")!).searchParams.get("error")).toBe("invalid_request");
