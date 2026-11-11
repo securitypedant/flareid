@@ -28,7 +28,7 @@ on upgrade.
   and "Password and a second factor" to start, assigned to groups with a
   priority, plus a default for everyone else. A passkey satisfies every policy.
 - **Factors** (Admin → Security → Factors): turn the authenticator app and
-  passkeys on or off, with enrolment counts; Duo, email one-time codes and
+  passkeys on or off, with enrolment counts; email one-time codes and
   security questions are listed as planned.
 - **A passkey as the second factor.** Someone with only a passkey who signs in
   with their password is asked for the passkey, not sent to set up an

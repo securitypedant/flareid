@@ -12,7 +12,7 @@ import { getSetting, setSetting } from "./settings.js";
  *
  * Factors are the second-factor methods the instance offers. Today:
  * authenticator app (TOTP, with backup codes) and passkeys. The list is the
- * extension point for Duo, email one-time codes and the like.
+ * extension point for email one-time codes and the like.
  */
 
 export type Requirement = "password" | "mfa";
@@ -30,7 +30,6 @@ export interface AuthPolicyRow {
 export const FACTORS = [
   { key: "totp", label: "Authenticator app", description: "Six-digit codes from an app such as 1Password, Google Authenticator or Authy, with single-use backup codes.", available: true },
   { key: "passkey", label: "Passkeys", description: "WebAuthn credentials on a device or security key. Multi-factor on their own, and can replace the password.", available: true },
-  { key: "duo", label: "Duo", description: "Push approval through Duo Security.", available: false },
   { key: "email_otp", label: "Email one-time code", description: "A code sent to the user's email address.", available: false },
   { key: "security_questions", label: "Security questions", description: "Answers chosen by the user at enrolment.", available: false },
 ] as const;
