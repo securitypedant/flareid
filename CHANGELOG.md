@@ -6,6 +6,15 @@ may break things.
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-11-11
+
+### Added
+
+- **Sync log** on Admin → Integrations → SCIM provisioning: a line for every
+  batch of users and for the groups as a full sync runs (counts, timings and
+  the first failures with their HTTP status), and the recent SCIM events when
+  the page loads. The groups are now their own step of a full sync.
+
 ## [3.3.1] - 2026-11-11
 
 ### Fixed

@@ -242,29 +242,50 @@ const SYNC_CURSOR_KEY = "scim_sync_cursor";
  * not, the next call (manual, or the cron via continueScimSync) picks it up;
  * once a sync completes the cursor is cleared, so the next call starts afresh.
  */
-export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<{ users: number; userErrors: number; groups: number; groupErrors: number; complete: boolean; remainingUsers: number }> {
+export interface SyncStep {
+  /** What this call did: a batch of users, or the groups. */
+  phase: "users" | "groups";
+  users: number;
+  userErrors: number;
+  groups: number;
+  groupErrors: number;
+  complete: boolean;
+  remainingUsers: number;
+  /** Up to five failures from this step, for the sync log. */
+  errors: { target: string; status?: number; error: string }[];
+}
+
+export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<SyncStep> {
   await drainScimDeprovisionQueue(env);
-  const stored = opts.restart ? 0 : Number((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value) || 0;
-  const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(stored, SYNC_BATCH).all<UserRow>();
-  let userErrors = 0;
-  for (const user of users) {
-    const result = await pushUser(env, user);
-    if (!result.ok) userErrors++;
-  }
   const setCursor = (v: string) =>
     env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .bind(SYNC_CURSOR_KEY, v, new Date().toISOString())
       .run();
-  if (users.length === SYNC_BATCH) {
-    const last = users[users.length - 1]!.id;
-    await setCursor(String(last));
-    const remaining = (await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE id > ?").bind(last).first<{ n: number }>())?.n ?? 0;
-    // Exactly a batch left nothing behind: carry straight on to the groups.
-    if (remaining > 0) return { users: users.length, userErrors, groups: 0, groupErrors: 0, complete: false, remainingUsers: remaining };
+  const stored = opts.restart ? "" : ((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(SYNC_CURSOR_KEY).first<{ value: string }>())?.value ?? "");
+  const errors: SyncStep["errors"] = [];
+  const note = (target: string, r: ScimResult) => {
+    if (!r.ok && errors.length < 5) errors.push({ target, status: r.status, error: String(r.error ?? "").slice(0, 300) });
+  };
+
+  // Last step: the groups, once every user has been pushed (members need their SCIM ids).
+  if (stored === "groups") {
+    const { groups, groupErrors, failures } = await syncGroups(env);
+    for (const f of failures) note(f.name, f.result);
+    await setCursor("");
+    return { phase: "groups", users: 0, userErrors: 0, groups, groupErrors, complete: true, remainingUsers: 0, errors };
   }
-  const { groups, groupErrors } = await syncGroups(env);
-  await setCursor("");
-  return { users: users.length, userErrors, groups, groupErrors, complete: true, remainingUsers: 0 };
+
+  const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(Number(stored) || 0, SYNC_BATCH).all<UserRow>();
+  let userErrors = 0;
+  for (const user of users) {
+    const result = await pushUser(env, user);
+    if (!result.ok) userErrors++;
+    note(user.upn, result);
+  }
+  const last = users.length ? users[users.length - 1]!.id : Number(stored) || 0;
+  const remaining = (await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE id > ?").bind(last).first<{ n: number }>())?.n ?? 0;
+  await setCursor(remaining > 0 ? String(last) : "groups");
+  return { phase: "users", users: users.length, userErrors, groups: 0, groupErrors: 0, complete: false, remainingUsers: remaining, errors };
 }
 
 /** Cron: carries on a full sync that a previous invocation left unfinished. */
@@ -365,9 +386,10 @@ export async function drainScimDeprovisionQueue(env: Env): Promise<{ removed: nu
   return { removed: removedUsers + removedGroups, removedUsers, removedGroups, failed, remaining };
 }
 
-export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number }> {
+export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number; failures: { name: string; result: ScimResult }[] }> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
+  const failures: { name: string; result: ScimResult }[] = [];
   for (const group of groups) {
     const memberIds = await resolveGroupMemberUserIds(env, group);
     const { results: memberRows } = memberIds.length
@@ -379,10 +401,13 @@ export async function syncGroups(env: Env): Promise<{ groups: number; groupError
       : { results: [] as { scimId: string; upn: string }[] };
 
     const result = await pushGroup(env, group, memberRows);
-    if (!result.ok) groupErrors++;
+    if (!result.ok) {
+      groupErrors++;
+      if (failures.length < 5) failures.push({ name: group.name, result });
+    }
   }
 
-  return { groups: groups.length, groupErrors };
+  return { groups: groups.length, groupErrors, failures };
 }
 
 export async function isScimConfigured(env: Env): Promise<boolean> {

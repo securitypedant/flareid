@@ -2213,16 +2213,37 @@ document.addEventListener("click", async function (e) {
       p.className = data.ok ? "success" : "error";
       p.textContent = data.message;
     } else {
-      // A full sync runs in batches: keep asking until the server says it is complete.
+      // A full sync runs in batches: keep asking until the server says it is complete,
+      // writing a line to the sync log for every step.
       status.appendChild(p);
       p.className = "muted";
+      const logEl = document.getElementById("scim-log");
+      const stamp = () => new Date().toLocaleTimeString();
+      const line = (text) => {
+        if (logEl.dataset.live !== "1") { logEl.textContent = ""; logEl.dataset.live = "1"; }
+        logEl.textContent += "[" + stamp() + "] " + text + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+      line("Full sync started.");
       let users = 0, userErrors = 0, first = true, data;
       do {
-        data = await (await fetch("/admin/scim/sync" + (first ? "?restart=1" : ""), { method: "POST" })).json();
+        const t0 = Date.now();
+        const res = await fetch("/admin/scim/sync" + (first ? "?restart=1" : ""), { method: "POST" });
+        if (!res.ok) { line("Stopped: the server answered " + res.status + ". Press Sync all now to carry on from here."); throw new Error("HTTP " + res.status); }
+        data = await res.json();
         first = false;
-        users += data.users; userErrors += data.userErrors;
-        p.textContent = data.complete ? "" : "Pushed " + users.toLocaleString() + " user(s), " + data.remainingUsers.toLocaleString() + " to go...";
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        if (data.phase === "users") {
+          users += data.users; userErrors += data.userErrors;
+          line("Users: pushed " + data.users + (data.userErrors ? " (" + data.userErrors + " failed)" : "") + " in " + secs + " s; " + users.toLocaleString() + " done, " + data.remainingUsers.toLocaleString() + " to go.");
+          if (data.remainingUsers === 0) line("Users done. Pushing groups...");
+        } else {
+          line("Groups: pushed " + data.groups + (data.groupErrors ? " (" + data.groupErrors + " failed)" : "") + " in " + secs + " s.");
+        }
+        (data.errors || []).forEach((e) => line("  ! " + e.target + (e.status ? " (HTTP " + e.status + ")" : "") + ": " + e.error));
+        p.textContent = data.complete ? "" : (data.phase === "users" && data.remainingUsers > 0 ? "Pushed " + users.toLocaleString() + " user(s), " + data.remainingUsers.toLocaleString() + " to go..." : "Pushing groups...");
       } while (!data.complete);
+      line("Full sync complete: " + users.toLocaleString() + " user(s)" + (userErrors ? " (" + userErrors + " failed)" : "") + ", " + data.groups + " group(s)" + (data.groupErrors ? " (" + data.groupErrors + " failed)" : "") + ".");
       p.className = userErrors || data.groupErrors ? "error" : "success";
       p.textContent = "Pushed " + users.toLocaleString() + " user(s)" + (userErrors ? " (" + userErrors + " failed)" : "") + " and " + data.groups + " group(s)" + (data.groupErrors ? " (" + data.groupErrors + " failed)" : "") + ".";
     }
@@ -2525,6 +2546,21 @@ admin.get("/admin/integrations/api-keys", async (c) => {
 admin.get("/admin/integrations/scim", async (c) => {
   const config = await getScimConfig(c.env);
   const scope = await getScimScope(c.env);
+  // The last SCIM events (syncs, failures, scope changes), newest last, as the log's starting content.
+  const { results: scimEvents } = await c.env.DB.prepare(
+    "SELECT at, actor_upn, action, target, details FROM audit_log WHERE action LIKE 'scim.%' ORDER BY id DESC LIMIT 15"
+  ).all<{ at: string; actor_upn: string | null; action: string; target: string | null; details: string | null }>();
+  const scimLog = scimEvents
+    .reverse()
+    .map((e) => {
+      const d = e.details ? (JSON.parse(e.details) as Record<string, unknown>) : {};
+      const summary =
+        e.action === "scim.sync_all"
+          ? `full sync: ${d.users ?? 0} user(s) in the last batch, ${d.groups ?? 0} group(s)${d.userErrors || d.groupErrors ? `, ${Number(d.userErrors ?? 0) + Number(d.groupErrors ?? 0)} failed` : ""}`
+          : `${e.action.replace(/^scim\./, "").replace(/_/g, " ")}${e.target ? `: ${e.target}` : ""}`;
+      return `[${e.at.slice(0, 19).replace("T", " ")}] ${summary}${e.actor_upn ? ` (${e.actor_upn})` : ""}`;
+    })
+    .join("\n");
   const { results: scopeGroups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
   return c.html(
     layout(
@@ -2575,6 +2611,8 @@ admin.get("/admin/integrations/scim", async (c) => {
             <button class="primary" type="button" id="scim-sync-btn" data-scim="sync">Sync all now</button>
           </div>
           <div id="scim-status"></div>
+          <h3 style="margin-top:18px;">Sync log</h3>
+          <pre id="scim-log" class="import-log">${escapeHtml(scimLog || "No syncs yet.")}</pre>
         `)}
       </div>
 
@@ -4099,16 +4137,10 @@ admin.post("/admin/scim/test", async (c) => {
 admin.post("/admin/scim/sync", async (c) => {
   // One batch per request; the page calls again until `complete` (see SCIM_SCRIPT).
   const summary = await syncAll(c.env, { restart: c.req.query("restart") === "1" });
-  if (summary.complete || summary.userErrors) await logAudit(c.env, c.get("user"), "scim.sync_all", undefined, summary, c.req.raw);
-  return c.json({
-    ok: summary.userErrors === 0 && summary.groupErrors === 0,
-    complete: summary.complete,
-    users: summary.users,
-    userErrors: summary.userErrors,
-    groups: summary.groups,
-    groupErrors: summary.groupErrors,
-    remainingUsers: summary.remainingUsers,
-  });
+  if (summary.complete || summary.userErrors || summary.groupErrors) {
+    await logAudit(c.env, c.get("user"), summary.complete ? "scim.sync_all" : "scim.sync_batch_errors", undefined, { ...summary }, c.req.raw);
+  }
+  return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
 });
 
 // ---------- Audit log ----------

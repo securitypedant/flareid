@@ -45,3 +45,35 @@ describe("hardening", () => {
     expect(keys).toEqual(["api:203.0.113.9:client:rp-a", "api:203.0.113.9:client:rp-b"]);
   });
 });
+
+describe("SCIM full sync in steps", () => {
+  it("runs user batches, then the groups, and reports each step for the sync log", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "Crew" }], users: [{ username: "a1", status: "active", groups: ["Crew"] }, { username: "a2", status: "active" }] } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] } } });
+    let n = 0;
+    const { vi } = await import("vitest");
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://scim.test/")) return new Response("unexpected", { status: 500 });
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      if (method === "GET") return Response.json({ schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"], totalResults: 0, Resources: [] });
+      return Response.json({ id: `remote-${++n}` }, { status: method === "POST" ? 201 : 200 });
+    });
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const { createSession } = await import("../src/lib/sessions.js");
+    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const step = async (restart: boolean) =>
+      (await (await worker.fetch(new Request(`${BASE}/admin/scim/sync${restart ? "?restart=1" : ""}`, { method: "POST", headers: { Origin: BASE, Cookie: cookie } }), env, createExecutionContext())).json()) as Record<string, unknown>;
+    const first = await step(true);
+    expect(first).toMatchObject({ phase: "users", complete: false, remainingUsers: 0, userErrors: 0 });
+    expect(first.users).toBeGreaterThanOrEqual(3);
+    const second = await step(false);
+    expect(second).toMatchObject({ phase: "groups", complete: true, groupErrors: 0 });
+    expect(second.groups).toBeGreaterThanOrEqual(1);
+    spy.mockRestore();
+    const page = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
+    expect(page).toContain('id="scim-log"');
+    expect(page).toContain("full sync:");
+  });
+});

@@ -689,7 +689,7 @@ api.post("/api/v1/scim/test", requireScope("settings:write"), async (c) => {
 
 api.post("/api/v1/scim/sync", requireScope("settings:write"), async (c) => {
   const summary = await syncAll(c.env);
-  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, summary, c.req.raw);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, { ...summary }, c.req.raw);
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
 });
 
