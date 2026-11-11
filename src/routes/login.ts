@@ -1,3 +1,4 @@
+import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { Hono } from "hono";
@@ -75,8 +76,14 @@ login.get("/login", async (c) => {
 
 login.post("/logout", async (c) => {
   const session = await getSession(c.req.raw, c.env);
+  const targets = session ? await frontchannelTargets(c.env, session.id) : [];
   if (session) await revokeSession(c.env, session.id);
   c.header("Set-Cookie", clearSessionCookie());
+  if (targets.length) {
+    const { html, frameSrc } = frontchannelLogoutPage(c.get("appName"), targets, "/login");
+    c.header("X-FlareID-Frame-Src", frameSrc);
+    return c.html(html);
+  }
   // No Clear-Site-Data: Chrome can stall a navigation for a long time clearing
   // the cache, so sign-out appeared to hang. Signed-in pages are sent
   // Cache-Control: no-store (security-headers.ts), so nothing is cached anyway.

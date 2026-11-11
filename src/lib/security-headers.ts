@@ -101,6 +101,9 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   // follows a form POST, and the login POST ends in a redirect to whatever
   // redirect_uri a relying party registered (or an auto-POST to a SAML ACS) -
   // any host, sometimes http://localhost.
+  // The front-channel logout page names the relying-party origins it frames.
+  const frameSrc = h.get("X-FlareID-Frame-Src");
+  h.delete("X-FlareID-Frame-Src");
   if ((h.get("Content-Type") ?? "").startsWith("text/html")) {
     h.set(
       "Content-Security-Policy",
@@ -113,6 +116,7 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
         "object-src 'none'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
+        ...(frameSrc ? [`frame-src ${frameSrc}`] : []),
       ].join("; ")
     );
   } else {

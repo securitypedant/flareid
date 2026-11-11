@@ -1,3 +1,4 @@
+import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { authPage, renderAuthMessage } from "../lib/login-views.js";
@@ -120,11 +121,17 @@ async function resolveLogout(c: Context<{ Bindings: Env }>, req: LogoutRequest) 
 
 async function signOut(c: Context<{ Bindings: Env }>, redirect: string | null, clientName?: string) {
   const session = await getSession(c.req.raw, c.env);
+  const targets = session ? await frontchannelTargets(c.env, session.id) : [];
   if (session) {
     await revokeSession(c.env, session.id);
-    await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.rp_initiated", clientName, undefined, c.req.raw);
+    await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.rp_initiated", clientName, { frontchannel: targets.length }, c.req.raw);
   }
   c.header("Set-Cookie", clearSessionCookie());
+  if (targets.length) {
+    const { html, frameSrc } = frontchannelLogoutPage(c.get("appName") ?? "FlareID", targets, redirect);
+    c.header("X-FlareID-Frame-Src", frameSrc);
+    return c.html(html);
+  }
   if (redirect) return c.redirect(redirect, 302);
   return renderAuthMessage(c, 200, { title: "You're signed out", message: "You have been signed out of this sign-in service.", action: { href: "/login", label: "Sign in again" } });
 }

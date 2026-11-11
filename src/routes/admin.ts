@@ -2594,6 +2594,9 @@ function clientSettingsFields(client?: OAuthClientRow): string {
     <label for="post_logout_redirect_uris">Post-logout redirect URIs (one per line)</label>
     <textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" rows="2" placeholder="https://app.example.com/signed-out">${escapeHtml(logoutUris.join("\n"))}</textarea>
     <p class="muted" style="margin-top:-8px;">Where RP-initiated logout (<code>/oidc/logout</code>) may send the browser afterwards. Anything else is refused.</p>
+    <label for="frontchannel_logout_uri">Front-channel logout URI</label>
+    <input type="text" id="frontchannel_logout_uri" name="frontchannel_logout_uri" value="${escapeHtml(client?.frontchannel_logout_uri ?? "")}" placeholder="https://app.example.com/logout/frontchannel" />
+    <p class="muted" style="margin-top:-8px;">Loaded in a hidden frame (with <code>iss</code> and <code>sid</code>) when the user signs out of FlareID, so the app can end its own session. https only.</p>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
@@ -2612,7 +2615,17 @@ function readClientSettings(body: Record<string, string | File | (string | File)
         .map((s) => s.trim())
         .filter((u) => u && isValidPostLogoutUri(u))
     ),
+    frontchannelLogoutUri: validFrontchannelUri(String(body.frontchannel_logout_uri ?? "").trim()),
   };
+}
+
+/** https only (frames from an http page would be blocked anyway); anything else is dropped. */
+export function validFrontchannelUri(u: string): string {
+  try {
+    return u && new URL(u).protocol === "https:" ? new URL(u).toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 admin.get("/admin/clients/new", async (c) => {
@@ -2677,6 +2690,7 @@ admin.post("/admin/clients", async (c) => {
   )
     .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris)
     .run();
+  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, clientId).run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.created", name, undefined, c.req.raw);
 
@@ -2749,6 +2763,7 @@ admin.post("/admin/clients/:id", async (c) => {
   await c.env.DB.prepare("UPDATE oauth_clients SET name = ?, redirect_uris = ?, trusted = ?, allowed_claims = ?, post_logout_redirect_uris = ? WHERE id = ?")
     .bind(name, JSON.stringify(redirectUris), settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris, id)
     .run();
+  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE id = ?").bind(settings.frontchannelLogoutUri, id).run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.updated", name, undefined, c.req.raw);
 

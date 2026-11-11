@@ -75,6 +75,10 @@ export async function finishOidcAuthorize(
       sid
     )
     .run();
+  // Remembered for front-channel logout: ending this session notifies this client.
+  if (sid) {
+    await env.DB.prepare("INSERT OR IGNORE INTO session_clients (session_id, client_id, created_at) VALUES (?, ?, ?)").bind(sid, req.clientId, new Date().toISOString()).run();
+  }
 
   const redirect = new URL(req.redirectUri);
   redirect.searchParams.set("code", code);

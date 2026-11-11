@@ -1,3 +1,4 @@
+import { validFrontchannelUri } from "./admin.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from "../lib/api-auth.js";
@@ -580,6 +581,7 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
     trusted?: boolean;
     allowed_claims?: string[] | null;
     post_logout_redirect_uris?: string[];
+    frontchannel_logout_uri?: string;
   }>(c);
   const isPublic = body.client_type === "public";
   if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
@@ -595,6 +597,8 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
   const badLogout = postLogoutList.find((u) => !isValidPostLogoutUri(u));
   if (badLogout) return c.json(badRequest(`post_logout_redirect_uri "${badLogout}" must be https (or http on a loopback host).`), 400);
   const postLogout = JSON.stringify(postLogoutList);
+  const fcl = body.frontchannel_logout_uri === undefined ? undefined : validFrontchannelUri(String(body.frontchannel_logout_uri).trim());
+  if (body.frontchannel_logout_uri && !fcl) return c.json(badRequest("frontchannel_logout_uri must be an https URL."), 400);
   const name = String(body.name ?? "").trim();
   if (!name) return c.json(badRequest("name is required."), 400);
 
@@ -628,7 +632,8 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
     )
       .bind(name, JSON.stringify(redirectUris), clientSecretHash, isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout, existing.id)
       .run();
-    await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
+    if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
+  await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris });
   }
 
@@ -639,6 +644,7 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
     .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout)
     .run();
 
+  if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({

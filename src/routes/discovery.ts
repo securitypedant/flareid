@@ -16,6 +16,8 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     introspection_endpoint: `${issuer}/introspect`,
     revocation_endpoint: `${issuer}/revoke`,
     end_session_endpoint: `${issuer}/oidc/logout`,
+    frontchannel_logout_supported: true,
+    frontchannel_logout_session_supported: true,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code", "refresh_token"],
