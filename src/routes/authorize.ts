@@ -1,3 +1,4 @@
+import { claimGroupsFromParameter } from "../lib/oidc.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
@@ -58,8 +59,8 @@ export async function finishOidcAuthorize(
   const code = randomToken(24);
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   await env.DB.prepare(
-    `INSERT INTO auth_codes (code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at, amr, auth_time, sid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO auth_codes (code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at, amr, auth_time, sid, claims)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       code,
@@ -73,7 +74,8 @@ export async function finishOidcAuthorize(
       expiresAt,
       JSON.stringify(amr),
       authTime,
-      sid
+      sid,
+      req.claimGroups?.length ? JSON.stringify(req.claimGroups) : null
     )
     .run();
   // Remembered for front-channel logout: ending this session notifies this client.
@@ -140,7 +142,10 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   if (prompts.has("none") && prompts.size > 1) return fail("invalid_request", "prompt=none cannot be combined with other values.");
   const maxAge = maxAgeRaw !== null && /^\d+$/.test(maxAgeRaw) ? Number(maxAgeRaw) : undefined;
 
+  const claimGroups = claimGroupsFromParameter(url.searchParams.get("claims"));
+  if (claimGroups === "invalid") return fail("invalid_request", "The claims parameter is not valid JSON.");
   const pendingRequest: PendingAuthorizeRequest = {
+    ...(claimGroups.length ? { claimGroups } : {}),
     clientId,
     redirectUri,
     scope,

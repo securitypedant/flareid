@@ -77,3 +77,36 @@ describe("conformance fixes", () => {
     expect(err.searchParams.get("state")).toBe("s1");
   });
 });
+
+describe("conformance fixes 2", () => {
+  async function codeFor(cookie: string, extra: Record<string, string> = {}) {
+    const params = { response_type: "code", client_id: "app", redirect_uri: "https://app.test/cb", scope: "openid", state: "s", nonce: "n", ...extra };
+    const r = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams(params)}`, { headers: { Cookie: cookie }, redirect: "manual" });
+    return new URL(r.headers.get("Location")!).searchParams.get("code")!;
+  }
+  const redeem = (code: string) =>
+    SELF.fetch(`${BASE}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${btoa(`app:${"s".repeat(32)}`)}` }, body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: "https://app.test/cb" }).toString() });
+
+  it("revokes the tokens a reused code issued, and honours the claims parameter", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"] } });
+    const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, uid, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+
+    const code = await codeFor(cookie);
+    const first = (await (await redeem(code)).json()) as { access_token: string };
+    expect((await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${first.access_token}` } })).status).toBe(200);
+    const again = await redeem(code);
+    expect(again.status).toBe(400);
+    expect((await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${first.access_token}` } })).status).toBe(401);
+
+    // scope=openid alone releases no profile; asking for name with `claims` does.
+    const plain = (await (await redeem(await codeFor(cookie))).json()) as { access_token: string };
+    expect(((await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${plain.access_token}` } })).json()) as Record<string, unknown>).name).toBeUndefined();
+    const asked = (await (await redeem(await codeFor(cookie, { claims: JSON.stringify({ userinfo: { name: { essential: true } } }) }))).json()) as { access_token: string };
+    expect(((await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${asked.access_token}` } })).json()) as Record<string, unknown>).name).toBeTruthy();
+
+    const bad = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ response_type: "code", client_id: "app", redirect_uri: "https://app.test/cb", scope: "openid", state: "s", claims: "{nope" })}`, { headers: { Cookie: cookie }, redirect: "manual" });
+    expect(new URL(bad.headers.get("Location")!).searchParams.get("error")).toBe("invalid_request");
+  });
+});

@@ -33,6 +33,7 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
     scope: string;
     expires_at: string;
     amr: string;
+    claims: string | null;
   }>();
 
   if (!row || new Date(row.expires_at).getTime() < Date.now()) {
@@ -47,7 +48,7 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
   const amr: string[] = JSON.parse(row.amr || '["pwd"]');
   // The same release rule as the id_token: the token's scopes, within the client's allowlist.
   const client = await getClientByClientId(c.env, row.client_id);
-  const release = client ? effectiveClaimGroups(client, row.scope) : new Set<never>();
+  const release = client ? effectiveClaimGroups(client, row.scope, row.claims ? (JSON.parse(row.claims) as string[]) : []) : new Set<never>();
 
   return c.json({
     sub: String(user.id),

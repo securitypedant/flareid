@@ -13,6 +13,8 @@ export interface PendingAuthorizeRequest {
   prompt?: string;
   /** OIDC `max_age`, seconds: an older session must re-authenticate. */
   maxAge?: number;
+  /** Claim groups named by the OIDC `claims` request parameter. */
+  claimGroups?: string[];
 }
 
 export interface PendingSamlRequest {

@@ -31,7 +31,7 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     ],
     acr_values_supported: ACR_VALUES,
     prompt_values_supported: ["none", "login", "consent"],
-    claims_parameter_supported: false,
+    claims_parameter_supported: true,
     request_parameter_supported: false,
     request_uri_parameter_supported: false,
     token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
