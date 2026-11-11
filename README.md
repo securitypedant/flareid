@@ -18,7 +18,7 @@ happens to run on Cloudflare's platform.
 
 - **OIDC**: `/authorize`, `/token` (authorization_code + refresh_token, PKCE),
   `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`,
-  `/.well-known/openid-configuration`, RP-initiated logout (`/oidc/logout`).
+  `/.well-known/openid-configuration`, RP-initiated and front-channel logout.
   Confidential and public (PKCE-only) clients, a consent screen for clients not
   marked trusted, a per-client claim allowlist, and `prompt`, `max_age`,
   `auth_time`, `acr`, `at_hash`. Works with Cloudflare Access's Generic OIDC
@@ -27,7 +27,7 @@ happens to run on Cloudflare's platform.
   per-user TOTP MFA, backup codes, trusted devices, and a setting to require
   MFA for everyone. Email password recovery and invitations (Cloudflare Email
   Sending), session lifetime limits, and edge rate limits on every anonymous
-  route.
+  route. Passkeys (WebAuthn) for passwordless, multi-factor sign-in.
 - **Directory**: users, flat groups (no nesting), multiple UPN domains, and
   HR-style attributes - job title, department, manager, employee number, hire
   date, employment status/type, location - exposed as claims so relying parties

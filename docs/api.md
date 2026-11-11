@@ -298,7 +298,8 @@ Scope: `directory:read` / `clients:write`.
   "client_type": "confidential | public",
   "trusted": true,
   "allowed_claims": ["profile", "email", "groups"],
-  "post_logout_redirect_uris": ["https://app.example.com/signed-out"]
+  "post_logout_redirect_uris": ["https://app.example.com/signed-out"],
+  "frontchannel_logout_uri": "https://app.example.com/logout/frontchannel"
 }
 ```
 
@@ -314,6 +315,9 @@ Scope: `directory:read` / `clients:write`.
 - `post_logout_redirect_uris` are exact-match targets for RP-initiated logout
   at `/oidc/logout` (the discovery document's `end_session_endpoint`); each
   must be `https`, or `http` on a loopback host.
+- `frontchannel_logout_uri` (https) is loaded in a hidden iframe, with `iss`
+  and `sid`, when a user who signed in to this client signs out of FlareID
+  (OpenID Connect Front-Channel Logout 1.0).
 
 Supplying `client_id` and `client_secret` is what makes a single-pass Terraform
 apply possible: Terraform needs the credential to create the Access identity
@@ -352,7 +356,8 @@ supplied keep their values.
   "signing_certs": ["PEM blocks, or bare base64 DER"],
   "slo_url": "https://sp.example.com/saml/slo",
   "encrypt_assertions": false,
-  "encryption_cert": "PEM, required when encrypt_assertions is true"
+  "encryption_cert": "PEM, required when encrypt_assertions is true",
+  "subject_id": "'' | subject-id | pairwise-id"
 }
 ```
 
@@ -361,8 +366,13 @@ signed LogoutRequests only, bound to the browser's session by SessionIndex).
 With `encrypt_assertions`, the signed assertion is encrypted to
 `encryption_cert` (AES-256-GCM, RSA-OAEP).
 
+`subject_id` releases the SAML subject identifier attribute: `pairwise-id`
+(different for every SP) or `subject-id` (the same for every SP), both scoped
+to the user's UPN domain.
+
 `POST /saml/service-providers/import-metadata` with `{ "xml": "<EntityDescriptor ...>",
-"name": "optional" }` creates or updates the SP from its metadata: entity ID,
+"name": "optional" }`, or `{ "url": "https://..." }` to register the SP's
+published metadata (re-read daily), creates or updates the SP from its metadata: entity ID,
 HTTP-POST ACS URLs, SLO URL, signing and encryption certificates. Answers
 `{ "ok": true, "id", "entity_id", "acs_urls", "slo_url", "encryption" }`.
 

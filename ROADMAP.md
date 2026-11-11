@@ -76,15 +76,10 @@ deciding whether to point real traffic at this.
 ## P1 - to call it a real identity provider
 
 Items 9-17, 19 (scripted check), 20 and most of 21 shipped in v3.0.0 (see Done).
-Still open:
+Items 12 (front-channel logout), 18 (passkeys), 19 (the official suite, as a
+CI workflow) and 21 (saml2int metadata refresh, subject-id/pairwise-id,
+published metadata) shipped in v3.2.0. Still open:
 
-12. **Front-channel logout** to relying parties (RP-initiated logout is done).
-18. **WebAuthn / passkeys.** Phishing-resistant MFA is table stakes now.
-19. **The OpenID Foundation's official suite** in CI against a disposable
-    deployment (today: `npm run oidc:conformance`, a scripted check of the
-    Basic OP rules, run against `idp.tmesandbox.com` at 61/0).
-21. **SAML v2 saml2int items:** metadata-driven SP registry refresh,
-    `subject-id`/`pairwise-id`, the full published-metadata requirements.
 22. **Large-directory performance:** a group's member picker still lists every
     user, and listing groups resolves each dynamic group with a full users scan
     (bounded per request, flagged by the audit as needing validation at scale).

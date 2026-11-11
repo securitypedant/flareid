@@ -6,6 +6,42 @@ may break things.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-11
+
+Migrations `0013` to `0016`. Applying `0013` forgets remembered devices once
+(they are now stored hashed), so affected users answer one MFA prompt.
+
+### Added
+
+- **Passkeys (WebAuthn).** Add them on My account; "Sign in with a passkey" on
+  the login page needs no username. A passkey sign-in is multi-factor
+  (`amr` `hwk`+`mfa`) and satisfies the require-MFA setting. Sign counters that
+  do not advance are refused.
+- **Front-channel logout** (OpenID Connect Front-Channel Logout 1.0): clients
+  may register a `frontchannel_logout_uri`, loaded with `iss` and `sid` when
+  the user signs out of FlareID.
+- **OpenID Foundation conformance suite** as a CI workflow (manual and weekly)
+  against a deployed instance: Basic OP, Config OP and RP-initiated logout.
+- **SAML saml2int:** SP metadata registered from a URL and refreshed daily;
+  `subject-id` and `pairwise-id` attributes (chosen per SP, or from the SP's
+  `subject-id:req`); IdP metadata with `validUntil`, `cacheDuration`,
+  `shibmd:Scope`, `mdui:DisplayName` and a technical contact.
+
+### Security
+
+- OAuth back-channel rate limits (`/token`, `/introspect`, `/revoke`) are keyed
+  per client as well as per address, so relying parties behind a shared egress
+  cannot throttle each other.
+- Trusted-device cookies are stored hashed.
+- The client address comes only from `CF-Connecting-IP`.
+- Imported passwords must meet the password policy.
+- CI actions are pinned to commit SHAs.
+
+### Changed
+
+- A full SCIM sync runs in batches of 200 users per invocation; the hourly
+  cron finishes an unfinished one.
+
 ## [3.1.2] - 2026-11-11
 
 ### Changed
