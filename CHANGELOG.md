@@ -6,6 +6,25 @@ may break things.
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-11
+
+### Changed
+
+- **Group page**: name, description and Membership come first again, with the
+  members list below. For a static group, Membership is now only where you add
+  people; current members are removed from the members list. "Convert to
+  static" sits in Membership for a dynamic group.
+- The groups list toolbar (search, type, page size, Import CSV, New group)
+  stays on one row.
+- The top bar links to the GitHub repository.
+- Sign-in pages always use the light, branded theme.
+
+### Fixed
+
+- **Sign out appeared to hang** in Chrome: the `Clear-Site-Data: "cache"`
+  header could stall the navigation. It is gone; signed-in pages are already
+  sent `Cache-Control: no-store`.
+
 ## [3.1.0] - 2026-11-11
 
 ### Added

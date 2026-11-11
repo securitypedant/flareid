@@ -137,7 +137,9 @@ describe("caching", () => {
     expect((await SELF.fetch(`${BASE}/login`)).headers.get("Cache-Control")).toBe("no-store");
     expect((await SELF.fetch(`${BASE}/jwks.json`)).headers.get("Cache-Control")).not.toBe("no-store");
     const logout = await SELF.fetch(`${BASE}/logout`, { method: "POST", headers: FORM, redirect: "manual" });
-    expect(logout.headers.get("Clear-Site-Data")).toBe('"cache"');
+    // Sign-out redirects straight away: no Clear-Site-Data (it stalled the navigation in Chrome).
+    expect(logout.status).toBe(302);
+    expect(logout.headers.get("Clear-Site-Data")).toBeNull();
   });
 });
 

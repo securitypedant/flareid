@@ -1772,13 +1772,25 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
         </div>
 
         <div id="static-section" style="${isDynamic ? "display:none;" : ""}">
-          ${multiSelect(
-            "user_ids",
-            users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })),
-            explicit,
-            "Search people..."
-          )}
+          ${
+            group
+              ? `<label>Add members</label>
+                 ${multiSelect(
+                   "add_user_ids",
+                   users.filter((u) => !explicit.has(u.id)).map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })),
+                   new Set<number>(),
+                   "Search people to add..."
+                 )}
+                 <p class="muted" style="margin-top:-8px;">Current members are listed below, where they can be removed.</p>`
+              : multiSelect("user_ids", users.map((u) => ({ id: u.id, label: `${u.display_name} (${u.upn})` })), explicit, "Search people...")
+          }
         </div>
+        ${
+          group && isDynamic
+            ? `<button class="secondary" type="submit" formaction="/admin/groups/${group.id}/freeze" formnovalidate style="margin-top:14px;"
+                ${confirmAttrs("The rule is removed and today's matching members become assigned members. Membership stops following attributes. This cannot be turned back into a dynamic group.", { title: "Convert to a static group?", action: "Convert to static" })}>Convert to static (keep current members)</button>`
+            : ""
+        }
       `)}
 
       <div class="form-actions end" style="margin-bottom:18px;">
@@ -1815,13 +1827,16 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
     const clash = (parseRule(rule)?.all ?? []).map((cond) => cond.field.replace(/^custom\./, "")).find((f) => editable.has(f));
     if (clash) throw new Error(`"${clash}" is user-editable in a schema, so it cannot drive group membership. Turn off "User can edit" for it first.`);
   }
+  // A new group posts its full member list; an existing static group posts only
+  // additions (current members are removed one by one from the members panel).
   const userIds = dynamic ? [] : list(body.user_ids).map(Number).filter(Boolean);
+  const addUserIds = dynamic ? [] : list(body.add_user_ids).map(Number).filter(Boolean);
 
   const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "group"));
   const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
   // Conform: only the schema's attributes are kept.
   const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
-  return { name, description, rule, userIds, schemaId, custom };
+  return { name, description, rule, userIds, addUserIds, schemaId, custom };
 }
 
 admin.get("/admin/groups", async (c) => {
@@ -1862,17 +1877,19 @@ admin.get("/admin/groups", async (c) => {
       "Groups",
       `
       ${cardSection(`
-        <form method="GET" class="row between" style="margin-bottom:0; gap:12px; flex-wrap:wrap;">
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <input type="text" name="search" placeholder="Search groups" value="${escapeHtml(search)}" style="max-width:300px; margin-bottom:0;" />
+        <form method="GET" class="list-toolbar">
+          <div class="list-toolbar-filters">
+            <input type="text" name="search" placeholder="Search groups" value="${escapeHtml(search)}" />
             <select name="type" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
               ${[["", "All types"], ["static", "Static"], ["dynamic", "Dynamic"]].map(([v, l]) => `<option value="${v}" ${v === typeFilter ? "selected" : ""}>${l}</option>`).join("")}
             </select>
             <input type="hidden" name="page" value="1" />
             ${pageSizeSelect(pageSize)}
           </div>
-          <a href="/admin/groups/import"><button class="secondary" type="button">Import CSV</button></a>
-          <a href="/admin/groups/new"><button class="primary" type="button">+ New group</button></a>
+          <div class="list-toolbar-actions">
+            <a href="/admin/groups/import"><button class="secondary" type="button">Import CSV</button></a>
+            <a href="/admin/groups/new"><button class="primary" type="button">+ New group</button></a>
+          </div>
         </form>
       `)}
       ${cardSection(`
@@ -1971,8 +1988,10 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
     </div>
     ${
       rows.length
-        ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th></tr></thead><tbody>
-            ${rows.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td></tr>`).join("")}
+        ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th>${rule ? "" : "<th></th>"}</tr></thead><tbody>
+            ${rows.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>${
+              rule ? "" : `<td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/members/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td>`
+            }</tr>`).join("")}
           </tbody></table>
           ${pages > 1 ? `<div class="row" style="justify-content:space-between; margin-top:12px;">
             <span class="muted">Page ${page} of ${pages}</span>
@@ -1980,15 +1999,22 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
           </div>` : ""}`
         : `<p class="muted">${needle ? `Nobody in this group matches "${escapeHtml(search)}".` : rule ? "Nobody matches these rules yet." : "No members yet."}</p>`
     }
-    ${
-      rule
-        ? `<form method="POST" action="/admin/groups/${group.id}/freeze" style="margin-top:14px;" ${confirmAttrs(`The rule is removed and today's ${total && !needle ? total : "matching"} members become assigned members. Membership stops following attributes. This cannot be turned back into a dynamic group.`, { title: "Convert to a static group?", action: "Convert to static" })}>
-            <button class="secondary" type="submit">Convert to static (keep current members)</button>
-          </form>`
-        : ""
-    }
   `);
 }
+
+admin.post("/admin/groups/:id/members/:uid/remove", async (c) => {
+  const id = Number(c.req.param("id"));
+  const uid = Number(c.req.param("uid"));
+  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
+  if (!group || group.rule) return c.text("Members of a dynamic group follow its rule.", 400);
+  if (group.name === SUPER_ADMINS_GROUP && uid === c.get("user").id) return c.text("You cannot remove yourself from Super Admins.", 400);
+  const user = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
+  await c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(id, uid).run();
+  await logAudit(c.env, c.get("user"), "group.member_removed", group.name, { user: user?.upn }, c.req.raw);
+  await syncGroupBestEffort(c, id);
+  if (await scimConfigured(c.env)) await pushUsersById(c.env, [uid]);
+  return c.redirect(`/admin/groups/${id}?saved=1`, 302);
+});
 
 admin.post("/admin/groups/:id/freeze", async (c) => {
   const id = Number(c.req.param("id"));
@@ -2021,7 +2047,7 @@ admin.get("/admin/groups/:id", async (c) => {
     layout(
       c,
       group.name,
-      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupMembersPanel(c.env, group, msearch, mpage)}${await groupFormHtml(c, group, Number(c.req.query("schema")))}`,
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}${await groupMembersPanel(c.env, group, msearch, mpage)}`,
       [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }],
       undefined,
       rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'
@@ -2055,6 +2081,7 @@ admin.post("/admin/groups/:id", async (c) => {
     return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be renamed, and no other group can take its name.`, 400);
   }
   const { results: before } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
+  if (!form.rule) form.userIds = [...new Set([...before.map((b) => b.user_id), ...form.userIds, ...form.addUserIds])];
 
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(

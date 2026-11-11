@@ -79,6 +79,15 @@ const STYLES = `
   .theme-toggle { background: none; border: 1px solid var(--fi-line); border-radius: 6px; color: var(--fi-muted); cursor: pointer; font-size: 0.8125rem; padding: 4px 10px; }
   .theme-toggle:hover { color: var(--fi-ink); background: var(--fi-line-soft); }
   .brand-version { color: var(--fi-faint); font-weight: 500; margin-left: 4px; }
+  .topbar nav a.github-link { display: inline-flex; align-items: center; padding: 6px 8px; color: var(--fi-muted); }
+  .topbar nav a.github-link:hover { color: var(--fi-ink); }
+
+  /* List toolbars: filters left, actions right, one row while it fits. */
+  .list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0; }
+  .list-toolbar-filters, .list-toolbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .list-toolbar input[type=text], .list-toolbar input[type=search] { width: 260px; margin: 0; }
+  .list-toolbar select, .list-toolbar .searchselect { width: auto; margin: 0; }
+  .list-toolbar-actions a { display: inline-flex; }
 
   /* CSV import */
   .import-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
@@ -1002,6 +1011,9 @@ export function nav(appName: string, isAdmin: boolean): string {
       <span class="brand-tagline">Open source, Cloudflare hosted IDP <span class="brand-version">(v${VERSION})</span></span>
     </a>
     <nav>
+      <a class="github-link" href="https://github.com/securitypedant/flareid" target="_blank" rel="noopener noreferrer" title="FlareID on GitHub" aria-label="FlareID on GitHub">
+        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
       <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme">Theme</button>
       <a href="/account">My account</a>
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
@@ -1019,15 +1031,17 @@ export function page(
   extraStyles = "",
   extraBodyHtml = ""
 ): string {
+  // Pages without the top bar are the branded sign-in pages: always light.
+  const themed = Boolean(navHtml);
   return `<!doctype html>
-<html>
+<html${themed ? "" : ' data-theme="light"'}>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)} - ${escapeHtml(appName)}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
-  ${scriptTag(THEME_INIT_SCRIPT)}
+  ${themed ? scriptTag(THEME_INIT_SCRIPT) : ""}
   <style>${STYLES}</style>
   ${extraStyles ? `<style>${extraStyles}</style>` : ""}
 </head>

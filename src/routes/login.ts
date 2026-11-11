@@ -75,9 +75,9 @@ login.post("/logout", async (c) => {
   const session = await getSession(c.req.raw, c.env);
   if (session) await revokeSession(c.env, session.id);
   c.header("Set-Cookie", clearSessionCookie());
-  // Drop anything the browser kept from the signed-in pages (back/forward
-  // cache included). Not "cookies": that would also forget remembered devices.
-  c.header("Clear-Site-Data", '"cache"');
+  // No Clear-Site-Data: Chrome can stall a navigation for a long time clearing
+  // the cache, so sign-out appeared to hang. Signed-in pages are sent
+  // Cache-Control: no-store (security-headers.ts), so nothing is cached anyway.
   return c.redirect("/login", 302);
 });
 

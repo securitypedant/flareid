@@ -125,7 +125,6 @@ async function signOut(c: Context<{ Bindings: Env }>, redirect: string | null, c
     await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.rp_initiated", clientName, undefined, c.req.raw);
   }
   c.header("Set-Cookie", clearSessionCookie());
-  c.header("Clear-Site-Data", '"cache"');
   if (redirect) return c.redirect(redirect, 302);
   return renderAuthMessage(c, 200, { title: "You're signed out", message: "You have been signed out of this sign-in service.", action: { href: "/login", label: "Sign in again" } });
 }
