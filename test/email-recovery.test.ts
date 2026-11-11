@@ -132,3 +132,18 @@ describe("invitations", () => {
     expect((await call(email, second!)).status).toBe(200);
   });
 });
+
+describe("email switch", () => {
+  it("switches sending off and on without losing the From address", async () => {
+    const { setEmailSettings, setEmailEnabled, isEmailConfigured, getEmailSettings } = await import("../src/lib/email.js");
+    const { env: e } = await import("cloudflare:test");
+    const withBinding = { ...e, EMAIL: { send: async () => ({ messageId: "x" }) } } as unknown as typeof e;
+    await setEmailSettings(withBinding, { fromAddress: "no-reply@horizon.test", fromName: "FlareID" });
+    expect(await isEmailConfigured(withBinding)).toBe(true);
+    await setEmailEnabled(withBinding, false);
+    expect(await isEmailConfigured(withBinding)).toBe(false);
+    expect((await getEmailSettings(withBinding)).fromAddress).toBe("no-reply@horizon.test");
+    await setEmailEnabled(withBinding, true);
+    expect(await isEmailConfigured(withBinding)).toBe(true);
+  });
+});

@@ -34,8 +34,16 @@ export async function setEmailSettings(env: Env, settings: EmailSettings): Promi
   return clean;
 }
 
+/** The on/off switch, kept apart from the From address so switching off loses no configuration. */
+export async function isEmailEnabled(env: Env): Promise<boolean> {
+  return (await getSetting(env, "email_enabled")) !== "false";
+}
+export async function setEmailEnabled(env: Env, on: boolean): Promise<void> {
+  await setSetting(env, "email_enabled", on ? "true" : "false");
+}
+
 export async function isEmailConfigured(env: Env): Promise<boolean> {
-  return Boolean(env.EMAIL) && Boolean((await getEmailSettings(env)).fromAddress);
+  return Boolean(env.EMAIL) && Boolean((await getEmailSettings(env)).fromAddress) && (await isEmailEnabled(env));
 }
 
 /** Where email for this account goes: its contact address if it has one, else its UPN. */
@@ -55,6 +63,7 @@ export type SendResult = { ok: true; messageId: string } | { ok: false; error: s
 export async function sendEmail(env: Env, message: OutboundEmail): Promise<SendResult> {
   const { fromAddress, fromName } = await getEmailSettings(env);
   if (!env.EMAIL || !fromAddress) return { ok: false, error: "Email is not configured." };
+  if (!(await isEmailEnabled(env))) return { ok: false, error: "Email is switched off (Admin -> Integrations -> Email)." };
   try {
     const result = await env.EMAIL.send({
       to: message.to,

@@ -48,7 +48,7 @@ import {
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
-import { getEmailSettings, isEmailAddress, isEmailConfigured, recipientFor, sendEmail, setEmailSettings } from "../lib/email.js";
+import { getEmailSettings, isEmailAddress, isEmailConfigured, isEmailEnabled, recipientFor, sendEmail, setEmailEnabled, setEmailSettings } from "../lib/email.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
@@ -2369,7 +2369,8 @@ admin.get("/admin/integrations", async (c) => {
 admin.get("/admin/integrations/email", async (c) => {
   const settings = await getEmailSettings(c.env);
   const hasBinding = Boolean(c.env.EMAIL);
-  const ready = hasBinding && Boolean(settings.fromAddress);
+  const enabled = await isEmailEnabled(c.env);
+  const ready = hasBinding && Boolean(settings.fromAddress) && enabled;
   const notice = c.req.query("test");
   return c.html(
     layout(
@@ -2383,8 +2384,13 @@ admin.get("/admin/integrations/email", async (c) => {
         ${integrationIntro("Outbound email through Cloudflare Email Sending, for password recovery and invitations. With email set up, the sign-in page offers &ldquo;Forgot your password?&rdquo; and user pages can send invitation and reset links instead of an administrator relaying a password.")}
         <table style="margin-bottom:14px;"><tbody>
           <tr><th style="width:180px;">Worker binding</th><td>${hasBinding ? '<span class="badge badge-active">EMAIL bound</span>' : '<span class="badge badge-disabled">Missing</span> &mdash; add <code>"send_email": [{ "name": "EMAIL" }]</code> to wrangler.jsonc and redeploy'}</td></tr>
-          <tr><th>Status</th><td>${ready ? '<span class="badge badge-active">Sending</span>' : '<span class="badge badge-disabled">Off</span>'}</td></tr>
+          <tr><th>Status</th><td>${ready ? '<span class="badge badge-active">Sending</span>' : !enabled ? '<span class="badge badge-disabled">Switched off</span> &mdash; the settings below are kept' : '<span class="badge badge-disabled">Off</span>'}</td></tr>
         </tbody></table>
+        <form method="POST" action="/admin/email/enabled" style="margin-bottom:16px;">
+          <input type="hidden" name="enabled" value="${enabled ? "0" : "1"}" />
+          <button class="${enabled ? "secondary" : "primary"}" type="submit">${enabled ? "Switch email off" : "Switch email on"}</button>
+          <span class="muted" style="margin-left:8px;">${enabled ? "Stops all sending and hides &ldquo;Forgot your password?&rdquo; and invitation buttons, keeping the address and name." : "Email is off: nothing is sent, and recovery and invitations are hidden."}</span>
+        </form>
         <form method="POST" action="/admin/email">
           <div class="field-row">
             <div>
@@ -2396,7 +2402,7 @@ admin.get("/admin/integrations/email", async (c) => {
               <input type="text" id="from_name" name="from_name" value="${escapeHtml(settings.fromName)}" maxlength="80" placeholder="${escapeHtml(c.get("appName"))}" />
             </div>
           </div>
-          <p class="muted" style="margin-top:-4px;">The address must be on a domain onboarded to Cloudflare Email Sending (<code>wrangler email sending enable yourdomain.com</code>). Leave it empty to switch email off.</p>
+          <p class="muted" style="margin-top:-4px;">The address must be on a domain onboarded to Cloudflare Email Sending (<code>wrangler email sending enable yourdomain.com</code>).</p>
           <div class="row" style="justify-content:flex-start; gap:10px;">
             <button class="primary" type="submit">Save</button>
             ${ready ? '<button class="secondary" type="submit" formaction="/admin/email/test">Send a test email to me</button>' : ""}
@@ -2407,6 +2413,13 @@ admin.get("/admin/integrations/email", async (c) => {
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "Email" }]
     )
   );
+});
+
+admin.post("/admin/email/enabled", async (c) => {
+  const on = String((await c.req.parseBody()).enabled) === "1";
+  await setEmailEnabled(c.env, on);
+  await logAudit(c.env, c.get("user"), "settings.email_switched", undefined, { enabled: on }, c.req.raw);
+  return c.redirect("/admin/integrations/email?saved=1", 302);
 });
 
 admin.post("/admin/email", async (c) => {

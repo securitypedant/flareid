@@ -270,14 +270,15 @@ export interface LoginAppearance {
 }
 
 export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
-  const [gradient, subtitle, cursorTrail, fromAddress] = await Promise.all([
+  const [gradient, subtitle, cursorTrail, fromAddress, emailSwitch] = await Promise.all([
     getLoginGradient(env),
     getLoginSubtitle(env),
     getCursorTrail(env),
     getSetting(env, "email_from_address"),
+    getSetting(env, "email_enabled"),
   ]);
   // Same rule as isEmailConfigured() in email.ts, inlined: email.ts imports this module.
-  return { gradient, subtitle, cursorTrail, recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) };
+  return { gradient, subtitle, cursorTrail, recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false" };
 }
 
 /**
