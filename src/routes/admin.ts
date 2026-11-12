@@ -1,3 +1,11 @@
+import { recordRateAttempt } from "../lib/rate-limit.js";
+import { verifyPassword } from "../lib/password.js";
+import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
+import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
+import { userHasPasskey } from "../lib/auth-policy.js";
+import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINUTES } from "../lib/step-up.js";
+import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
+import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { adminRolesFor, ROLE_GROUP_NAMES, visibleSections, type AdminRole } from "../lib/admin-roles.js";
 import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
@@ -112,6 +120,102 @@ admin.use("/admin/*", async (c, next) => {
     if (path === "/admin/groups" && ROLE_GROUP_NAMES.includes(name)) return forbid("creating an admin role group");
   }
   return next();
+});
+
+/** Sensitive actions need a recent sign-in or re-authentication (step-up.ts). */
+admin.use("/admin/*", async (c, next) => {
+  if (!isSensitive(c.req.method, c.req.path) || (await isFreshlyAuthenticated(c.env, c.get("sessionId")))) return next();
+  // Back to the page the form was on, which the user resubmits after confirming.
+  const ref = c.req.header("Referer");
+  const back = ref && new URL(ref).origin === new URL(c.req.url).origin ? new URL(ref).pathname + new URL(ref).search : "/admin";
+  return c.redirect(`/admin/reauth?next=${encodeURIComponent(back)}`, 303);
+});
+
+function safeNext(next: string | undefined): string {
+  return next && next.startsWith("/admin") && !next.startsWith("//") ? next : "/admin";
+}
+
+admin.get("/admin/reauth", async (c) => {
+  const user = c.get("user");
+  const next = safeNext(c.req.query("next"));
+  const hasPasskey = await userHasPasskey(c.env, user.id);
+  return c.html(
+    layout(
+      c,
+      "Confirm it's you",
+      cardSection(`
+        ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+        <p class="muted" style="margin-top:0;">This action changes credentials or security settings, so it needs you to have signed in within the last ${STEP_UP_WINDOW_MINUTES} minutes. Confirm, then repeat what you were doing.</p>
+        <form method="POST" action="/admin/reauth">
+          <input type="hidden" name="next" value="${escapeHtml(next)}" />
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password" style="max-width:320px;" />
+          ${user.mfa_enabled ? `<label for="code">Authenticator code or backup code</label><input type="text" id="code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px;" />` : ""}
+          <div class="form-actions"><button class="primary" type="submit">Confirm</button>${cancelLink(next)}</div>
+        </form>
+        ${
+          hasPasskey
+            ? `<div class="auth-passkey" style="max-width:320px;">
+                <button class="secondary" type="button" data-passkey-login data-param="next" data-flow="${escapeHtml(next)}" data-options="/admin/reauth/passkey/options" data-post="/admin/reauth/passkey" style="width:100%;">Or confirm with a passkey</button>
+                <p class="muted" id="passkey-login-status" style="margin:6px 0 0; font-size:0.8125rem;"></p>
+              </div>${scriptTag(PASSKEY_LOGIN_SCRIPT)}`
+            : ""
+        }
+      `),
+      [{ label: "Admin", href: "/admin" }, { label: "Confirm it's you" }]
+    )
+  );
+});
+
+async function stepUpAttemptsExceeded(c: { env: Env; get: (k: "user") => UserRow }): Promise<boolean> {
+  const policy = await getRateLimitPolicy(c.env);
+  return recordRateAttempt(c.env, `admin:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
+}
+
+admin.post("/admin/reauth", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const next = safeNext(String(body.next ?? ""));
+  const fail = async (msg: string) => {
+    await logAudit(c.env, user, "admin.step_up_failed", user.upn, undefined, c.req.raw);
+    return c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&error=${encodeURIComponent(msg)}`, 302);
+  };
+  if (await stepUpAttemptsExceeded(c)) return fail("Too many attempts. Please wait a few minutes.");
+  if (!(await verifyPassword(String(body.password ?? "").slice(0, 1024), user))) return fail("That password is not right.");
+  if (user.mfa_enabled) {
+    const code = String(body.code ?? "").slice(0, 12);
+    const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+    const ok = (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) || (await verifyAndConsumeBackupCode(c.env, user.id, code));
+    if (!ok) return fail("That code is not right.");
+  }
+  await markSteppedUp(c.env, c.get("sessionId"));
+  await logAudit(c.env, user, "admin.step_up", user.upn, { method: user.mfa_enabled ? "password+totp" : "password" }, c.req.raw);
+  return c.redirect(next, 302);
+});
+
+admin.get("/admin/reauth/passkey/options", async (c) => {
+  const attempt = randomToken(16);
+  return c.json({ attempt, options: await authenticationOptions(c.env, attempt, c.get("user").id) });
+});
+
+admin.post("/admin/reauth/passkey", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const next = safeNext(String(body.next ?? ""));
+  let response: unknown;
+  try {
+    response = JSON.parse(String(body.response ?? "").slice(0, 16_384));
+  } catch {
+    response = null;
+  }
+  const proved = response && !(await stepUpAttemptsExceeded(c)) ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
+  if (proved !== user.id) {
+    await logAudit(c.env, user, "admin.step_up_failed", user.upn, { method: "passkey" }, c.req.raw);
+    return c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&error=${encodeURIComponent("That passkey could not confirm it's you.")}`, 302);
+  }
+  await markSteppedUp(c.env, c.get("sessionId"));
+  await logAudit(c.env, user, "admin.step_up", user.upn, { method: "passkey" }, c.req.raw);
+  return c.redirect(next, 302);
 });
 
 /** Section labels (second breadcrumb) -> nav key, so detail pages highlight their section too. */

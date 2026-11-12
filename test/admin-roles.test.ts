@@ -81,3 +81,28 @@ describe("admin roles", () => {
     expect(await env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(superAdmins, pat).first()).toBeNull();
   });
 });
+
+describe("step-up re-authentication", () => {
+  it("sends a stale session to re-authenticate before a sensitive action, then lets it through", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const { setCookie, sessionId } = await createSession(env, id, ["pwd"], new Request(BASE));
+    const cookie = setCookie.split(";")[0]!;
+    await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").bind(new Date(Date.now() - 30 * 60 * 1000).toISOString(), sessionId).run();
+
+    const mint = () => SELF.fetch(`${BASE}/admin/api-keys`, { method: "POST", headers: { ...FORM, Cookie: cookie, Referer: `${BASE}/admin/integrations/api-keys` }, body: new URLSearchParams({ name: "k", scopes: "directory:read" }).toString(), redirect: "manual" });
+    const blocked = await mint();
+    expect(blocked.status).toBe(303);
+    expect(blocked.headers.get("Location")).toBe(`/admin/reauth?next=${encodeURIComponent("/admin/integrations/api-keys")}`);
+    expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).toBeNull();
+    // Non-sensitive actions are not interrupted.
+    expect((await get("/admin/users", cookie)).status).toBe(200);
+
+    const wrong = await post("/admin/reauth", cookie, { password: "nope", next: "/admin/integrations/api-keys" });
+    expect(wrong.headers.get("Location")).toContain("error=");
+    const ok = await post("/admin/reauth", cookie, { password: "test-admin-password-1", next: "/admin/integrations/api-keys" });
+    expect(ok.headers.get("Location")).toBe("/admin/integrations/api-keys");
+    expect((await mint()).status).not.toBe(303);
+    expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).not.toBeNull();
+  });
+});

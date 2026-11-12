@@ -6,6 +6,32 @@ may break things.
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-11-11
+
+Migrations `0019` (admin role groups) and `0020` (step-up).
+
+### Added
+
+- **Granular admin roles**, held through built-in groups like Super Admins:
+  - **Directory Admins**: users, groups, domains, schemas and CSV import.
+  - **Application Admins**: OIDC clients, SAML apps, SCIM provisioning, email.
+  - **Auditors**: read-only access to everything above, the overview and the log.
+
+  Security settings, branding, setup and API keys stay Super Admin only. Below
+  Super Admin nobody can change a role group, act on an account that holds a
+  role, or grant a role through a form or a CSV import. The sidebar shows only
+  what a role can reach.
+- **Step-up re-authentication** for sensitive admin actions (API keys, client
+  secret rotation and deletion, password and MFA resets, user deletion,
+  security settings, setup, the SCIM secret): unless the admin signed in or
+  confirmed within the last 10 minutes, they confirm with their password (and
+  code) or a passkey first.
+
+### Changed
+
+- Replace-mode imports and the sample-directory wipe keep the admin role
+  groups and everyone holding a role.
+
 ## [3.4.0] - 2026-11-11
 
 Migration `0018`.
