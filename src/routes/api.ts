@@ -18,7 +18,7 @@ import { apiCtx } from "../services/context.js";
 import { applyScimScope } from "../services/scim-sync.js";
 import { sendUserLink } from "../services/users.js";
 import { runSetup, SetupAdminError, type SetupInput } from "../services/setup.js";
-import { resolveGroupMemberUserIds } from "../lib/groups.js";
+import { resolveManyGroupMemberUserIds } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -338,14 +338,15 @@ defineRoute({
        FROM groups g ORDER BY g.name`
   ).all<GroupRow & { member_count: number; explicit_member_count: number; schema_name: string | null }>();
 
-  const groups = await Promise.all(
-    results.map(async ({ explicit_member_count, custom_attributes, ...g }) => ({
-      ...g,
-      attributes: parseCustomAttributes(custom_attributes),
-      member_count: (await resolveGroupMemberUserIds(c.env, g as unknown as GroupRow)).length,
-      explicit_member_count,
-    }))
-  );
+  // Every group's members in one pass: one read of the directory for all the
+  // dynamic groups, not one per group.
+  const members = await resolveManyGroupMemberUserIds(c.env, results);
+  const groups = results.map(({ explicit_member_count, custom_attributes, ...g }) => ({
+    ...g,
+    attributes: parseCustomAttributes(custom_attributes),
+    member_count: members.get(g.id)?.length ?? 0,
+    explicit_member_count,
+  }));
 
   return c.json({ groups });
 });

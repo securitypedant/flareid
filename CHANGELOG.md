@@ -6,6 +6,17 @@ may break things.
 
 ## [Unreleased]
 
+### Changed
+
+- **Group lists read the directory once.** `GET /api/v1/groups` and the SCIM
+  server's `GET /scim/v2/Groups` resolve every listed group's members in one
+  pass (`resolveManyGroupMemberUserIds`): one read of the users table for all
+  dynamic groups instead of one per dynamic group (4 → 1 for a list with four
+  dynamic groups), and one lookup for every member's SCIM reference on a
+  page. A SCIM list asked to leave members out (`excludedAttributes=members`,
+  or `attributes` without `members`) resolves none at all and omits the
+  attribute.
+
 ## [3.7.0] - 2026-11-12
 
 Deployable from the **Deploy to Cloudflare** button, with first-run setup in

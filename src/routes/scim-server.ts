@@ -5,7 +5,7 @@ import { hasScope } from "../lib/api-keys.js";
 import { logAudit } from "../lib/audit.js";
 import { getUserByExternalId } from "../lib/db.js";
 import { listDomains, getDefaultDomain } from "../lib/domains.js";
-import { resolveGroupMemberUserIds } from "../lib/groups.js";
+import { resolveGroupMemberUserIds, resolveManyGroupMemberUserIds } from "../lib/groups.js";
 import { defaultSchemaId } from "../lib/schemas.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -161,18 +161,46 @@ async function userResource(env: Env, u: UserRow) {
   };
 }
 
-async function groupResource(env: Env, g: GroupRow) {
-  const ids = await resolveGroupMemberUserIds(env, g);
-  const { results } = ids.length
-    ? await env.DB.prepare(`SELECT external_id, display_name FROM users WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(ids)).all<{ external_id: string; display_name: string }>()
-    : { results: [] as { external_id: string; display_name: string }[] };
+type MemberRef = { id: number; external_id: string; display_name: string };
+
+/** SCIM member references for user ids, in one query. */
+async function memberRefs(env: Env, ids: number[]): Promise<Map<number, MemberRef>> {
+  if (!ids.length) return new Map();
+  const { results } = await env.DB.prepare("SELECT id, external_id, display_name FROM users WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ids)).all<MemberRef>();
+  return new Map(results.map((r) => [r.id, r]));
+}
+
+/**
+ * A Group resource. `members` is the resolved member list (user ids plus their
+ * references), or null to leave the attribute out - a list asked not to return
+ * it resolves nobody.
+ */
+function groupResourceFrom(env: Env, g: GroupRow, members: MemberRef[] | null) {
   return {
     schemas: [GROUP],
     id: String(g.id),
     displayName: g.name,
-    members: results.map((m) => ({ value: m.external_id, display: m.display_name, $ref: `${base(env)}/Users/${m.external_id}` })),
+    ...(members ? { members: members.map((m) => ({ value: m.external_id, display: m.display_name, $ref: `${base(env)}/Users/${m.external_id}` })) } : {}),
     meta: { resourceType: "Group", location: `${base(env)}/Groups/${g.id}` },
   };
+}
+
+async function groupResource(env: Env, g: GroupRow) {
+  const ids = await resolveGroupMemberUserIds(env, g);
+  const refs = await memberRefs(env, ids);
+  return groupResourceFrom(env, g, ids.map((id) => refs.get(id)).filter((m): m is MemberRef => Boolean(m)));
+}
+
+/**
+ * Whether a list request wants the members attribute (RFC 7644 3.4.2.5): not
+ * when `excludedAttributes` names it, nor when `attributes` is given without it.
+ */
+function wantsMembers(c: Context<{ Bindings: Env }>): boolean {
+  const names = (q: string | undefined) =>
+    (q ?? "").split(",").map((a) => a.trim().toLowerCase().replace(`${GROUP.toLowerCase()}:`, "").split(".")[0]!).filter(Boolean);
+  if (names(c.req.query("excludedAttributes")).includes("members")) return false;
+  const attributes = names(c.req.query("attributes"));
+  return attributes.length === 0 || attributes.includes("members");
 }
 
 /** Only `attr eq "value"` is supported - what SCIM clients actually send to look a resource up. */
@@ -366,8 +394,16 @@ scimServer.get("/scim/v2/Groups", requireScope("directory:read"), async (c) => {
   const args = f ? [f.value] : [];
   const total = (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM groups ${where}`).bind(...args).first<{ n: number }>())?.n ?? 0;
   const { results } = await c.env.DB.prepare(`SELECT * FROM groups ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...args, count, startIndex - 1).all<GroupRow>();
-  const excluded = (c.req.query("excludedAttributes") ?? "").includes("members");
-  const resources = await Promise.all(results.map(async (g) => (excluded ? { ...(await groupResource(c.env, g)), members: undefined } : groupResource(c.env, g))));
+  // The page's members in one pass (one directory read for all its dynamic
+  // groups, one lookup for every member), and none at all when not asked for.
+  let resources;
+  if (wantsMembers(c)) {
+    const members = await resolveManyGroupMemberUserIds(c.env, results);
+    const refs = await memberRefs(c.env, [...new Set([...members.values()].flat())]);
+    resources = results.map((g) => groupResourceFrom(c.env, g, (members.get(g.id) ?? []).map((id) => refs.get(id)).filter((m): m is MemberRef => Boolean(m))));
+  } else {
+    resources = results.map((g) => groupResourceFrom(c.env, g, null));
+  }
   return c.json({ schemas: [LIST], totalResults: total, startIndex, itemsPerPage: results.length, Resources: resources });
 });
 
