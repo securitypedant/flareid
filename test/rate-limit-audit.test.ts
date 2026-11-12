@@ -74,13 +74,15 @@ describe("edge flood control", () => {
 
 describe("open redirect", () => {
   it("/login?next= only ever leads to a path on this origin", async () => {
-    const { domain } = await bootstrapInstance({ domain: "horizon.test" });
+    const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
+    // An ordinary user: an administrator signing in with a password alone is sent to set up a second factor instead.
+    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "sam", password: "pw-sam-12345", status: "active" }] } });
     for (const next of ["https://evil.test/x", "//evil.test/x", "/\\evil.test", "javascript:alert(1)"]) {
       const flowId = await flowIdFrom(await SELF.fetch(`${BASE}/login?next=${encodeURIComponent(next)}`));
       const res = await SELF.fetch(`${BASE}/login`, {
         method: "POST",
         headers: FORM,
-        body: new URLSearchParams({ flow_id: flowId, upn: `admin@${domain}`, password: ADMIN_PASSWORD }).toString(),
+        body: new URLSearchParams({ flow_id: flowId, upn: `sam@${domain}`, password: "pw-sam-12345" }).toString(),
         redirect: "manual",
       });
       expect(res.headers.get("Location")).toBe("/account");
@@ -89,7 +91,7 @@ describe("open redirect", () => {
     const ok = await SELF.fetch(`${BASE}/login`, {
       method: "POST",
       headers: FORM,
-      body: new URLSearchParams({ flow_id: flowId, upn: `admin@${domain}`, password: ADMIN_PASSWORD }).toString(),
+      body: new URLSearchParams({ flow_id: flowId, upn: `sam@${domain}`, password: "pw-sam-12345" }).toString(),
       redirect: "manual",
     });
     expect(ok.headers.get("Location")).toBe("/admin/users");
@@ -150,7 +152,7 @@ describe("user deletion", () => {
     const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'sam'").first<{ id: number }>())!.id;
     await trustDevice(env, new Request(BASE), uid);
 
-    const { setCookie } = await createSession(env, (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id, ["pwd"], new Request(BASE));
+    const { setCookie } = await createSession(env, (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id, ["pwd", "mfa"], new Request(BASE));
     const res = await SELF.fetch(`${BASE}/admin/users/${uid}/delete`, { method: "POST", headers: { ...FORM, Cookie: setCookie.split(";")[0]! }, redirect: "manual" });
     expect(res.status).toBe(302);
     expect(await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(uid).first()).toBeNull();

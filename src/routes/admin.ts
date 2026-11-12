@@ -4036,7 +4036,13 @@ admin.get("/admin/security/roles", async (c) => {
   // Administrators: everyone a non-default role reaches, with the roles that do it.
   const adminIds = [...new Set(roles.filter((r) => !r.is_default).flatMap((r) => members.get(r.id) ?? []))];
   const admins = adminIds.length
-    ? (await c.env.DB.prepare("SELECT id, display_name, upn, status FROM users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY display_name").bind(JSON.stringify(adminIds)).all<{ id: number; display_name: string; upn: string; status: string }>()).results
+    ? (
+        await c.env.DB.prepare(
+          "SELECT id, display_name, upn, status, mfa_enabled, email_otp_enabled, (SELECT COUNT(*) FROM webauthn_credentials w WHERE w.user_id = users.id) AS passkeys FROM users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY display_name"
+        )
+          .bind(JSON.stringify(adminIds))
+          .all<{ id: number; display_name: string; upn: string; status: string; mfa_enabled: number; email_otp_enabled: number; passkeys: number }>()
+      ).results
     : [];
   const rolesOf = (uid: number) => roles.filter((r) => !r.is_default && (members.get(r.id) ?? []).includes(uid));
   return c.html(
@@ -4058,13 +4064,15 @@ admin.get("/admin/security/roles", async (c) => {
       `)}
       ${cardSection(`
         <h2>Administrators</h2>
-        <p class="muted">Everyone with more than the default role, and what they can do.</p>
+        <p class="muted">Everyone with more than the default role, and what they can do. Administrators always need a second factor - the authenticator app, a passkey or email codes, never security questions alone - whatever the authentication policies say: without one they are sent to set one up before the console opens.</p>
         ${
           admins.length
-            ? `<table><thead><tr><th>Person</th><th>Roles</th><th>Can</th></tr></thead><tbody>${admins
+            ? `<table><thead><tr><th>Person</th><th>Roles</th><th>Second factor</th><th>Can</th></tr></thead><tbody>${admins
                 .map((u) => {
                   const rs = rolesOf(u.id);
-                  return `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a><br /><span class="muted">${escapeHtml(u.upn)}</span>${u.status !== "active" ? ' <span class="badge badge-disabled">Inactive</span>' : ""}</td><td>${rs.map((r) => escapeHtml(r.name)).join(", ")}</td><td style="max-width:460px;">${permissionSummary(rs.flatMap(rolePermissions))}</td></tr>`;
+                  const factors = [u.mfa_enabled ? "Authenticator app" : "", u.passkeys ? `Passkey${u.passkeys > 1 ? "s" : ""}` : "", u.email_otp_enabled ? "Email codes" : ""].filter(Boolean);
+                  const second = factors.length ? escapeHtml(factors.join(", ")) : '<span class="badge badge-disabled">None</span><br /><span class="muted">Must set one up at their next sign-in</span>';
+                  return `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a><br /><span class="muted">${escapeHtml(u.upn)}</span>${u.status !== "active" ? ' <span class="badge badge-disabled">Inactive</span>' : ""}</td><td>${rs.map((r) => escapeHtml(r.name)).join(", ")}</td><td>${second}</td><td style="max-width:460px;">${permissionSummary(rs.flatMap(rolePermissions))}</td></tr>`;
                 })
                 .join("")}</tbody></table>`
             : '<p class="muted">Nobody yet.</p>'

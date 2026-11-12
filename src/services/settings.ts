@@ -1,4 +1,4 @@
-import { FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabled } from "../lib/auth-policy.js";
+import { ADMIN_FACTORS, FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabled } from "../lib/auth-policy.js";
 import { isEmailAddress, isEmailConfigured, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
 import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { escapeHtml } from "../lib/html.js";
@@ -153,6 +153,11 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
     const othersUsable = await Promise.all(FACTOR_KEYS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
     if (!othersUsable.some(Boolean) && (mfaPolicies?.n ?? 0) > 0) {
       throw new ServiceError(400, "At least one second factor must stay on while a policy requires one.");
+    }
+    // Administrators always need a second factor stronger than security questions.
+    const adminUsable = await Promise.all(ADMIN_FACTORS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
+    if ((ADMIN_FACTORS as readonly string[]).includes(key) && !adminUsable.some(Boolean)) {
+      throw new ServiceError(400, "Administrators always need a second factor: keep the authenticator app, passkeys or email codes on.");
     }
   }
   await setFactorEnabled(ctx.env, key, enabled);

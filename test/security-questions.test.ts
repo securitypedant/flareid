@@ -2,7 +2,8 @@
 // forced-enrolment page, the sign-in step (normalised answers, questions fixed
 // per attempt, the attempt limit), the factor switch, policies, the catalogue
 // in the console and the API, the administrator's reset, user deletion, the
-// Super Admin step-up rule, and answers never stored or logged in clear.
+// rule that they never count for an administrator, and answers never stored or
+// logged in clear.
 import { beforeEach, describe, expect, it } from "vitest";
 import { env, SELF } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
@@ -264,13 +265,11 @@ describe("security questions", () => {
     expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("login");
     expect(await secondFactorGate(env, await userRow(rita), ["pwd", "kba", "mfa"])).toBe("ok");
 
-    // The last-factor guard counts security questions...
+    // Questions are never left as the only factor: administrators need one of the others.
     expect((await post("/admin/security/factors/totp", { enabled: "0" }, adminCookie)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
-    expect((await post("/admin/security/factors/passkey", { enabled: "0" }, adminCookie)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
-    expect((await factor(adminCookie, false)).headers.get("Location")).toContain("error=");
-    // ...and once switched off, they no longer count.
-    await post("/admin/security/factors/totp", { enabled: "1" }, adminCookie);
-    await factor(adminCookie, false);
+    expect((await post("/admin/security/factors/passkey", { enabled: "0" }, adminCookie)).headers.get("Location")).toContain("error=Administrators%20always%20need%20a%20second%20factor");
+    // Questions can go while passkeys stay; once switched off, they no longer count.
+    expect((await factor(adminCookie, false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("enrol");
   });
 
@@ -357,24 +356,48 @@ describe("security questions", () => {
     expect((await post("/login/mfa/questions", answerForm(step.mfaId!, asked, qids))).headers.get("Location")).toBe("/account");
   });
 
-  it("never satisfies a Super Admin's step-up", async () => {
-    const { adminId } = await setup();
-    const sensitive = (cookie: string) => post("/admin/security/factors/security-questions/settings", { required: "3", asked: "2" }, cookie);
+  it("never counts for an administrator: not offered at sign-in or enrolment, and a session that used them is bounced", async () => {
+    const { adminId, qids } = await setup();
+    await enrolDirectly(adminId, qids);
+    expect((await userRow(adminId)).security_questions_enabled).toBe(1);
+    expect(await secondFactorGate(env, await userRow(adminId), ["pwd"])).toBe("enrol");
+    expect(await secondFactorGate(env, await userRow(adminId), ["pwd", "kba", "mfa"])).toBe("enrol");
 
-    // Signed in a moment ago with the password and security questions: not enough for a Super Admin.
+    // Sign-in: no questions step for the admin, straight to enrolment of a stronger factor.
+    const adminLogin = async () => {
+      const flowId = /name="flow_id" value="([^"]+)"/.exec(await (await call("/login")).text())![1]!;
+      return post("/login", { flow_id: flowId, upn: "admin@horizon.test", password: "test-admin-password-1" });
+    };
+    const login = await adminLogin();
+    expect(login.status).toBe(302);
+    const location = login.headers.get("Location")!;
+    expect(location).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    expect(await amrOf(sessionIdOf(login)!)).toEqual(["pwd"]);
+    // The forced enrolment offers the authenticator app and passkeys, never questions.
+    const setupPage = await page(location, `__Host-flareid_session=${sessionIdOf(login)}`);
+    expect(setupPage).toContain('action="/account/mfa/setup"');
+    expect(setupPage).not.toContain('action="/account/mfa/questions"');
+    expect(setupPage).not.toContain("security questions");
+
+    // A session that answered questions does not open the console.
     const kbaCookie = (await createSession(env, adminId, ["pwd", "kba", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    const refused = await sensitive(kbaCookie);
-    expect(refused.status).toBe(303);
-    expect(refused.headers.get("Location")).toMatch(/^\/admin\/reauth/);
-    // The re-authentication page offers no security questions.
-    expect(await page("/admin/reauth", kbaCookie)).not.toContain("answer_");
-    // Re-authenticating with the password (the admin has no authenticator here) counts.
-    const reauth = await post("/admin/reauth", { password: "test-admin-password-1", next: "/admin/security/factors" }, kbaCookie);
-    expect(reauth.headers.get("Location")).toBe("/admin/security/factors");
-    expect((await sensitive(kbaCookie)).headers.get("Location")).toBe("/admin/security/factors/security-questions?saved=1");
+    const bounced = await call("/admin", { headers: { Cookie: kbaCookie } });
+    expect(bounced.status).toBe(302);
+    expect(bounced.headers.get("Location")).toBe("/account/mfa/setup");
 
-    // Another factor at sign-in still counts as fresh.
+    // With an authenticator enrolled, the questions session must sign in again with it...
+    await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(adminId).run();
+    expect(await secondFactorGate(env, await userRow(adminId), ["pwd", "kba", "mfa"])).toBe("login");
+    expect((await call("/admin", { headers: { Cookie: kbaCookie } })).headers.get("Location")).toBe("/login?next=%2Fadmin");
+    // ...and the sign-in step offers the authenticator app, not the questions.
+    const stepHtml = await (await adminLogin()).text();
+    expect(stepHtml).toContain('action="/login/mfa"');
+    expect(stepHtml).not.toContain("Answer security questions");
+
+    // A session with the authenticator app opens the console and passes the step-up for a sensitive action.
     const totpCookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    expect((await sensitive(totpCookie)).headers.get("Location")).toBe("/admin/security/factors/security-questions?saved=1");
+    expect((await call("/admin", { headers: { Cookie: totpCookie } })).status).toBe(200);
+    const sensitive = await post("/admin/security/factors/security-questions/settings", { required: "3", asked: "2" }, totpCookie);
+    expect(sensitive.headers.get("Location")).toBe("/admin/security/factors/security-questions?saved=1");
   });
 });

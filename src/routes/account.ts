@@ -1,5 +1,5 @@
 import { grants } from "../lib/permissions.js";
-import { isFactorEnabled } from "../lib/auth-policy.js";
+import { isFactorEnabled, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
 import {
@@ -602,7 +602,8 @@ account.get("/account/mfa/setup", async (c) => {
     securityQuestionsAvailable(c.env),
   ]);
   const emailOn = emailAvailable && !user.email_otp_enabled;
-  const kbaOn = kbaAvailable && !user.security_questions_enabled;
+  // Administrators need a stronger second factor than security questions.
+  const kbaOn = kbaAvailable && !user.security_questions_enabled && !c.get("access")?.isAdmin;
   const emailError = ERROR_MESSAGES[c.req.query("error") ?? ""];
   const to = escapeHtml(recipientFor(user));
   const emailHidden = `<input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />`;
@@ -755,6 +756,10 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, s
   if (isSealedFlowId(resumeFlowId)) return "/account";
   const flow = await getLoginFlow(env, resumeFlowId);
   if (!flow || flow.resumeFor !== userId) return "/account";
+  // The factor just enrolled must satisfy the gate (security questions never
+  // do for an administrator): otherwise the flow stays parked at enrolment.
+  const user = await getUserById(env, userId);
+  if (!user || (await secondFactorGate(env, user, amr)) !== "ok") return `/account/mfa/setup?resume=${encodeURIComponent(resumeFlowId)}`;
 
   if (flow.kind === "direct") {
     await deleteLoginFlow(env, resumeFlowId);

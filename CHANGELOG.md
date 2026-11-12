@@ -14,6 +14,15 @@ may break things.
   password alone - weaker than their sign-in. A passkey still confirms on its
   own; security questions never do. Audited as `admin.step_up_code_sent` and
   `admin.step_up` with `method: "password+email_otp"`.
+- **Administrators always need a strong second factor**, whatever the
+  authentication policies say: anyone holding a role beyond the default User
+  role must use the authenticator app, a passkey or email codes. Security
+  questions never count for them (not offered at sign-in or forced enrolment,
+  and a session that used them is bounced); a password-only session goes to
+  `/account/mfa/setup`, or back to sign-in if they have a factor but did not
+  use it. The last of those three factors cannot be switched off, and
+  Security > Roles shows each administrator's second factor. Finishing a
+  forced enrolment now re-checks the rule before resuming the app's sign-in.
 
 ## [3.6.0] - 2026-11-12
 

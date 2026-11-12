@@ -4,6 +4,7 @@ import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { generateBackupCodes } from "../src/lib/backup-codes.js";
 import { createSession } from "../src/lib/sessions.js";
 import { purgeExpiredState } from "../src/lib/cleanup.js";
+import { totp } from "./helpers-totp.js";
 
 beforeEach(resetDatabase);
 
@@ -26,9 +27,21 @@ async function signIn(upn: string, password: string): Promise<{ cookie: string; 
   return { cookie: res.headers.get("Set-Cookie")?.split(";")[0] ?? "", res };
 }
 
+/** The admin signed in through the form: password, then the authenticator app (administrators always need a second factor). */
 async function adminSession(): Promise<{ apiKey: string; cookie: string }> {
   const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
-  const { cookie } = await signIn(`admin@${domain}`, ADMIN_PASSWORD);
+  const secret = "JBSWY3DPEHPK3PXP";
+  await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE username = 'admin'").bind(secret).run();
+  const { res } = await signIn(`admin@${domain}`, ADMIN_PASSWORD);
+  const mfaId = /name="mfa_id" value="([^"]+)"/.exec(await res.text())![1]!;
+  const mfa = await SELF.fetch(`${BASE}/login/mfa`, {
+    method: "POST",
+    headers: FORM,
+    body: new URLSearchParams({ mfa_id: mfaId, code: await totp(secret) }).toString(),
+    redirect: "manual",
+  });
+  const cookie = mfa.headers.get("Set-Cookie")?.split(";")[0] ?? "";
+  expect(cookie).toContain("flareid_session=");
   return { apiKey, cookie };
 }
 

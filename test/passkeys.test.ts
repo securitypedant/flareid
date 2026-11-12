@@ -2,15 +2,17 @@
 // sign in with no username, counter replay refused, removal.
 import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
-import { BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
+import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
 import { b64u, SoftAuthenticator } from "./fixtures/soft-authenticator.js";
 
 beforeEach(resetDatabase);
 
+/** An ordinary user with a password-only session (an administrator would be sent to set up a second factor first). */
 async function signedIn() {
-  await bootstrapInstance({ domain: "horizon.test" });
-  const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+  const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+  await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "pat", password: "user-password-123", status: "active" }] } });
+  const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'pat'").first<{ id: number }>())!.id;
   return { id, cookie: (await createSession(env, id, ["pwd"], new Request(BASE))).setCookie.split(";")[0]! };
 }
 const JSON_POST = { "Content-Type": "application/json", Origin: BASE };

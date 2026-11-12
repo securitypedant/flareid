@@ -91,7 +91,8 @@ describe("step-up re-authentication", () => {
   it("sends a stale session to re-authenticate before a sensitive action, then lets it through", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
     const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
-    const { setCookie, sessionId } = await createSession(env, id, ["pwd"], new Request(BASE));
+    // A multi-factor session (administrators always need one), just an old one.
+    const { setCookie, sessionId } = await createSession(env, id, ["pwd", "mfa"], new Request(BASE));
     const cookie = setCookie.split(";")[0]!;
     await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").bind(new Date(Date.now() - 30 * 60 * 1000).toISOString(), sessionId).run();
 

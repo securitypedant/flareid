@@ -398,7 +398,19 @@ describe("credential change", () => {
     const upn = `heidi@${domain}`;
     await importUser(apiKey, { username: "heidi", password: USER_PASSWORD, status: "active" });
     const { cookie: userCookie } = await signIn(upn);
-    const { cookie: adminCookie } = await signIn(`admin@${domain}`, ADMIN_PASSWORD);
+    // Administrators always sign in with a second factor: password, then the authenticator app.
+    const secret = "JBSWY3DPEHPK3PXP";
+    await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE username = 'admin'").bind(secret).run();
+    const { res: pw } = await signIn(`admin@${domain}`, ADMIN_PASSWORD);
+    const mfaId = /name="mfa_id" value="([^"]+)"/.exec(await pw.text())?.[1] ?? "";
+    const mfa = await SELF.fetch(`${BASE}/login/mfa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE },
+      body: new URLSearchParams({ mfa_id: mfaId, code: await totp(secret) }).toString(),
+      redirect: "manual",
+    });
+    const adminCookie = mfa.headers.get("Set-Cookie")?.split(";")[0] ?? "";
+    expect(adminCookie).toContain("flareid_session=");
     const uid = await userId("heidi");
 
     const reset = await SELF.fetch(`${BASE}/admin/users/${uid}/reset-password`, {

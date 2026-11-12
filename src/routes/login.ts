@@ -1,5 +1,5 @@
 import { canSignIn } from "../lib/admin-roles.js";
-import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
+import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey, isAdministrator } from "../lib/auth-policy.js";
 import { EMAIL_OTP_MINUTES, loginScope, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { challengeQuestions, KBA_MAX_ANSWER, userHasSecurityQuestions, verifyAnswers } from "../lib/security-questions.js";
 import type { UserRow } from "../lib/types.js";
@@ -70,17 +70,19 @@ function dummyPasswordHash(env: Env): Promise<StoredPassword> {
 
 /** The second-step methods this user can use now: enrolled, and switched on by the administrator. */
 async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
-  const [totpOn, passkeyOn, emailOtp, securityQuestions] = await Promise.all([
+  const [totpOn, passkeyOn, emailOtp, securityQuestions, admin] = await Promise.all([
     isFactorEnabled(env, "totp"),
     isFactorEnabled(env, "passkey"),
     userHasEmailOtp(env, user),
     userHasSecurityQuestions(env, user),
+    isAdministrator(env, user.id),
   ]);
   return {
     totp: Boolean(user.mfa_enabled) && totpOn,
     passkey: passkeyOn && (await userHasPasskey(env, user.id)),
     emailOtp,
-    securityQuestions,
+    // Never offered to an administrator: too weak to be their second factor.
+    securityQuestions: securityQuestions && !admin,
   };
 }
 

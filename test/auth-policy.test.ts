@@ -120,3 +120,150 @@ describe("secure defaults", () => {
     expect(await mfaRequiredFor(env, admin)).toBe(true);
   });
 });
+
+describe("administrators always need a strong second factor", () => {
+  const ADMIN_PASSWORD = "test-admin-password-1";
+  const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
+  const get = (path: string, cookie: string) => SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie }, redirect: "manual" });
+  const sessionOf = async (userId: number, amr: string[]) => (await createSession(env, userId, amr, new Request(BASE))).setCookie.split(";")[0]!;
+
+  /** The default "Password only" policy, a Super Admin ("admin"), a Directory Admin ("dora") and an ordinary user ("eng"). */
+  async function adminSetup() {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/directory/import", {
+      token: apiKey,
+      body: { version: 1, users: [{ username: "dora", status: "active", password: PASSWORD, groups: ["Directory Admins"] }, { username: "eng", status: "active", password: PASSWORD }] },
+    });
+    const id = async (u: string) => (await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(u).first<{ id: number }>())!.id;
+    return { apiKey, admin: await id("admin"), dora: await id("dora"), eng: await id("eng") };
+  }
+
+  async function login(upn: string, password: string, path = "/login") {
+    const page = await (await SELF.fetch(`${BASE}${path}`)).text();
+    const flowId = /name="flow_id" value="([^"]+)"/.exec(page)![1]!;
+    return SELF.fetch(`${BASE}/login`, { method: "POST", headers: FORM, redirect: "manual", body: new URLSearchParams({ flow_id: flowId, upn, password }).toString() });
+  }
+
+  it("sends an administrator's password-only session to enrolment whatever the policy, but not an ordinary user's", async () => {
+    const { admin, dora, eng } = await adminSetup();
+    for (const uid of [admin, dora, eng]) expect((await policyForUser(env, uid))!.requirement).toBe("password");
+    expect(await mfaRequiredFor(env, admin)).toBe(true);
+    expect(await mfaRequiredFor(env, dora)).toBe(true);
+    expect(await mfaRequiredFor(env, eng)).toBe(false);
+
+    for (const [uid, path] of [[admin, "/admin"], [dora, "/admin/users"], [admin, "/account"], [dora, "/account"]] as const) {
+      const res = await get(path, await sessionOf(uid, ["pwd"]));
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("/account/mfa/setup");
+    }
+    expect((await get("/account", await sessionOf(eng, ["pwd"]))).status).toBe(200);
+
+    // Signing in with the password alone parks the administrator at enrolment; the ordinary user goes straight through.
+    expect((await login("admin@horizon.test", ADMIN_PASSWORD)).headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    expect((await login("dora@horizon.test", PASSWORD)).headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    expect((await login("eng@horizon.test", PASSWORD)).headers.get("Location")).toBe("/account");
+
+    // A multi-factor session opens the console.
+    expect((await get("/admin", await sessionOf(admin, ["pwd", "mfa"]))).status).toBe(200);
+    expect((await get("/admin/users", await sessionOf(dora, ["pwd", "hwk", "mfa"]))).status).toBe(200);
+  });
+
+  it("sends an administrator who has an authenticator but signed in without it back to sign in", async () => {
+    const { admin } = await adminSetup();
+    await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE id = ?").bind(TOTP_SECRET, admin).run();
+    const res = await get("/admin", await sessionOf(admin, ["pwd"]));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/login?next=%2Fadmin");
+    // The sign-in asks for the code.
+    const step = await login("admin@horizon.test", ADMIN_PASSWORD);
+    expect(step.status).toBe(200);
+    const html = await step.text();
+    expect(html).toContain('action="/login/mfa"');
+    expect(html).toContain('name="mfa_id"');
+  });
+
+  it("does not let security questions stand in for an administrator's second factor", async () => {
+    const { apiKey, dora, eng } = await adminSetup();
+    expect((await apiCall("/api/v1/security/factors/security_questions", { token: apiKey, method: "PUT", body: { enabled: true } })).status).toBe(200);
+    const { saveAnswers } = await import("../src/lib/security-questions.js");
+    const { results } = await env.DB.prepare("SELECT id FROM security_questions ORDER BY id LIMIT 3").all<{ id: number }>();
+    const answers = ["Rex the Dog", "Springfield", "Hill Valley High"].map((answer, i) => ({ questionId: results[i]!.id, answer }));
+    await saveAnswers(env, dora, answers);
+    await saveAnswers(env, eng, answers);
+
+    // Dora's only factor is security questions: still sent to enrol a stronger one.
+    expect((await get("/admin/users", await sessionOf(dora, ["pwd"]))).headers.get("Location")).toBe("/account/mfa/setup");
+    expect((await get("/admin/users", await sessionOf(dora, ["pwd", "kba", "mfa"]))).headers.get("Location")).toBe("/account/mfa/setup");
+    // The sign-in has no questions step for her...
+    const doraLogin = await login("dora@horizon.test", PASSWORD);
+    expect(doraLogin.status).toBe(302);
+    expect(doraLogin.headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    // ...while an ordinary user with the same questions is asked them.
+    const engLogin = await login("eng@horizon.test", PASSWORD);
+    expect(engLogin.status).toBe(200);
+    expect(await engLogin.text()).toContain('action="/login/mfa/questions"');
+  });
+
+  it("does not let an administrator finish a forced enrolment by posting security questions", async () => {
+    const { apiKey, dora } = await adminSetup();
+    expect((await apiCall("/api/v1/security/factors/security_questions", { token: apiKey, method: "PUT", body: { enabled: true } })).status).toBe(200);
+    const redirectUri = "https://rp.test/callback";
+    const client = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp", redirect_uris: [redirectUri] } });
+    const authorize = `/authorize?${new URLSearchParams({ client_id: client.body.client_id, redirect_uri: redirectUri, response_type: "code", scope: "openid" })}`;
+
+    // Signing in to the app with the password parks her at enrolment, which offers no questions.
+    const res = await login("dora@horizon.test", PASSWORD, authorize);
+    const location = res.headers.get("Location")!;
+    expect(location).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    const resume = new URL(location, BASE).searchParams.get("resume")!;
+    const cookie = res.headers.get("Set-Cookie")!.split(";")[0]!;
+    expect(await (await get(location, cookie)).text()).not.toContain('action="/account/mfa/questions"');
+
+    // Posting questions anyway must not complete the app's sign-in.
+    const { results } = await env.DB.prepare("SELECT id FROM security_questions ORDER BY id LIMIT 3").all<{ id: number }>();
+    const form = Object.fromEntries(["Rex the Dog", "Springfield", "Hill Valley High"].flatMap((a, i) => [[`question_${i + 1}`, String(results[i]!.id)], [`answer_${i + 1}`, a]]));
+    const posted = await SELF.fetch(`${BASE}/account/mfa/questions`, { method: "POST", headers: { ...FORM, Cookie: cookie }, redirect: "manual", body: new URLSearchParams({ ...form, from: "setup", resume }).toString() });
+    expect(posted.status).toBe(302);
+    expect(posted.headers.get("Location")).not.toContain("code=");
+    expect(posted.headers.get("Location")).not.toContain("rp.test");
+    expect(posted.headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    expect(await env.DB.prepare("SELECT 1 FROM auth_codes").first()).toBeNull();
+  });
+
+  it("refuses to turn off the last of the administrators' factors, even with no policy requiring one", async () => {
+    const { apiKey, admin } = await adminSetup();
+    await env.DB.prepare("UPDATE auth_policies SET requirement = 'password'").run();
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>())!.n).toBe(0);
+    // Security questions on: they would satisfy the policy guard, but not the administrators' rule.
+    expect((await apiCall("/api/v1/security/factors/security_questions", { token: apiKey, method: "PUT", body: { enabled: true } })).status).toBe(200);
+    const cookie = await sessionOf(admin, ["pwd", "mfa"]);
+    const toggle = (k: string, on: boolean) => SELF.fetch(`${BASE}/admin/security/factors/${k}`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `enabled=${on ? 1 : 0}`, redirect: "manual" });
+
+    expect((await toggle("passkey", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await toggle("email_otp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    const refused = await toggle("totp", false);
+    expect(refused.headers.get("Location")).toContain("error=Administrators%20always%20need%20a%20second%20factor");
+    expect((await apiCall("/api/v1/security/factors/totp", { token: apiKey, method: "PUT", body: { enabled: false } })).status).toBe(400);
+    const { isFactorEnabled } = await import("../src/lib/auth-policy.js");
+    expect(await isFactorEnabled(env, "totp")).toBe(true);
+    // With passkeys back on, the authenticator app can go.
+    expect((await toggle("passkey", true)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await toggle("totp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+  });
+
+  it("shows each administrator's second factor on the Roles page", async () => {
+    const { admin, dora } = await adminSetup();
+    await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE id = ?").bind(TOTP_SECRET, dora).run();
+    const html = await (await get("/admin/security/roles", await sessionOf(admin, ["pwd", "mfa"]))).text();
+    expect(html).toContain("<th>Second factor</th>");
+    const rowOf = (uid: number) => {
+      const start = html.indexOf(`<tr><td><a href="/admin/users/${uid}">`);
+      expect(start).toBeGreaterThan(-1);
+      return html.slice(start, html.indexOf("</tr>", start));
+    };
+    expect(rowOf(admin)).toContain('<span class="badge badge-disabled">None</span>');
+    expect(rowOf(admin)).toContain("Must set one up at their next sign-in");
+    expect(rowOf(dora)).toContain("Authenticator app");
+    expect(rowOf(dora)).not.toContain(">None<");
+  });
+});

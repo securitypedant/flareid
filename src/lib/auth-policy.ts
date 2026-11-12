@@ -102,16 +102,31 @@ export async function policyForUser(env: Env, userId: number): Promise<AuthPolic
   return env.DB.prepare("SELECT * FROM auth_policies WHERE is_default = 1 LIMIT 1").first<AuthPolicyRow>();
 }
 
-/** Whether this user must present a second factor (or a passkey) to sign in. */
+/**
+ * Whether this user must use a second factor. Anyone holding an admin role
+ * always must, whatever the policies say: no policy, default or group
+ * assignment can leave an administrator on a password alone.
+ */
 export async function mfaRequiredFor(env: Env, userId: number): Promise<boolean> {
+  if (await isAdministrator(env, userId)) return true;
   return (await policyForUser(env, userId))?.requirement === "mfa";
 }
 
+/** Holds any admin role (beyond the self-service default). */
+export async function isAdministrator(env: Env, userId: number): Promise<boolean> {
+  const { accessFor } = await import("./admin-roles.js");
+  return (await accessFor(env, userId)).isAdmin;
+}
+
+/** The second factors strong enough for administrators: everything but security questions. */
+export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "email_otp"];
+
 /** Whether the user has a second factor enrolled that the instance currently accepts. */
-export async function hasSecondFactor(env: Env, user: SecondFactorUser): Promise<boolean> {
+export async function hasSecondFactor(env: Env, user: SecondFactorUser, opts: { admin?: boolean } = {}): Promise<boolean> {
   if (user.mfa_enabled && (await isFactorEnabled(env, "totp"))) return true;
   if (user.email_otp_enabled && (await isFactorUsable(env, "email_otp"))) return true;
-  if (user.security_questions_enabled && (await isFactorUsable(env, "security_questions"))) return true;
+  // Security questions are too weak to be an administrator's only second factor.
+  if (!opts.admin && user.security_questions_enabled && (await isFactorUsable(env, "security_questions"))) return true;
   return (await userHasPasskey(env, user.id)) && (await isFactorEnabled(env, "passkey"));
 }
 
@@ -147,7 +162,10 @@ export async function defaultRequirement(env: Env): Promise<Requirement> {
  *  - "login": they have one but this session did not use it - they must sign in again.
  */
 export async function secondFactorGate(env: Env, user: SecondFactorUser, amr: string[]): Promise<"ok" | "enrol" | "login"> {
-  if (amr.some((a) => a === "mfa" || a === "hwk" || a === "mfa_remembered_device")) return "ok";
-  if (!(await mfaRequiredFor(env, user.id))) return "ok";
-  return (await hasSecondFactor(env, user)) ? "login" : "enrol";
+  const admin = await isAdministrator(env, user.id);
+  // A session that answered security questions is not enough for an administrator.
+  const satisfied = amr.includes("hwk") || amr.includes("mfa_remembered_device") || (amr.includes("mfa") && !(admin && amr.includes("kba")));
+  if (satisfied) return "ok";
+  if (!admin && !(await mfaRequiredFor(env, user.id))) return "ok";
+  return (await hasSecondFactor(env, user, { admin })) ? "login" : "enrol";
 }
