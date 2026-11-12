@@ -77,3 +77,18 @@ describe("SCIM full sync in steps", () => {
     expect(page).toContain("full sync:");
   });
 });
+
+describe("inline scripts", () => {
+  it("the SCIM page script keeps its newline escape (a raw newline in a string broke the whole script)", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const { createSession } = await import("../src/lib/sessions.js");
+    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const html = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
+    expect(html).toContain('text + "\\n";');
+    // No double-quoted string in any inline script runs across a line break.
+    for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+      for (const line of m[1]!.split("\n")) expect((line.replace(/\\./g, "").match(/"/g) ?? []).length % 2, line).toBe(0);
+    }
+  });
+});

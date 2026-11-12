@@ -2379,7 +2379,7 @@ document.addEventListener("click", async function (e) {
       const stamp = () => new Date().toLocaleTimeString();
       const line = (text) => {
         if (logEl.dataset.live !== "1") { logEl.textContent = ""; logEl.dataset.live = "1"; }
-        logEl.textContent += "[" + stamp() + "] " + text + "\n";
+        logEl.textContent += "[" + stamp() + "] " + text + "\\n";
         logEl.scrollTop = logEl.scrollHeight;
       };
       line("Full sync started.");
