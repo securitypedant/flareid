@@ -1,3 +1,4 @@
+import { expand, grants, isPermission } from "./permissions.js";
 import type { Env } from "../env.js";
 import { randomToken, sha256Hex } from "./tokens.js";
 
@@ -15,7 +16,8 @@ export const API_SCOPES = [
   "admin",
 ] as const;
 
-export type ApiScope = (typeof API_SCOPES)[number];
+/** A legacy scope (API_SCOPES) or any permission from permissions.ts. */
+export type ApiScope = string;
 
 export interface ApiKeyRow {
   id: number;
@@ -38,7 +40,7 @@ export function keyDisplayPrefix(token: string): string {
 }
 
 export function isApiScope(value: string): value is ApiScope {
-  return (API_SCOPES as readonly string[]).includes(value);
+  return (API_SCOPES as readonly string[]).includes(value) || isPermission(value);
 }
 
 /** Parses a stored scopes column, falling back to no scopes rather than to full access if it is unreadable. */
@@ -52,9 +54,12 @@ export function parseScopes(raw: string): ApiScope[] {
   }
 }
 
-/** `admin` implies every other scope; otherwise the scope has to be held explicitly. */
+/**
+ * The same check as admin roles: what a key holds (legacy scopes expanded to
+ * permissions) must grant what the route needs.
+ */
 export function hasScope(held: ApiScope[], required: ApiScope): boolean {
-  return held.includes("admin") || held.includes(required);
+  return grants(expand(held), required);
 }
 
 export interface CreatedApiKey {

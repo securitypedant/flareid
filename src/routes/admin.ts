@@ -6,7 +6,8 @@ import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINUTES } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
-import { accessFor, adminRoleGroupIds, adminRoleGroupNames, visibleSections, type Access } from "../lib/admin-roles.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
+import { AREAS, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -2815,11 +2816,8 @@ admin.get("/admin/api-keys/new", async (c) => {
           <input type="text" id="name" name="name" required placeholder="e.g. terraform, ci, laptop-deploy" />
           <p class="muted" style="margin:4px 0 14px;">What is using it. This is what appears in the audit log against everything the key does.</p>
 
-          <label>Scopes</label>
-          ${API_SCOPES.map(
-            (s) =>
-              `<label style="font-weight:400;"><input type="checkbox" name="scopes" value="${s}" ${s === "admin" ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> <code>${s}</code> &mdash; ${escapeHtml(SCOPE_DESCRIPTIONS[s])}</label>`
-          ).join("")}
+          <label>Permissions</label>
+          ${permissionMatrix(new Set(["*"]), { roles: await listRoles(c.env) })}
 
           <div class="form-actions" style="margin-top:16px;">
             <button class="primary" type="submit">Create key</button>
@@ -2832,16 +2830,67 @@ admin.get("/admin/api-keys/new", async (c) => {
   );
 });
 
+/**
+ * The permission picker, shared by roles and API keys: one row per area with
+ * none / read / write, a "full access" switch, and (for keys) a role to copy.
+ */
+function permissionMatrix(selected: Set<string>, opts: { roles?: RoleRow[]; self?: boolean } = {}): string {
+  const full = selected.has("*");
+  const level = (area: string) => (selected.has(`${area}:write`) ? "write" : selected.has(`${area}:read`) ? "read" : "");
+  const rows = AREAS.map((a) => {
+    const choices: [string, string][] = [["", "None"], ...("writeOnly" in a ? [] : [["read", "Read"] as [string, string]]), ...("readOnly" in a ? [] : [["write", "Change"] as [string, string]])];
+    return `<tr><td>${escapeHtml(a.label)} <span class="muted">${escapeHtml(a.group)}</span></td><td>${choices
+      .map(([v, l]) => `<label style="display:inline-flex; gap:4px; margin:0 12px 0 0; font-weight:400;"><input type="radio" name="perm_${a.key}" value="${v}" ${level(a.key) === v ? "checked" : ""} style="width:auto; margin:0;" /> ${l}</label>`)
+      .join("")}</td></tr>`;
+  }).join("");
+  const selfRows = opts.self
+    ? SELF_PERMISSIONS.map((p) => `<tr><td>${escapeHtml(p.label)} <span class="muted">Self-service</span></td><td><label style="font-weight:400; margin:0;"><input type="checkbox" name="perm_self" value="${p.key}" ${selected.has(p.key) ? "checked" : ""} style="width:auto; margin:0 6px 0 0;" /> Allowed</label></td></tr>`).join("")
+    : "";
+  const template = opts.roles?.length
+    ? `<div class="row" style="justify-content:flex-start; gap:8px; margin-bottom:8px;"><label for="perm_template" style="margin:0;">Start from a role</label>
+        <select id="perm_template" data-perm-template style="width:auto; margin:0;"><option value="">Choose...</option>${opts.roles
+          .map((r) => `<option value="${escapeHtml(r.permissions)}">${escapeHtml(r.name)}</option>`)
+          .join("")}</select></div>`
+    : "";
+  return `${template}
+    <label style="font-weight:400;"><input type="checkbox" name="perm_full" value="1" ${full ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> <strong>Full access</strong> (everything, like a Super Admin)</label>
+    <table class="perm-matrix" style="margin-top:8px;"><tbody>${rows}${selfRows}</tbody></table>
+    ${opts.roles?.length ? scriptTag(PERM_TEMPLATE_SCRIPT) : ""}`;
+}
+
+/** Copies a role's permissions into the picker (API keys keep a copy, never a live link). */
+const PERM_TEMPLATE_SCRIPT = `(function(){
+  var sel=document.querySelector("[data-perm-template]"); if(!sel) return;
+  sel.addEventListener("change",function(){
+    if(!sel.value) return; var perms=JSON.parse(sel.value); var f=sel.closest("form");
+    f.querySelector("input[name=perm_full]").checked=perms.indexOf("*")>=0;
+    f.querySelectorAll("input[type=radio][name^=perm_]").forEach(function(r){
+      var area=r.name.slice(5), lvl=perms.indexOf(area+":write")>=0?"write":perms.indexOf(area+":read")>=0?"read":"";
+      r.checked=(r.value===lvl);
+    });
+  });
+})();`;
+
+function readPermissionMatrix(body: Record<string, unknown>): string[] {
+  if (body.perm_full) return ["*"];
+  const out: string[] = [];
+  for (const a of AREAS) {
+    const v = String(body[`perm_${a.key}`] ?? "");
+    if (v === "read" || v === "write") out.push(`${a.key}:${v}`);
+  }
+  const self = body.perm_self;
+  for (const p of Array.isArray(self) ? self : self ? [self] : []) if (SELF_PERMISSIONS.some((s) => s.key === String(p))) out.push(String(p));
+  return out.filter(isPermission);
+}
+
 admin.post("/admin/api-keys", async (c) => {
   const body = await c.req.parseBody({ all: true });
   const name = String(body.name ?? "").trim();
   if (!name) return c.text("name is required", 400);
 
-  const requested = (Array.isArray(body.scopes) ? body.scopes : body.scopes ? [body.scopes] : [])
-    .map(String)
-    .filter(isApiScope);
-  // Unticking every box used to mint an admin key. It now asks again.
-  if (requested.length === 0) return c.text("Choose at least one scope for the key.", 400);
+  const requested = readPermissionMatrix(body);
+  // Choosing nothing used to mint an admin key. It now asks again.
+  if (requested.length === 0) return c.text("Choose at least one permission for the key.", 400);
   const scopes: ApiScope[] = requested;
 
   const created = await createApiKey(c.env, { name, scopes, createdBy: c.get("user").upn });

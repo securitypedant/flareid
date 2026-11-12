@@ -95,7 +95,7 @@ describe("step-up re-authentication", () => {
     const cookie = setCookie.split(";")[0]!;
     await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").bind(new Date(Date.now() - 30 * 60 * 1000).toISOString(), sessionId).run();
 
-    const mint = () => SELF.fetch(`${BASE}/admin/api-keys`, { method: "POST", headers: { ...FORM, Cookie: cookie, Referer: `${BASE}/admin/integrations/api-keys` }, body: new URLSearchParams({ name: "k", scopes: "directory:read" }).toString(), redirect: "manual" });
+    const mint = () => SELF.fetch(`${BASE}/admin/api-keys`, { method: "POST", headers: { ...FORM, Cookie: cookie, Referer: `${BASE}/admin/integrations/api-keys` }, body: new URLSearchParams({ name: "k", perm_users: "read" }).toString(), redirect: "manual" });
     const blocked = await mint();
     expect(blocked.status).toBe(303);
     expect(blocked.headers.get("Location")).toBe(`/admin/reauth?next=${encodeURIComponent("/admin/integrations/api-keys")}`);
