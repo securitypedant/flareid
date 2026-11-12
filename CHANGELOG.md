@@ -6,6 +6,12 @@ may break things.
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-11-12
+
+Deployable from the **Deploy to Cloudflare** button, with first-run setup in
+the browser; administrators always need a strong second factor; errors are
+pages; step-up asks for an emailed code when that is the second factor.
+
 ### Added
 
 - **Deploy to Cloudflare button.** The README has the button and a
