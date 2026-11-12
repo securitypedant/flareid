@@ -7,7 +7,7 @@ import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINU
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
-import { AREAS, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
+import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { FACTORS, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -2484,6 +2484,10 @@ admin.post("/admin/api-keys", async (c) => {
   if (!name) return c.text("name is required", 400);
 
   const requested = readPermissionMatrix(body);
+  // Same rule as roles: a key carries only permissions its creator holds ("*" only from a Super Admin).
+  const mine = c.get("access");
+  const beyond = requested.filter((p) => (p === "*" ? !mine.isSuper : !grants(mine.perms, p)));
+  if (beyond.length) return c.text(`You cannot give a key permissions you do not hold: ${beyond.join(", ")}.`, 403);
   // Choosing nothing used to mint an admin key. It now asks again.
   if (requested.length === 0) return c.text("Choose at least one permission for the key.", 400);
   const scopes: ApiScope[] = requested;
@@ -3573,6 +3577,8 @@ admin.post("/admin/branding/cursor-trail", async (c) => {
 });
 
 admin.post("/admin/security/apply-default-password", async (c) => {
+  // It resets every password, Super Admins' included.
+  if (!c.get("isSuperAdmin")) return c.text("Applying the default password to every account needs a Super Admin.", 403);
   const count = await applyDefaultPasswordToAll(consoleCtx(c), String((await c.req.parseBody()).default_password ?? ""));
   return c.html(
     layout(
