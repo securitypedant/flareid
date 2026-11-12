@@ -1,3 +1,4 @@
+import { getUserGroupNames } from "./db.js";
 import { getPasswordPolicy, validatePassword } from "./settings.js";
 import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
@@ -216,8 +217,38 @@ export interface ImportOptions {
   allowPrivileged?: boolean;
 }
 
+/** Above this many people, an import re-pushes every group rather than working out which changed. */
+const SCIM_TARGETED_LIMIT = 200;
+
+async function groupIdsForUser(env: Env, userId: number): Promise<number[]> {
+  const names = await getUserGroupNames(env, userId);
+  if (!names.length) return [];
+  const { results } = await env.DB.prepare("SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?))").bind(JSON.stringify(names)).all<{ id: number }>();
+  return results.map((r) => r.id);
+}
+
+async function groupIdsOfUsernames(env: Env, usernames: string[]): Promise<Set<number>> {
+  const { results } = await env.DB.prepare("SELECT id FROM users WHERE username IN (SELECT value FROM json_each(?))").bind(JSON.stringify(usernames)).all<{ id: number }>();
+  const out = new Set<number>();
+  for (const r of results) for (const g of await groupIdsForUser(env, r.id)) out.add(g);
+  return out;
+}
+
+async function affectedGroupIds(env: Env, before: Set<number>, userIds: number[], bundleGroupNames: string[]): Promise<number[]> {
+  const out = new Set(before);
+  for (const id of userIds) for (const g of await groupIdsForUser(env, id)) out.add(g);
+  if (bundleGroupNames.length) {
+    const { results } = await env.DB.prepare("SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?))").bind(JSON.stringify(bundleGroupNames)).all<{ id: number }>();
+    for (const r of results) out.add(r.id);
+  }
+  return [...out];
+}
+
 export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: ImportOptions = {}): Promise<ImportResult> {
   const { users, groups } = validateBundle(bundle);
+  // Groups the bundle's existing people are in now, so a SCIM push after the
+  // import can update them even if this import takes someone out.
+  const groupsBefore = users.length <= SCIM_TARGETED_LIMIT && (await isScimConfigured(env)) ? await groupIdsOfUsernames(env, users.map((u) => cleanString(u.username).toLowerCase())) : new Set<number>();
 
   if (!opts.allowPrivileged) {
     const ROLE_GROUP_NAMES = await adminRoleGroupNames(env);
@@ -583,9 +614,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       const r = await pushUser(env, user);
       r.ok ? scim.users_pushed++ : scim.errors++;
     }
-    // Memberships (dynamic ones included) may have changed for any group.
-    const { groups, groupErrors } = await syncGroups(env);
-    scim.groups_pushed = groups - groupErrors;
+    // Only groups this import could have changed: the ones it names, and every
+    // group (dynamic ones included) its people were in before or are in now.
+    // Re-pushing the whole directory for a one-person import took minutes.
+    // A large import (or a replace) still re-pushes everything.
+    const affected = bundle.mode === "replace" || touchedUserIds.length > SCIM_TARGETED_LIMIT ? undefined : await affectedGroupIds(env, groupsBefore, touchedUserIds, groups.map((g) => cleanString(g.name)));
+    const { groups: groupsPushed, groupErrors } = await syncGroups(env, affected);
+    scim.groups_pushed = groupsPushed - groupErrors;
     scim.errors += groupErrors;
     result.scim = scim;
   }

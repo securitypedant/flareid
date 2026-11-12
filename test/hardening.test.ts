@@ -92,3 +92,31 @@ describe("inline scripts", () => {
     }
   });
 });
+
+describe("import SCIM push", () => {
+  it("pushes only the groups an import could have changed", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "A" }, { name: "B" }, { name: "C" }], users: [{ username: "u1", status: "active", groups: ["A"] }, { username: "u2", status: "active", groups: ["B"] }] } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] } } });
+    const { vi } = await import("vitest");
+    const groupWrites: string[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/Groups") && method !== "GET") groupWrites.push(String(init?.body ?? ""));
+      if (method === "GET") return Response.json({ Resources: [] });
+      return Response.json({ id: `r-${Math.random()}` }, { status: method === "POST" ? 201 : 200 });
+    });
+    // The config call re-pushes everything in the background; let it finish first.
+    await new Promise((r) => setTimeout(r, 300));
+    groupWrites.length = 0;
+    // u1 moves from A to C: A and C change, B does not.
+    const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });
+    spy.mockRestore();
+    expect(res.status).toBe(200);
+    const names = groupWrites.map((b) => (JSON.parse(b) as { displayName?: string }).displayName);
+    expect(names).toContain("A");
+    expect(names).toContain("C");
+    expect(names).not.toContain("B");
+  });
+});

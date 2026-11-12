@@ -387,8 +387,11 @@ export async function drainScimDeprovisionQueue(env: Env): Promise<{ removed: nu
   return { removed: removedUsers + removedGroups, removedUsers, removedGroups, failed, remaining };
 }
 
-export async function syncGroups(env: Env): Promise<{ groups: number; groupErrors: number; failures: { name: string; result: ScimResult }[] }> {
-  const { results: groups } = await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
+export async function syncGroups(env: Env, onlyIds?: number[]): Promise<{ groups: number; groupErrors: number; failures: { name: string; result: ScimResult }[] }> {
+  // onlyIds: just these groups (an import that touched a few people), not the whole directory.
+  const { results: groups } = onlyIds
+    ? await env.DB.prepare("SELECT * FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(onlyIds)).all<GroupRow>()
+    : await env.DB.prepare("SELECT * FROM groups").all<GroupRow>();
   let groupErrors = 0;
   const failures: { name: string; result: ScimResult }[] = [];
   const members = await resolveManyGroupMemberUserIds(env, groups);
