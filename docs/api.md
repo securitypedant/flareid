@@ -8,6 +8,15 @@ It exists because the alternative was a deploy script holding a cookie jar,
 regexing a `flow_id` out of the login page and parsing a client secret out of a
 `<code>` block in the response. That worked until a heading moved.
 
+**Reference:** every operation, with its permission, parameters, request body
+and responses, is in [api-reference.md](api-reference.md), generated from the
+OpenAPI 3.1 document [openapi.json](openapi.json). Every deployment also serves
+that document at `GET /api/v1/openapi.json` (no token needed - it describes
+routes, never data), so a client generator or an API explorer can point at it.
+Both files are generated from the route definitions with `npm run docs:api`;
+the test suite fails if they are stale, and fails if a console action has no
+API operation (`test/api-parity.test.ts`).
+
 Base path: `/api/v1`. JSON in, JSON out. Every mutation is idempotent and is
 recorded in the audit log against the token that made it. Every authenticated
 call, reads included, is also logged as `api.request` with its method, path and
@@ -46,20 +55,57 @@ Minted from **Admin → Integrations → API keys**, or from
 `POST /api/v1/api-keys`. Shown once, stored only as a SHA-256 hash. Use these
 for anything ongoing.
 
-Scopes:
+Permissions are the same ones admin roles use (Security → Roles): one per
+area, `<area>:read` or `<area>:write` (write implies read), and `*` for
+everything. The areas are `users`, `groups`, `domains`, `schemas`, `import`
+(write only), `oidc`, `saml`, `scim`, `email`, `api_keys`, `security`,
+`branding`, `signing_keys`, `roles`, `audit` and `performance` (both read
+only). Each operation names the permission it needs as `x-permission` in the
+spec, and in the reference.
 
-| Scope | Allows |
+The original scopes keep working, as shorthand:
+
+| Scope | Stands for |
 |---|---|
-| `directory:read` | Read users, groups, domains, clients, status |
-| `directory:write` | Create and update users and groups, manage domains; cannot grant `super_admin`, add members to `Super Admins`, or overwrite an existing `Super Admins` member |
-| `clients:write` | Register OIDC relying parties |
-| `settings:write` | Settings, branding, SCIM configuration, setup; cannot create or reset an administrator |
-| `admin` | All of the above, plus minting further keys |
+| `directory:read` | `users:read`, `groups:read`, `domains:read`, `schemas:read`, `oidc:read`, `saml:read` |
+| `directory:write` | `users:write`, `groups:write`, `domains:write`, `import:write`, and reading clients, SAML apps and schemas |
+| `clients:write` | `oidc:write`, `saml:write` |
+| `settings:write` | `security:write`, `branding:write`, `email:write`, `scim:write`, `schemas:write` |
+| `admin` | `*`: everything, plus minting further keys |
+
+Some actions need `*` whatever else a key holds, because they reach an
+administrator: creating or resetting an administrator in `/setup`, granting
+`super_admin` or an admin role group through an import, acting on an account
+that holds an admin role (update, delete, password or MFA reset, invite),
+changing an admin role group or its members, moving every UPN to another
+domain, and resetting every password to the default. A role can only be given
+permissions the calling key holds itself, and `*` only by a `*` key.
 
 A failure answers `401` (unknown, revoked or expired token) or `403` (the token
 is valid but lacks the scope), with a `message` explaining which.
 
 ## Endpoints
+
+The sections below cover the original endpoints in depth, with the scope names
+they were written for (still accepted); the exact permission of every route is
+in the reference. The API also covers everything else the console
+does - in summary:
+
+| Area | Endpoints |
+|---|---|
+| Users | `POST /users`, `GET`/`PATCH`/`DELETE /users/{username}`, `POST .../reset-password`, `POST .../reset-mfa`, `GET`/`DELETE .../sessions`, `GET .../passkeys`, `DELETE .../passkeys/{credential_id}`, `GET .../apps`, `DELETE .../apps/{client_id}` |
+| Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members paged, `?search=`), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}` |
+| OIDC clients | `GET`/`PATCH`/`DELETE /clients/{client_id}`, `POST .../rotate-secret` |
+| SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config` |
+| Domains | `DELETE /domains/{domain}` |
+| API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
+| Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
+| Branding | `GET`/`PATCH /branding`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` |
+| Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
+| Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
+
+Request bodies are validated against the schema in the spec: a wrong type is a
+`400` with `error: "invalid_request"` and a `message` naming the field.
 
 ### `GET /status`
 

@@ -6,6 +6,39 @@ may break things.
 
 ## [Unreleased]
 
+### Added
+
+- **The provisioning API covers everything the admin console does.** New
+  endpoints for users (get, update - attributes, schema, email, status -
+  delete, password and MFA resets, sessions, passkeys, connected apps),
+  groups (create, get with paged and searchable members, update, delete,
+  freeze, add and remove members), OIDC clients (get, update, rotate secret,
+  delete), SAML service providers (get), API keys (list, revoke), domains
+  (remove), SCIM (read configuration), email (settings, switch, test),
+  branding and email templates, security settings, authentication policies,
+  factors, roles, signing keys (list, rotate), the audit log, the overview
+  statistics and performance. See `docs/api.md` for a summary.
+- **An OpenAPI 3.1 document**, generated from the route definitions and served
+  without a token at `GET /api/v1/openapi.json`. Every operation names the
+  permission it needs (`x-permission`). `npm run docs:api` writes it to
+  `docs/openapi.json` with a readable `docs/api-reference.md`.
+- A parity test fails when a console action has no API operation, when an API
+  route is missing from the spec, or when the committed spec is stale.
+
+### Changed
+
+- API routes require the granular permission for their area (`users:read`,
+  `oidc:write`, ...), so keys minted with per-area permissions work across the
+  API. Keys with the original scopes keep exactly the access they had.
+- API request bodies are validated against the documented schemas: a wrong
+  type is a `400 invalid_request` naming the field.
+- `POST /api/v1/users/{username}/invite` now needs `*` for any account holding
+  an admin role, not only Super Admins, as the console already required.
+- `POST /api/v1/scim/config` with a new scope re-evaluates what was already
+  pushed, as the console does.
+- Console and API share one implementation per action (`src/services`), so the
+  two cannot drift.
+
 ## [3.5.0] - 2026-11-11
 
 Migrations `0019` (admin role groups) and `0020` (step-up).
