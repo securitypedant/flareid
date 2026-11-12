@@ -1,3 +1,4 @@
+import { errorResponse } from "./html.js";
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
 import { getClientIp, rateLimitAddress } from "./rate-limit.js";
@@ -70,5 +71,7 @@ export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, nex
   // write amplification this exists to stop.
   c.header("Retry-After", "60");
   if (group === "api") return c.json({ error: "rate_limited", message: "Too many requests. Try again in a minute." }, 429);
-  return c.text("Too many requests from this network. Please wait a minute and try again.", 429);
+  const res = errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 429, "Too many requests from this network. Please wait a minute and try again.");
+  res.headers.set("Retry-After", "60");
+  return res;
 };

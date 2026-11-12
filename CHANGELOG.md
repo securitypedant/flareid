@@ -6,6 +6,16 @@ may break things.
 
 ## [Unreleased]
 
+### Changed
+
+- **Errors are pages, not bare text.** Every refused or failed action in the
+  admin console (a duplicate group or schema name, a missing item, a role
+  that cannot do this, an invalid form) now shows in the console with a
+  title, the reason and **Go back**, which returns to the form with what was
+  typed. My account, the admin access refusals, unknown addresses, server
+  errors, the edge rate limit and the cross-site refusal do the same for
+  browsers; API, SCIM and token endpoints still answer in their own formats.
+
 ### Security
 
 - **Step-up re-authentication asks for an emailed code** when email codes are

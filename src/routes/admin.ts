@@ -15,7 +15,7 @@ import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -133,9 +133,9 @@ export const admin = new Hono<{ Bindings: Env }>();
 // A refusal from a shared service (src/services) is rendered as the console
 // always rendered its refusals: the message as text, with the status.
 admin.onError((err, c) => {
-  if (err instanceof ServiceError) return c.text(err.message, err.status);
+  if (err instanceof ServiceError) return consoleError(c, err.message, err.status);
   console.error(err);
-  return c.text("Internal server error", 500);
+  return consoleError(c, "Something went wrong on our side. Try again; if it keeps happening, check the Worker logs.", 500);
 });
 
 admin.use("/admin", requireSession, requireAdmin);
@@ -149,7 +149,7 @@ admin.use("/admin/*", requireSession, requireAdmin);
 admin.use("/admin/*", async (c, next) => {
   if (c.req.method !== "POST" || c.get("isSuperAdmin")) return next();
   const path = c.req.path;
-  const forbid = (why: string) => c.text(`Forbidden: ${why} needs a Super Admin.`, 403);
+  const forbid = (why: string) => consoleError(c, `Forbidden: ${why} needs a Super Admin.`, 403);
   const roleGroupIds = await adminRoleGroupIds(c.env);
   const roleGroupNames = await adminRoleGroupNames(c.env);
   const userMatch = /^\/admin\/users\/(\d+)(\/|$)/.exec(path);
@@ -380,6 +380,12 @@ const INTEGRATIONS_CRUMB: Breadcrumb = { label: "Integrations", href: "/admin/in
 function integrationCrumb(key: IntegrationPage): Breadcrumb {
   const p = INTEGRATION_PAGES.find((x) => x.key === key)!;
   return { label: p.label, href: `/admin/integrations/${p.key}` };
+}
+
+/** A refused or failed console action, as a page in the console rather than bare text. */
+function consoleError(c: Context<{ Bindings: Env }>, message: string, status: number) {
+  const title = status === 404 ? "Not found" : status === 403 ? "Not allowed" : status === 409 ? "Already exists" : "That didn't work";
+  return c.html(layout(c, title, errorCard(status, message, safeBackHref(c.req.raw, "/admin")), [{ label: "Admin", href: "/admin" }, { label: title }]), status as 400);
 }
 
 function adminNav(active: string, sub = "", visible?: Set<string>) {
@@ -1237,7 +1243,7 @@ admin.post("/admin/users", async (c) => {
 admin.get("/admin/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
-  if (!user) return c.text("Not found", 404);
+  if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const emailOn = await isEmailConfigured(c.env);
 
   const { results: groups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
@@ -1490,7 +1496,7 @@ admin.post("/admin/users/:id", async (c) => {
 async function emailUserLink(c: Context<{ Bindings: Env }>, kind: "invite" | "reset") {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
-  if (!user) return c.text("Not found", 404);
+  if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const result = await sendUserLink(consoleCtx(c), user, kind);
   return c.redirect(`/admin/users/${id}?${result.ok ? `sent=${kind}` : `send_error=${encodeURIComponent(result.error)}`}`, 302);
 }
@@ -1521,7 +1527,7 @@ function choosePasswordForm(userId: number, policy: Awaited<ReturnType<typeof ge
 admin.post("/admin/users/:id/reset-password", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
-  if (!user) return c.text("Not found", 404);
+  if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   const body = await c.req.parseBody();
   const chosen = String(body.password ?? "");
@@ -1913,7 +1919,7 @@ admin.post("/admin/groups", async (c) => {
   try {
     form = await readGroupForm(c, null);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
+    return consoleError(c, e instanceof Error ? e.message : "Invalid group.", 400);
   }
   const id = await createGroup(consoleCtx(c), form, form.userIds);
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
@@ -1972,7 +1978,7 @@ admin.post("/admin/groups/:id/freeze", async (c) => {
 admin.get("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
-  if (!group) return c.text("Not found", 404);
+  if (!group) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const rule = parseRule(group.rule);
   const msearch = (c.req.query("msearch") ?? "").slice(0, 100);
   const mpage = Math.min(100_000, Math.max(1, Math.floor(Number(c.req.query("mpage")) || 1)));
@@ -1992,13 +1998,13 @@ admin.get("/admin/groups/:id", async (c) => {
 admin.post("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const existing = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
-  if (!existing) return c.text("Not found", 404);
+  if (!existing) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   let form;
   try {
     form = await readGroupForm(c, existing.name);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
+    return consoleError(c, e instanceof Error ? e.message : "Invalid group.", 400);
   }
   // The form posts only additions to a static group (current members are
   // removed one by one from the members panel), so its set is the union.
@@ -2539,15 +2545,15 @@ function readPermissionMatrix(body: Record<string, unknown>): string[] {
 admin.post("/admin/api-keys", async (c) => {
   const body = await c.req.parseBody({ all: true });
   const name = String(body.name ?? "").trim();
-  if (!name) return c.text("name is required", 400);
+  if (!name) return consoleError(c, "Enter a name.", 400);
 
   const requested = readPermissionMatrix(body);
   // Same rule as roles: a key carries only permissions its creator holds ("*" only from a Super Admin).
   const mine = c.get("access");
   const beyond = requested.filter((p) => (p === "*" ? !mine.isSuper : !grants(mine.perms, p)));
-  if (beyond.length) return c.text(`You cannot give a key permissions you do not hold: ${beyond.join(", ")}.`, 403);
+  if (beyond.length) return consoleError(c, `You cannot give a key permissions you do not hold: ${beyond.join(", ")}.`, 403);
   // Choosing nothing used to mint an admin key. It now asks again.
-  if (requested.length === 0) return c.text("Choose at least one permission for the key.", 400);
+  if (requested.length === 0) return consoleError(c, "Choose at least one permission for the key.", 400);
   const scopes: ApiScope[] = requested;
 
   const created = await createApiKey(c.env, { name, scopes, createdBy: c.get("user").upn });
@@ -2649,7 +2655,7 @@ admin.post("/admin/clients", async (c) => {
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!name) return c.text("name is required", 400);
+  if (!name) return consoleError(c, "Enter a name.", 400);
 
   // Seeded credentials, for provisioning that has to know them in advance.
   //
@@ -2701,7 +2707,7 @@ admin.post("/admin/clients", async (c) => {
 admin.get("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
-  if (!client) return c.text("Not found", 404);
+  if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   return c.html(
     layout(
@@ -2754,7 +2760,7 @@ admin.post("/admin/clients/:id", async (c) => {
 admin.post("/admin/clients/:id/rotate-secret", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await getClientById(c.env, id);
-  if (!client) return c.text("Not found", 404);
+  if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const clientSecret = await rotateClientSecret(consoleCtx(c), client);
 
   return c.html(
@@ -2773,7 +2779,7 @@ admin.post("/admin/clients/:id/rotate-secret", async (c) => {
 
 admin.post("/admin/clients/:id/delete", async (c) => {
   const client = await getClientById(c.env, Number(c.req.param("id")));
-  if (!client) return c.text("Not found", 404);
+  if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   await deleteClient(consoleCtx(c), client);
   return c.redirect("/admin/integrations/oidc?saved=1", 302);
 });
@@ -2986,14 +2992,14 @@ admin.post("/admin/saml/import-metadata", async (c) => {
     await logAudit(c.env, c.get("user"), "saml_sp.metadata_imported", meta.entityId, { acs_urls: meta.acsUrls.length }, c.req.raw);
     return c.redirect(`/admin/saml/${id}?saved=1`, 302);
   } catch (e) {
-    if (e instanceof SpMetadataError) return c.text(e.message, 400);
+    if (e instanceof SpMetadataError) return consoleError(c, e.message, 400);
     throw e;
   }
 });
 
 admin.post("/admin/saml", async (c) => {
   const v = parseSpForm(await c.req.parseBody());
-  if (typeof v === "string") return c.text(v, 400);
+  if (typeof v === "string") return consoleError(c, v, 400);
 
   const now = new Date().toISOString();
   const result = await c.env.DB.prepare(
@@ -3011,7 +3017,7 @@ admin.post("/admin/saml", async (c) => {
 admin.get("/admin/saml/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
-  if (!sp) return c.text("Not found", 404);
+  if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   return c.html(
     layout(
@@ -3056,10 +3062,10 @@ admin.get("/admin/saml/:id", async (c) => {
 admin.post("/admin/saml/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
-  if (!sp) return c.text("Not found", 404);
+  if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   const v = parseSpForm(await c.req.parseBody());
-  if (typeof v === "string") return c.text(v, 400);
+  if (typeof v === "string") return consoleError(c, v, 400);
 
   await c.env.DB.prepare(
     `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ? WHERE id = ?`
@@ -3075,7 +3081,7 @@ admin.post("/admin/saml/:id", async (c) => {
 admin.post("/admin/saml/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
-  if (!sp) return c.text("Not found", 404);
+  if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
   await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
@@ -3199,8 +3205,8 @@ admin.post("/admin/schemas", async (c) => {
   const objectType = String(body.object_type ?? "") === "group" ? "group" : "user";
   const name = String(body.name ?? "").trim();
   const description = String(body.description ?? "").trim();
-  if (!name) return c.text("name is required", 400);
-  if (await findSchema(c.env, objectType, name)) return c.text(`A ${objectType} schema named "${name}" already exists.`, 409);
+  if (!name) return consoleError(c, "Enter a name.", 400);
+  if (await findSchema(c.env, objectType, name)) return consoleError(c, `A ${objectType} schema named "${name}" already exists.`, 409);
 
   const id = await createSchema(c.env, objectType, name, description);
   await logAudit(c.env, c.get("user"), "schema.created", `${objectType}:${name}`, undefined, c.req.raw);
@@ -3210,7 +3216,7 @@ admin.post("/admin/schemas", async (c) => {
 admin.get("/admin/schemas/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
-  if (!schema) return c.text("Not found", 404);
+  if (!schema) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const attributes = await getSchemaAttributes(c.env, id);
   const conforming = await countConforming(c.env, id, schema.object_type);
   const columnNote =
@@ -3280,27 +3286,27 @@ admin.get("/admin/schemas/:id", async (c) => {
 admin.post("/admin/schemas/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
-  if (!schema) return c.text("Not found", 404);
+  if (!schema) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody({ all: true });
   const name = String(body.name ?? "").trim();
   const description = String(body.description ?? "").trim();
-  if (!name) return c.text("name is required", 400);
+  if (!name) return consoleError(c, "Enter a name.", 400);
 
   const clash = await c.env.DB.prepare("SELECT id FROM schemas WHERE object_type = ? AND name = ? AND id != ?").bind(schema.object_type, name, id).first();
-  if (clash) return c.text(`A ${schema.object_type} schema named "${name}" already exists.`, 409);
+  if (clash) return consoleError(c, `A ${schema.object_type} schema named "${name}" already exists.`, 409);
 
   let attributes: AttributeInput[];
   try {
     attributes = readAttributeRows(body);
   } catch (e) {
-    return c.text(e instanceof Error ? e.message : "Invalid attributes.", 400);
+    return consoleError(c, e instanceof Error ? e.message : "Invalid attributes.", 400);
   }
 
   try {
     // Checked before anything is written: a refused permission changes nothing.
     await saveSchemaAttributes(c.env, id, attributes);
   } catch (e) {
-    if (e instanceof RangeError) return c.text(e.message, 400);
+    if (e instanceof RangeError) return consoleError(c, e.message, 400);
     throw e;
   }
   await c.env.DB.prepare("UPDATE schemas SET name = ?, description = ? WHERE id = ?").bind(name, description || null, id).run();
@@ -3311,7 +3317,7 @@ admin.post("/admin/schemas/:id", async (c) => {
 admin.post("/admin/schemas/:id/apply", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
-  if (!schema) return c.text("Not found", 404);
+  if (!schema) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const count = await applySchemaToAll(c.env, schema);
   await logAudit(c.env, c.get("user"), "schema.applied", `${schema.object_type}:${schema.name}`, { count }, c.req.raw);
   return c.redirect(`/admin/schemas/${id}?saved=1`, 302);
@@ -3320,8 +3326,8 @@ admin.post("/admin/schemas/:id/apply", async (c) => {
 admin.post("/admin/schemas/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
-  if (!schema) return c.text("Not found", 404);
-  if (schema.builtin) return c.text("Provided schemas cannot be deleted - remove their attributes instead.", 400);
+  if (!schema) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  if (schema.builtin) return consoleError(c, "Provided schemas cannot be deleted - remove their attributes instead.", 400);
 
   const fallback = await getSchema(c.env, Number(await defaultSchemaId(c.env, schema.object_type)));
   if (fallback) await applySchemaToAll(c.env, fallback, id);
@@ -3820,14 +3826,14 @@ admin.get("/admin/branding/email-templates", async (c) => {
 /** The preview alone, for the editor's live refresh. Never saves anything. */
 admin.get("/admin/branding/email-templates/preview", async (c) => {
   const q = c.req.query();
-  if (!isTemplateKey(q.t)) return c.text("No such template.", 404);
+  if (!isTemplateKey(q.t)) return consoleError(c, "No such template.", 404);
   const accent = q.accent && isHexColor(q.accent) ? q.accent.toLowerCase() : await getAccent(c.env);
   return c.html(emailPreview(c.get("appName"), q.t, templateFromInput(q, await getTemplate(c.env, q.t)), accent));
 });
 
 admin.post("/admin/branding/email-templates/:key", async (c) => {
   const key = c.req.param("key");
-  if (!isTemplateKey(key)) return c.text("No such template.", 404);
+  if (!isTemplateKey(key)) return consoleError(c, "No such template.", 404);
   const body = await c.req.parseBody();
   const t: Partial<EmailTemplate> = {};
   for (const f of TEMPLATE_FIELDS) if (typeof body[f] === "string") t[f] = body[f] as string;
@@ -3842,7 +3848,7 @@ admin.post("/admin/branding/email-templates/:key", async (c) => {
 
 admin.post("/admin/branding/email-templates/:key/reset", async (c) => {
   const key = c.req.param("key");
-  if (!isTemplateKey(key)) return c.text("No such template.", 404);
+  if (!isTemplateKey(key)) return consoleError(c, "No such template.", 404);
   await saveEmailTemplate(consoleCtx(c), key, null);
   return c.redirect(`/admin/branding/email-templates?t=${key}&saved=reset`, 302);
 });
@@ -3857,7 +3863,7 @@ admin.post("/admin/branding/email-accent", async (c) => {
 
 admin.post("/admin/security/apply-default-password", async (c) => {
   // It resets every password, Super Admins' included.
-  if (!c.get("isSuperAdmin")) return c.text("Applying the default password to every account needs a Super Admin.", 403);
+  if (!c.get("isSuperAdmin")) return consoleError(c, "Applying the default password to every account needs a Super Admin.", 403);
   const count = await applyDefaultPasswordToAll(consoleCtx(c), String((await c.req.parseBody()).default_password ?? ""));
   return c.html(
     layout(
@@ -3952,7 +3958,7 @@ admin.post("/admin/security/policies", async (c) => {
   try {
     f = await readPolicyForm(c);
   } catch (e) {
-    return c.text((e as Error).message, 400);
+    return consoleError(c, (e as Error).message, 400);
   }
   await createPolicy(consoleCtx(c), f);
   return c.redirect("/admin/security/policies?saved=1", 302);
@@ -3961,7 +3967,7 @@ admin.post("/admin/security/policies", async (c) => {
 admin.get("/admin/security/policies/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const p = (await listPolicies(c.env)).find((x) => x.id === id);
-  if (!p) return c.text("Not found", 404);
+  if (!p) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const groups = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
   return c.html(
     layout(
@@ -3994,12 +4000,12 @@ admin.get("/admin/security/policies/:id", async (c) => {
 
 admin.post("/admin/security/policies/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  if (!(await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE id = ?").bind(id).first())) return c.text("Not found", 404);
+  if (!(await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE id = ?").bind(id).first())) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   let f;
   try {
     f = await readPolicyForm(c);
   } catch (e) {
-    return c.text((e as Error).message, 400);
+    return consoleError(c, (e as Error).message, 400);
   }
   await updatePolicy(consoleCtx(c), id, f);
   return c.redirect("/admin/security/policies?saved=1", 302);
@@ -4111,7 +4117,7 @@ admin.get("/admin/security/roles/new", async (c) => c.html(layout(c, "New role",
 
 admin.get("/admin/security/roles/:id", async (c) => {
   const role = (await listRoles(c.env)).find((r) => r.id === Number(c.req.param("id")));
-  if (!role) return c.text("Not found", 404);
+  if (!role) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   return c.html(layout(c, role.name, await roleForm(c, role), ROLE_CRUMBS([{ label: role.name }])));
 });
 
@@ -4127,7 +4133,7 @@ admin.post("/admin/security/roles", async (c) => {
   try {
     f = await readRoleForm(c);
   } catch (e) {
-    return c.text((e as Error).message, 400);
+    return consoleError(c, (e as Error).message, 400);
   }
   await createRole(consoleCtx(c), f);
   return c.redirect("/admin/security/roles?saved=1", 302);
@@ -4136,13 +4142,13 @@ admin.post("/admin/security/roles", async (c) => {
 admin.post("/admin/security/roles/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const role = await c.env.DB.prepare("SELECT * FROM admin_roles WHERE id = ?").bind(id).first<RoleRow>();
-  if (!role) return c.text("Not found", 404);
-  if (role.name === SUPER_ROLE) return c.text("Super Admin cannot be changed.", 400);
+  if (!role) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  if (role.name === SUPER_ROLE) return consoleError(c, "Super Admin cannot be changed.", 400);
   let f;
   try {
     f = await readRoleForm(c);
   } catch (e) {
-    return c.text((e as Error).message, 400);
+    return consoleError(c, (e as Error).message, 400);
   }
   await updateRole(consoleCtx(c), id, f);
   return c.redirect("/admin/security/roles?saved=1", 302);
@@ -4250,7 +4256,7 @@ async function kbaAction(c: Context<{ Bindings: Env }>, run: () => Promise<unkno
     await run();
   } catch (e) {
     if (!(e instanceof ServiceError)) throw e;
-    if (e.status === 404) return c.text(e.message, 404);
+    if (e.status === 404) return consoleError(c, e.message, 404);
     return c.redirect(`/admin/security/factors/security-questions?error=${encodeURIComponent(e.message)}`, 302);
   }
   return c.redirect("/admin/security/factors/security-questions?saved=1", 302);
@@ -4280,7 +4286,7 @@ admin.post("/admin/security/factors/:key", async (c) => {
     await saveFactor(consoleCtx(c), c.req.param("key"), String((await c.req.parseBody()).enabled) === "1");
   } catch (e) {
     if (!(e instanceof ServiceError)) throw e;
-    if (e.message === "Unknown factor.") return c.text(e.message, 400);
+    if (e.message === "Unknown factor.") return consoleError(c, e.message, 400);
     return c.redirect(`/admin/security/factors?error=${encodeURIComponent(e.message)}`, 302);
   }
   return c.redirect("/admin/security/factors?saved=1", 302);

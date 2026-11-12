@@ -1,3 +1,4 @@
+import { errorPage, safeBackHref } from "../lib/html.js";
 import { grants } from "../lib/permissions.js";
 import { isFactorEnabled, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
@@ -47,10 +48,10 @@ account.use("/account", requireSession);
 // Self-service is a permission like any other (the default "User" role grants both).
 account.use("/account/*", async (c, next) => {
   const need = c.req.method === "GET" || c.req.method === "HEAD" ? "account:read" : "account:write";
-  if (!grants(c.get("access").perms, need)) return c.text("Your role does not allow changes to your account here.", 403);
+  if (!grants(c.get("access").perms, need)) return c.html(errorPage(c.get("appName"), 403, "Your role doesn't allow changes to your account here.", safeBackHref(c.req.raw, "/account"), Boolean(c.get("access")?.isAdmin)), 403);
   return next();
 });
-account.use("/account", async (c, next) => (grants(c.get("access").perms, "account:read") ? next() : c.text("Your role does not include My account.", 403)));
+account.use("/account", async (c, next) => (grants(c.get("access").perms, "account:read") ? next() : c.html(errorPage(c.get("appName"), 403, "Your role doesn't include My account. Ask an administrator.", "/", Boolean(c.get("access")?.isAdmin)), 403)));
 
 function layout(c: Context<{ Bindings: Env }>, title: string, body: string, headerMeta?: string) {
   const appName = c.get("appName");
@@ -722,7 +723,7 @@ account.post("/account/mfa/setup", async (c) => {
   const resume = String(body.resume ?? "");
 
   const secret = await getPendingEnrollment(c.env, c.get("sessionId"));
-  if (!secret) return c.text("Enrollment session expired, please start again.", 400);
+  if (!secret) return c.html(errorPage(c.get("appName"), 400, "The set-up session expired. Start setting up the authenticator app again.", "/account/mfa/setup", Boolean(c.get("access")?.isAdmin)), 400);
 
   const counter = await matchTotpCounter(secret, code);
   if (counter === null) {

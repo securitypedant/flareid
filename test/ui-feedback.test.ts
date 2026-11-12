@@ -132,3 +132,30 @@ describe("large-directory pickers", () => {
     expect(page).not.toContain('value="' + (await env.DB.prepare("SELECT id FROM users WHERE username = 'nils.berg'").first<{ id: number }>())!.id + '" data-label');
   });
 });
+
+describe("error pages", () => {
+  it("shows refused console actions as a page with the reason and a way back, not bare text", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const cookie = await adminCookie();
+    const make = () => SELF.fetch(`${BASE}/admin/groups`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE, Cookie: cookie, Referer: `${BASE}/admin/groups/new` }, body: "name=Sales&membership=static", redirect: "manual" });
+    expect((await make()).status).toBe(302);
+    const dup = await make();
+    expect(dup.status).toBe(409);
+    expect(dup.headers.get("Content-Type")).toContain("text/html");
+    const html = await dup.text();
+    expect(html).toContain("Already exists");
+    expect(html).toContain("A group named &quot;Sales&quot; already exists.");
+    expect(html).toContain('href="/admin/groups/new" data-go-back');
+    expect(html).toContain('class="admin-side"');
+  });
+
+  it("gives browsers a page and API clients text for unknown addresses", async () => {
+    const page = await SELF.fetch(`${BASE}/no/such/page`, { headers: { Accept: "text/html" } });
+    expect(page.status).toBe(404);
+    expect(await page.text()).toContain("no page at this address");
+    // The API answers its own way (here: no token), never with an HTML page.
+    const api = await SELF.fetch(`${BASE}/api/v1/nope`, { headers: { Accept: "text/html" } });
+    expect(api.status).toBeGreaterThanOrEqual(400);
+    expect(api.headers.get("Content-Type")).not.toContain("text/html");
+  });
+});

@@ -1,3 +1,4 @@
+import { errorResponse } from "./html.js";
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
 import { hasSessionCookie } from "./sessions.js";
@@ -60,7 +61,7 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   else verdict = hasSessionCookie(c.req.raw) ? "unknown" : "ok";
 
   if (verdict !== "ok") {
-    return c.text("This request did not come from this site, so it was refused. Reload the page and try again.", 403);
+    return errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 403, "This request did not come from this site, so it was refused. Reload the page and try again.");
   }
   return next();
 };

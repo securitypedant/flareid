@@ -1124,6 +1124,69 @@ export function nav(appName: string, isAdmin: boolean): string {
   </header>`;
 }
 
+/** Titles for the shared error card, by HTTP status. */
+const ERROR_TITLES: Record<number, string> = {
+  400: "That didn't work",
+  403: "Not allowed",
+  404: "Not found",
+  409: "Already exists",
+  429: "Too many requests",
+  503: "Not available",
+};
+
+const GO_BACK_SCRIPT = `document.querySelectorAll("[data-go-back]").forEach(function (b) {
+  b.addEventListener("click", function (e) { if (history.length > 1) { e.preventDefault(); history.back(); } });
+});`;
+
+/**
+ * The card every refused action shows in the signed-in pages: a title, the
+ * reason, and a way back. "Go back" uses the browser history, so a form keeps
+ * what was typed into it; without history it follows `backHref`.
+ */
+export function errorCard(status: number, message: string, backHref: string): string {
+  const title = ERROR_TITLES[status] ?? "Something went wrong";
+  return `<section class="card error-card" role="alert">
+    <h2 style="margin-top:0;">${escapeHtml(title)}</h2>
+    <p class="error" style="font-size:0.9375rem;">${escapeHtml(message)}</p>
+    <div class="form-actions" style="justify-content:flex-start;">
+      <a href="${escapeHtml(backHref)}" data-go-back><button class="primary" type="button">Go back</button></a>
+    </div>
+    ${scriptTag(GO_BACK_SCRIPT)}
+  </section>`;
+}
+
+/** The error card as a whole page with the top bar, for routes outside the admin console layout. */
+export function errorPage(appName: string, status: number, message: string, backHref: string, isAdmin: boolean): string {
+  return page(ERROR_TITLES[status] ?? "Something went wrong", `<div style="max-width:640px; margin:32px auto;">${errorCard(status, message, backHref)}</div>`, appName, false, nav(appName, isAdmin));
+}
+
+/**
+ * An error for whoever asked: the styled card for a browser (no top bar - the
+ * person may not be signed in), plain text for an API client or script.
+ */
+export function errorResponse(request: Request, appName: string, status: number, message: string): Response {
+  const path = new URL(request.url).pathname;
+  const machine = /^\/(api|scim)\//.test(path) || ["/token", "/userinfo", "/introspect", "/revoke", "/jwks.json"].includes(path);
+  const wantsHtml = (request.headers.get("Accept") ?? "").includes("text/html");
+  if (machine || !wantsHtml) return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
+  const body = page(ERROR_TITLES[status] ?? "Something went wrong", `<div style="max-width:640px; margin:48px auto;">${errorCard(status, message, safeBackHref(request, "/"))}</div>`, appName);
+  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=UTF-8" } });
+}
+
+/** Where "Go back" leads when there is no history: the page the request came from, if it is ours. */
+export function safeBackHref(request: Request, fallback: string): string {
+  const ref = request.headers.get("Referer");
+  try {
+    if (ref && new URL(ref).origin === new URL(request.url).origin) {
+      const u = new URL(ref);
+      return u.pathname + u.search;
+    }
+  } catch {
+    // fall through
+  }
+  return fallback;
+}
+
 export function page(
   title: string,
   bodyHtml: string,

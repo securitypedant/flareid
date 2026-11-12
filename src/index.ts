@@ -1,3 +1,4 @@
+import { errorResponse } from "./lib/html.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { Hono } from "hono";
@@ -68,10 +69,10 @@ app.route("/", admin);
 
 app.onError((err, c) => {
   console.error(err);
-  return c.text("Internal server error", 500);
+  return errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 500, "Something went wrong on our side. Please try again in a moment.");
 });
 
-app.notFound((c) => c.text("Not found", 404));
+app.notFound((c) => errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 404, "There's no page at this address. Check the link, or go back."));
 
 export default {
   fetch: app.fetch,

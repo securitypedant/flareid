@@ -1,3 +1,4 @@
+import { errorPage, safeBackHref } from "./html.js";
 import { grants } from "./permissions.js";
 import { accessFor, canAccess, type Access } from "./admin-roles.js";
 import { secondFactorGate } from "./auth-policy.js";
@@ -60,9 +61,10 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
 /** Any admin role reaches the console; each request must be within the roles' areas (canAccess). */
 export async function requireAdmin(c: Context<{ Bindings: Env }>, next: Next) {
   const access = c.get("access");
-  if (!access?.isAdmin) return c.text("Forbidden", 403);
+  const refuse = (message: string, back: string) => c.html(errorPage(c.get("appName"), 403, message, safeBackHref(c.req.raw, back), Boolean(access?.isAdmin)), 403);
+  if (!access?.isAdmin) return refuse("The admin console is for administrators. Ask a Super Admin if you need access.", "/account");
   if (!canAccess(access, c.req.method, c.req.path)) {
-    return c.text(c.req.method === "GET" ? "Forbidden: your role does not include this part of the console." : "Forbidden: your role can view this but not change it.", 403);
+    return refuse(c.req.method === "GET" ? "Your role doesn't include this part of the console." : "Your role can view this but not change it.", "/admin");
   }
   await next();
 }
