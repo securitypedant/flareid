@@ -1,3 +1,4 @@
+import { adminRolesFor, canAccess, type AdminRole } from "./admin-roles.js";
 import { secondFactorGate } from "./auth-policy.js";
 import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
@@ -10,6 +11,8 @@ declare module "hono" {
   interface ContextVariableMap {
     user: UserRow;
     isSuperAdmin: boolean;
+    /** Admin roles held through the built-in role groups (admin-roles.ts). */
+    adminRoles: Set<AdminRole>;
     sessionId: string;
     /** Resolved once per request by the `resolveAppName` middleware - the admin-configurable display name, falling back to the APP_NAME env var. */
     appName: string;
@@ -34,7 +37,9 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
 
   c.set("user", user);
   c.set("sessionId", session!.id);
-  c.set("isSuperAdmin", await isSuperAdmin(c.env, user.id));
+  const roles = await adminRolesFor(c.env, user.id);
+  c.set("adminRoles", roles);
+  c.set("isSuperAdmin", roles.has("super"));
 
   // Safety net: even outside the forced-enrollment flow right after login
   // (see login.ts), nothing else should be usable without MFA once it's required.
@@ -50,7 +55,12 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
   await next();
 }
 
+/** Any admin role reaches the console; each request must be within the roles' areas (canAccess). */
 export async function requireAdmin(c: Context<{ Bindings: Env }>, next: Next) {
-  if (!c.get("isSuperAdmin")) return c.text("Forbidden", 403);
+  const roles = c.get("adminRoles");
+  if (!roles || roles.size === 0) return c.text("Forbidden", 403);
+  if (!canAccess(roles, c.req.method, c.req.path)) {
+    return c.text(roles.has("auditor") && c.req.method !== "GET" ? "Forbidden: Auditors have read-only access." : "Forbidden: your admin role does not cover this part of the console.", 403);
+  }
   await next();
 }

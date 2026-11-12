@@ -35,7 +35,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, c.get("isSuperAdmin"))
+    nav(appName, (c.get("adminRoles")?.size ?? 0) > 0)
   );
 }
 

@@ -1,3 +1,4 @@
+import { adminRolesFor, ROLE_GROUP_NAMES, visibleSections, type AdminRole } from "../lib/admin-roles.js";
 import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -87,6 +88,32 @@ export const admin = new Hono<{ Bindings: Env }>();
 admin.use("/admin", requireSession, requireAdmin);
 admin.use("/admin/*", requireSession, requireAdmin);
 
+/**
+ * Below Super Admin, nobody can change who holds an admin role or act on an
+ * account that holds one: a Directory Admin could otherwise make themselves
+ * (or anyone) Super Admin, or reset a Super Admin's password.
+ */
+admin.use("/admin/*", async (c, next) => {
+  if (c.req.method !== "POST" || c.get("isSuperAdmin")) return next();
+  const path = c.req.path;
+  const forbid = (why: string) => c.text(`Forbidden: ${why} needs a Super Admin.`, 403);
+  const roleGroupIds = new Set(
+    (await c.env.DB.prepare("SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ROLE_GROUP_NAMES)).all<{ id: number }>()).results.map((r) => r.id)
+  );
+  const userMatch = /^\/admin\/users\/(\d+)(\/|$)/.exec(path);
+  if (userMatch && (await adminRolesFor(c.env, Number(userMatch[1]))).size > 0) return forbid("changing an account that holds an admin role");
+  const groupMatch = /^\/admin\/groups\/(\d+)(\/|$)/.exec(path);
+  if (groupMatch && roleGroupIds.has(Number(groupMatch[1]))) return forbid("changing an admin role group");
+  if (path === "/admin/users" || userMatch || path === "/admin/groups") {
+    const form = await c.req.raw.clone().formData().catch(() => null);
+    const ids = form ? [...form.getAll("group_ids"), ...form.getAll("add_group_ids")].map(Number) : [];
+    if (ids.some((id) => roleGroupIds.has(id))) return forbid("giving someone an admin role");
+    const name = String(form?.get("name") ?? "").trim();
+    if (path === "/admin/groups" && ROLE_GROUP_NAMES.includes(name)) return forbid("creating an admin role group");
+  }
+  return next();
+});
+
 /** Section labels (second breadcrumb) -> nav key, so detail pages highlight their section too. */
 const CRUMB_SECTIONS: Record<string, string> = {
   Users: "users",
@@ -100,7 +127,7 @@ const CRUMB_SECTIONS: Record<string, string> = {
 };
 
 function layout(
-  c: { get: (k: "appName") => string },
+  c: { get: ((k: "appName") => string) & ((k: "adminRoles") => Set<AdminRole> | undefined) },
   title: string,
   body: string,
   crumbs?: Breadcrumb[],
@@ -125,7 +152,7 @@ function layout(
   return page(
     `${title}`,
     `<div class="admin-shell">
-      <aside class="admin-side">${adminNav(section, sub)}</aside>
+      <aside class="admin-side">${adminNav(section, sub, visibleSections(c.get("adminRoles") ?? new Set(["super"])))}</aside>
       <div class="admin-main">
         <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
         ${body}
@@ -173,7 +200,7 @@ function integrationCrumb(key: IntegrationPage): Breadcrumb {
   return { label: p.label, href: `/admin/integrations/${p.key}` };
 }
 
-function adminNav(active: string, sub = "") {
+function adminNav(active: string, sub = "", visible?: Set<string>) {
   const items: [string, string, string][] = [
     ["overview", "/admin", "Overview"],
     ["users", "/admin/users", "Users"],
@@ -186,6 +213,7 @@ function adminNav(active: string, sub = "") {
     ["audit", "/admin/audit", "Log"],
   ];
   return items
+    .filter(([key]) => !visible || visible.has(key))
     .map(([key, href, label]) => {
       const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
       // A section's pages are listed only while you are in that section.
@@ -200,7 +228,7 @@ function adminNav(active: string, sub = "") {
           .join("");
       }
       if (key !== "integrations" || active !== "integrations") return link;
-      const children = [{ key: "overview", label: "Overview", href: "/admin/integrations" }, ...INTEGRATION_PAGES.map((p) => ({ ...p, href: `/admin/integrations/${p.key}` }))]
+      const children = [{ key: "overview", label: "Overview", href: "/admin/integrations" }, ...INTEGRATION_PAGES.filter((p) => p.key !== "api-keys" || !visible || visible.has("security")).map((p) => ({ ...p, href: `/admin/integrations/${p.key}` }))]
         .map((p) => `<a href="${p.href}" class="sub${sub === p.key ? " active" : ""}">${p.label}</a>`)
         .join("");
       return link + children;
@@ -696,10 +724,11 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
   const { results: sampleUsers } = await c.env.DB.prepare("SELECT * FROM users WHERE id != ?")
     .bind(currentUserId)
     .all<UserRow>();
+  // The admin role groups are FlareID's own, like Super Admins: never sample data.
   const { results: sampleGroups } = await c.env.DB.prepare(
-    `SELECT * FROM groups WHERE name != ?`
+    `SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`
   )
-    .bind(SUPER_ADMINS_GROUP)
+    .bind(JSON.stringify(ROLE_GROUP_NAMES))
     .all<GroupRow>();
 
   // The shared deletion (every users(id)-referencing table), with the remote
@@ -709,7 +738,7 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
     ...sampleUsers.filter((u) => u.scim_id).map((u) => queueScimDeprovision(c.env, "user", u.scim_id!, u.upn)),
     ...sampleGroups.filter((g) => g.scim_id).map((g) => queueScimDeprovision(c.env, "group", g.scim_id!, g.name)),
     ...(sampleUserIds.length > 0 ? deleteUserStatements(c.env, ...sampleUserIds) : []),
-    c.env.DB.prepare("DELETE FROM groups WHERE name != ?").bind(SUPER_ADMINS_GROUP),
+    c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ROLE_GROUP_NAMES)),
   ]);
   if (await scimConfigured(c.env)) await drainScimDeprovisionQueue(c.env);
 }
@@ -1038,7 +1067,8 @@ admin.post("/admin/users/import", async (c) => {
   // The console is Super Admin authority already; replace mode is not offered here.
   bundle.mode = "merge";
   try {
-    const result = await importDirectory(c.env, bundle, { allowPrivileged: true });
+    // Only Super Admins may assign admin roles or overwrite role holders through an import.
+    const result = await importDirectory(c.env, bundle, { allowPrivileged: c.get("isSuperAdmin") });
     await logAudit(c.env, c.get("user"), "directory.imported", result.domain, { via: "csv", users: result.users, groups: result.groups, errors: result.errors.length }, c.req.raw);
     return c.json(result);
   } catch (e) {

@@ -5,6 +5,7 @@ import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
+import { ROLE_GROUP_NAMES } from "./admin-roles.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
@@ -174,15 +175,17 @@ async function ensureDomain(env: Env, domain: string): Promise<void> {
  * an empty instance can delete the administrators afterwards.
  */
 async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; groups: GroupRow[] }> {
+  // Replace keeps the administrators - everyone holding an admin role - and the role groups themselves.
+  const roles = JSON.stringify(ROLE_GROUP_NAMES);
   const { results: doomed } = await env.DB.prepare(
     `SELECT * FROM users
       WHERE id NOT IN (
-        SELECT user_id FROM group_members WHERE group_id = (SELECT id FROM groups WHERE name = ?)
+        SELECT user_id FROM group_members WHERE group_id IN (SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?)))
       )`
   )
-    .bind(SUPER_ADMINS_GROUP)
+    .bind(roles)
     .all<UserRow>();
-  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name != ?").bind(SUPER_ADMINS_GROUP).all<GroupRow>();
+  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(roles).all<GroupRow>();
 
   // The remote ids are queued in the same batch as the deletion: once the
   // rows are gone they are the only way to find these objects downstream.
@@ -194,7 +197,7 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   await env.DB.batch([
     ...queue,
     ...(doomed.length > 0 ? deleteUserStatements(env, ...doomed.map((r) => r.id)) : []),
-    env.DB.prepare(`DELETE FROM groups WHERE name != ?`).bind(SUPER_ADMINS_GROUP),
+    env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`).bind(roles),
   ]);
 
   // Returned so the caller can remove them from the SCIM server too: once the
@@ -220,9 +223,9 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     const { results: adminRows } = await env.DB.prepare(
       `SELECT u.username FROM users u
        JOIN group_members gm ON gm.user_id = u.id
-       JOIN groups g ON g.id = gm.group_id WHERE g.name = ?`
+       JOIN groups g ON g.id = gm.group_id WHERE g.name IN (SELECT value FROM json_each(?))`
     )
-      .bind(SUPER_ADMINS_GROUP)
+      .bind(JSON.stringify(ROLE_GROUP_NAMES))
       .all<{ username: string }>();
     const adminUsernames = new Set(adminRows.map((r) => r.username));
     for (const user of users) {
@@ -230,13 +233,12 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       if (user.super_admin) {
         throw new ImportValidationError(`User "${username}" sets super_admin, which requires an admin-scoped token.`);
       }
-      if ((user.groups ?? []).some((name) => cleanString(name) === SUPER_ADMINS_GROUP)) {
-        throw new ImportValidationError(`User "${username}" lists "${SUPER_ADMINS_GROUP}", which requires an admin-scoped token.`);
+      const roleGroup = (user.groups ?? []).map((name) => cleanString(name)).find((name) => ROLE_GROUP_NAMES.includes(name));
+      if (roleGroup) {
+        throw new ImportValidationError(`User "${username}" lists "${roleGroup}", an admin role, which requires an admin-scoped token.`);
       }
       if (adminUsernames.has(username)) {
-        throw new ImportValidationError(
-          `User "${username}" would overwrite an existing member of "${SUPER_ADMINS_GROUP}", which requires an admin-scoped token.`
-        );
+        throw new ImportValidationError(`User "${username}" holds an admin role; overwriting them requires an admin-scoped token.`);
       }
     }
   }
