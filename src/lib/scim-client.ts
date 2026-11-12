@@ -151,7 +151,18 @@ export async function deleteUserScim(env: Env, user: UserRow): Promise<ScimResul
   }
 }
 
-function groupToScim(group: GroupRow, members: { scimId: string; upn: string }[]) {
+/** A group member as pushed: the local user and the remote user id they were sent as. */
+export interface ScimMember {
+  userId: number;
+  scimId: string;
+  upn: string;
+}
+
+const PATCH_OP_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
+/** Member references per PATCH request: keeps each body small for a big change. */
+const PATCH_MEMBERS_PER_REQUEST = 1000;
+
+function groupToScim(group: GroupRow, members: ScimMember[]) {
   return {
     schemas: [GROUP_SCHEMA],
     externalId: String(group.id),
@@ -160,23 +171,83 @@ function groupToScim(group: GroupRow, members: { scimId: string; upn: string }[]
   };
 }
 
+/** Bodies for a membership change, at most PATCH_MEMBERS_PER_REQUEST member references each. */
+export function groupPatchBodies(add: string[], remove: string[], rename: string | null): string[] {
+  const bodies: string[] = [];
+  let a = 0;
+  let r = 0;
+  do {
+    const ops: Record<string, unknown>[] = [];
+    if (rename !== null && bodies.length === 0) ops.push({ op: "replace", path: "displayName", value: rename });
+    const adds = add.slice(a, a + PATCH_MEMBERS_PER_REQUEST);
+    a += adds.length;
+    if (adds.length) ops.push({ op: "add", path: "members", value: adds.map((value) => ({ value })) });
+    const removes = remove.slice(r, r + PATCH_MEMBERS_PER_REQUEST - adds.length);
+    r += removes.length;
+    // The value-filter form (RFC 7644 3.5.2.2), which every SCIM server
+    // accepts for removing one member.
+    for (const id of removes) ops.push({ op: "remove", path: `members[value eq "${id.replace(/["\\]/g, "\\$&")}"]` });
+    bodies.push(JSON.stringify({ schemas: [PATCH_OP_SCHEMA], Operations: ops }));
+  } while (a < add.length || r < remove.length);
+  return bodies;
+}
+
+/** The last push the SCIM server accepted for a group, if it is for the remote group on file. */
+async function lastPushed(env: Env, group: GroupRow): Promise<{ displayName: string; members: Map<number, string> } | null> {
+  if (!group.scim_id) return null;
+  const state = await env.DB.prepare("SELECT display_name FROM scim_group_state WHERE group_id = ? AND scim_id = ?").bind(group.id, group.scim_id).first<{ display_name: string }>();
+  if (!state) return null;
+  const { results } = await env.DB.prepare("SELECT user_id, scim_id FROM scim_group_members WHERE group_id = ?").bind(group.id).all<{ user_id: number; scim_id: string }>();
+  return { displayName: state.display_name, members: new Map(results.map((m) => [m.user_id, m.scim_id])) };
+}
+
+const upsertState = (env: Env, groupId: number, scimId: string, name: string) =>
+  env.DB.prepare(
+    `INSERT INTO scim_group_state (group_id, scim_id, display_name, pushed_at) SELECT id, ?, ?, ? FROM groups WHERE id = ?
+     ON CONFLICT(group_id) DO UPDATE SET scim_id = excluded.scim_id, display_name = excluded.display_name, pushed_at = excluded.pushed_at`
+  ).bind(scimId, name, new Date().toISOString(), groupId);
+
 /**
- * Creates/replaces a group in the SCIM server. Members without a scim_id yet
+ * Member rows for the stored state. Joined to users and groups, so a row
+ * deleted while the push was in flight is simply not recorded.
+ */
+const insertMembers = (env: Env, groupId: number, members: { userId: number; scimId: string }[]) =>
+  env.DB.prepare(
+    `INSERT OR REPLACE INTO scim_group_members (group_id, user_id, scim_id)
+     SELECT g.id, u.id, json_extract(j.value, '$[1]') FROM json_each(?) j JOIN users u ON u.id = json_extract(j.value, '$[0]') JOIN groups g ON g.id = ?`
+  ).bind(JSON.stringify(members.map((m) => [m.userId, m.scimId])), groupId);
+
+/** Records a full push (PUT or POST): the remote group now has exactly these members. */
+async function recordFullPush(env: Env, group: GroupRow, scimId: string, members: ScimMember[]): Promise<void> {
+  await env.DB.batch([env.DB.prepare("DELETE FROM scim_group_members WHERE group_id = ?").bind(group.id), insertMembers(env, group.id, members), upsertState(env, group.id, scimId, group.name)]);
+}
+
+/** Forgets what was pushed: the next push sends the group in full. */
+export function clearGroupPushState(env: Env, groupId: number): D1PreparedStatement[] {
+  return [env.DB.prepare("DELETE FROM scim_group_members WHERE group_id = ?").bind(groupId), env.DB.prepare("DELETE FROM scim_group_state WHERE group_id = ?").bind(groupId)];
+}
+
+/**
+ * Creates or updates a group in the SCIM server. Members without a scim_id yet
  * (not pushed as users) are skipped - push users first. A group outside the
  * configured scope is removed from the SCIM server (if previously synced) or
  * skipped entirely (if never synced).
+ *
+ * An update is proportional to the change: when the last accepted push is on
+ * file (scim_group_state), only the members added and removed since are sent,
+ * as RFC 7644 PATCH operations (Cloudflare Access's SCIM endpoint takes the
+ * add/remove-members form Okta and Entra ID send); nothing at all when nothing
+ * changed. A full PUT is sent instead when there is no stored state, when more
+ * than half the group changed, when `full` is set (a full sync), or when the
+ * server refuses the PATCH. A 404 recreates the group either way.
  */
-export async function pushGroup(
-  env: Env,
-  group: GroupRow,
-  members: { scimId: string; upn: string }[]
-): Promise<ScimResult> {
+export async function pushGroup(env: Env, group: GroupRow, members: ScimMember[], opts: { full?: boolean } = {}): Promise<ScimResult> {
   try {
     const scope = await getScimScope(env);
     if (!isGroupInScimScope(scope, group.id)) {
       if (!group.scim_id) return { ok: true };
       const result = await deleteGroupScim(env, group);
-      if (result.ok) await env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id).run();
+      if (result.ok) await env.DB.batch([env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id), ...clearGroupPushState(env, group.id)]);
       return result;
     }
 
@@ -184,31 +255,77 @@ export async function pushGroup(
       return createScimGroup(env, group, members);
     }
 
-    const res = await scimFetch(env, `/Groups/${group.scim_id}`, {
-      method: "PUT",
-      body: JSON.stringify(groupToScim(group, members)),
-    });
-    if (res.ok) return { ok: true, status: res.status };
-
-    // Self-heal, same as pushUser: recreate if the remote resource is gone.
-    if (res.status === 404) {
-      const cleared = await env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id).run();
-      if (cleared.meta.changes === 0) return { ok: true, status: 404 };
-      return createScimGroup(env, { ...group, scim_id: null }, members);
+    const last = opts.full ? null : await lastPushed(env, group);
+    if (last) {
+      const wanted = new Map(members.map((m) => [m.userId, m]));
+      const add = members.filter((m) => last.members.get(m.userId) !== m.scimId);
+      const gone = [...last.members].filter(([userId]) => !wanted.has(userId)).map(([userId, scimId]) => ({ userId, scimId }));
+      const rename = last.displayName !== group.name ? group.name : null;
+      if (add.length + gone.length === 0 && rename === null) return { ok: true };
+      if (add.length + gone.length <= Math.max(wanted.size, last.members.size) / 2) {
+        const patched = await patchGroup(env, group, add, gone, rename);
+        if (patched !== "fallback") return patched;
+      }
     }
 
-    return { ok: false, status: res.status, error: await res.text() };
+    return await putGroup(env, group, members);
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 }
 
-async function createScimGroup(env: Env, group: GroupRow, members: { scimId: string; upn: string }[]): Promise<ScimResult> {
+/** Sends a membership delta; "fallback" when the server refused it and a full PUT should follow. */
+async function patchGroup(env: Env, group: GroupRow, add: ScimMember[], gone: { userId: number; scimId: string }[], rename: string | null): Promise<ScimResult | "fallback"> {
+  // A member whose user was recreated downstream since (a new remote id)
+  // left the group along with the old remote user: nothing to remove.
+  const { results: current } = gone.length
+    ? await env.DB.prepare("SELECT id, scim_id FROM users WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(gone.map((g) => g.userId))).all<{ id: number; scim_id: string | null }>()
+    : { results: [] as { id: number; scim_id: string | null }[] };
+  const stillRemote = new Map(current.map((u) => [u.id, u.scim_id]));
+  const remove = gone.filter((g) => stillRemote.get(g.userId) === g.scimId).map((g) => g.scimId);
+
+  for (const body of groupPatchBodies(add.map((m) => m.scimId), remove, rename)) {
+    const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PATCH", body });
+    if (res.ok) continue;
+    if (res.status === 404) return recreateGroup(env, group, null);
+    // Refused (or failed part-way): the state is unknown, so send it whole.
+    return "fallback";
+  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM scim_group_members WHERE group_id = ? AND user_id IN (SELECT value FROM json_each(?))").bind(group.id, JSON.stringify(gone.map((g) => g.userId))),
+    insertMembers(env, group.id, add),
+    upsertState(env, group.id, group.scim_id!, group.name),
+  ]);
+  return { ok: true, status: 200 };
+}
+
+async function putGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
+  const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PUT", body: JSON.stringify(groupToScim(group, members)) });
+  if (res.ok) {
+    await recordFullPush(env, group, group.scim_id!, members);
+    return { ok: true, status: res.status };
+  }
+  // Self-heal, same as pushUser: recreate if the remote resource is gone.
+  if (res.status === 404) return recreateGroup(env, group, members);
+  await env.DB.batch(clearGroupPushState(env, group.id));
+  return { ok: false, status: res.status, error: await res.text() };
+}
+
+/** The remote group is gone: unlink it and create it again (with `members`, or the group's current members). */
+async function recreateGroup(env: Env, group: GroupRow, members: ScimMember[] | null): Promise<ScimResult> {
+  const cleared = await env.DB.prepare("UPDATE groups SET scim_id = NULL WHERE id = ?").bind(group.id).run();
+  await env.DB.batch(clearGroupPushState(env, group.id));
+  if (cleared.meta.changes === 0) return { ok: true, status: 404 };
+  return createScimGroup(env, { ...group, scim_id: null }, members ?? (await currentScimMembers(env, group)));
+}
+
+async function createScimGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
   const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, members)) });
   if (!res.ok) return { ok: false, status: res.status, error: await res.text() };
   const created = await res.json<{ id: string }>();
   const linked = await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ?").bind(created.id, group.id).run();
   if (linked.meta.changes === 0) await queueScimDeprovision(env, "group", created.id, group.name).run();
+  else await recordFullPush(env, group, created.id, members);
   return { ok: true, status: res.status };
 }
 
@@ -298,13 +415,17 @@ export async function continueScimSync(env: Env): Promise<void> {
 /** Pushes every group with its resolved members (dynamic ones included). */
 /** Pushes one group with its current resolved members (for writers that change a single group). */
 export async function pushGroupCurrent(env: Env, group: GroupRow): Promise<ScimResult> {
+  return pushGroup(env, group, await currentScimMembers(env, group));
+}
+
+/** A group's current members that have been pushed as users (have a scim_id). */
+async function currentScimMembers(env: Env, group: GroupRow): Promise<ScimMember[]> {
   const memberIds = await resolveGroupMemberUserIds(env, group);
-  const { results } = memberIds.length
-    ? await env.DB.prepare("SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL")
-        .bind(JSON.stringify(memberIds))
-        .all<{ scimId: string; upn: string }>()
-    : { results: [] as { scimId: string; upn: string }[] };
-  return pushGroup(env, group, results);
+  if (!memberIds.length) return [];
+  const { results } = await env.DB.prepare("SELECT id AS userId, scim_id AS scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL")
+    .bind(JSON.stringify(memberIds))
+    .all<ScimMember>();
+  return results;
 }
 
 /**
@@ -397,12 +518,14 @@ export async function syncGroups(env: Env, onlyIds?: number[]): Promise<{ groups
   const members = await resolveManyGroupMemberUserIds(env, groups);
   // SCIM ids for every user once, rather than a query per group.
   const { results: synced } = await env.DB.prepare("SELECT id, scim_id, upn FROM users WHERE scim_id IS NOT NULL").all<{ id: number; scim_id: string; upn: string }>();
-  const byId = new Map(synced.map((u) => [u.id, { scimId: u.scim_id, upn: u.upn }]));
+  const byId = new Map(synced.map((u) => [u.id, { userId: u.id, scimId: u.scim_id, upn: u.upn }]));
   for (const group of groups) {
     const memberIds = members.get(group.id) ?? [];
-    const memberRows = memberIds.map((id) => byId.get(id)).filter((m): m is { scimId: string; upn: string } => Boolean(m));
+    const memberRows = memberIds.map((id) => byId.get(id)).filter((m): m is ScimMember => Boolean(m));
 
-    const result = await pushGroup(env, group, memberRows);
+    // A full sync (every group) re-sends each group whole, which also
+    // refreshes the stored state; a targeted one sends only the changes.
+    const result = await pushGroup(env, group, memberRows, { full: !onlyIds });
     if (!result.ok) {
       groupErrors++;
       if (failures.length < 5) failures.push({ name: group.name, result });

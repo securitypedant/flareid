@@ -1,6 +1,5 @@
 import type { Env } from "../env.js";
-import { resolveGroupMemberUserIds } from "../lib/groups.js";
-import { deactivateUserScim, pushGroup, pushUser, pushUsersById, syncGroups } from "../lib/scim-client.js";
+import { deactivateUserScim, pushGroupCurrent, pushUser, pushUsersById, syncGroups } from "../lib/scim-client.js";
 import { getScimConfig, setScimScope, type ScimScope } from "../lib/settings.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { audit, type ServiceCtx } from "./context.js";
@@ -31,14 +30,7 @@ export async function syncGroupBestEffort(ctx: ServiceCtx, groupId: number): Pro
   const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(groupId).first<GroupRow>();
   if (!group) return;
 
-  const memberIds = await resolveGroupMemberUserIds(ctx.env, group);
-  const { results: memberRows } = memberIds.length
-    ? await ctx.env.DB.prepare(`SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL`)
-        .bind(JSON.stringify(memberIds))
-        .all<{ scimId: string; upn: string }>()
-    : { results: [] as { scimId: string; upn: string }[] };
-
-  const result = await pushGroup(ctx.env, group, memberRows);
+  const result = await pushGroupCurrent(ctx.env, group);
   if (!result.ok) await audit(ctx, "scim.group_sync_failed", group.name, { error: result.error });
 }
 

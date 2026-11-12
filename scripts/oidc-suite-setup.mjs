@@ -43,6 +43,12 @@ for (const n of [1, 2]) {
   clients.push(c);
 }
 
+// `groups` is left out, so the user's memberships stay as they are. With
+// SCIM configured the import still re-pushes every group the user is in -
+// including dynamic ones its empty attributes match ("location != London" in
+// the sample directory: thousands of members). Those pushes are deltas
+// against the last push (nothing is sent when membership did not change);
+// they used to be full member-list PUTs, which made this step take minutes.
 const password = `Cf-${secret()}`;
 const domain = new URL(issuer).hostname;
 const imported = await api("/directory/import", {

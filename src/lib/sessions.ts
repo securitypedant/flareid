@@ -145,6 +145,8 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
   const idList = JSON.stringify(ids);
   return [
     env.DB.prepare(`DELETE FROM group_members WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    // Their remote user is deprovisioned (deleted downstream), which takes it out of every remote group.
+    env.DB.prepare(`DELETE FROM scim_group_members WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM access_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM refresh_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),

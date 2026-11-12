@@ -16,6 +16,22 @@ may break things.
   page. A SCIM list asked to leave members out (`excludedAttributes=members`,
   or `attributes` without `members`) resolves none at all and omits the
   attribute.
+- **SCIM group updates send only the change.** FlareID records what the SCIM
+  server last accepted for each group (new migration
+  `0026_scim_group_state.sql`: `scim_group_state` and `scim_group_members`)
+  and updates an existing remote group with an RFC 7644 PATCH - `add` on
+  `members` and `remove` on `members[value eq "…"]`, at most 1000 member
+  references per request, `replace displayName` on a rename - instead of
+  PUT-ing every member again; a group whose membership did not change is not
+  sent at all. A full PUT is still sent when nothing is on file, when more
+  than half the group changed, or when the server refuses the PATCH; a 404
+  recreates the group. Full syncs (Sync now, the cron, a scope change) still
+  PUT every group and refresh the record. A one-person import into a
+  2,000-person sample directory went from three group PUTs (~164 KB, the
+  whole of "All Employees" and "Everyone outside London") to none; moving one
+  person between two large groups is two PATCHes of under 300 bytes. This
+  is what made `scripts/oidc-suite-setup.mjs` take over a minute and a half:
+  its conformance user sits in the dynamic groups its empty attributes match.
 
 ## [3.7.0] - 2026-11-12
 

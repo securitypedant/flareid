@@ -103,18 +103,22 @@ describe("import SCIM push", () => {
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/Groups") && method !== "GET") groupWrites.push(String(init?.body ?? ""));
+      if (url.includes("/Groups") && method !== "GET") groupWrites.push(url);
       if (method === "GET") return Response.json({ Resources: [] });
       return Response.json({ id: `r-${Math.random()}` }, { status: method === "POST" ? 201 : 200 });
     });
-    // The config call re-pushes everything in the background; let it finish first.
+    // The config call re-pushes everything in the background; let it finish,
+    // then a full sync pushes the users and the groups with their members.
     await new Promise((r) => setTimeout(r, 300));
+    const { syncAll } = await import("../src/lib/scim-client.js");
+    while (!(await syncAll(env)).complete) { /* next step */ }
     groupWrites.length = 0;
     // u1 moves from A to C: A and C change, B does not.
     const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });
     spy.mockRestore();
     expect(res.status).toBe(200);
-    const names = groupWrites.map((b) => (JSON.parse(b) as { displayName?: string }).displayName);
+    const byScimId = new Map((await env.DB.prepare("SELECT name, scim_id FROM groups").all<{ name: string; scim_id: string }>()).results.map((g) => [g.scim_id, g.name]));
+    const names = groupWrites.map((url) => byScimId.get(url.split("/Groups/")[1] ?? ""));
     expect(names).toContain("A");
     expect(names).toContain("C");
     expect(names).not.toContain("B");
