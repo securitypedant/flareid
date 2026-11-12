@@ -8,6 +8,7 @@ import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserA
 import { drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { getPasswordPolicy, resolveNewAccountPassword, validatePassword } from "../lib/settings.js";
+import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import type { UserRow } from "../lib/types.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
@@ -44,6 +45,8 @@ export interface NewUser {
   /** A chosen password (checked against the policy); omitted = the "New account password" setting. */
   password?: string;
   status?: "active" | "disabled";
+  /** Contact address for email, when not the UPN. */
+  email?: string;
 }
 
 /**
@@ -66,6 +69,8 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   await assertMayAssignGroups(ctx, groupIds);
 
   if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first()) throw new ServiceError(409, TAKEN(username));
+  const email = String(input.email ?? "").trim().toLowerCase() || null;
+  if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
   if (input.password) {
     const policyError = validatePassword(input.password, await getPasswordPolicy(ctx.env));
     if (policyError) throw new ServiceError(400, policyError);
@@ -105,6 +110,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
     .run();
 
   const userId = Number(result.meta.last_row_id);
+  if (email) await ctx.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email, userId).run();
   if (groupIds.length > 0) {
     await ctx.env.DB.batch(groupIds.map((gid) => ctx.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId)));
   }
@@ -322,4 +328,14 @@ export async function sendUserLink(ctx: ServiceCtx, user: UserRow, kind: "invite
     ...(result.ok ? {} : { error: result.error }),
   });
   return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
+
+/** Removes one of a user's passkeys (a lost device); false when they have no such credential. */
+export async function removeUserPasskey(ctx: ServiceCtx, user: UserRow, credentialId: string): Promise<boolean> {
+  await assertMayTouchUser(ctx, user.id);
+  const row = await ctx.env.DB.prepare("SELECT name FROM webauthn_credentials WHERE id = ? AND user_id = ?").bind(credentialId, user.id).first<{ name: string }>();
+  if (!row) return false;
+  await removePasskey(ctx.env, user.id, credentialId);
+  await audit(ctx, "user.passkey_removed", user.upn, { name: row.name });
+  return true;
 }

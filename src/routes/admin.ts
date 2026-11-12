@@ -16,7 +16,7 @@ import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middlew
 import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
-import { addDomain, applyDomainToAllUsers, deleteDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
 import {
   getDefaultPassword,
   getPasswordPolicy,
@@ -51,7 +51,7 @@ import { deleteUserStatements, listActiveSessionsForUser } from "../lib/sessions
 import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
-import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
+import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
@@ -110,6 +110,7 @@ import {
   switchEmail,
 } from "../services/settings.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
+import { removeDomain, revokeKey } from "../services/platform.js";
 import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
 
 export { validFrontchannelUri };
@@ -2506,12 +2507,7 @@ admin.post("/admin/api-keys", async (c) => {
 });
 
 admin.post("/admin/api-keys/:id/revoke", async (c) => {
-  const id = Number(c.req.param("id"));
-  const key = await c.env.DB.prepare("SELECT name FROM api_keys WHERE id = ?").bind(id).first<{ name: string }>();
-  if (!key) return c.text("Not found", 404);
-
-  await revokeApiKey(c.env, id);
-  await logAudit(c.env, c.get("user"), "api_key.revoked", key.name, undefined, c.req.raw);
+  await revokeKey(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/integrations/api-keys?saved=1", 302);
 });
 
@@ -3330,9 +3326,12 @@ admin.post("/admin/domains/:id/set-default", async (c) => {
 });
 
 admin.post("/admin/domains/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const { error } = await deleteDomain(c.env, id);
-  await logAudit(c.env, c.get("user"), "domain.delete_attempted", String(id), error ? { error } : undefined, c.req.raw);
+  try {
+    await removeDomain(consoleCtx(c), Number(c.req.param("id")));
+  } catch (e) {
+    // Refusals are in the log; the page shows the domain still there.
+    if (!(e instanceof ServiceError)) throw e;
+  }
   return c.redirect("/admin/domains", 302);
 });
 

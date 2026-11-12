@@ -1,13 +1,23 @@
-import { validFrontchannelUri } from "./admin.js";
-import { Hono } from "hono";
-import type { Env } from "../env.js";
-import { auditActor, bootstrapTokenValid, requireApiAuth, requireScope } from "../lib/api-auth.js";
+import { z } from "@hono/zod-openapi";
+import { validFrontchannelUri } from "../services/clients.js";
+import { api, apiErrorHandler, AnyObject, badRequest, defineRoute, readJson } from "../api/openapi.js";
+import { GroupSchema, IdParam, Paging, PasswordPolicySchema, SchemaAttributeInput, ServiceProviderSchema, StringMap, UserSchema } from "../api/schemas.js";
+// Each module registers its routes on `api` when imported (users.ts also
+// shares the user query with the list below).
+import { selectUsers } from "../api/users.js";
+import "../api/groups.js";
+import "../api/applications.js";
+import "../api/settings.js";
+import "../api/monitoring.js";
+import { auditActor, bootstrapTokenValid } from "../lib/api-auth.js";
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
-import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
+import { importDirectory, type DirectoryBundle } from "../lib/directory-import.js";
 import { isEmailConfigured, recipientFor } from "../lib/email.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
-import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
-import { userMatchesRule, parseRule, resolveGroupMemberUserIds } from "../lib/groups.js";
+import { apiCtx } from "../services/context.js";
+import { applyScimScope } from "../services/scim-sync.js";
+import { sendUserLink } from "../services/users.js";
+import { resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -42,7 +52,6 @@ import {
   setNewUserPasswordMode,
   setPasswordPolicy,
   setScimConfig,
-  setScimScope,
   type PasswordPolicy,
 } from "../lib/settings.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
@@ -70,27 +79,24 @@ import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
  *     first call has to be authenticated by something other than a password;
  *     see BOOTSTRAP_TOKEN in api-auth.ts.
  */
-export const api = new Hono<{ Bindings: Env }>();
+export { api };
 
-api.use("/api/v1/*", requireApiAuth);
-
-async function readJson<T>(c: { req: { json: () => Promise<unknown> } }): Promise<T> {
-  try {
-    return (await c.req.json()) as T;
-  } catch {
-    throw new ImportValidationError("Request body must be valid JSON.");
-  }
-}
-
-function badRequest(message: string) {
-  return { error: "invalid_request", message };
-}
+// The app, its authentication middleware, the OpenAPI document and
+// defineRoute() live in src/api/openapi.ts; the routes added since v3.5 are in
+// src/api/*.ts. These are the original ones, now with schemas.
 
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
-api.get("/api/v1/status", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/status", tag: "Status", permission: "directory:read",
+  summary: "Instance status and directory counts",
+  response: z.object({
+    service: z.string(), api_version: z.number(), issuer: z.string(), app_name: z.string(), setup_completed: z.boolean(), default_domain: z.string().nullable(),
+    counts: z.object({ users: z.number(), groups: z.number(), oidc_clients: z.number(), domains: z.number() }),
+  }),
+}, async (c) => {
   const [users, groups, clients, domains, setupCompleted, appName] = await Promise.all([
     c.env.DB.prepare("SELECT COUNT(*) as n FROM users").first<{ n: number }>(),
     c.env.DB.prepare("SELECT COUNT(*) as n FROM groups").first<{ n: number }>(),
@@ -144,7 +150,29 @@ interface SetupBody {
  * what stops the bootstrap token working, so anything after it would be locked
  * out of its own setup call.
  */
-api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
+const SetupBody = z.object({
+  domain: z.string().optional(),
+  admin: z.object({ username: z.string().optional(), password: z.string().optional(), display_name: z.string().optional(), given_name: z.string().optional(), family_name: z.string().optional() }).optional(),
+  default_password: z.string().optional(),
+  app_name: z.string().optional(),
+  login_subtitle: z.string().optional(),
+  login_gradient: z.object({ from: z.string().optional(), to: z.string().optional() }).optional(),
+  require_mfa: z.boolean().optional(),
+  new_user_password_mode: z.enum(["default", "random"]).optional(),
+  password_policy: PasswordPolicySchema.optional(),
+  rate_limit: z.object({ max_attempts: z.number().optional(), window_minutes: z.number().optional() }).optional(),
+  cursor_trail: z.object({ enabled: z.boolean().optional(), characters: z.string().optional() }).optional(),
+  session_limits: z.object({ max_hours: z.number().optional(), idle_minutes: z.number().optional() }).optional(),
+  complete: z.boolean().optional(),
+});
+
+defineRoute({
+  method: "post", path: "/api/v1/setup", tag: "Status", permission: "settings:write",
+  summary: "Configure the instance (first run, or re-run to converge)",
+  description: "Applies settings, then creates or resets the administrator (needs `*`), then marks setup complete when `complete` is true - which retires the bootstrap token, so send it last.",
+  body: SetupBody,
+  response: z.object({ ok: z.literal(true), applied: z.array(z.string()), setup_completed: z.boolean(), admin: z.object({ upn: z.string(), password: z.string().optional() }).optional() }),
+}, async (c) => {
   const body = await readJson<SetupBody>(c);
   const actor = c.get("apiActor");
   // Creating or resetting an administrator grants Super Admin, and with it key
@@ -282,14 +310,21 @@ api.post("/api/v1/setup", requireScope("settings:write"), async (c) => {
 // Domains
 // ---------------------------------------------------------------------------
 
-api.get("/api/v1/domains", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/domains", tag: "Domains", permission: "domains:read", summary: "List domains",
+  response: z.object({ domains: z.array(z.object({ domain: z.string(), is_default: z.boolean(), created_at: z.string() })) }),
+}, async (c) => {
   const domains = await listDomains(c.env);
   return c.json({
     domains: domains.map((d) => ({ domain: d.domain, is_default: d.is_default === 1, created_at: d.created_at })),
   });
 });
 
-api.post("/api/v1/domains", requireScope("directory:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/domains", tag: "Domains", permission: "domains:write", summary: "Add a domain (idempotent)",
+  body: z.object({ domain: z.string(), set_default: z.boolean().optional() }),
+  response: z.object({ ok: z.literal(true), domain: z.string(), is_default: z.boolean() }),
+}, async (c) => {
   const body = await readJson<{ domain?: string; set_default?: boolean }>(c);
   const domain = String(body.domain ?? "").trim().toLowerCase();
   if (!domain) return c.json(badRequest("domain is required."), 400);
@@ -306,7 +341,10 @@ api.post("/api/v1/domains", requireScope("directory:write"), async (c) => {
   return c.json({ ok: true, domain, is_default: Boolean(body.set_default) });
 });
 
-api.post("/api/v1/domains/:domain/default", requireScope("directory:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/domains/{domain}/default", tag: "Domains", permission: "domains:write", summary: "Make a domain the default",
+  errors: [404], response: z.object({ ok: z.literal(true), default_domain: z.string() }),
+}, async (c) => {
   const domain = (c.req.param("domain") ?? "").toLowerCase();
   const row = (await listDomains(c.env)).find((d) => d.domain === domain);
   if (!row) return c.json({ error: "not_found", message: `No such domain "${domain}".` }, 404);
@@ -324,7 +362,11 @@ api.post("/api/v1/domains/:domain/default", requireScope("directory:write"), asy
  * carries usernames and the domain is a parameter of the import, so there is
  * nothing to rewrite afterwards.
  */
-api.post("/api/v1/domains/:domain/apply-to-all", requireScope("directory:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/domains/{domain}/apply-to-all", tag: "Domains", permission: "domains:write",
+  summary: "Move every user onto this domain", description: "Also needs `*`: it rewrites Super Admin UPNs, and recovery mail follows the UPN.",
+  errors: [404], response: z.object({ ok: z.literal(true), updated: z.number(), conflicts: z.array(z.string()) }),
+}, async (c) => {
   const domain = (c.req.param("domain") ?? "").toLowerCase();
   const row = (await listDomains(c.env)).find((d) => d.domain === domain);
   if (!row) return c.json({ error: "not_found", message: `No such domain "${domain}".` }, 404);
@@ -344,7 +386,36 @@ api.post("/api/v1/domains/:domain/apply-to-all", requireScope("directory:write")
 // Directory
 // ---------------------------------------------------------------------------
 
-api.post("/api/v1/directory/import", requireScope("directory:write"), async (c) => {
+const BundleSchema = z
+  .object({
+    version: z.number().optional(),
+    mode: z.enum(["merge", "replace"]).optional(),
+    passwords: z.enum(["default", "none"]).optional(),
+    domain: z.string().optional(),
+    groups: z.array(z.object({ name: z.string(), description: z.string().optional(), rule: z.string().optional() }).passthrough()).optional(),
+    users: z.array(z.object({ username: z.string() }).passthrough()).optional(),
+  })
+  .passthrough()
+  .openapi("DirectoryBundle", { description: "Users and groups to merge into (or replace) the directory; see docs/api.md for every user field." });
+
+const ImportResultSchema = z
+  .object({
+    domain: z.string(),
+    mode: z.enum(["merge", "replace"]),
+    users: z.object({ created: z.number(), updated: z.number(), skipped: z.number() }),
+    groups: z.object({ created: z.number(), updated: z.number() }),
+    generated_passwords: StringMap,
+    managers_resolved: z.number(),
+    errors: z.array(z.object({ username: z.string().optional(), group: z.string().optional(), message: z.string() })),
+    scim: AnyObject.optional(),
+  })
+  .openapi("ImportResult");
+
+defineRoute({
+  method: "post", path: "/api/v1/directory/import", tag: "Directory", permission: "import:write",
+  summary: "Import users and groups", description: "Idempotent. `super_admin`, admin role group membership and overwriting an administrator need `*`.",
+  body: BundleSchema, response: ImportResultSchema,
+}, async (c) => {
   const bundle = await readJson<DirectoryBundle>(c);
   // super_admin grants, "Super Admins" membership and overwriting an existing
   // admin are admin authority, not directory authority.
@@ -367,7 +438,12 @@ api.post("/api/v1/directory/import", requireScope("directory:write"), async (c) 
  * activates the account) or, for an active account, a password reset link.
  * Needs email configured (Admin -> Integrations -> Email).
  */
-api.post("/api/v1/users/:username/invite", requireScope("directory:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/users/{username}/invite", tag: "Users", permission: "users:write",
+  summary: "Email an invitation or a password reset link",
+  description: "An inactive account gets an invitation (choosing a password activates it); an active one a reset link. Needs email configured. An administrator's account needs `*`.",
+  errors: [404, 409, 502], response: z.object({ ok: z.literal(true), kind: z.enum(["invite", "reset"]), to: z.string() }),
+}, async (c) => {
   if (!(await isEmailConfigured(c.env))) return c.json({ error: "email_not_configured", message: "Set a From address in Admin -> Integrations -> Email first." }, 409);
   const username = (c.req.param("username") ?? "").toLowerCase();
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
@@ -379,59 +455,48 @@ api.post("/api/v1/users/:username/invite", requireScope("directory:write"), asyn
     return c.json({ error: "forbidden", message: "Emailing a Super Admin a credential link requires the \"admin\" scope." }, 403);
   }
   const kind = user.status === "active" ? "reset" : "invite";
-  const result = kind === "invite" ? await sendInvitation(c.env, user) : await sendPasswordReset(c.env, user);
-  await logAudit(c.env, auditActor(c.get("apiActor")), kind === "invite" ? "user.invitation_sent" : "user.password_reset_link_sent", user.upn, { to: recipientFor(user), sent: result.ok }, c.req.raw);
+  // Shared with the console's invite and send-reset buttons; refuses any other
+  // admin role holder below "*" too.
+  const result = await sendUserLink(apiCtx(c), user, kind);
   if (!result.ok) return c.json({ error: "send_failed", message: result.error }, 502);
   return c.json({ ok: true, kind, to: recipientFor(user) });
 });
 
 /** The "remove the sample directory" wipe, as an API call. Keeps the built-in groups and the administrators. */
-api.post("/api/v1/directory/reset", requireScope("directory:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/directory/reset", tag: "Directory", permission: "import:write",
+  summary: "Remove every user and group except the administrators and their groups",
+  response: z.object({ ok: z.literal(true), domain: z.string(), scim: AnyObject.optional() }),
+}, async (c) => {
   const result = await importDirectory(c.env, { version: 1, mode: "replace", users: [], groups: [] }, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
   await logAudit(c.env, auditActor(c.get("apiActor")), "directory.reset", undefined, undefined, c.req.raw);
   return c.json({ ok: true, domain: result.domain, ...(result.scim ? { scim: result.scim } : {}) });
 });
 
-api.get("/api/v1/users", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/users", tag: "Users", permission: "users:read", summary: "List users",
+  query: z.object(Paging),
+  response: z.object({ total: z.number(), limit: z.number(), offset: z.number(), users: z.array(UserSchema) }),
+}, async (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 100) || 100, 500);
   const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
 
-  // Explicit column list, not SELECT *: password_hash, password_salt and
-  // totp_secret live in this table and must never leave it.
-  const { results } = await c.env.DB.prepare(
-    `SELECT u.id, u.upn, u.username, u.email, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
-            u.mfa_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
-            u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
-            (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,
-            (SELECT name FROM schemas s WHERE s.id = u.schema_id) AS schema_name,
-            (SELECT GROUP_CONCAT(g.name, char(10)) FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = u.id) AS group_names
-       FROM users u ORDER BY u.id LIMIT ? OFFSET ?`
-  )
-    .bind(limit, offset)
-    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; custom_attributes: string }>();
-
-  // Dynamic groups don't live in group_members, so resolve them once per
-  // request and fold them into each user's groups.
-  const { results: ruleGroups } = await c.env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
-  const { results: pageUsers } = await c.env.DB.prepare("SELECT * FROM users ORDER BY id LIMIT ? OFFSET ?").bind(limit, offset).all<UserRow>();
-  const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => { const r = parseRule(g.rule); return r !== null && userMatchesRule(u, r); }).map((g) => g.name)]));
-
+  // Explicit column list and dynamic groups resolved: see selectUsers.
+  const users = await selectUsers(c.env, { limit, offset });
   const total = await c.env.DB.prepare("SELECT COUNT(*) as n FROM users").first<{ n: number }>();
 
   return c.json({
     total: total?.n ?? 0,
     limit,
     offset,
-    users: results.map(({ group_names, mfa_enabled, custom_attributes, id, ...user }) => ({
-      ...user,
-      mfa_enabled: mfa_enabled === 1,
-      attributes: parseCustomAttributes(custom_attributes),
-      groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
-    })),
+    users,
   });
 });
 
-api.get("/api/v1/groups", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/groups", tag: "Groups", permission: "groups:read", summary: "List groups",
+  response: z.object({ groups: z.array(GroupSchema) }),
+}, async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT g.*, (SELECT name FROM schemas s WHERE s.id = g.schema_id) AS schema_name,
             (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS explicit_member_count
@@ -454,7 +519,18 @@ api.get("/api/v1/groups", requireScope("directory:read"), async (c) => {
 // Directory schemas
 // ---------------------------------------------------------------------------
 
-api.get("/api/v1/schemas", requireScope("directory:read"), async (c) => {
+const SchemaSchema = z
+  .object({
+    id: z.number(), object_type: z.enum(["user", "group"]), name: z.string(), description: z.string().nullable(), builtin: z.boolean(), default: z.boolean(), conforming: z.number(),
+    attributes: z.array(z.object({ name: z.string(), label: z.string(), type: z.string(), required: z.boolean(), ref_object: z.string().nullable() })),
+  })
+  .openapi("Schema");
+
+defineRoute({
+  method: "get", path: "/api/v1/schemas", tag: "Schemas", permission: "schemas:read", summary: "List schemas",
+  query: z.object({ object_type: z.enum(["user", "group"]).optional() }),
+  response: z.object({ schemas: z.array(SchemaSchema) }),
+}, async (c) => {
   const objectType = c.req.query("object_type");
   const schemas = await listSchemas(c.env, objectType === "group" ? "group" : objectType === "user" ? "user" : undefined);
   const result = await Promise.all(
@@ -478,7 +554,11 @@ api.get("/api/v1/schemas", requireScope("directory:read"), async (c) => {
   return c.json({ schemas: result });
 });
 
-api.post("/api/v1/schemas", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/schemas", tag: "Schemas", permission: "schemas:write", summary: "Create a schema",
+  body: z.object({ object_type: z.enum(["user", "group"]).optional(), name: z.string(), description: z.string().optional(), attributes: z.array(SchemaAttributeInput).optional() }),
+  status: 201, errors: [409], response: z.object({ id: z.number() }),
+}, async (c) => {
   const body = await readJson<{
     object_type?: string;
     name?: string;
@@ -496,7 +576,12 @@ api.post("/api/v1/schemas", requireScope("settings:write"), async (c) => {
   return c.json({ id }, 201);
 });
 
-api.patch("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "patch", path: "/api/v1/schemas/{id}", tag: "Schemas", permission: "schemas:write", summary: "Update a schema",
+  description: "`attributes`, when given, replaces the attribute list.",
+  params: IdParam, body: z.object({ name: z.string().optional(), description: z.string().optional(), attributes: z.array(SchemaAttributeInput).optional() }),
+  errors: [404],
+}, async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return c.json({ error: "not_found" }, 404);
@@ -516,7 +601,10 @@ api.patch("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
   return c.json({ ok: true });
 });
 
-api.post("/api/v1/schemas/:id/apply", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/schemas/{id}/apply", tag: "Schemas", permission: "schemas:write", summary: "Move every user (or group) onto this schema",
+  params: IdParam, errors: [404], response: z.object({ applied: z.number() }),
+}, async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return c.json({ error: "not_found" }, 404);
@@ -525,7 +613,11 @@ api.post("/api/v1/schemas/:id/apply", requireScope("settings:write"), async (c) 
   return c.json({ applied: count });
 });
 
-api.delete("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "delete", path: "/api/v1/schemas/{id}", tag: "Schemas", permission: "schemas:write", summary: "Delete a schema",
+  description: "Objects on it move to the default schema. Provided schemas cannot be deleted.",
+  params: IdParam, errors: [404],
+}, async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return c.json({ error: "not_found" }, 404);
@@ -543,7 +635,10 @@ api.delete("/api/v1/schemas/:id", requireScope("settings:write"), async (c) => {
 // OIDC clients
 // ---------------------------------------------------------------------------
 
-api.get("/api/v1/clients", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/clients", tag: "OIDC clients", permission: "oidc:read", summary: "List OIDC clients",
+  response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), created_at: z.string() })) }),
+}, async (c) => {
   const { results } = await c.env.DB.prepare(
     "SELECT id, client_id, name, redirect_uris, created_at FROM oauth_clients ORDER BY name"
   ).all<Omit<OAuthClientRow, "client_secret_hash">>();
@@ -571,7 +666,23 @@ api.get("/api/v1/clients", requireScope("directory:read"), async (c) => {
  * credential FlareID had never heard of and every login failing with nothing
  * to explain why - so now it is a 400.
  */
-api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/clients", tag: "OIDC clients", permission: "oidc:write",
+  summary: "Register an OIDC client (idempotent on a supplied client_id)",
+  description: "Supply `client_id` and `client_secret` (24+ characters) together to seed known credentials; omit both to have them generated (the secret is returned once).",
+  body: z.object({
+    name: z.string(),
+    redirect_uris: z.array(z.string()),
+    client_id: z.string().optional(),
+    client_secret: z.string().optional(),
+    client_type: z.enum(["confidential", "public"]).optional(),
+    trusted: z.boolean().optional(),
+    allowed_claims: z.array(z.string()).nullable().optional(),
+    post_logout_redirect_uris: z.array(z.string()).optional(),
+    frontchannel_logout_uri: z.string().optional(),
+  }),
+  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()) }),
+}, async (c) => {
   const body = await readJson<{
     name?: string;
     redirect_uris?: string[];
@@ -664,30 +775,42 @@ api.post("/api/v1/clients", requireScope("clients:write"), async (c) => {
 // SCIM (FlareID as a SCIM client, pushing to e.g. Cloudflare Access)
 // ---------------------------------------------------------------------------
 
-api.post("/api/v1/scim/config", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the SCIM endpoint, secret and scope",
+  description: "A changed scope re-evaluates everything already pushed, after the response.",
+  body: z.object({ endpoint: z.string().optional(), secret: z.string().optional(), scope: z.object({ mode: z.enum(["all", "selected"]).optional(), group_ids: z.array(z.number()).optional() }).optional() }),
+}, async (c) => {
   const body = await readJson<{ endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] } }>(c);
 
   if (body.endpoint !== undefined || body.secret !== undefined) {
     await setScimConfig(c.env, { endpoint: String(body.endpoint ?? ""), secret: String(body.secret ?? "") });
   }
   if (body.scope) {
-    await setScimScope(c.env, {
+    // As in the console: what was already pushed is re-evaluated against the new scope.
+    await applyScimScope(apiCtx(c), {
       mode: body.scope.mode === "selected" ? "selected" : "all",
       groupIds: Array.isArray(body.scope.group_ids) ? body.scope.group_ids.map(Number) : [],
-    });
+    }, (p) => c.executionCtx.waitUntil(p));
   }
 
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_config_changed", undefined, undefined, c.req.raw);
   return c.json({ ok: true });
 });
 
-api.post("/api/v1/scim/test", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/scim/test", tag: "SCIM", permission: "scim:write", summary: "Test the SCIM connection",
+  response: z.object({ ok: z.boolean(), status: z.number().optional(), error: z.string().optional() }).passthrough(),
+}, async (c) => {
   const result = await testScimConnection(c.env);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.connection_tested", undefined, { ok: result.ok }, c.req.raw);
   return c.json(result);
 });
 
-api.post("/api/v1/scim/sync", requireScope("settings:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/scim/sync", tag: "SCIM", permission: "scim:write", summary: "Push the next batch of users, then the groups",
+  description: "Call again until `complete` is true.",
+  response: z.object({ ok: z.boolean(), complete: z.boolean() }).passthrough(),
+}, async (c) => {
   const summary = await syncAll(c.env);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, { ...summary }, c.req.raw);
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
@@ -718,7 +841,10 @@ function spJson(sp: SamlServiceProviderRow) {
   };
 }
 
-api.get("/api/v1/saml/service-providers", requireScope("directory:read"), async (c) => {
+defineRoute({
+  method: "get", path: "/api/v1/saml/service-providers", tag: "SAML", permission: "saml:read", summary: "List SAML service providers",
+  response: z.object({ service_providers: z.array(ServiceProviderSchema) }),
+}, async (c) => {
   const { results } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
   return c.json({ service_providers: results.map(spJson) });
 });
@@ -746,7 +872,28 @@ interface SpUpsertBody {
  * rule as POST /api/v1/clients. On update, fields not supplied keep their
  * existing values; on create, the documented defaults apply.
  */
-api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/saml/service-providers", tag: "SAML", permission: "saml:write",
+  summary: "Register or update a service provider (keyed on entity_id)",
+  description: "On update, fields not supplied keep their values; on create, the documented defaults apply.",
+  body: z.object({
+    entity_id: z.string(),
+    name: z.string().optional(),
+    acs_urls: z.array(z.string()).optional(),
+    default_acs_url: z.string().optional(),
+    nameid_format: z.string().optional(),
+    attribute_map: StringMap.optional(),
+    sign_response: z.boolean().optional(),
+    sign_assertion: z.boolean().optional(),
+    want_authn_requests_signed: z.boolean().optional(),
+    signing_certs: z.array(z.string()).optional(),
+    slo_url: z.string().nullable().optional(),
+    encryption_cert: z.string().nullable().optional(),
+    encrypt_assertions: z.boolean().optional(),
+    subject_id: z.enum(["", "subject-id", "pairwise-id"]).optional(),
+  }),
+  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string() }),
+}, async (c) => {
   const body = await readJson<SpUpsertBody>(c);
   const entityId = String(body.entity_id ?? "").trim();
   if (!entityId) return c.json(badRequest("entity_id is required."), 400);
@@ -831,7 +978,13 @@ api.post("/api/v1/saml/service-providers", requireScope("clients:write"), async 
  * metadata XML: ACS URLs, signing and encryption certificates, the Single
  * Logout URL and the NameID format. Body: { "xml": "<md:EntityDescriptor ...>" }.
  */
-api.post("/api/v1/saml/service-providers/import-metadata", requireScope("clients:write"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/saml/service-providers/import-metadata", tag: "SAML", permission: "saml:write",
+  summary: "Register or update a service provider from its metadata",
+  description: "Pasted `xml`, or a `url` that is fetched now and re-read daily.",
+  body: z.object({ xml: z.string().optional(), url: z.string().optional(), name: z.string().optional() }),
+  response: z.object({ ok: z.literal(true), id: z.number(), entity_id: z.string(), acs_urls: z.array(z.string()), slo_url: z.string().nullable(), encryption: z.boolean(), subject_id: z.string().nullable(), refresh: z.boolean() }).passthrough(),
+}, async (c) => {
   const body = await readJson<{ xml?: string; url?: string; name?: string }>(c);
   let meta: ParsedSpMetadata;
   try {
@@ -846,7 +999,10 @@ api.post("/api/v1/saml/service-providers/import-metadata", requireScope("clients
   return c.json({ ok: true, id, entity_id: meta.entityId, acs_urls: meta.acsUrls, slo_url: meta.sloUrl, encryption: Boolean(meta.encryptionCert), subject_id: meta.subjectId, refresh: Boolean(body.url) });
 });
 
-api.delete("/api/v1/saml/service-providers/:id", requireScope("clients:write"), async (c) => {
+defineRoute({
+  method: "delete", path: "/api/v1/saml/service-providers/{id}", tag: "SAML", permission: "saml:write", summary: "Delete a service provider",
+  params: IdParam, errors: [404],
+}, async (c) => {
   const id = Number(c.req.param("id"));
   const existing = await c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ id: number; name: string; entity_id: string }>();
   if (!existing) return c.json({ error: "not_found", message: `No service provider with id ${id}.` }, 404);
@@ -860,7 +1016,12 @@ api.delete("/api/v1/saml/service-providers/:id", requireScope("clients:write"), 
 // API keys
 // ---------------------------------------------------------------------------
 
-api.post("/api/v1/api-keys", requireScope("admin"), async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/api-keys", tag: "API keys", permission: "admin", summary: "Mint an API key",
+  description: "`scopes` are permissions (`users:read`, `oidc:write`, `*`) or the legacy scopes; omit for an admin key. The token is returned once.",
+  body: z.object({ name: z.string(), scopes: z.array(z.string()).optional(), expires_at: z.string().nullable().optional() }),
+  response: z.object({ ok: z.literal(true), id: z.number(), name: z.string(), scopes: z.array(z.string()), token: z.string() }),
+}, async (c) => {
   const body = await readJson<{ name?: string; scopes?: string[]; expires_at?: string }>(c);
   const name = String(body.name ?? "").trim();
   if (!name) return c.json(badRequest("name is required."), 400);
@@ -908,7 +1069,12 @@ api.post("/api/v1/api-keys", requireScope("admin"), async (c) => {
  * operator who does not want this door to exist deletes the secret:
  * `wrangler secret delete BOOTSTRAP_TOKEN`.
  */
-api.post("/api/v1/recovery/admin-reset", async (c) => {
+defineRoute({
+  method: "post", path: "/api/v1/recovery/admin-reset", tag: "Recovery", permission: null,
+  summary: "Re-mint a Super Admin (break-glass)", description: "Only the BOOTSTRAP_TOKEN secret is accepted, before or after setup. Loudly audited.",
+  body: z.object({ username: z.string(), password: z.string().optional() }),
+  response: z.object({ ok: z.literal(true), upn: z.string(), password: z.string() }),
+}, async (c) => {
   const header = c.req.header("Authorization") ?? "";
   const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   if (!token || !(await bootstrapTokenValid(c.env, token))) {
@@ -954,11 +1120,4 @@ api.post("/api/v1/recovery/admin-reset", async (c) => {
 // Errors
 // ---------------------------------------------------------------------------
 
-api.onError((err, c) => {
-  if (err instanceof ImportValidationError) return c.json(badRequest(err.message), 400);
-  // Validation refusals from the settings/schema layer (e.g. a user-editable
-  // attribute that a dynamic group's rule depends on).
-  if (err instanceof RangeError) return c.json(badRequest(err.message), 400);
-  console.error(err);
-  return c.json({ error: "server_error", message: "Unexpected error." }, 500);
-});
+api.onError(apiErrorHandler);

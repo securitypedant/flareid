@@ -1,0 +1,597 @@
+import { z } from "@hono/zod-openapi";
+import type { Env } from "../env.js";
+import { listRoles, rolePermissions } from "../lib/admin-roles.js";
+import { expand } from "../lib/permissions.js";
+import { FACTORS, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { getEmailSettings, isEmailAddress, isEmailConfigured, isEmailEnabled } from "../lib/email.js";
+import { DEFAULT_TEMPLATES, getAccent, getTemplate, TEMPLATE_INFO, type TemplateKey } from "../lib/email-templates.js";
+import { getRateLimitPolicy } from "../lib/rate-limit.js";
+import {
+  getAppName,
+  getAuditRetentionDays,
+  getCursorTrail,
+  getDefaultPassword,
+  getLoginGradient,
+  getLoginSubtitle,
+  getNewUserPasswordMode,
+  getPasswordPolicy,
+  getSessionPolicy,
+  getSetting,
+  isHexColor,
+  isMfaRequired,
+} from "../lib/settings.js";
+import { listSigningKeys } from "../lib/signing-keys.js";
+import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
+import { apiCtx, ServiceError } from "../services/context.js";
+import { rotateKey } from "../services/platform.js";
+import {
+  applyDefaultPasswordToAll,
+  saveAppName,
+  saveAuditRetention,
+  saveCursorTrail,
+  saveDefaultPassword,
+  saveEmailAccent,
+  saveEmailSettings,
+  saveEmailTemplate,
+  saveFactor,
+  saveLoginGradient,
+  saveLoginSubtitle,
+  saveNewUserPasswordMode,
+  savePasswordPolicy,
+  saveRateLimit,
+  saveRequireMfa,
+  saveSessionLimits,
+  sendTestEmail,
+  switchEmail,
+} from "../services/settings.js";
+import { badRequest, defineRoute, notFound, param, readJson, readOptionalJson, type ApiContext } from "./openapi.js";
+import { IdParam, PasswordPolicySchema } from "./schemas.js";
+
+/**
+ * Email, branding, security settings, authentication policies, factors,
+ * roles and signing keys: the console's Integrations -> Email, Branding and
+ * Security pages.
+ */
+
+/** Group names to ids; an unknown name is an error. */
+async function groupIdsByName(env: Env, names: string[]): Promise<number[]> {
+  if (names.length === 0) return [];
+  const { results } = await env.DB.prepare("SELECT id, name FROM groups WHERE name IN (SELECT value FROM json_each(?))").bind(JSON.stringify(names)).all<{ id: number; name: string }>();
+  const missing = names.filter((n) => !results.some((r) => r.name === n));
+  if (missing.length) throw new ServiceError(400, `No such group(s): ${missing.join(", ")}.`);
+  return results.map((r) => r.id);
+}
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
+
+const EmailSchema = z.object({ enabled: z.boolean(), binding: z.boolean(), sending: z.boolean(), from_address: z.string(), from_name: z.string() }).openapi("EmailSettings");
+
+async function emailJson(env: Env) {
+  const [settings, enabled, sending] = await Promise.all([getEmailSettings(env), isEmailEnabled(env), isEmailConfigured(env)]);
+  return { enabled, binding: Boolean(env.EMAIL), sending, from_address: settings.fromAddress, from_name: settings.fromName };
+}
+
+defineRoute(
+  { method: "get", path: "/api/v1/email", tag: "Email", permission: "email:read", summary: "Read the email settings", description: "`sending` is true when the binding, a From address and the switch are all in place.", response: EmailSchema },
+  async (c) => c.json(await emailJson(c.env))
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/email",
+    tag: "Email",
+    permission: "email:write",
+    summary: "Set the From address and name",
+    description: "The address must be on a domain onboarded to Cloudflare Email Sending.",
+    body: z.object({ from_address: z.string(), from_name: z.string().optional() }),
+    response: EmailSchema,
+  },
+  async (c) => {
+    const body = await readJson<{ from_address: string; from_name?: string }>(c);
+    await saveEmailSettings(apiCtx(c), String(body.from_address ?? ""), String(body.from_name ?? ""));
+    return c.json(await emailJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/email/enabled",
+    tag: "Email",
+    permission: "email:write",
+    summary: "Switch email on or off",
+    description: "Off stops all sending and hides recovery and invitations, keeping the From address and name.",
+    body: z.object({ enabled: z.boolean() }),
+    response: EmailSchema,
+  },
+  async (c) => {
+    await switchEmail(apiCtx(c), (await readJson<{ enabled: boolean }>(c)).enabled === true);
+    return c.json(await emailJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/email/test",
+    tag: "Email",
+    permission: "email:write",
+    summary: "Send a test email",
+    body: z.object({ to: z.string().openapi({ example: "ops@example.com" }) }),
+    errors: [502],
+    response: z.object({ ok: z.literal(true), to: z.string() }),
+  },
+  async (c) => {
+    const to = String((await readJson<{ to: string }>(c)).to ?? "").trim();
+    if (!isEmailAddress(to)) return c.json(badRequest("to must be an email address."), 400);
+    const result = await sendTestEmail(apiCtx(c), to, await getAppName(c.env));
+    if (!result.ok) return c.json({ error: "send_failed", message: result.error }, 502);
+    return c.json({ ok: true, to });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Branding
+// ---------------------------------------------------------------------------
+
+const BrandingSchema = z
+  .object({
+    app_name: z.string(),
+    login_subtitle: z.string(),
+    login_gradient: z.object({ from: z.string(), to: z.string() }),
+    cursor_trail: z.object({ enabled: z.boolean(), characters: z.string() }),
+    email_accent: z.string(),
+  })
+  .openapi("Branding");
+
+async function brandingJson(env: Env) {
+  const [appName, subtitle, gradient, trail, accent] = await Promise.all([getAppName(env), getLoginSubtitle(env), getLoginGradient(env), getCursorTrail(env), getAccent(env)]);
+  return { app_name: appName, login_subtitle: subtitle, login_gradient: gradient, cursor_trail: trail, email_accent: accent };
+}
+
+defineRoute({ method: "get", path: "/api/v1/branding", tag: "Branding", permission: "branding:read", summary: "Read the branding", response: BrandingSchema }, async (c) => c.json(await brandingJson(c.env)));
+
+defineRoute(
+  {
+    method: "patch",
+    path: "/api/v1/branding",
+    tag: "Branding",
+    permission: "branding:write",
+    summary: "Change the branding",
+    description: "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols.",
+    body: z.object({
+      app_name: z.string().optional(),
+      login_subtitle: z.string().optional(),
+      login_gradient: z.object({ from: z.string(), to: z.string() }).optional(),
+      cursor_trail: z.object({ enabled: z.boolean().optional(), characters: z.string().optional() }).optional(),
+      email_accent: z.string().optional(),
+    }),
+    response: BrandingSchema,
+  },
+  async (c) => {
+    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; email_accent?: string }>(c);
+    // Everything validated before anything is saved.
+    if (body.app_name !== undefined && !body.app_name.trim()) return c.json(badRequest("app_name cannot be empty."), 400);
+    if (body.login_gradient && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
+    if (body.email_accent !== undefined && !isHexColor(body.email_accent)) return c.json(badRequest("email_accent must be a #rrggbb hex colour."), 400);
+    const ctx = apiCtx(c);
+    if (body.app_name !== undefined) await saveAppName(ctx, body.app_name.trim());
+    if (body.login_subtitle !== undefined) await saveLoginSubtitle(ctx, body.login_subtitle);
+    if (body.login_gradient) await saveLoginGradient(ctx, body.login_gradient.from, body.login_gradient.to);
+    if (body.cursor_trail) {
+      const current = await getCursorTrail(c.env);
+      await saveCursorTrail(ctx, { enabled: body.cursor_trail.enabled ?? current.enabled, characters: body.cursor_trail.characters ?? current.characters });
+    }
+    if (body.email_accent !== undefined) await saveEmailAccent(ctx, body.email_accent);
+    return c.json(await brandingJson(c.env));
+  }
+);
+
+const TemplateSchema = z.object({ subject: z.string(), heading: z.string(), body: z.string(), action: z.string(), footer: z.string() }).openapi("EmailTemplate");
+const TEMPLATE_KEYS = Object.keys(TEMPLATE_INFO) as TemplateKey[];
+
+async function templateJson(env: Env, key: TemplateKey) {
+  const info = TEMPLATE_INFO[key];
+  return { key, label: info.label, placeholders: info.placeholders, has_link: info.hasLink, customised: Boolean(await getSetting(env, `email_template_${key}`)), ...(await getTemplate(env, key)) };
+}
+
+function templateKey(c: ApiContext): TemplateKey | null {
+  const key = param(c, "key");
+  return (TEMPLATE_KEYS as string[]).includes(key) ? (key as TemplateKey) : null;
+}
+
+const TemplateOut = TemplateSchema.extend({ key: z.string(), label: z.string(), placeholders: z.array(z.string()), has_link: z.boolean(), customised: z.boolean() });
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/branding/email-templates",
+    tag: "Branding",
+    permission: "branding:read",
+    summary: "List the email templates",
+    description: `Keys: ${TEMPLATE_KEYS.join(", ")}. Text fields take {{placeholders}}; the layout is FlareID's own.`,
+    response: z.object({ accent: z.string(), templates: z.array(TemplateOut) }),
+  },
+  async (c) => c.json({ accent: await getAccent(c.env), templates: await Promise.all(TEMPLATE_KEYS.map((k) => templateJson(c.env, k))) })
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/branding/email-templates/{key}",
+    tag: "Branding",
+    permission: "branding:write",
+    summary: "Replace an email template",
+    description: "Fields not supplied take the default wording. Subject and heading cannot be empty.",
+    params: z.object({ key: z.enum(TEMPLATE_KEYS as [TemplateKey, ...TemplateKey[]]) }),
+    body: TemplateSchema.partial(),
+    errors: [404],
+    response: TemplateOut,
+  },
+  async (c) => {
+    const key = templateKey(c);
+    if (!key) return notFound(c, "No such template.");
+    await saveEmailTemplate(apiCtx(c), key, await readJson<Partial<(typeof DEFAULT_TEMPLATES)[TemplateKey]>>(c));
+    return c.json(await templateJson(c.env, key));
+  }
+);
+
+defineRoute(
+  {
+    method: "delete",
+    path: "/api/v1/branding/email-templates/{key}",
+    tag: "Branding",
+    permission: "branding:write",
+    summary: "Reset an email template to the default",
+    params: z.object({ key: z.enum(TEMPLATE_KEYS as [TemplateKey, ...TemplateKey[]]) }),
+    errors: [404],
+    response: TemplateOut,
+  },
+  async (c) => {
+    const key = templateKey(c);
+    if (!key) return notFound(c, "No such template.");
+    await saveEmailTemplate(apiCtx(c), key, null);
+    return c.json(await templateJson(c.env, key));
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Security settings
+// ---------------------------------------------------------------------------
+
+const SecuritySchema = z
+  .object({
+    password_policy: PasswordPolicySchema,
+    rate_limit: z.object({ max_attempts: z.number(), window_minutes: z.number() }),
+    session_limits: z.object({ max_hours: z.number(), idle_minutes: z.number() }),
+    audit_retention_days: z.number(),
+    new_user_password: z.object({ mode: z.enum(["default", "random"]), default_password_set: z.boolean() }),
+    require_mfa: z.boolean(),
+  })
+  .openapi("SecuritySettings");
+
+async function securityJson(env: Env) {
+  const [policy, rate, session, retention, mode, defaultPassword, mfa] = await Promise.all([
+    getPasswordPolicy(env),
+    getRateLimitPolicy(env),
+    getSessionPolicy(env),
+    getAuditRetentionDays(env),
+    getNewUserPasswordMode(env),
+    getDefaultPassword(env),
+    isMfaRequired(env),
+  ]);
+  return {
+    password_policy: policy,
+    rate_limit: { max_attempts: rate.maxAttempts, window_minutes: rate.windowMinutes },
+    session_limits: { max_hours: session.maxHours, idle_minutes: session.idleMinutes },
+    audit_retention_days: retention,
+    // Whether one is set, never the password itself.
+    new_user_password: { mode, default_password_set: Boolean(defaultPassword) },
+    require_mfa: mfa,
+  };
+}
+
+defineRoute(
+  { method: "get", path: "/api/v1/security", tag: "Security", permission: "security:read", summary: "Read the security settings", response: SecuritySchema },
+  async (c) => c.json(await securityJson(c.env))
+);
+
+defineRoute(
+  { method: "put", path: "/api/v1/security/password-policy", tag: "Security", permission: "security:write", summary: "Set the password policy", description: "Omitted rules are off; minLength defaults to 8.", body: PasswordPolicySchema, response: SecuritySchema },
+  async (c) => {
+    await savePasswordPolicy(apiCtx(c), await readJson<Record<string, unknown>>(c));
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  { method: "put", path: "/api/v1/security/rate-limit", tag: "Security", permission: "security:write", summary: "Set the sign-in rate limit", body: z.object({ max_attempts: z.number().int().positive(), window_minutes: z.number().int().positive() }), response: SecuritySchema },
+  async (c) => {
+    const body = await readJson<{ max_attempts: number; window_minutes: number }>(c);
+    await saveRateLimit(apiCtx(c), body.max_attempts, body.window_minutes);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/session-limits",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Set the session limits",
+    description: "`max_hours` 1-720; `idle_minutes` 5-10080, or 0 for no idle limit. Out-of-range values are clamped. Applies to existing sessions at once.",
+    body: z.object({ max_hours: z.number(), idle_minutes: z.number() }),
+    response: SecuritySchema,
+  },
+  async (c) => {
+    const body = await readJson<{ max_hours: number; idle_minutes: number }>(c);
+    await saveSessionLimits(apiCtx(c), body.max_hours, body.idle_minutes);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  { method: "put", path: "/api/v1/security/audit-retention", tag: "Security", permission: "security:write", summary: "Set how long the audit log is kept", description: "30-3650 days, clamped.", body: z.object({ days: z.number() }), response: SecuritySchema },
+  async (c) => {
+    await saveAuditRetention(apiCtx(c), (await readJson<{ days: number }>(c)).days);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/new-user-password",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Set what password new accounts get",
+    description: "`mode: default` gives new accounts the shared `default_password` (generated if none is set); `random` generates one per account.",
+    body: z.object({ mode: z.enum(["default", "random"]).optional(), default_password: z.string().optional() }),
+    response: SecuritySchema,
+  },
+  async (c) => {
+    const body = await readJson<{ mode?: string; default_password?: string }>(c);
+    if (body.default_password !== undefined) await saveDefaultPassword(apiCtx(c), String(body.default_password));
+    if (body.mode !== undefined) await saveNewUserPasswordMode(apiCtx(c), body.mode);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/security/new-user-password/apply-to-all",
+    tag: "Security",
+    permission: "admin",
+    summary: "Set every account's password to the default password",
+    description: "Administrators' accounts included, so it needs `*`. Optionally sets `default_password` first. Refused (0 changed) when no default is set.",
+    body: z.object({ default_password: z.string().optional() }),
+    response: z.object({ ok: z.literal(true), updated: z.number() }),
+  },
+  async (c) => {
+    const body = await readOptionalJson<{ default_password?: string }>(c);
+    return c.json({ ok: true, updated: await applyDefaultPasswordToAll(apiCtx(c), String(body.default_password ?? "")) });
+  }
+);
+
+defineRoute(
+  { method: "put", path: "/api/v1/security/require-mfa", tag: "Security", permission: "security:write", summary: "Require a second factor for everyone (legacy switch)", description: "Authentication policies are the finer-grained control.", body: z.object({ required: z.boolean() }), response: SecuritySchema },
+  async (c) => {
+    await saveRequireMfa(apiCtx(c), (await readJson<{ required: boolean }>(c)).required === true);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Authentication policies
+// ---------------------------------------------------------------------------
+
+const PolicySchema = z
+  .object({ id: z.number(), name: z.string(), description: z.string(), requirement: z.enum(["password", "mfa"]), priority: z.number(), is_default: z.boolean(), groups: z.array(z.string()) })
+  .openapi("AuthPolicy");
+
+async function policiesJson(env: Env) {
+  return (await listPolicies(env)).map((p) => ({ id: p.id, name: p.name, description: p.description, requirement: p.requirement, priority: p.priority, is_default: p.is_default === 1, groups: p.groups.map((g) => g.name) }));
+}
+
+const PolicyWrite = {
+  description: z.string().optional(),
+  requirement: z.enum(["password", "mfa"]).optional().openapi({ description: "Password alone, or password plus a second factor; a passkey satisfies either." }),
+  priority: z.number().int().optional().openapi({ description: "1-1000; lower wins when several policies match." }),
+  groups: z.array(z.string()).optional().openapi({ description: "Group names the policy applies to." }),
+};
+
+defineRoute(
+  { method: "get", path: "/api/v1/security/policies", tag: "Security", permission: "security:read", summary: "List authentication policies", response: z.object({ policies: z.array(PolicySchema) }) },
+  async (c) => c.json({ policies: await policiesJson(c.env) })
+);
+
+defineRoute(
+  { method: "post", path: "/api/v1/security/policies", tag: "Security", permission: "security:write", summary: "Create an authentication policy", body: z.object({ name: z.string(), ...PolicyWrite }), status: 201, response: PolicySchema },
+  async (c) => {
+    const body = await readJson<{ name: string; description?: string; requirement?: string; priority?: number; groups?: string[] }>(c);
+    const id = await createPolicy(apiCtx(c), normalizePolicy({ ...body, groupIds: await groupIdsByName(c.env, body.groups ?? []) }));
+    return c.json((await policiesJson(c.env)).find((p) => p.id === id), 201);
+  }
+);
+
+defineRoute(
+  {
+    method: "patch",
+    path: "/api/v1/security/policies/{id}",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Update an authentication policy",
+    description: "Fields not supplied keep their values. `make_default: true` makes it the policy for everyone no other policy matches.",
+    params: IdParam,
+    body: z.object({ name: z.string().optional(), make_default: z.boolean().optional(), ...PolicyWrite }),
+    errors: [404],
+    response: PolicySchema,
+  },
+  async (c) => {
+    const id = Number(param(c, "id"));
+    const current = (await policiesJson(c.env)).find((p) => p.id === id);
+    if (!current) return notFound(c, `No policy with id ${id}.`);
+    const body = await readJson<{ name?: string; description?: string; requirement?: string; priority?: number; groups?: string[]; make_default?: boolean }>(c);
+    await updatePolicy(
+      apiCtx(c),
+      id,
+      normalizePolicy({
+        name: body.name ?? current.name,
+        description: body.description ?? current.description,
+        requirement: body.requirement ?? current.requirement,
+        priority: body.priority ?? current.priority,
+        groupIds: await groupIdsByName(c.env, body.groups ?? current.groups),
+        makeDefault: body.make_default,
+      })
+    );
+    return c.json((await policiesJson(c.env)).find((p) => p.id === id));
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/security/policies/{id}", tag: "Security", permission: "security:write", summary: "Delete an authentication policy", description: "The default policy cannot be deleted.", params: IdParam, errors: [404] },
+  async (c) => {
+    await deletePolicy(apiCtx(c), Number(param(c, "id")));
+    return c.json({ ok: true });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Factors
+// ---------------------------------------------------------------------------
+
+const FactorSchema = z.object({ key: z.string(), label: z.string(), description: z.string(), available: z.boolean(), enabled: z.boolean(), enrolled_users: z.number().nullable() }).openapi("Factor");
+
+async function factorsJson(env: Env) {
+  const [totp, passkey] = await env.DB.batch([env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"), env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials")]);
+  const enrolled: Record<string, number> = { totp: (totp!.results[0] as { n: number }).n, passkey: (passkey!.results[0] as { n: number }).n };
+  return Promise.all(
+    FACTORS.map(async (f) => ({ key: f.key, label: f.label, description: f.description, available: f.available, enabled: f.available ? await isFactorEnabled(env, f.key as FactorKey) : false, enrolled_users: enrolled[f.key] ?? null }))
+  );
+}
+
+defineRoute(
+  { method: "get", path: "/api/v1/security/factors", tag: "Security", permission: "security:read", summary: "List second factors", response: z.object({ factors: z.array(FactorSchema) }) },
+  async (c) => c.json({ factors: await factorsJson(c.env) })
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/factors/{key}",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Turn a second factor on or off",
+    description: "At least one factor must stay on while a policy requires a second factor.",
+    params: z.object({ key: z.enum(["totp", "passkey"]) }),
+    body: z.object({ enabled: z.boolean() }),
+    response: z.object({ factors: z.array(FactorSchema) }),
+  },
+  async (c) => {
+    await saveFactor(apiCtx(c), param(c, "key"), (await readJson<{ enabled: boolean }>(c)).enabled === true);
+    return c.json({ factors: await factorsJson(c.env) });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Roles
+// ---------------------------------------------------------------------------
+
+const RoleSchema = z
+  .object({ id: z.number(), name: z.string(), description: z.string(), builtin: z.boolean(), is_default: z.boolean(), permissions: z.array(z.string()), groups: z.array(z.string()) })
+  .openapi("Role");
+
+async function rolesJson(env: Env) {
+  return (await listRoles(env)).map((r) => ({ id: r.id, name: r.name, description: r.description, builtin: r.builtin === 1, is_default: r.is_default === 1, permissions: rolePermissions(r), groups: r.groups.map((g) => g.name) }));
+}
+
+const RoleWrite = {
+  description: z.string().optional(),
+  permissions: z.array(z.string()).optional().openapi({ description: "Permissions (`users:read`, `oidc:write`, `signin`, `account:write`, `*`). None beyond what the calling token holds; `*` only with `*`." }),
+  groups: z.array(z.string()).optional().openapi({ description: "Group names the role is granted to (ignored for a default role, which applies to everyone)." }),
+};
+
+defineRoute(
+  { method: "get", path: "/api/v1/security/roles", tag: "Roles", permission: "roles:read", summary: "List roles", response: z.object({ roles: z.array(RoleSchema) }) },
+  async (c) => c.json({ roles: await rolesJson(c.env) })
+);
+
+defineRoute(
+  { method: "post", path: "/api/v1/security/roles", tag: "Roles", permission: "roles:write", summary: "Create a role", body: z.object({ name: z.string(), ...RoleWrite }), status: 201, response: RoleSchema },
+  async (c) => {
+    const body = await readJson<{ name: string; description?: string; permissions?: string[]; groups?: string[] }>(c);
+    const f = normalizeRole({ name: body.name, description: body.description, permissions: body.permissions ?? [], groupIds: await groupIdsByName(c.env, body.groups ?? []) }, expand(c.get("apiActor").scopes));
+    const id = await createRole(apiCtx(c), f);
+    return c.json((await rolesJson(c.env)).find((r) => r.id === id), 201);
+  }
+);
+
+defineRoute(
+  {
+    method: "patch",
+    path: "/api/v1/security/roles/{id}",
+    tag: "Roles",
+    permission: "roles:write",
+    summary: "Update a role",
+    description: "Fields not supplied keep their values. Super Admin cannot be changed; a built-in role keeps its name.",
+    params: IdParam,
+    body: z.object({ name: z.string().optional(), ...RoleWrite }),
+    errors: [404],
+    response: RoleSchema,
+  },
+  async (c) => {
+    const id = Number(param(c, "id"));
+    const current = (await rolesJson(c.env)).find((r) => r.id === id);
+    if (!current) return notFound(c, `No role with id ${id}.`);
+    const body = await readJson<{ name?: string; description?: string; permissions?: string[]; groups?: string[] }>(c);
+    const f = normalizeRole(
+      { name: body.name ?? current.name, description: body.description ?? current.description, permissions: body.permissions ?? current.permissions, groupIds: await groupIdsByName(c.env, body.groups ?? current.groups) },
+      expand(c.get("apiActor").scopes)
+    );
+    await updateRole(apiCtx(c), id, f);
+    return c.json((await rolesJson(c.env)).find((r) => r.id === id));
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/security/roles/{id}", tag: "Roles", permission: "roles:write", summary: "Delete a role", description: "Built-in roles cannot be deleted.", params: IdParam, errors: [404] },
+  async (c) => {
+    await deleteRole(apiCtx(c), Number(param(c, "id")));
+    return c.json({ ok: true });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Signing keys
+// ---------------------------------------------------------------------------
+
+const SigningKeySchema = z
+  .object({ kid: z.string(), alg: z.enum(["RS256", "ES256"]), status: z.enum(["active", "retired"]), created_at: z.string(), retired_at: z.string().nullable(), public_jwk: z.record(z.string(), z.unknown()) })
+  .openapi("SigningKey");
+
+defineRoute(
+  { method: "get", path: "/api/v1/security/signing-keys", tag: "Signing keys", permission: "signing_keys:read", summary: "List token signing keys", description: "Public parts only.", response: z.object({ keys: z.array(SigningKeySchema) }) },
+  async (c) => {
+    const keys = (await listSigningKeys(c.env)).map((k) => ({ kid: k.kid, alg: k.alg, status: k.status, created_at: k.created_at, retired_at: k.retired_at, public_jwk: JSON.parse(k.public_jwk) as Record<string, unknown> }));
+    return c.json({ keys });
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/security/signing-keys/{alg}/rotate",
+    tag: "Signing keys",
+    permission: "signing_keys:write",
+    summary: "Rotate the signing key for an algorithm",
+    description: "The old key is retired but stays published for 24 hours so tokens it signed still verify.",
+    params: z.object({ alg: z.enum(["RS256", "ES256"]) }),
+    response: z.object({ ok: z.literal(true), alg: z.string(), kid: z.string() }),
+  },
+  async (c) => c.json({ ok: true, alg: param(c, "alg"), kid: await rotateKey(apiCtx(c), param(c, "alg")) })
+);

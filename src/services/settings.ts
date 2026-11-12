@@ -1,5 +1,6 @@
 import { isFactorEnabled, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { isEmailAddress, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
+import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { escapeHtml } from "../lib/html.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import {
@@ -159,4 +160,28 @@ export async function sendTestEmail(ctx: ServiceCtx, to: string, appName: string
   });
   await audit(ctx, "settings.email_test_sent", to, { sent: result.ok, ...(result.ok ? {} : { error: result.error }) });
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Email templates (Branding)
+// ---------------------------------------------------------------------------
+
+/** Saves a template (fields not given take the default wording), or resets it with null. */
+export async function saveEmailTemplate(ctx: ServiceCtx, key: TemplateKey, t: Partial<EmailTemplate> | null): Promise<EmailTemplate> {
+  try {
+    await setTemplate(ctx.env, key, t);
+  } catch (e) {
+    throw new ServiceError(400, (e as Error).message);
+  }
+  await audit(ctx, t === null ? "settings.email_template_reset" : "settings.email_template_changed", key);
+  return getTemplate(ctx.env, key);
+}
+
+export async function saveEmailAccent(ctx: ServiceCtx, accent: string): Promise<void> {
+  try {
+    await setAccent(ctx.env, accent);
+  } catch (e) {
+    throw new ServiceError(400, (e as Error).message);
+  }
+  await audit(ctx, "settings.email_accent_changed", undefined, { accent: accent.toLowerCase() });
 }

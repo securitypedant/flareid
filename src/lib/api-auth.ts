@@ -2,6 +2,7 @@ import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
 import { isSetupCompleted } from "./settings.js";
 import { hasScope, KEY_PREFIX, keyDisplayPrefix, parseScopes, touchApiKey, verifyApiKey, type ApiScope } from "./api-keys.js";
+import { expand, grants, LEGACY_SCOPES } from "./permissions.js";
 import { sha256Hex } from "./tokens.js";
 import { logAudit } from "./audit.js";
 
@@ -132,7 +133,11 @@ export function requireScope(scope: ApiScope) {
         actor?.kind === "bootstrap" && setupDone
           ? " The bootstrap token only works until initial setup is complete; use an API key minted from /admin/integrations/api-keys."
           : "";
-      return c.json({ error: "forbidden", message: `This token lacks the "${scope}" scope.${hint}` }, 403);
+      // A permission is also named by the legacy scopes that grant it, so a
+      // caller holding those names knows which one the key is missing.
+      const via = Object.keys(LEGACY_SCOPES).filter((s) => s !== "admin" && s !== scope && grants(expand([s]), scope));
+      const also = via.length ? ` (granted by ${via.map((s) => `"${s}"`).join(" or ")})` : "";
+      return c.json({ error: "forbidden", message: `This token lacks the "${scope}" scope${also}.${hint}` }, 403);
     }
     await next();
   };
