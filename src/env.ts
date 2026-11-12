@@ -66,4 +66,11 @@ export interface Env {
   CF_ANALYTICS_TOKEN?: string;
   /** Encrypts the signing keys stored in D1 (signing-keys.ts). Set once; never change. */
   KEY_ENCRYPTION_KEY?: string;
+  /**
+   * Optional Cloudflare Turnstile secret key. When set it is used instead of
+   * the one saved under Security > Settings > Bot protection (turnstile.ts),
+   * so the secret can live only in Worker secrets. The site key and the on/off
+   * switch are still set in the console.
+   */
+  TURNSTILE_SECRET_KEY?: string;
 }

@@ -21,8 +21,15 @@ export default defineConfig({
         // A stand-in SCIM server at https://scim.test, so the provisioning paths
         // can be exercised without the network. Creates answer with an id and
         // everything else succeeds; any other host is passed through.
+        //
+        // The breached-password range API (on by default) and Turnstile's
+        // Siteverify are stood in for too, so no test reaches the network:
+        // no password is in a breach, and no Turnstile token verifies. Tests
+        // that need other answers stub globalThis.fetch.
         outboundService: async (request: Request) => {
           const url = new URL(request.url);
+          if (url.hostname === "api.pwnedpasswords.com") return new Response("", { status: 200, headers: { "Content-Type": "text/plain" } });
+          if (url.hostname === "challenges.cloudflare.com") return Response.json({ success: false, "error-codes": ["invalid-input-response"] });
           if (url.hostname !== "scim.test") return fetch(request);
           if (request.method === "POST") {
             return new Response(JSON.stringify({ id: crypto.randomUUID() }), { status: 201, headers: { "Content-Type": "application/scim+json" } });

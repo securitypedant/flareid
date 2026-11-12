@@ -59,6 +59,8 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/security/new-user-password-mode": "PUT /api/v1/security/new-user-password",
   "POST /admin/security/apply-default-password": "POST /api/v1/security/new-user-password/apply-to-all",
   "POST /admin/security/password-policy": "PUT /api/v1/security/password-policy",
+  "POST /admin/security/breached-passwords": "PUT /api/v1/security/breached-passwords",
+  "POST /admin/security/turnstile": "PUT /api/v1/security/turnstile",
   "POST /admin/security/require-mfa": "PUT /api/v1/security/require-mfa",
   "POST /admin/security/rate-limit": "PUT /api/v1/security/rate-limit",
   "POST /admin/security/session-limits": "PUT /api/v1/security/session-limits",

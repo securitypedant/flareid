@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
 import { hasSessionCookie } from "./sessions.js";
 import { inlineScriptHashes } from "./html.js";
+import { TURNSTILE_CSP_HEADER, TURNSTILE_ORIGIN } from "./turnstile.js";
 
 /**
  * Cross-site request forgery defence for every state-changing browser route.
@@ -104,19 +105,26 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   // The front-channel logout page names the relying-party origins it frames.
   const frameSrc = h.get("X-FlareID-Frame-Src");
   h.delete("X-FlareID-Frame-Src");
+  // The sign-in and recovery forms with bot protection on load Turnstile's
+  // script, which frames its challenge (turnstile.ts). Only those responses
+  // say so, and only they get the allowance.
+  const turnstile = h.get(TURNSTILE_CSP_HEADER) === "1";
+  h.delete(TURNSTILE_CSP_HEADER);
+  // 'self' kept for Turnstile, as default-src gave it before frame-src was set.
+  const frames = frameSrc ? [frameSrc, ...(turnstile ? [TURNSTILE_ORIGIN] : [])].join(" ") : turnstile ? `'self' ${TURNSTILE_ORIGIN}` : "";
   if ((h.get("Content-Type") ?? "").startsWith("text/html")) {
     h.set(
       "Content-Security-Policy",
       [
         "default-src 'self'",
-        `script-src ${(await inlineScriptHashes()).join(" ")}`,
+        `script-src ${[...(await inlineScriptHashes()), ...(turnstile ? [TURNSTILE_ORIGIN] : [])].join(" ")}`,
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
-        ...(frameSrc ? [`frame-src ${frameSrc}`] : []),
+        ...(frames ? [`frame-src ${frames}`] : []),
       ].join("; ")
     );
   } else {

@@ -1,5 +1,6 @@
 import { getUserGroupNames } from "./db.js";
-import { getPasswordPolicy, validatePassword } from "./settings.js";
+import { getPasswordPolicy, isBreachedPasswordCheckEnabled, validatePassword, type PasswordPolicy } from "./settings.js";
+import { breachCount, breachMessage } from "./breached-passwords.js";
 import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
 import { hashPassword, type PasswordHash } from "./password.js";
@@ -38,7 +39,40 @@ const UNUSABLE_PASSWORD = { hash: "!", salt: "", iterations: 0 };
 /** Per-request cap. PBKDF2 is ~30-60ms per new user, so this bounds CPU time; callers chunk. */
 export const MAX_USERS_PER_IMPORT = 100;
 
+/**
+ * Imported passwords are checked against breached-password data only when the
+ * import carries at most this many users with explicit passwords, so a big
+ * import is not held up by a round-trip per password. (With the per-request
+ * cap above, every request currently qualifies; the browser's CSV import sends
+ * chunks, each checked on its own.)
+ */
+export const IMPORT_BREACH_CHECK_MAX_USERS = 200;
+/** Concurrent range requests during an import's breach check. */
+const IMPORT_BREACH_CHECK_CONCURRENCY = 6;
+
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+/**
+ * The breached passwords among an import's explicit passwords, each mapped to
+ * its message. Each distinct password is asked about once; passwords the
+ * policy already refuses are not asked about at all. If the service cannot
+ * answer, the remaining passwords are not checked (the check fails open).
+ */
+async function breachedImportPasswords(env: Env, users: DirectoryUser[], policy: PasswordPolicy): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  const explicit = users.map((u) => u.password).filter((p): p is string => typeof p === "string" && p !== "");
+  if (explicit.length === 0 || explicit.length > IMPORT_BREACH_CHECK_MAX_USERS || !(await isBreachedPasswordCheckEnabled(env))) return found;
+  const distinct = [...new Set(explicit)].filter((p) => !validatePassword(p, policy));
+  for (let i = 0; i < distinct.length; i += IMPORT_BREACH_CHECK_CONCURRENCY) {
+    const batch = distinct.slice(i, i + IMPORT_BREACH_CHECK_CONCURRENCY);
+    const counts = await Promise.all(batch.map((p) => breachCount(p)));
+    counts.forEach((n, j) => {
+      if (n) found.set(batch[j]!, breachMessage(n));
+    });
+    if (counts.includes(null)) break;
+  }
+  return found;
+}
 
 export interface DirectoryGroup {
   /** Dynamic membership rule JSON, e.g. {"all":[{"field":"employment_type","op":"eq","value":"full_time"}]}. */
@@ -372,12 +406,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   };
 
   const passwordPolicy = await getPasswordPolicy(env);
+  const breached = await breachedImportPasswords(env, users, passwordPolicy);
   for (const user of users) {
     const username = cleanString(user.username).toLowerCase();
     const upn = `${username}@${domain}`;
     // An explicit password meets the same policy as every other way of setting one.
     if (typeof user.password === "string" && user.password !== "") {
-      const weak = validatePassword(user.password, passwordPolicy);
+      const weak = validatePassword(user.password, passwordPolicy) ?? breached.get(user.password) ?? null;
       if (weak) {
         result.errors.push({ username, message: `Password rejected: ${weak}` });
         continue;

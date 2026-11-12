@@ -29,7 +29,7 @@ import {
 import { logAudit } from "../lib/audit.js";
 import { getScimConfig, getScimScope, setScimConfig } from "../lib/settings.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
-import { getNewUserPasswordMode, isMfaRequired } from "../lib/settings.js";
+import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
   AUDIT_RETENTION_MAX_DAYS,
   AUDIT_RETENTION_MIN_DAYS,
@@ -96,6 +96,8 @@ import {
   addSecurityQuestion,
   applyDefaultPasswordToAll,
   deleteSecurityQuestion,
+  saveBreachedPasswordCheck,
+  saveTurnstile,
   saveKbaSettings,
   setSecurityQuestionEnabled,
   saveAppName,
@@ -1494,17 +1496,21 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
   const crumbs = [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name, href: `/admin/users/${id}` }, { label: "Set password" }];
 
   // Blank means "generate one" - except from a form that exists to set a chosen password.
+  const formError = (message: string) =>
+    c.html(layout(c, "Set password", cardSection(`<h2>Set a password for ${escapeHtml(user.display_name)}</h2>${choosePasswordForm(id, policy, message)}`), crumbs), 400);
   const policyError = chosen ? validatePassword(chosen, policy) : body.require_chosen ? "Enter a password." : null;
-  if (policyError) {
-    return c.html(
-      layout(c, "Set password", cardSection(`<h2>Set a password for ${escapeHtml(user.display_name)}</h2>${choosePasswordForm(id, policy, policyError)}`), crumbs),
-      400
-    );
-  }
+  if (policyError) return formError(policyError);
 
   // A reset is a compromise response too: every existing session ends
   // (services/users.ts, shared with POST /api/v1/users/{username}/reset-password).
-  const { password } = await resetUserPassword(consoleCtx(c), id, chosen);
+  // The service also runs the breached-password check on a chosen password.
+  let password: string;
+  try {
+    ({ password } = await resetUserPassword(consoleCtx(c), id, chosen));
+  } catch (e) {
+    if (e instanceof ServiceError && e.status === 400) return formError(e.message);
+    throw e;
+  }
 
   return c.html(
     layout(
@@ -3399,6 +3405,10 @@ admin.get("/admin/security", async (c) => {
   const newUserPasswordMode = await getNewUserPasswordMode(c.env);
   const auditRetentionDays = await getAuditRetentionDays(c.env);
   const sessionPolicy = await getSessionPolicy(c.env);
+  const breachedCheck = await isBreachedPasswordCheckEnabled(c.env);
+  const turnstile = await getTurnstileConfig(c.env);
+  const turnstileActive = activeTurnstileSiteKey(turnstile) !== null;
+  const radio = 'style="width:auto; display:inline; margin-right:6px;"';
 
   return c.html(
     layout(
@@ -3406,6 +3416,7 @@ admin.get("/admin/security", async (c) => {
       "Security",
       `
             ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       <div class="two-col security-grid">
       ${cardSection(`
         <h2>Default password</h2>
@@ -3439,6 +3450,35 @@ admin.get("/admin/security", async (c) => {
           <label><input type="checkbox" name="requireNumber" value="1" ${policy.requireNumber ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require number</label>
           <label><input type="checkbox" name="requireSymbol" value="1" ${policy.requireSymbol ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require symbol</label>
           <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save policy</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Breached passwords</h2>
+        <p class="muted">Refuses a password that appears in known data breaches (Have I Been Pwned's Pwned Passwords) wherever one is chosen: self-service changes, invitations, password resets, passwords an administrator sets, and imported passwords (imports with up to 200 of them). Generated passwords are not checked.
+          Only the first 5 characters of the password's SHA-1 hash leave ${escapeHtml(c.get("appName"))}; the password itself never does. If the service can't be reached within 3 seconds, the password is allowed.</p>
+        <form method="POST" action="/admin/security/breached-passwords">
+          <label><input type="checkbox" name="enabled" value="1" ${breachedCheck ? "checked" : ""} ${radio} /> Reject passwords found in data breaches</label>
+          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Bot protection (Turnstile)</h2>
+        <p class="muted">Cloudflare Turnstile checks that a person, not a script, is behind the password sign-in and password-recovery forms, before any password is checked or email sent. Passkey sign-in is not challenged: passkeys cannot be phished or stuffed.
+          Create a widget for this hostname in the Cloudflare dashboard (Turnstile) and paste its keys here.
+          Currently <strong>${turnstileActive ? "on" : "off"}</strong>.</p>
+        <form method="POST" action="/admin/security/turnstile">
+          <label><input type="radio" name="mode" value="off" ${turnstile.mode === "off" ? "checked" : ""} ${radio} /> Off</label>
+          <label><input type="radio" name="mode" value="on" ${turnstile.mode === "on" ? "checked" : ""} ${radio} /> On for sign-in and password recovery</label>
+          <label for="turnstile_site_key">Site key</label>
+          <input type="text" id="turnstile_site_key" name="site_key" value="${escapeHtml(turnstile.siteKey)}" autocomplete="off" />
+          <label for="turnstile_secret">Secret key</label>
+          ${
+            turnstile.secretFromEnv
+              ? `<p class="muted" style="margin-top:0;">Set by the <code>TURNSTILE_SECRET_KEY</code> Worker secret, which is used instead of a saved one.</p>`
+              : `<input type="password" id="turnstile_secret" name="secret" value="" autocomplete="new-password" placeholder="${turnstile.secret ? "Saved - leave blank to keep it" : "From the Cloudflare dashboard"}" />
+          <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>`
+          }
+          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -3806,6 +3846,22 @@ admin.post("/admin/security/new-user-password-mode", async (c) => {
 
 admin.post("/admin/security/password-policy", async (c) => {
   await savePasswordPolicy(consoleCtx(c), await c.req.parseBody());
+  return c.redirect("/admin/security?saved=1", 302);
+});
+
+admin.post("/admin/security/breached-passwords", async (c) => {
+  await saveBreachedPasswordCheck(consoleCtx(c), String((await c.req.parseBody()).enabled ?? "") === "1");
+  return c.redirect("/admin/security?saved=1", 302);
+});
+
+admin.post("/admin/security/turnstile", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await saveTurnstile(consoleCtx(c), { mode: body.mode === undefined ? undefined : String(body.mode), siteKey: String(body.site_key ?? ""), secret: String(body.secret ?? "") });
+  } catch (e) {
+    if (!(e instanceof ServiceError)) throw e;
+    return c.redirect(`/admin/security?error=${encodeURIComponent(e.message)}`, 302);
+  }
   return c.redirect("/admin/security?saved=1", 302);
 });
 

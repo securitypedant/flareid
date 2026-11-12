@@ -2,7 +2,7 @@ import { canSignIn } from "../lib/admin-roles.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
@@ -178,7 +178,7 @@ saml.get("/saml/sso", async (c) => {
   }
 
   const flowId = await sealLoginFlow(c.env, { kind: "saml", request: pending });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
+  return sendLoginForm(c, flowId, await getLoginAppearance(c.env));
 });
 
 /**

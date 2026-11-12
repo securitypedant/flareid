@@ -8,8 +8,9 @@ import { randomToken } from "../lib/tokens.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage, type MfaFactors } from "../lib/login-views.js";
+import { AUTH_MESSAGES, mfaForm, renderAuthMessage, sendLoginForm, type MfaFactors } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
+import { TURNSTILE_FAILED_MESSAGE, turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
@@ -94,7 +95,7 @@ login.get("/login", async (c) => {
   // load let anyone spend the deployment's write quota (see sealLoginFlow).
   const flowId = await sealLoginFlow(c.env, { kind: "direct", next });
   const denied = c.req.query("denied") ? "This account is not allowed to sign in. Ask an administrator." : undefined;
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env), denied));
+  return sendLoginForm(c, flowId, await getLoginAppearance(c.env), denied);
 });
 
 login.post("/logout", async (c) => {
@@ -185,6 +186,12 @@ login.post("/login", async (c) => {
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   const appearance = await getLoginAppearance(c.env);
 
+  // Bot protection, before anything that costs: no account lookup, no
+  // password hash, and no count against the account's failure budget - a bot
+  // that cannot solve the challenge must not be able to lock its victim out
+  // either. Not audited (a flood would fill the log); the Worker log has it.
+  if (await turnstileRefused(c, body, "login")) return sendLoginForm(c, flowId, appearance, TURNSTILE_FAILED_MESSAGE);
+
   // Resolve first: the bucket must bind to the account, not the spelling, or
   // "admin", " admin" and "admin@x" would each get their own failure budget.
   // Recording before verifying keeps the increment and the limit decision
@@ -194,9 +201,7 @@ login.post("/login", async (c) => {
 
   if (await recordLoginAttempt(c.env, rateKey, ip)) {
     await logAudit(c.env, null, "login.rate_limited", upn, { ip }, c.req.raw);
-    return c.html(
-      loginForm(c.get("appName"), flowId, appearance, "Too many attempts. Please wait a few minutes before trying again.")
-    );
+    return sendLoginForm(c, flowId, appearance, "Too many attempts. Please wait a few minutes before trying again.");
   }
 
   // An unknown or disabled account still costs one real hash verification, so
@@ -209,7 +214,7 @@ login.post("/login", async (c) => {
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
-    return c.html(loginForm(c.get("appName"), flowId, appearance, "Incorrect username/UPN or password."));
+    return sendLoginForm(c, flowId, appearance, "Incorrect username/UPN or password.");
   }
 
   await clearLoginAttempts(c.env, rateKey, ip);
@@ -219,9 +224,7 @@ login.post("/login", async (c) => {
   }
 
   if (!(await isSetupCompleted(c.env)) && !(await isSuperAdmin(c.env, user.id))) {
-    return c.html(
-      loginForm(c.get("appName"), flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.")
-    );
+    return sendLoginForm(c, flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.");
   }
 
   // Second step: the authenticator app when enrolled (unless this device is
@@ -277,10 +280,10 @@ login.post("/login/passkey", async (c) => {
   const user = userId ? await getUserById(c.env, userId) : null;
   if (!user || user.status !== "active") {
     await logAudit(c.env, null, "login.passkey_failed", undefined, { ip: getClientIp(c.req.raw) }, c.req.raw);
-    return c.html(loginForm(c.get("appName"), flowId, appearance, "That passkey could not sign you in."));
+    return sendLoginForm(c, flowId, appearance, "That passkey could not sign you in.");
   }
   if (!(await isSetupCompleted(c.env)) && !(await isSuperAdmin(c.env, user.id))) {
-    return c.html(loginForm(c.get("appName"), flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now."));
+    return sendLoginForm(c, flowId, appearance, "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.");
   }
   const amr = ["hwk", "mfa"];
   await deleteLoginFlow(c.env, flowId);

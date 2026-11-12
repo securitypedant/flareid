@@ -7,7 +7,8 @@ import { hashPassword } from "../lib/password.js";
 import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes } from "../lib/schemas.js";
 import { drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { getPasswordPolicy, resolveNewAccountPassword, validatePassword } from "../lib/settings.js";
+import { resolveNewAccountPassword } from "../lib/settings.js";
+import { newPasswordError } from "../lib/breached-passwords.js";
 import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import type { UserRow } from "../lib/types.js";
@@ -72,7 +73,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const email = String(input.email ?? "").trim().toLowerCase() || null;
   if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
   if (input.password) {
-    const policyError = validatePassword(input.password, await getPasswordPolicy(ctx.env));
+    const policyError = await newPasswordError(ctx.env, input.password);
     if (policyError) throw new ServiceError(400, policyError);
   }
 
@@ -236,7 +237,7 @@ export async function resetUserPassword(ctx: ServiceCtx, id: number, chosen: str
   if (!user) throw new ServiceError(404, "Not found");
   await assertMayTouchUser(ctx, id);
   if (chosen) {
-    const policyError = validatePassword(chosen, await getPasswordPolicy(ctx.env));
+    const policyError = await newPasswordError(ctx.env, chosen);
     if (policyError) throw new ServiceError(400, policyError);
   }
   const password = chosen || (await generateAccountPassword(ctx.env));

@@ -186,6 +186,55 @@ export async function getPasswordPolicy(env: Env): Promise<PasswordPolicy> {
   }
 }
 
+/**
+ * Whether new passwords are checked against Have I Been Pwned's breached
+ * password corpus (breached-passwords.ts). On unless switched off, so a fresh
+ * install starts with it on.
+ */
+export async function isBreachedPasswordCheckEnabled(env: Env): Promise<boolean> {
+  return (await getSetting(env, "breached_password_check")) !== "false";
+}
+
+export async function setBreachedPasswordCheckEnabled(env: Env, enabled: boolean): Promise<void> {
+  await setSetting(env, "breached_password_check", enabled ? "true" : "false");
+}
+
+/**
+ * Cloudflare Turnstile on the sign-in and recovery forms (turnstile.ts).
+ * `mode` "on" only takes effect with both keys present. The secret is
+ * write-only: readers outside this module and turnstile.ts get `secretSet`.
+ * A TURNSTILE_SECRET_KEY Worker secret, when set, wins over the stored one.
+ */
+export type TurnstileMode = "off" | "on";
+
+export interface TurnstileConfig {
+  mode: TurnstileMode;
+  siteKey: string;
+  secret: string;
+  secretFromEnv: boolean;
+}
+
+export async function getTurnstileConfig(env: Env): Promise<TurnstileConfig> {
+  const { results } = await env.DB.prepare("SELECT key, value FROM idp_settings WHERE key IN ('turnstile_mode', 'turnstile_site_key', 'turnstile_secret')").all<{ key: string; value: string }>();
+  const get = (k: string) => results.find((r) => r.key === k)?.value ?? "";
+  const fromEnv = (env.TURNSTILE_SECRET_KEY ?? "").trim();
+  return { mode: get("turnstile_mode") === "on" ? "on" : "off", siteKey: get("turnstile_site_key"), secret: fromEnv || get("turnstile_secret"), secretFromEnv: Boolean(fromEnv) };
+}
+
+/** Fields not given keep their value; an empty secret keeps the saved one. */
+export async function setTurnstileConfig(env: Env, input: { mode?: TurnstileMode; siteKey?: string; secret?: string }): Promise<void> {
+  const writes: Promise<void>[] = [];
+  if (input.mode !== undefined) writes.push(setSetting(env, "turnstile_mode", input.mode));
+  if (input.siteKey !== undefined) writes.push(setSetting(env, "turnstile_site_key", input.siteKey.trim()));
+  if (input.secret) writes.push(setSetting(env, "turnstile_secret", input.secret.trim()));
+  await Promise.all(writes);
+}
+
+/** The site key to render the widget with, or null when Turnstile is not in force. */
+export function activeTurnstileSiteKey(config: TurnstileConfig): string | null {
+  return config.mode === "on" && config.siteKey && config.secret ? config.siteKey : null;
+}
+
 /** Admin-configurable display name, shown everywhere the UI previously hardcoded "FlareID"/env.APP_NAME. */
 export async function getAppName(env: Env): Promise<string> {
   return (await getSetting(env, "app_name")) || env.APP_NAME;
@@ -267,18 +316,27 @@ export interface LoginAppearance {
   cursorTrail: CursorTrail;
   /** Whether "Forgot your password?" is offered: email is configured (see email.ts). */
   recoveryEnabled: boolean;
+  /** The Turnstile site key when bot protection is on (the sign-in and recovery forms render the widget), else null. */
+  turnstileSiteKey: string | null;
 }
 
 export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
-  const [gradient, subtitle, cursorTrail, fromAddress, emailSwitch] = await Promise.all([
+  const [gradient, subtitle, cursorTrail, fromAddress, emailSwitch, turnstile] = await Promise.all([
     getLoginGradient(env),
     getLoginSubtitle(env),
     getCursorTrail(env),
     getSetting(env, "email_from_address"),
     getSetting(env, "email_enabled"),
+    getTurnstileConfig(env),
   ]);
   // Same rule as isEmailConfigured() in email.ts, inlined: email.ts imports this module.
-  return { gradient, subtitle, cursorTrail, recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false" };
+  return {
+    gradient,
+    subtitle,
+    cursorTrail,
+    recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false",
+    turnstileSiteKey: activeTurnstileSiteKey(turnstile),
+  };
 }
 
 /**

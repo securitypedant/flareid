@@ -3,7 +3,7 @@ import { claimGroupsFromParameter } from "../lib/oidc.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, loginForm, renderAuthMessage } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
@@ -191,5 +191,5 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   }
 
   const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
+  return sendLoginForm(c, flowId, await getLoginAppearance(c.env));
 }

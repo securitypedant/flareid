@@ -1742,6 +1742,8 @@ Password, session, rate-limit and audit settings; authentication policies and fa
 |---|---|---|---|
 | `GET` | `/api/v1/security` | `security:read` | Read the security settings |
 | `PUT` | `/api/v1/security/password-policy` | `security:write` | Set the password policy |
+| `PUT` | `/api/v1/security/breached-passwords` | `security:write` | Switch the breached-password check on or off |
+| `PUT` | `/api/v1/security/turnstile` | `security:write` | Configure bot protection (Cloudflare Turnstile) |
 | `PUT` | `/api/v1/security/rate-limit` | `security:write` | Set the sign-in rate limit |
 | `PUT` | `/api/v1/security/session-limits` | `security:write` | Set the session limits |
 | `PUT` | `/api/v1/security/audit-retention` | `security:write` | Set how long the audit log is kept |
@@ -1778,6 +1780,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1813,6 +1817,72 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/security/breached-passwords`
+
+Switch the breached-password check on or off.
+
+When on (the default), passwords people choose - self-service changes, invitations, resets, passwords set by administrators and imported passwords (imports with up to 200 explicit passwords) - are refused if they appear in Have I Been Pwned's breach corpus. Only the first 5 characters of the password's SHA-1 hash are sent (k-anonymity). If the service cannot be reached the password is allowed.
+
+Permission: `security:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+
+Response `200`:
+
+`SecuritySettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `password_policy` | PasswordPolicy | yes |  |
+| `rate_limit` | object { max_attempts, window_minutes } | yes |  |
+| `session_limits` | object { max_hours, idle_minutes } | yes |  |
+| `audit_retention_days` | number | yes |  |
+| `new_user_password` | object { mode, default_password_set } | yes |  |
+| `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/security/turnstile`
+
+Configure bot protection (Cloudflare Turnstile).
+
+Fields not supplied keep their values; an empty or omitted `secret` keeps the saved one. The secret is write-only. `mode: on` needs a site key and a secret (or the TURNSTILE_SECRET_KEY Worker secret) and protects the password sign-in and password-recovery forms; passkey sign-in is not challenged.
+
+Permission: `security:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mode` | "off" \| "on" | no |  |
+| `site_key` | string | no |  |
+| `secret` | string | no |  |
+
+Response `200`:
+
+`SecuritySettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `password_policy` | PasswordPolicy | yes |  |
+| `rate_limit` | object { max_attempts, window_minutes } | yes |  |
+| `session_limits` | object { max_hours, idle_minutes } | yes |  |
+| `audit_retention_days` | number | yes |  |
+| `new_user_password` | object { mode, default_password_set } | yes |  |
+| `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1841,6 +1911,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1871,6 +1943,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1900,6 +1974,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1930,6 +2006,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1982,6 +2060,8 @@ Response `200`:
 | `audit_retention_days` | number | yes |  |
 | `new_user_password` | object { mode, default_password_set } | yes |  |
 | `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

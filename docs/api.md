@@ -101,7 +101,7 @@ does - in summary:
 | API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
 | Branding | `GET`/`PATCH /branding`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` |
-| Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`, security questions at `/security/security-questions`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
+| Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `.../breached-passwords`, `.../turnstile`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`, security questions at `/security/security-questions`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
 | Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
 
 Second factors: `GET /security/factors` lists `totp`, `passkey`,
@@ -122,6 +122,16 @@ from; `PUT` changes the settings, and `POST .../questions`,
 `DELETE .../questions/{id}` manage the catalogue (`security:write`). A question
 someone has answered cannot be deleted, only disabled; answers are never
 exposed (they are stored only as salted hashes).
+
+Breached passwords and bot protection: `GET /security` includes
+`breached_password_check` (on by default; `PUT /security/breached-passwords`
+with `{"enabled": false}` turns it off) and `turnstile` (`mode`, `active`,
+`site_key`, `secret_set`, `secret_from_env`). `PUT /security/turnstile` takes
+`mode` (`off` / `on`), `site_key` and `secret`; fields not given keep their
+values, the secret is write-only and never returned, and `mode: "on"` is a
+`400` until a site key and a secret (or the `TURNSTILE_SECRET_KEY` Worker
+secret) are present. A password set through the API that is in a breach is a
+`400` naming how often it appeared.
 
 Request bodies are validated against the schema in the spec: a wrong type is a
 `400` with `error: "invalid_request"` and a `message` naming the field.
@@ -283,6 +293,11 @@ Other things worth knowing:
   hash (~100 ms of CPU): a chunk of 100 users with generated passwords takes
   around ten seconds, while 100 users sharing a default password hash it once.
   Chunk; the import is idempotent by username, so chunking is safe.
+- With the breached-password check on (the default), explicit passwords are
+  checked against Have I Been Pwned (only a 5-character hash prefix is sent)
+  when the request carries at most 200 of them - every request, at the current
+  cap - and a breached one is reported in `errors` like a policy failure. If
+  the service cannot be reached, the passwords are allowed.
 
 ```json
 {

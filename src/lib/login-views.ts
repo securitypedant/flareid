@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import { escapeHtml, page, scriptTag } from "./html.js";
 import { getLoginAppearance, type CursorTrail, type LoginAppearance, type LoginGradient } from "./settings.js";
+import { allowTurnstileCsp, turnstileWidget } from "./turnstile.js";
 
 /** Inline <style> override for the auth-flow pages (login, MFA) - a full-bleed gradient behind the centered card. */
 function gradientStyles(gradient: LoginGradient): string {
@@ -141,6 +142,7 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
       <input type="text" id="upn" name="upn" placeholder="username or username@domain" required autofocus autocapitalize="off" autocorrect="off" />
       <label for="password">Password</label>
       <input type="password" id="password" name="password" required />
+      ${turnstileWidget(appearance.turnstileSiteKey, "login")}
       <div class="row"><button class="primary" type="submit">Sign in</button></div>
     </form>
     <div class="auth-passkey">
@@ -152,6 +154,15 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
     <div class="auth-foot"><span class="muted">Protected by ${escapeHtml(appName)} single sign-on</span></div>
     `
   );
+}
+
+/**
+ * Responds with the sign-in form - the way every route should send it, so the
+ * Content-Security-Policy admits Turnstile exactly when the form renders it.
+ */
+export function sendLoginForm(c: Context<{ Bindings: Env }>, flowId: string, appearance: LoginAppearance, error?: string) {
+  allowTurnstileCsp(c, appearance.turnstileSiteKey);
+  return c.html(loginForm(c.get("appName"), flowId, appearance, error));
 }
 
 /** The second-step methods a sign-in can offer. */

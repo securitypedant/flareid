@@ -8,6 +8,42 @@ may break things.
 
 ### Added
 
+- **Breached-password check** (Have I Been Pwned's Pwned Passwords,
+  k-anonymity): a password someone chooses is refused with "This password has
+  appeared in a data breach N times; choose another." if it is in the breach
+  corpus - on self-service changes (My account), invitation acceptance,
+  password-reset links, passwords an administrator sets (console and
+  `POST /api/v1/users`, `POST /api/v1/users/{username}/reset-password`) and
+  imported passwords (when the import carries at most 200 explicit passwords;
+  each distinct password is asked about once). Generated passwords are not
+  checked. Only the first 5 hex characters of the password's SHA-1 hash are
+  sent, with `Add-Padding: true`; the suffixes are compared locally. On a
+  timeout (3 s) or network error the check fails open and a warning (with no
+  password or hash) goes to the Worker log. **On by default on a fresh
+  install**; switched under Security > Settings > Breached passwords or
+  `PUT /api/v1/security/breached-passwords`, audited as
+  `settings.breached_password_check_changed`; `GET /api/v1/security` reports
+  `breached_password_check`.
+- **Bot protection with Cloudflare Turnstile** on the password sign-in form
+  (`/login`, also when reached from `/authorize` or SAML SSO) and the
+  password-recovery request (`/forgot-password`). Off by default; set under
+  Security > Settings > Bot protection (site key, write-only secret key, mode
+  off / on) or `PUT /api/v1/security/turnstile` (`GET /api/v1/security`
+  returns `turnstile` with `secret_set`, never the secret). An optional
+  `TURNSTILE_SECRET_KEY` Worker secret overrides the stored secret. The widget
+  is rendered explicitly (light theme) and the token is redeemed with
+  Siteverify - with `remoteip` from `CF-Connecting-IP` and an idempotency
+  key, retried once on a network or internal error - before any account
+  lookup, password hash, rate-limit count or email; the `hostname` must be
+  the issuer host and the `action` the form's (`login` / `recovery`). A
+  refusal shows "Please complete the check and try again.", is not audited
+  and does not count against the account's sign-in limit (so a bot cannot
+  lock out its victim); Siteverify being unreachable refuses (fails closed).
+  Passkey sign-in is not challenged. The Content-Security-Policy admits
+  `https://challenges.cloudflare.com` in `script-src` and `frame-src` only on
+  the responses that render the widget, and only while it is on. Audited as
+  `settings.turnstile_changed` (never with the secret).
+
 - **Security questions as a second factor**, completing the initial set
   (password, authenticator app, passkeys, email codes, security questions).
   Off on a fresh install; switched on under Security > Factors, whose new

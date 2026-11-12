@@ -814,6 +814,13 @@
           },
           "require_mfa": {
             "type": "boolean"
+          },
+          "breached_password_check": {
+            "type": "boolean",
+            "description": "New passwords found in Have I Been Pwned's breach corpus are refused."
+          },
+          "turnstile": {
+            "$ref": "#/components/schemas/TurnstileSettings"
           }
         },
         "required": [
@@ -822,7 +829,9 @@
           "session_limits",
           "audit_retention_days",
           "new_user_password",
-          "require_mfa"
+          "require_mfa",
+          "breached_password_check",
+          "turnstile"
         ]
       },
       "PasswordPolicy": {
@@ -844,6 +853,41 @@
             "type": "boolean"
           }
         }
+      },
+      "TurnstileSettings": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "description": "`on` checks the password sign-in and password-recovery forms."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "`mode` is on and both keys are present, so the widget is shown."
+          },
+          "site_key": {
+            "type": "string"
+          },
+          "secret_set": {
+            "type": "boolean",
+            "description": "The secret is write-only: never returned."
+          },
+          "secret_from_env": {
+            "type": "boolean",
+            "description": "The TURNSTILE_SECRET_KEY Worker secret is set and used instead of a stored secret."
+          }
+        },
+        "required": [
+          "mode",
+          "active",
+          "site_key",
+          "secret_set",
+          "secret_from_env"
+        ]
       },
       "AuthPolicy": {
         "type": "object",
@@ -5585,6 +5629,163 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PasswordPolicy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/breached-passwords": {
+      "put": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Switch the breached-password check on or off",
+        "description": "When on (the default), passwords people choose - self-service changes, invitations, resets, passwords set by administrators and imported passwords (imports with up to 200 explicit passwords) - are refused if they appear in Have I Been Pwned's breach corpus. Only the first 5 characters of the password's SHA-1 hash are sent (k-anonymity). If the service cannot be reached the password is allowed.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/turnstile": {
+      "put": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Configure bot protection (Cloudflare Turnstile)",
+        "description": "Fields not supplied keep their values; an empty or omitted `secret` keeps the saved one. The secret is write-only. `mode: on` needs a site key and a secret (or the TURNSTILE_SECRET_KEY Worker secret) and protects the password sign-in and password-recovery forms; passkey sign-in is not challenged.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "on"
+                    ]
+                  },
+                  "site_key": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }

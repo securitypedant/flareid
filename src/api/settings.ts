@@ -16,7 +16,10 @@ import {
   getNewUserPasswordMode,
   getPasswordPolicy,
   getSessionPolicy,
+  activeTurnstileSiteKey,
   getSetting,
+  getTurnstileConfig,
+  isBreachedPasswordCheckEnabled,
   isHexColor,
   isMfaRequired,
 } from "../lib/settings.js";
@@ -28,6 +31,8 @@ import { rotateKey } from "../services/platform.js";
 import {
   applyDefaultPasswordToAll,
   saveAppName,
+  saveBreachedPasswordCheck,
+  saveTurnstile,
   saveAuditRetention,
   saveCursorTrail,
   saveDefaultPassword,
@@ -267,6 +272,16 @@ defineRoute(
 // Security settings
 // ---------------------------------------------------------------------------
 
+const TurnstileSchema = z
+  .object({
+    mode: z.enum(["off", "on"]).openapi({ description: "`on` checks the password sign-in and password-recovery forms." }),
+    active: z.boolean().openapi({ description: "`mode` is on and both keys are present, so the widget is shown." }),
+    site_key: z.string(),
+    secret_set: z.boolean().openapi({ description: "The secret is write-only: never returned." }),
+    secret_from_env: z.boolean().openapi({ description: "The TURNSTILE_SECRET_KEY Worker secret is set and used instead of a stored secret." }),
+  })
+  .openapi("TurnstileSettings");
+
 const SecuritySchema = z
   .object({
     password_policy: PasswordPolicySchema,
@@ -275,11 +290,13 @@ const SecuritySchema = z
     audit_retention_days: z.number(),
     new_user_password: z.object({ mode: z.enum(["default", "random"]), default_password_set: z.boolean() }),
     require_mfa: z.boolean(),
+    breached_password_check: z.boolean().openapi({ description: "New passwords found in Have I Been Pwned's breach corpus are refused." }),
+    turnstile: TurnstileSchema,
   })
   .openapi("SecuritySettings");
 
 async function securityJson(env: Env) {
-  const [policy, rate, session, retention, mode, defaultPassword, mfa] = await Promise.all([
+  const [policy, rate, session, retention, mode, defaultPassword, mfa, breached, turnstile] = await Promise.all([
     getPasswordPolicy(env),
     getRateLimitPolicy(env),
     getSessionPolicy(env),
@@ -287,6 +304,8 @@ async function securityJson(env: Env) {
     getNewUserPasswordMode(env),
     getDefaultPassword(env),
     isMfaRequired(env),
+    isBreachedPasswordCheckEnabled(env),
+    getTurnstileConfig(env),
   ]);
   return {
     password_policy: policy,
@@ -296,6 +315,15 @@ async function securityJson(env: Env) {
     // Whether one is set, never the password itself.
     new_user_password: { mode, default_password_set: Boolean(defaultPassword) },
     require_mfa: mfa,
+    breached_password_check: breached,
+    // Whether a secret is set, never the secret itself.
+    turnstile: {
+      mode: turnstile.mode,
+      active: activeTurnstileSiteKey(turnstile) !== null,
+      site_key: turnstile.siteKey,
+      secret_set: Boolean(turnstile.secret),
+      secret_from_env: turnstile.secretFromEnv,
+    },
   };
 }
 
@@ -308,6 +336,43 @@ defineRoute(
   { method: "put", path: "/api/v1/security/password-policy", tag: "Security", permission: "security:write", summary: "Set the password policy", description: "Omitted rules are off; minLength defaults to 8.", body: PasswordPolicySchema, response: SecuritySchema },
   async (c) => {
     await savePasswordPolicy(apiCtx(c), await readJson<Record<string, unknown>>(c));
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/breached-passwords",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Switch the breached-password check on or off",
+    description:
+      "When on (the default), passwords people choose - self-service changes, invitations, resets, passwords set by administrators and imported passwords (imports with up to 200 explicit passwords) - are refused if they appear in Have I Been Pwned's breach corpus. Only the first 5 characters of the password's SHA-1 hash are sent (k-anonymity). If the service cannot be reached the password is allowed.",
+    body: z.object({ enabled: z.boolean() }),
+    response: SecuritySchema,
+  },
+  async (c) => {
+    await saveBreachedPasswordCheck(apiCtx(c), (await readJson<{ enabled: boolean }>(c)).enabled === true);
+    return c.json(await securityJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/turnstile",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Configure bot protection (Cloudflare Turnstile)",
+    description:
+      "Fields not supplied keep their values; an empty or omitted `secret` keeps the saved one. The secret is write-only. `mode: on` needs a site key and a secret (or the TURNSTILE_SECRET_KEY Worker secret) and protects the password sign-in and password-recovery forms; passkey sign-in is not challenged.",
+    body: z.object({ mode: z.enum(["off", "on"]).optional(), site_key: z.string().optional(), secret: z.string().optional() }),
+    response: SecuritySchema,
+  },
+  async (c) => {
+    const body = await readJson<{ mode?: string; site_key?: string; secret?: string }>(c);
+    await saveTurnstile(apiCtx(c), { mode: body.mode, siteKey: body.site_key, secret: body.secret });
     return c.json(await securityJson(c.env));
   }
 );

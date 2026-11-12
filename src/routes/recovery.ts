@@ -7,7 +7,9 @@ import { hashPassword } from "../lib/password.js";
 import { consumeAccountToken, peekAccountToken, revokeAccountTokens, type AccountTokenPurpose } from "../lib/account-tokens.js";
 import { sendPasswordReset } from "../lib/account-email.js";
 import { isEmailConfigured } from "../lib/email.js";
-import { getLoginAppearance, getPasswordPolicy, passwordPolicySummary, validatePassword } from "../lib/settings.js";
+import { getLoginAppearance, getPasswordPolicy, passwordPolicySummary } from "../lib/settings.js";
+import { newPasswordError } from "../lib/breached-passwords.js";
+import { allowTurnstileCsp, TURNSTILE_FAILED_MESSAGE, turnstileRefused, turnstileWidget } from "../lib/turnstile.js";
 import { revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { clearLoginAttempts, getClientIp, loginRateKey, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
 import { logAudit } from "../lib/audit.js";
@@ -55,26 +57,35 @@ const LINK_EXPIRED = {
 
 // ---------- Forgot password ----------
 
-recovery.get("/forgot-password", async (c) => {
-  if (!(await isEmailConfigured(c.env))) return renderAuthMessage(c, 400, { title: "Password recovery is not available", message: "Ask your administrator to reset your password.", action: null });
-  return page(
-    c,
-    "Reset your password",
-    `
+/** The recovery request form, with the Turnstile widget when bot protection is on. */
+async function forgotPasswordForm(c: Context<{ Bindings: Env }>, error?: string) {
+  const appearance = await getLoginAppearance(c.env);
+  allowTurnstileCsp(c, appearance.turnstileSiteKey);
+  const body = `
     <h1>Reset your password</h1>
     <p class="sub">Enter your username or email. If it matches an account, we'll send a link to choose a new password.</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     <form method="POST" action="/forgot-password">
       <label for="identifier">Username or email</label>
       <input type="text" id="identifier" name="identifier" required autofocus autocapitalize="off" autocorrect="off" />
+      ${turnstileWidget(appearance.turnstileSiteKey, "recovery")}
       <div class="row"><button class="primary" type="submit">Send reset link</button></div>
     </form>
-    <p class="auth-alt"><a href="/login">Back to sign in</a></p>`
-  );
+    <p class="auth-alt"><a href="/login">Back to sign in</a></p>`;
+  return c.html(authPage("Reset your password", c.get("appName"), appearance, body), error ? 400 : 200);
+}
+
+recovery.get("/forgot-password", async (c) => {
+  if (!(await isEmailConfigured(c.env))) return renderAuthMessage(c, 400, { title: "Password recovery is not available", message: "Ask your administrator to reset your password.", action: null });
+  return forgotPasswordForm(c);
 });
 
 recovery.post("/forgot-password", async (c) => {
   if (!(await isEmailConfigured(c.env))) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const identifier = String((await c.req.parseBody()).identifier ?? "").slice(0, 254);
+  const body = await c.req.parseBody();
+  // Before any lookup, rate-limit count or email: a refused check costs nothing.
+  if (await turnstileRefused(c, body, "recovery")) return forgotPasswordForm(c, TURNSTILE_FAILED_MESSAGE);
+  const identifier = String(body.identifier ?? "").slice(0, 254);
   const ip = getClientIp(c.req.raw);
 
   // Everything that depends on whether the account exists happens after the
@@ -141,7 +152,7 @@ async function acceptPassword(c: Context<{ Bindings: Env }>, purpose: AccountTok
   const action = `/${purpose === "reset" ? "reset-password" : "invite"}/${token}`;
 
   // Validated before the token is used, so a weak password does not burn the link.
-  const error = password !== String(body.confirm ?? "") ? "The two passwords do not match." : validatePassword(password, policy);
+  const error = password !== String(body.confirm ?? "") ? "The two passwords do not match." : await newPasswordError(c.env, password, policy);
   if (error) {
     const { user } = await linkTarget(c, purpose);
     if (!user) return { response: await renderAuthMessage(c, 400, LINK_EXPIRED) };

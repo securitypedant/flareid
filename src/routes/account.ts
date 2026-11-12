@@ -29,7 +29,8 @@ import { attributeInput, getSchemaAttributes, parseCustomAttributes, ruleAttribu
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { UserRow } from "../lib/types.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
-import { getPasswordPolicy, validatePassword } from "../lib/settings.js";
+import { getPasswordPolicy } from "../lib/settings.js";
+import { newPasswordError } from "../lib/breached-passwords.js";
 import { logAudit } from "../lib/audit.js";
 import { getRateLimitPolicy, recordRateAttempt } from "../lib/rate-limit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
@@ -564,7 +565,7 @@ account.post("/account/password", async (c) => {
   }
 
   const policy = await getPasswordPolicy(c.env);
-  const policyError = validatePassword(newPassword, policy);
+  const policyError = await newPasswordError(c.env, newPassword, policy);
   if (policyError) {
     return c.html(errorRedirectPage(c, policyError));
   }

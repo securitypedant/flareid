@@ -30,7 +30,10 @@ happens to run on Cloudflare's platform.
   route. Passkeys (WebAuthn) for passwordless, multi-factor sign-in; email
   one-time codes and security questions as further second factors (off by
   default; security questions are the weakest and never count as a Super
-  Admin's step-up re-authentication).
+  Admin's step-up re-authentication). New passwords are checked against
+  Have I Been Pwned's breached passwords (k-anonymity, on by default), and
+  Cloudflare Turnstile can guard the password sign-in and recovery forms
+  against bots.
 - **Directory**: users, flat groups (no nesting), multiple UPN domains, and
   HR-style attributes - job title, department, manager, employee number, hire
   date, employment status/type, location - exposed as claims so relying parties

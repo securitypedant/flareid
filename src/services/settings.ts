@@ -16,7 +16,11 @@ import {
 import {
   AUDIT_RETENTION_DEFAULT_DAYS,
   applyDefaultPasswordToAllUsers,
+  getTurnstileConfig,
   setAppName,
+  setBreachedPasswordCheckEnabled,
+  setTurnstileConfig,
+  type TurnstileMode,
   setAuditRetentionDays,
   setCursorTrail,
   setDefaultPassword,
@@ -51,6 +55,34 @@ export async function savePasswordPolicy(ctx: ServiceCtx, p: Partial<Record<keyo
   await setPasswordPolicy(ctx.env, policy);
   await audit(ctx, "settings.password_policy_changed");
   return policy;
+}
+
+export async function saveBreachedPasswordCheck(ctx: ServiceCtx, enabled: boolean): Promise<boolean> {
+  await setBreachedPasswordCheckEnabled(ctx.env, enabled);
+  await audit(ctx, "settings.breached_password_check_changed", undefined, { enabled });
+  return enabled;
+}
+
+const TURNSTILE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+
+/**
+ * Bot protection (Turnstile). Fields not given keep their value; a secret is
+ * replaced only by a non-empty one, and is never part of the audit entry.
+ * Turning it on needs a site key and a secret (stored, or the
+ * TURNSTILE_SECRET_KEY Worker secret).
+ */
+export async function saveTurnstile(ctx: ServiceCtx, input: { mode?: unknown; siteKey?: unknown; secret?: unknown }): Promise<void> {
+  if (input.mode !== undefined && input.mode !== "on" && input.mode !== "off") throw new ServiceError(400, 'mode must be "off" or "on".');
+  const siteKey = input.siteKey === undefined ? undefined : String(input.siteKey).trim();
+  const secret = input.secret === undefined ? "" : String(input.secret).trim();
+  if (siteKey && !TURNSTILE_KEY_PATTERN.test(siteKey)) throw new ServiceError(400, "That does not look like a Turnstile site key.");
+  if (secret && !TURNSTILE_KEY_PATTERN.test(secret)) throw new ServiceError(400, "That does not look like a Turnstile secret key.");
+  const current = await getTurnstileConfig(ctx.env);
+  const mode = (input.mode as TurnstileMode | undefined) ?? current.mode;
+  const effectiveSiteKey = siteKey ?? current.siteKey;
+  if (mode === "on" && (!effectiveSiteKey || !(secret || current.secret))) throw new ServiceError(400, "Turnstile needs a site key and a secret key before it can be switched on.");
+  await setTurnstileConfig(ctx.env, { mode: input.mode === undefined ? undefined : mode, siteKey, secret });
+  await audit(ctx, "settings.turnstile_changed", undefined, { mode, site_key: effectiveSiteKey, secret_changed: Boolean(secret) });
 }
 
 export async function saveRateLimit(ctx: ServiceCtx, maxAttempts: unknown, windowMinutes: unknown): Promise<{ maxAttempts: number; windowMinutes: number }> {
