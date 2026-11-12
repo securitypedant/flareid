@@ -97,7 +97,9 @@ import {
   saveAuditRetention,
   saveCursorTrail,
   saveDefaultPassword,
+  saveEmailAccent,
   saveEmailSettings,
+  saveEmailTemplate,
   saveFactor,
   saveLoginGradient,
   saveLoginSubtitle,
@@ -111,6 +113,8 @@ import {
 } from "../services/settings.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
 import { removeDomain, revokeKey, rotateKey } from "../services/platform.js";
+import { getAccent, getTemplate, renderEmail, TEMPLATE_INFO, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
+import { getSetting } from "../lib/settings.js";
 import { listSigningKeys, RETIRED_PUBLISH_HOURS, SIGNING_ALGS } from "../lib/signing-keys.js";
 import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
 
@@ -280,6 +284,8 @@ function layout(
       ? (crumbs?.[1]?.label === "Performance" ? "performance" : "dashboard")
       : section === "security"
       ? ({ Policies: "policies", Factors: "factors", Roles: "roles", "Signing keys": "signing-keys" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
+      : section === "branding"
+      ? (crumbs?.[2]?.label === "Email templates" ? "email-templates" : "settings")
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -356,6 +362,11 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
       if (key === "overview" && active === "overview") {
         return link + [["dashboard", "/admin", "Dashboard"], ["performance", "/admin/performance", "Performance"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "dashboard") === k ? " active" : ""}">${l}</a>`)
+          .join("");
+      }
+      if (key === "branding" && active === "branding") {
+        return link + [["settings", "/admin/branding", "Settings"], ["email-templates", "/admin/branding/email-templates", "Email templates"]]
+          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "settings") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
       if (key === "security" && active === "security") {
@@ -3552,6 +3563,11 @@ admin.get("/admin/branding", async (c) => {
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
+      ${cardSection(`
+        <h2>Email templates</h2>
+        <p class="muted">The wording of the invitation, password reset and sign-in code emails, and the accent colour they share.</p>
+        <a href="/admin/branding/email-templates"><button class="secondary" type="button">Edit email templates</button></a>
+      `)}
       </div>
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Branding" }]
@@ -3583,6 +3599,180 @@ admin.post("/admin/branding/cursor-trail", async (c) => {
   const body = await c.req.parseBody();
   await saveCursorTrail(consoleCtx(c), { enabled: !!body.enabled, characters: String(body.characters ?? "") });
   return c.redirect("/admin/branding?saved=1", 302);
+});
+
+// ---------- Branding > Email templates ----------
+
+const TEMPLATE_KEYS = Object.keys(TEMPLATE_INFO) as TemplateKey[];
+const TEMPLATE_FIELDS = ["subject", "heading", "body", "action", "footer"] as const;
+const PLACEHOLDER_HELP: Record<string, string> = {
+  app_name: "the app name",
+  name: "the person's name",
+  code: "the one-time code",
+  minutes: "how many minutes the code works",
+};
+const isTemplateKey = (k: string | undefined): k is TemplateKey => !!k && (TEMPLATE_KEYS as string[]).includes(k);
+
+/** The template as typed into the form (or a preview query), unsaved; missing fields keep the given values. */
+function templateFromInput(input: Record<string, unknown>, base: EmailTemplate): EmailTemplate {
+  const t = { ...base };
+  for (const f of TEMPLATE_FIELDS) if (typeof input[f] === "string") t[f] = (input[f] as string).replace(/\r/g, "");
+  return t;
+}
+
+/**
+ * The rendered email for the editor: subject, HTML and plain text, filled in
+ * with sample values. The HTML is renderEmail's own (inline styles, escaped
+ * text), embedded in the page rather than framed - the CSP frames nothing,
+ * so its <body> becomes a bordered container.
+ */
+function emailPreview(appName: string, key: TemplateKey, t: EmailTemplate, accent: string): string {
+  const vars: Record<string, string> = { app_name: appName, name: "Ada Lovelace", ...(key === "email_otp" ? { code: "428 913", minutes: "10" } : {}) };
+  const link = TEMPLATE_INFO[key].hasLink ? `https://example.com/${key === "invitation" ? "invite" : "reset-password"}/sample-link` : undefined;
+  const r = renderEmail(t, accent, vars, link);
+  const m = /<body style="([^"]*)">([\s\S]*)<\/body>/.exec(r.html);
+  return `
+    <label>Subject</label>
+    <p style="margin:0 0 16px; font-weight:600;">${escapeHtml(r.subject)}</p>
+    <label>HTML</label>
+    <div style="${m?.[1] ?? ""} border:1px solid var(--fi-line); border-radius:10px; margin-bottom:16px;">${m?.[2] ?? ""}</div>
+    <label>Plain text</label>
+    <pre style="white-space:pre-wrap; word-break:break-word; margin:0; padding:12px; border:1px solid var(--fi-line); border-radius:10px; background:var(--fi-surface-2); color:var(--fi-body); font-size:0.8125rem;">${escapeHtml(r.text)}</pre>`;
+}
+
+// Re-renders the preview as the form changes: the server renders it (one
+// implementation), the page swaps it in. Without script, "Preview" does the same.
+const EMAIL_PREVIEW_SCRIPT = `(function(){
+  var form = document.getElementById("email-template-form");
+  var out = document.getElementById("email-preview");
+  var accent = document.getElementById("email_accent");
+  if (!form || !out) return;
+  var timer = null, seq = 0;
+  function refresh() {
+    var q = new URLSearchParams(new FormData(form));
+    if (accent) q.set("accent", accent.value);
+    var n = ++seq;
+    fetch("/admin/branding/email-templates/preview?" + q.toString(), { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (h) { if (h !== null && n === seq) out.innerHTML = h; })
+      .catch(function () {});
+  }
+  function later() { clearTimeout(timer); timer = setTimeout(refresh, 250); }
+  form.addEventListener("input", later);
+  if (accent) accent.addEventListener("input", later);
+})();`;
+
+admin.get("/admin/branding/email-templates", async (c) => {
+  const q = c.req.query();
+  const key: TemplateKey = isTemplateKey(q.t) ? q.t : "invitation";
+  const info = TEMPLATE_INFO[key];
+  const saved = await getTemplate(c.env, key);
+  // A no-script "Preview" submits the form here by GET: show the draft, unsaved.
+  const draft = typeof q.subject === "string";
+  const t = draft ? templateFromInput(q, saved) : saved;
+  const accent = await getAccent(c.env);
+  const customised = await Promise.all(TEMPLATE_KEYS.map(async (k) => Boolean(await getSetting(c.env, `email_template_${k}`))));
+  const field = (f: (typeof TEMPLATE_FIELDS)[number], label: string, max: number) =>
+    `<label for="tpl_${f}">${label}</label><input type="text" id="tpl_${f}" name="${f}" value="${escapeHtml(t[f])}" maxlength="${max}" ${f === "subject" || f === "heading" ? "required" : ""} />`;
+
+  const tabs = TEMPLATE_KEYS.map((k, i) => {
+    const on = k === key;
+    return `<a href="/admin/branding/email-templates?t=${k}" style="display:inline-block; padding:8px 14px; border-radius:8px; text-decoration:none; font-weight:600; border:1px solid ${on ? "var(--fi-accent)" : "var(--fi-line)"}; background:${on ? "var(--fi-accent-soft)" : "var(--fi-surface)"}; color:${on ? "var(--fi-ink)" : "var(--fi-body)"};"${on ? ' aria-current="page"' : ""}>${escapeHtml(TEMPLATE_INFO[k].label)}${customised[i] ? ' <span class="pill" style="margin:0 0 0 6px;">Customised</span>' : ""}</a>`;
+  }).join("");
+
+  return c.html(
+    layout(
+      c,
+      "Email templates",
+      `
+      ${q.saved ? successBanner(q.saved === "reset" ? "Reset to the default wording." : "Saved.") : ""}
+      ${q.error ? `<p class="error">${escapeHtml(q.error)}</p>` : ""}
+      ${draft ? `<p class="muted">Previewing unsaved changes. Save to use them.</p>` : ""}
+      <nav aria-label="Templates" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px;">${tabs}</nav>
+      <div class="two-col">
+      ${cardSection(`
+        <h2>${escapeHtml(info.label)}</h2>
+        <form method="POST" action="/admin/branding/email-templates/${key}" id="email-template-form">
+          <input type="hidden" name="t" value="${key}" />
+          ${field("subject", "Subject", 150)}
+          ${field("heading", "Heading", 150)}
+          <label for="tpl_body">Body</label>
+          <textarea id="tpl_body" name="body" rows="6" maxlength="1500">${escapeHtml(t.body)}</textarea>
+          <p class="muted" style="margin-top:-8px;">A blank line starts a new paragraph.${key === "email_otp" ? " The code is shown under the body." : " The button and the link are added under the body."}</p>
+          ${info.hasLink ? field("action", "Button label", 60) : ""}
+          ${field("footer", "Footer", 500)}
+          <p class="muted" style="margin-bottom:6px;">Placeholders:</p>
+          <ul class="muted" style="margin:0 0 16px; padding-left:18px;">
+            ${info.placeholders.map((p) => `<li><code>{{${escapeHtml(p)}}}</code> ${escapeHtml(PLACEHOLDER_HELP[p] ?? "")}</li>`).join("")}
+          </ul>
+          <div class="row" style="justify-content:flex-start; gap:8px;">
+            <button class="primary" type="submit">Save</button>
+            <button class="secondary" type="submit" formmethod="get" formaction="/admin/branding/email-templates">Preview</button>
+          </div>
+        </form>
+        <form method="POST" action="/admin/branding/email-templates/${key}/reset" style="margin-top:12px;" ${confirmAttrs(`Reset the ${info.label.toLowerCase()} email to FlareID's default wording? Your changes to it are lost.`, { title: "Reset to default", action: "Reset", danger: true })}>
+          <button class="secondary" type="submit" ${customised[TEMPLATE_KEYS.indexOf(key)] ? "" : "disabled"}>Reset to default</button>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Preview</h2>
+        <p class="muted">With sample values: the person is Ada Lovelace${key === "email_otp" ? ", the code 428 913" : ""}.</p>
+        <div id="email-preview">${emailPreview(c.get("appName"), key, t, accent)}</div>
+      `)}
+      </div>
+      ${cardSection(`
+        <h2>Accent colour</h2>
+        <p class="muted">The top border, button and link colour of every email.</p>
+        <form method="POST" action="/admin/branding/email-accent">
+          <input type="hidden" name="t" value="${key}" />
+          <label for="email_accent">Accent colour</label>
+          <input type="color" id="email_accent" name="accent" value="${escapeHtml(accent)}" style="height:42px; max-width:120px; padding:4px; cursor:pointer;" />
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${scriptTag(EMAIL_PREVIEW_SCRIPT)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Branding", href: "/admin/branding" }, { label: "Email templates" }]
+    )
+  );
+});
+
+/** The preview alone, for the editor's live refresh. Never saves anything. */
+admin.get("/admin/branding/email-templates/preview", async (c) => {
+  const q = c.req.query();
+  if (!isTemplateKey(q.t)) return c.text("No such template.", 404);
+  const accent = q.accent && isHexColor(q.accent) ? q.accent.toLowerCase() : await getAccent(c.env);
+  return c.html(emailPreview(c.get("appName"), q.t, templateFromInput(q, await getTemplate(c.env, q.t)), accent));
+});
+
+admin.post("/admin/branding/email-templates/:key", async (c) => {
+  const key = c.req.param("key");
+  if (!isTemplateKey(key)) return c.text("No such template.", 404);
+  const body = await c.req.parseBody();
+  const t: Partial<EmailTemplate> = {};
+  for (const f of TEMPLATE_FIELDS) if (typeof body[f] === "string") t[f] = body[f] as string;
+  try {
+    await saveEmailTemplate(consoleCtx(c), key, t);
+  } catch (e) {
+    if (!(e instanceof ServiceError)) throw e;
+    return c.redirect(`/admin/branding/email-templates?t=${key}&error=${encodeURIComponent(e.message)}`, 302);
+  }
+  return c.redirect(`/admin/branding/email-templates?t=${key}&saved=1`, 302);
+});
+
+admin.post("/admin/branding/email-templates/:key/reset", async (c) => {
+  const key = c.req.param("key");
+  if (!isTemplateKey(key)) return c.text("No such template.", 404);
+  await saveEmailTemplate(consoleCtx(c), key, null);
+  return c.redirect(`/admin/branding/email-templates?t=${key}&saved=reset`, 302);
+});
+
+admin.post("/admin/branding/email-accent", async (c) => {
+  const body = await c.req.parseBody();
+  const key = isTemplateKey(String(body.t ?? "")) ? String(body.t) : "invitation";
+  // Refused (400) unless #rrggbb; the colour picker never sends anything else.
+  await saveEmailAccent(consoleCtx(c), String(body.accent ?? "").trim());
+  return c.redirect(`/admin/branding/email-templates?t=${key}&saved=1`, 302);
 });
 
 admin.post("/admin/security/apply-default-password", async (c) => {

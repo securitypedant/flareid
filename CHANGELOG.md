@@ -30,6 +30,14 @@ may break things.
   (audited `signing_key.rotated`, shared with the API's rotate operation).
   Retired keys stay in `/jwks.json` for 24 hours so tokens they signed still
   verify, and the hourly cron now removes them afterwards. No redeploy needed.
+- **Branding > Email templates** in the console: edit the subject, heading,
+  body, button label and footer of the invitation, password reset and
+  sign-in code emails, with their `{{placeholders}}` listed, a live preview
+  (rendered subject, HTML and plain text with sample values) that updates as
+  you type, **Reset to default** (confirmed), and the accent colour every email
+  shares. Changes are audited (`settings.email_template_changed`,
+  `settings.email_template_reset`, `settings.email_accent_changed`) and share
+  their implementation with the API's email-template and branding operations.
 - **Per-client ID token signing algorithm** (RS256 default, or ES256) on the
   OIDC client create and edit forms, and as `id_token_signed_response_alg` on
   `POST /api/v1/clients`, `PATCH /api/v1/clients/{client_id}` and the client
