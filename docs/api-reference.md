@@ -1033,6 +1033,7 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
+| `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
@@ -1059,6 +1060,7 @@ Request body:
 | `allowed_claims` | array \| null | no | Claim groups this client may receive; null = every group. |
 | `post_logout_redirect_uris` | string[] | no |  |
 | `frontchannel_logout_uri` | string | no | https URL; empty clears it. |
+| `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed. |
 
 Response `200`:
 
@@ -1075,6 +1077,7 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
+| `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
@@ -1158,6 +1161,7 @@ Request body:
 | `allowed_claims` | array \| null | no |  |
 | `post_logout_redirect_uris` | string[] | no |  |
 | `frontchannel_logout_uri` | string | no |  |
+| `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed (default RS256). |
 
 Response `200`:
 
@@ -1170,6 +1174,7 @@ Response `200`:
 | `client_secret` | string | no |  |
 | `client_type` | string | no |  |
 | `redirect_uris` | string[] | yes |  |
+| `id_token_signed_response_alg` | "RS256" \| "ES256" | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

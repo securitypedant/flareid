@@ -462,6 +462,14 @@
             },
             "description": "Claim groups released to this client; null = every group."
           },
+          "id_token_signed_response_alg": {
+            "type": "string",
+            "enum": [
+              "RS256",
+              "ES256"
+            ],
+            "description": "How this client's id_tokens are signed."
+          },
           "created_at": {
             "type": "string"
           }
@@ -476,6 +484,7 @@
           "frontchannel_logout_uri",
           "trusted",
           "allowed_claims",
+          "id_token_signed_response_alg",
           "created_at"
         ],
         "additionalProperties": {}
@@ -3663,6 +3672,14 @@
                   "frontchannel_logout_uri": {
                     "type": "string",
                     "description": "https URL; empty clears it."
+                  },
+                  "id_token_signed_response_alg": {
+                    "type": "string",
+                    "enum": [
+                      "RS256",
+                      "ES256"
+                    ],
+                    "description": "How this client's id_tokens are signed."
                   }
                 }
               }
@@ -8928,6 +8945,13 @@
                               "type": "string"
                             }
                           },
+                          "id_token_signed_response_alg": {
+                            "type": "string",
+                            "enum": [
+                              "RS256",
+                              "ES256"
+                            ]
+                          },
                           "created_at": {
                             "type": "string"
                           }
@@ -8937,6 +8961,7 @@
                           "client_id",
                           "name",
                           "redirect_uris",
+                          "id_token_signed_response_alg",
                           "created_at"
                         ]
                       }
@@ -9042,6 +9067,14 @@
                   },
                   "frontchannel_logout_uri": {
                     "type": "string"
+                  },
+                  "id_token_signed_response_alg": {
+                    "type": "string",
+                    "enum": [
+                      "RS256",
+                      "ES256"
+                    ],
+                    "description": "How this client's id_tokens are signed (default RS256)."
                   }
                 },
                 "required": [
@@ -9086,6 +9119,13 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "id_token_signed_response_alg": {
+                      "type": "string",
+                      "enum": [
+                        "RS256",
+                        "ES256"
+                      ]
                     }
                   },
                   "required": [
@@ -9093,7 +9133,8 @@
                     "created",
                     "id",
                     "client_id",
-                    "redirect_uris"
+                    "redirect_uris",
+                    "id_token_signed_response_alg"
                   ]
                 }
               }

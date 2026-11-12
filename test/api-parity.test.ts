@@ -70,6 +70,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/security/roles/:id": "PATCH /api/v1/security/roles/{id}",
   "POST /admin/security/roles/:id/delete": "DELETE /api/v1/security/roles/{id}",
   "POST /admin/security/factors/:key": "PUT /api/v1/security/factors/{key}",
+  "POST /admin/security/signing-keys/:alg/rotate": "POST /api/v1/security/signing-keys/{alg}/rotate",
   "POST /admin/branding/app-name": "PATCH /api/v1/branding",
   "POST /admin/branding/login-gradient": "PATCH /api/v1/branding",
   "POST /admin/branding/cursor-trail": "PATCH /api/v1/branding",

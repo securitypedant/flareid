@@ -12,6 +12,11 @@ export function validFrontchannelUri(u: string): string {
   }
 }
 
+/** id_token signing algorithms a client may choose (OIDC Registration's id_token_signed_response_alg). */
+export const ID_TOKEN_ALGS = ["RS256", "ES256"] as const;
+export type IdTokenAlg = (typeof ID_TOKEN_ALGS)[number];
+export const isIdTokenAlg = (v: unknown): v is IdTokenAlg => (ID_TOKEN_ALGS as readonly unknown[]).includes(v);
+
 export async function getClientById(env: Env, id: number): Promise<OAuthClientRow | null> {
   return env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
 }
@@ -25,6 +30,8 @@ export interface ClientSettings {
   /** JSON array of post-logout redirect URIs. */
   postLogoutRedirectUris: string;
   frontchannelLogoutUri: string;
+  /** id_token signing algorithm; omitted keeps the current one. */
+  idTokenAlg?: IdTokenAlg;
 }
 
 /** Saves a client's editable settings; its id, type and secret stay as they are. */
@@ -33,6 +40,7 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
     .bind(s.name, JSON.stringify(s.redirectUris), s.trusted, s.allowedClaims, s.postLogoutRedirectUris, id)
     .run();
   await ctx.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE id = ?").bind(s.frontchannelLogoutUri, id).run();
+  if (s.idTokenAlg) await ctx.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(s.idTokenAlg, id).run();
   await audit(ctx, "oidc_client.updated", s.name);
 }
 

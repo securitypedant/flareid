@@ -125,7 +125,8 @@ export async function rotateSigningKey(env: Env, alg: SigningAlg): Promise<strin
 }
 
 /** Hourly cleanup: drop retired keys that can no longer have signed a live token. */
-export async function purgeRetiredKeys(env: Env): Promise<void> {
-  const cutoff = new Date(Date.now() - RETIRED_PUBLISH_HOURS * 3600 * 1000).toISOString();
-  await env.DB.prepare("DELETE FROM signing_keys WHERE status = 'retired' AND retired_at < ?").bind(cutoff).run();
+export async function purgeRetiredKeys(env: Env, now = Date.now()): Promise<number> {
+  const cutoff = new Date(now - RETIRED_PUBLISH_HOURS * 3600 * 1000).toISOString();
+  const r = await env.DB.prepare("DELETE FROM signing_keys WHERE status = 'retired' AND retired_at < ?").bind(cutoff).run();
+  return Number(r.meta.changes ?? 0);
 }

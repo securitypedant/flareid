@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import { validFrontchannelUri } from "../services/clients.js";
+import { ID_TOKEN_ALGS, isIdTokenAlg, validFrontchannelUri } from "../services/clients.js";
 import { api, apiErrorHandler, AnyObject, badRequest, defineRoute, readJson } from "../api/openapi.js";
 import { GroupSchema, IdParam, Paging, PasswordPolicySchema, SchemaAttributeInput, ServiceProviderSchema, StringMap, UserSchema } from "../api/schemas.js";
 // Each module registers its routes on `api` when imported (users.ts also
@@ -637,10 +637,10 @@ defineRoute({
 
 defineRoute({
   method: "get", path: "/api/v1/clients", tag: "OIDC clients", permission: "oidc:read", summary: "List OIDC clients",
-  response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), created_at: z.string() })) }),
+  response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), created_at: z.string() })) }),
 }, async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id, client_id, name, redirect_uris, created_at FROM oauth_clients ORDER BY name"
+    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, created_at FROM oauth_clients ORDER BY name"
   ).all<Omit<OAuthClientRow, "client_secret_hash">>();
 
   return c.json({
@@ -649,6 +649,7 @@ defineRoute({
       client_id: cl.client_id,
       name: cl.name,
       redirect_uris: JSON.parse(cl.redirect_uris) as string[],
+      id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
       created_at: cl.created_at,
     })),
   });
@@ -680,8 +681,9 @@ defineRoute({
     allowed_claims: z.array(z.string()).nullable().optional(),
     post_logout_redirect_uris: z.array(z.string()).optional(),
     frontchannel_logout_uri: z.string().optional(),
+    id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed (default RS256)." }),
   }),
-  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()) }),
+  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS) }),
 }, async (c) => {
   const body = await readJson<{
     name?: string;
@@ -693,6 +695,7 @@ defineRoute({
     allowed_claims?: string[] | null;
     post_logout_redirect_uris?: string[];
     frontchannel_logout_uri?: string;
+    id_token_signed_response_alg?: string;
   }>(c);
   const isPublic = body.client_type === "public";
   if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
@@ -710,6 +713,10 @@ defineRoute({
   const postLogout = JSON.stringify(postLogoutList);
   const fcl = body.frontchannel_logout_uri === undefined ? undefined : validFrontchannelUri(String(body.frontchannel_logout_uri).trim());
   if (body.frontchannel_logout_uri && !fcl) return c.json(badRequest("frontchannel_logout_uri must be an https URL."), 400);
+  if (body.id_token_signed_response_alg !== undefined && !isIdTokenAlg(body.id_token_signed_response_alg)) {
+    return c.json(badRequest(`id_token_signed_response_alg must be one of ${ID_TOKEN_ALGS.join(", ")}.`), 400);
+  }
+  const idTokenAlg = body.id_token_signed_response_alg as "RS256" | "ES256" | undefined;
   const name = String(body.name ?? "").trim();
   if (!name) return c.json(badRequest("name is required."), 400);
 
@@ -744,8 +751,10 @@ defineRoute({
       .bind(name, JSON.stringify(redirectUris), clientSecretHash, isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout, existing.id)
       .run();
     if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
-  await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
-    return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris });
+    if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(idTokenAlg, existing.id).run();
+    await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
+    const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
+    return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256" });
   }
 
   const result = await c.env.DB.prepare(
@@ -756,6 +765,7 @@ defineRoute({
     .run();
 
   if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
+  if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE client_id = ?").bind(idTokenAlg, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({
@@ -768,6 +778,7 @@ defineRoute({
     ...(seededSecret || isPublic ? {} : { client_secret: clientSecret }),
     client_type: isPublic ? "public" : "confidential",
     redirect_uris: redirectUris,
+    id_token_signed_response_alg: idTokenAlg ?? "RS256",
   });
 });
 

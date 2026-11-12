@@ -90,6 +90,7 @@ export const ClientSchema = z
     frontchannel_logout_uri: z.string().nullable(),
     trusted: z.boolean(),
     allowed_claims: z.array(z.string()).nullable().openapi({ description: "Claim groups released to this client; null = every group." }),
+    id_token_signed_response_alg: z.enum(["RS256", "ES256"]).openapi({ description: "How this client's id_tokens are signed." }),
     created_at: z.string(),
   })
   .passthrough()

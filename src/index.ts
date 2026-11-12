@@ -18,6 +18,7 @@ import { api } from "./routes/api.js";
 import { scimServer } from "./routes/scim-server.js";
 import { getAppName } from "./lib/settings.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
+import { purgeRetiredKeys } from "./lib/signing-keys.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 import { edgeRateLimit } from "./lib/edge-limit.js";
 import { recordRequestMetrics } from "./lib/metrics.js";
@@ -82,6 +83,14 @@ export default {
       purgeExpiredState(env).then(
         (removed) => console.log(JSON.stringify({ event: "cleanup", removed })),
         (err) => console.error(JSON.stringify({ event: "cleanup_failed", error: String(err) }))
+      )
+    );
+    // Retired signing keys past their RETIRED_PUBLISH_HOURS window. Separate from
+    // purgeExpiredState, whose report reads its batch results by position.
+    ctx.waitUntil(
+      purgeRetiredKeys(env).then(
+        (removed) => removed > 0 && console.log(JSON.stringify({ event: "signing_keys_purged", removed })),
+        (err) => console.error(JSON.stringify({ event: "signing_key_purge_failed", error: String(err) }))
       )
     );
     // Re-read SP metadata registered from a URL (daily per SP).

@@ -90,7 +90,7 @@ import {
   updateUserProfile,
 } from "../services/users.js";
 import { assertRuleAllowed, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
-import { deleteClient, getClientById, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
+import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import {
   applyDefaultPasswordToAll,
   saveAppName,
@@ -110,7 +110,8 @@ import {
   switchEmail,
 } from "../services/settings.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
-import { removeDomain, revokeKey } from "../services/platform.js";
+import { removeDomain, revokeKey, rotateKey } from "../services/platform.js";
+import { listSigningKeys, RETIRED_PUBLISH_HOURS, SIGNING_ALGS } from "../lib/signing-keys.js";
 import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
 
 export { validFrontchannelUri };
@@ -278,7 +279,7 @@ function layout(
     section === "overview"
       ? (crumbs?.[1]?.label === "Performance" ? "performance" : "dashboard")
       : section === "security"
-      ? ({ Policies: "policies", Factors: "factors", Roles: "roles" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
+      ? ({ Policies: "policies", Factors: "factors", Roles: "roles", "Signing keys": "signing-keys" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -358,7 +359,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
           .join("");
       }
       if (key === "security" && active === "security") {
-        return link + [["settings", "/admin/security", "Settings"], ["policies", "/admin/security/policies", "Policies"], ["factors", "/admin/security/factors", "Factors"], ["roles", "/admin/security/roles", "Roles"]]
+        return link + [["settings", "/admin/security", "Settings"], ["policies", "/admin/security/policies", "Policies"], ["factors", "/admin/security/factors", "Factors"], ["roles", "/admin/security/roles", "Roles"], ["signing-keys", "/admin/security/signing-keys", "Signing keys"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "settings") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
@@ -2520,7 +2521,13 @@ function clientSettingsFields(client?: OAuthClientRow): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
   const logoutUris: string[] = client ? JSON.parse(client.post_logout_redirect_uris || "[]") : [];
   const trusted = client ? client.trusted === 1 : true;
+  const alg = client?.id_token_signed_response_alg ?? "RS256";
   return `
+    <label for="id_token_signed_response_alg">ID token signing algorithm</label>
+    <select id="id_token_signed_response_alg" name="id_token_signed_response_alg">
+      ${ID_TOKEN_ALGS.map((a) => `<option value="${a}" ${a === alg ? "selected" : ""}>${a}${a === "RS256" ? " (default)" : ""}</option>`).join("")}
+    </select>
+    <p class="muted" style="margin-top:-8px;">How this app's id_tokens are signed. RS256 works with every OIDC library; choose ES256 only if the app supports it. Keys are under Security &rarr; Signing keys.</p>
     <label for="post_logout_redirect_uris">Post-logout redirect URIs (one per line)</label>
     <textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" rows="2" placeholder="https://app.example.com/signed-out">${escapeHtml(logoutUris.join("\n"))}</textarea>
     <p class="muted" style="margin-top:-8px;">Where RP-initiated logout (<code>/oidc/logout</code>) may send the browser afterwards. Anything else is refused.</p>
@@ -2546,6 +2553,8 @@ function readClientSettings(body: Record<string, string | File | (string | File)
         .filter((u) => u && isValidPostLogoutUri(u))
     ),
     frontchannelLogoutUri: validFrontchannelUri(String(body.frontchannel_logout_uri ?? "").trim()),
+    // Anything unrecognised falls back to the default rather than being stored.
+    idTokenAlg: isIdTokenAlg(body.id_token_signed_response_alg) ? body.id_token_signed_response_alg : ("RS256" as const),
   };
 }
 
@@ -2613,7 +2622,7 @@ admin.post("/admin/clients", async (c) => {
   )
     .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris)
     .run();
-  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, clientId).run();
+  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, settings.idTokenAlg, clientId).run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.created", name, undefined, c.req.raw);
 
@@ -3890,6 +3899,57 @@ admin.post("/admin/security/factors/:key", async (c) => {
     return c.redirect(`/admin/security/factors?error=${encodeURIComponent(e.message)}`, 302);
   }
   return c.redirect("/admin/security/factors?saved=1", 302);
+});
+
+// ---------- Signing keys ----------
+
+admin.get("/admin/security/signing-keys", async (c) => {
+  const keys = await listSigningKeys(c.env);
+  const usage = await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg, COUNT(*) AS n FROM oauth_clients GROUP BY id_token_signed_response_alg").all<{ alg: string; n: number }>();
+  const clientsUsing = (alg: string) => usage.results.find((r) => r.alg === alg)?.n ?? 0;
+  const when = (iso: string) => `<span title="${escapeHtml(iso)}">${escapeHtml(new Date(iso).toLocaleString("en-GB", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }))} UTC</span>`;
+  const publishedUntil = (k: (typeof keys)[number]) => {
+    if (k.status === "active") return '<span class="muted">While active</span>';
+    const until = new Date(Date.parse(k.retired_at!) + RETIRED_PUBLISH_HOURS * 3600 * 1000);
+    return until.getTime() > Date.now() ? when(until.toISOString()) : '<span class="muted">Expired &mdash; removed by the hourly cleanup</span>';
+  };
+  return c.html(
+    layout(
+      c,
+      "Signing keys",
+      `${c.req.query("rotated") ? successBanner(`Rotated. New key: ${c.req.query("rotated")}`) : ""}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">The keys that sign id_tokens and access tokens, published at <a href="/jwks.json"><code>/jwks.json</code></a>. Each algorithm has one active key. Rotating makes a new active key straight away &mdash; no redeploy &mdash; and retires the old one, which stays published for ${RETIRED_PUBLISH_HOURS} hours so tokens it already signed still verify. After that the hourly cleanup removes it.</p>
+        <table><thead><tr><th>Algorithm</th><th>Active key</th><th>Since</th><th>Clients using it</th><th></th></tr></thead><tbody>
+          ${SIGNING_ALGS.map((alg) => {
+            const active = keys.find((k) => k.alg === alg && k.status === "active");
+            return `<tr><td><strong>${alg}</strong></td><td>${active ? `<code>${escapeHtml(active.kid)}</code>` : '<span class="muted">None yet</span>'}</td><td>${active ? when(active.created_at) : "&mdash;"}</td><td>${clientsUsing(alg)}</td>
+              <td style="text-align:right;"><form method="POST" action="/admin/security/signing-keys/${alg}/rotate" ${confirmAttrs(`A new ${alg} key signs every token from now on. The current key stays published for ${RETIRED_PUBLISH_HOURS} hours so tokens it signed still verify; relying parties that cache the key set pick up the new key on their next refresh.`, { title: `Rotate the ${alg} signing key?`, action: "Rotate key" })}><button class="secondary" type="submit">Rotate</button></form></td></tr>`;
+          }).join("")}
+        </tbody></table>
+      `)}
+      ${cardSection(`
+        <h2>All keys</h2>
+        <table><thead><tr><th>Key ID</th><th>Algorithm</th><th>Status</th><th>Created</th><th>Retired</th><th>Published until</th></tr></thead><tbody>
+          ${keys
+            .map((k) => `<tr${k.status === "active" ? ' class="key-active" style="background:var(--fi-green-soft);"' : ""}>
+              <td>${k.status === "active" ? `<strong><code>${escapeHtml(k.kid)}</code></strong>` : `<code>${escapeHtml(k.kid)}</code>`}</td>
+              <td>${escapeHtml(k.alg)}</td>
+              <td><span class="badge ${k.status === "active" ? "badge-active" : "badge-disabled"}">${k.status === "active" ? "Active" : "Retired"}</span></td>
+              <td>${when(k.created_at)}</td>
+              <td>${k.retired_at ? when(k.retired_at) : "&mdash;"}</td>
+              <td>${publishedUntil(k)}</td></tr>`)
+            .join("")}
+        </tbody></table>
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Signing keys" }]
+    )
+  );
+});
+
+admin.post("/admin/security/signing-keys/:alg/rotate", async (c) => {
+  const kid = await rotateKey(consoleCtx(c), c.req.param("alg"));
+  return c.redirect(`/admin/security/signing-keys?rotated=${encodeURIComponent(kid)}`, 302);
 });
 
 admin.post("/admin/security/require-mfa", async (c) => {

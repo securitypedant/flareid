@@ -97,17 +97,20 @@ a user at all. Actions taken that way appear in the audit log with a null
 
 ## Signing keys
 
-An RS256 keypair. The private half is the `SIGNING_KEY_PKCS8` secret; the
-public half is a non-secret `var`, because it is exactly what `/jwks.json`
-publishes. They are generated together by `scripts/generate-keypair.mjs` and
-must stay in step.
+Token signing keys live in D1 (`signing_keys`, migration 0021), one active key
+per algorithm (RS256 and ES256), private halves encrypted with AES-256-GCM
+under the `KEY_ENCRYPTION_KEY` secret. On first use the RS256 key from
+`SIGNING_KEY_PKCS8` / `SIGNING_PUBLIC_JWK` is imported with its kid, and an
+ES256 key is generated.
 
-Rotation publishes both keys for a window: set `SIGNING_PUBLIC_JWK_PREVIOUS`
-and `SIGNING_KEY_ID_PREVIOUS` to the outgoing key so tokens signed moments
-before the rotation stay verifiable until they expire.
+Each OIDC client picks its id_token algorithm (`id_token_signed_response_alg`,
+RS256 by default, ES256 allowed) in the console or through the API.
 
-Keys living in environment variables is a known limitation - rotation needs a
-redeploy. ROADMAP.md item 24 moves them into storage.
+Rotation needs no redeploy: Security > Signing keys in the console, or
+`POST /api/v1/security/signing-keys/{alg}/rotate`. The outgoing key is retired
+but stays in `/jwks.json` for `RETIRED_PUBLISH_HOURS` (24) so tokens it signed
+still verify; the hourly cron then deletes it. Rotating from the console is a
+step-up action.
 
 ## Provisioning
 

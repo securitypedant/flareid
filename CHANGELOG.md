@@ -24,6 +24,16 @@ may break things.
   `docs/openapi.json` with a readable `docs/api-reference.md`.
 - A parity test fails when a console action has no API operation, when an API
   route is missing from the spec, or when the committed spec is stale.
+- **Security > Signing keys** in the console: every token signing key (kid,
+  algorithm, status, created, retired, published until) with the active key
+  per algorithm highlighted, and a step-up protected **Rotate** per algorithm
+  (audited `signing_key.rotated`, shared with the API's rotate operation).
+  Retired keys stay in `/jwks.json` for 24 hours so tokens they signed still
+  verify, and the hourly cron now removes them afterwards. No redeploy needed.
+- **Per-client ID token signing algorithm** (RS256 default, or ES256) on the
+  OIDC client create and edit forms, and as `id_token_signed_response_alg` on
+  `POST /api/v1/clients`, `PATCH /api/v1/clients/{client_id}` and the client
+  read and list responses (anything other than RS256 or ES256 is a 400).
 
 ### Changed
 

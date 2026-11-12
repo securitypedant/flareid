@@ -4,7 +4,7 @@ import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimConfig, getScimScope } from "../lib/settings.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
-import { deleteClient, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
+import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { apiCtx } from "../services/context.js";
 import { removeDomain, revokeKey } from "../services/platform.js";
 import { badRequest, defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
@@ -30,6 +30,7 @@ function clientJson(cl: OAuthClientRow) {
     frontchannel_logout_uri: cl.frontchannel_logout_uri || null,
     trusted: cl.trusted === 1,
     allowed_claims: cl.allowed_claims === null ? null : parseAllowedClaims(cl),
+    id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
     created_at: cl.created_at,
   };
 }
@@ -63,6 +64,7 @@ defineRoute(
       allowed_claims: z.array(z.string()).nullable().optional().openapi({ description: "Claim groups this client may receive; null = every group." }),
       post_logout_redirect_uris: z.array(z.string()).optional(),
       frontchannel_logout_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
+      id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed." }),
     }),
     errors: [404],
     response: ClientSchema,
@@ -70,7 +72,7 @@ defineRoute(
   async (c) => {
     const client = await clientFor(c);
     if (!client) return noClient(c);
-    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string }>(c);
+    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; id_token_signed_response_alg?: string }>(c);
     const current = clientJson(client);
     const name = String(body.name ?? current.name).trim();
     if (!name) return c.json(badRequest("name cannot be empty."), 400);
@@ -83,6 +85,9 @@ defineRoute(
     if (badLogout) return c.json(badRequest(`post_logout_redirect_uri "${badLogout}" must be https (or http on a loopback host).`), 400);
     const fcl = body.frontchannel_logout_uri === undefined ? (client.frontchannel_logout_uri ?? "") : validFrontchannelUri(String(body.frontchannel_logout_uri).trim());
     if (body.frontchannel_logout_uri && !fcl) return c.json(badRequest("frontchannel_logout_uri must be an https URL."), 400);
+    if (body.id_token_signed_response_alg !== undefined && !isIdTokenAlg(body.id_token_signed_response_alg)) {
+      return c.json(badRequest(`id_token_signed_response_alg must be one of ${ID_TOKEN_ALGS.join(", ")}.`), 400);
+    }
     const claims = body.allowed_claims === undefined ? client.allowed_claims : body.allowed_claims === null ? null : JSON.stringify(CLAIM_GROUPS.filter((g) => body.allowed_claims!.includes(g)));
     await updateClient(apiCtx(c), client.id, {
       name,
@@ -91,6 +96,7 @@ defineRoute(
       allowedClaims: claims,
       postLogoutRedirectUris: JSON.stringify(logout),
       frontchannelLogoutUri: fcl,
+      idTokenAlg: body.id_token_signed_response_alg as "RS256" | "ES256" | undefined,
     });
     return c.json(clientJson((await clientFor(c))!));
   }

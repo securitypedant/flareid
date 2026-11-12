@@ -13,6 +13,7 @@ const SENSITIVE: RegExp[] = [
   /^\/admin\/clients\/\d+\/(rotate-secret|delete)$/,
   /^\/admin\/saml\/\d+\/delete$/,
   /^\/admin\/users\/\d+\/(reset-password|reset-mfa|delete)$/,
+  /^\/admin\/security\/signing-keys\/[^/]+\/rotate$/, // token signing key rotation (also under /admin/security below; explicit so it survives a narrower rule)
   /^\/admin\/security(\/|$)/, // policies, factors, password and session rules
   /^\/admin\/setup(\/|$)/,
   /^\/admin\/scim$/, // the SCIM endpoint and secret
