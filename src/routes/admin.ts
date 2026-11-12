@@ -4032,8 +4032,8 @@ admin.get("/admin/security/policies", async (c) => {
     <tr>
       <td><strong>${escapeHtml(p.name)}</strong>${p.is_default ? ' <span class="badge badge-active">Default</span>' : ""}<br /><span class="muted">${escapeHtml(p.description)}</span></td>
       <td>${reqLabel(p.requirement)}</td>
-      <td>${p.is_default ? '<span class="muted">Everyone not matched by another policy</span>' : p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ") || '<span class="muted">No groups yet</span>'}</td>
-      <td>${p.is_default ? "&mdash;" : p.priority}</td>
+      <td>${p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ")}${p.is_default ? `${p.groups.length ? " and " : ""}<span class="muted">everyone not matched by another policy</span>` : p.groups.length ? "" : '<span class="muted">No groups yet</span>'}</td>
+      <td>${p.groups.length ? p.priority : "&mdash;"}</td>
       <td style="text-align:right;"><a href="/admin/security/policies/${p.id}">Edit</a></td>
     </tr>`;
   return c.html(
@@ -4120,13 +4120,10 @@ admin.get("/admin/security/policies/:id", async (c) => {
               <option value="password" ${p.requirement === "password" ? "selected" : ""}>Password (or a passkey)</option></select></div>
           </div>
           <label for="p_desc">Description</label><input type="text" id="p_desc" name="description" maxlength="200" value="${escapeHtml(p.description)}" />
-          ${
-            p.is_default
-              ? '<p class="muted">This is the default policy: it applies to everyone no other policy matches, so it has no groups or priority.</p>'
-              : `<label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="${p.priority}" style="max-width:120px;" />
-                 ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
-                 <label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`
-          }
+          ${p.is_default ? '<p class="muted">This is the default policy: it applies to everyone no other policy matches. It can also be assigned to groups, so they keep it if another policy becomes the default.</p>' : ""}
+          <label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="${p.priority}" style="max-width:120px;" />
+          ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
+          ${p.is_default ? "" : `<label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`}
           <div class="form-actions end">
             ${p.is_default ? "" : `<button class="danger" type="submit" formaction="/admin/security/policies/${p.id}/delete" formnovalidate ${confirmAttrs("Its groups fall back to another matching policy or the default.", { title: `Delete the policy "${p.name}"?`, action: "Delete policy", danger: true })}>Delete policy</button>`}
             ${cancelLink("/admin/security/policies")}
@@ -4151,15 +4148,9 @@ admin.post("/admin/security/policies/:id", async (c) => {
   }
   if (await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ? AND id != ?").bind(f.name, id).first()) return c.text("A policy with that name already exists.", 400);
   await c.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, id).run();
-  if (!current.is_default) {
-    if (f.makeDefault) {
-      await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id),
-        c.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id),
-      ]);
-    } else {
-      await savePolicyGroups(c.env, id, f.groupIds);
-    }
+  await savePolicyGroups(c.env, id, f.groupIds);
+  if (!current.is_default && f.makeDefault) {
+    await c.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id).run();
   }
   await logAudit(c.env, c.get("user"), "auth_policy.updated", f.name, { requirement: f.requirement, default: Boolean(current.is_default || f.makeDefault) }, c.req.raw);
   return c.redirect("/admin/security/policies?saved=1", 302);

@@ -162,10 +162,12 @@ describe("discovery", () => {
     const response = await SELF.fetch(`${BASE}/jwks.json`);
     const jwks = (await response.json()) as { keys: Record<string, unknown>[] };
 
-    expect(jwks.keys).toHaveLength(1);
-    expect(jwks.keys[0]).toMatchObject({ kty: "RSA", use: "sig", alg: "RS256", kid: "flareid-test-key" });
+    // The RS256 key from the environment keeps its kid; an ES256 key sits alongside.
+    expect(jwks.keys).toHaveLength(2);
+    expect(jwks.keys.find((k) => k.alg === "RS256")).toMatchObject({ kty: "RSA", use: "sig", kid: "flareid-test-key" });
+    expect(jwks.keys.find((k) => k.alg === "ES256")).toMatchObject({ kty: "EC", crv: "P-256", use: "sig" });
     // Never the private half.
-    expect(jwks.keys[0]).not.toHaveProperty("d");
+    for (const k of jwks.keys) expect(k).not.toHaveProperty("d");
   });
 });
 

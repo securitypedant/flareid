@@ -36,6 +36,7 @@ export default defineConfig({
           // secrets in every real deployment, and a committed Worker config is
           // the wrong place for one even when the value is fake.
           SIGNING_KEY_PKCS8: TEST_SIGNING_KEY_PKCS8,
+          KEY_ENCRYPTION_KEY: "test-key-encryption-key-not-secret",
           COOKIE_ENCRYPTION_KEY: "test-cookie-key",
           BOOTSTRAP_TOKEN: "test-bootstrap-token",
           SAML_SIGNING_KEY_PKCS8: TEST_SAML_IDP_KEY_PKCS8,

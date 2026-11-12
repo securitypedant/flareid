@@ -99,3 +99,24 @@ describe("authentication policies", () => {
     expect(await (await SELF.fetch(`${BASE}/admin/security/factors`, { headers: { Cookie: adminCookie } })).text()).toContain("Planned");
   });
 });
+
+describe("secure defaults", () => {
+  it("a fresh install requires a second factor by default, and always for Super Admins", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test", secureDefaults: true });
+    const def = await env.DB.prepare("SELECT name, requirement FROM auth_policies WHERE is_default = 1").first<{ name: string; requirement: string }>();
+    expect(def).toEqual({ name: "Password and a second factor", requirement: "mfa" });
+    const admin = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    expect((await policyForUser(env, admin))!.name).toBe("Password and a second factor");
+
+    // The administrator's first sign-in goes straight to enrolment.
+    const page = await (await SELF.fetch(`${BASE}/login`)).text();
+    const flowId = /name="flow_id" value="([^"]+)"/.exec(page)![1]!;
+    const login = await SELF.fetch(`${BASE}/login`, { method: "POST", headers: FORM, redirect: "manual", body: new URLSearchParams({ flow_id: flowId, upn: "admin@horizon.test", password: "test-admin-password-1" }).toString() });
+    expect(login.headers.get("Location")).toMatch(/^\/account\/mfa\/setup/);
+
+    // Relaxing the default for everyone leaves Super Admins on the MFA policy.
+    await apiCall("/api/v1/setup", { token: apiKey, body: { require_mfa: false } });
+    expect((await env.DB.prepare("SELECT requirement FROM auth_policies WHERE is_default = 1").first<{ requirement: string }>())!.requirement).toBe("password");
+    expect(await mfaRequiredFor(env, admin)).toBe(true);
+  });
+});

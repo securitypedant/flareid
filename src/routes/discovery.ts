@@ -22,7 +22,7 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     subject_types_supported: ["public"],
-    id_token_signing_alg_values_supported: ["RS256"],
+    id_token_signing_alg_values_supported: ["RS256", "ES256"],
     scopes_supported: SUPPORTED_SCOPES,
     claims_supported: [
       "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "sid", "at_hash",
@@ -41,6 +41,6 @@ discovery.get("/.well-known/openid-configuration", (c) => {
   });
 });
 
-discovery.get("/jwks.json", (c) => {
-  return c.json({ keys: getPublicJwks(c.env) });
+discovery.get("/jwks.json", async (c) => {
+  return c.json({ keys: await getPublicJwks(c.env) });
 });

@@ -245,7 +245,8 @@ async function issueTokenResponse(
       nonce: opts.nonce,
     },
     effectiveClaimGroups(client, scope, parseRequestedClaims(opts.claims).id_token),
-    { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ? await oidcSid(opts.sid) : undefined, atHash: await atHash(accessToken) }
+    { authTime: opts.authTime, acr: acrFor(amr), sid: opts.sid ? await oidcSid(opts.sid) : undefined, atHash: await atHash(accessToken) },
+    client.id_token_signed_response_alg === "ES256" ? "ES256" : "RS256"
   );
 
   return Response.json({

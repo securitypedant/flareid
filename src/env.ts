@@ -64,4 +64,6 @@ export interface Env {
   /** Account id and Account Analytics:Read token for reading those metrics back on the overview. */
   CF_ACCOUNT_ID?: string;
   CF_ANALYTICS_TOKEN?: string;
+  /** Encrypts the signing keys stored in D1 (signing-keys.ts). Set once; never change. */
+  KEY_ENCRYPTION_KEY?: string;
 }

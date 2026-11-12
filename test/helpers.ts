@@ -64,7 +64,7 @@ export async function apiCall(
  * a trap to fall into here otherwise.
  */
 export async function bootstrapInstance(
-  opts: { domain?: string; adminPassword?: string; complete?: boolean } = {}
+  opts: { domain?: string; adminPassword?: string; complete?: boolean; secureDefaults?: boolean } = {}
 ): Promise<{ apiKey: string; domain: string }> {
   const domain = opts.domain ?? "example.com";
 
@@ -83,6 +83,15 @@ export async function bootstrapInstance(
     },
   });
   if (setup.status !== 200) throw new Error(`setup failed: ${JSON.stringify(setup.body)}`);
+
+  // A fresh install requires a second factor (migration 0022), which most tests
+  // are not about: they opt back to "Password only" unless they ask for it.
+  if (!opts.secureDefaults) {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN requirement = 'password' THEN 1 ELSE 0 END"),
+      env.DB.prepare("DELETE FROM auth_policy_groups"),
+    ]);
+  }
 
   return { apiKey: key.body.token as string, domain };
 }

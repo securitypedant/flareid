@@ -76,6 +76,8 @@ export interface OAuthClientRow {
   /** JSON array of ClaimGroup; NULL = every group (the pre-v3 behaviour). */
   allowed_claims: string | null;
   post_logout_redirect_uris: string; // JSON-encoded string[]
+  /** id_token signing algorithm: RS256 (default) or ES256. */
+  id_token_signed_response_alg: string;
   /** OIDC Front-Channel Logout 1.0 target ('' = none). */
   frontchannel_logout_uri: string;
 }
