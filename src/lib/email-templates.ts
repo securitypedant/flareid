@@ -91,10 +91,10 @@ export function renderEmail(t: EmailTemplate, accent: string, vars: Record<strin
   const text = [f.heading, "", f.body, "", ...(code ? [code, ""] : []), ...(link ? [`${f.action}: ${link}`, ""] : []), f.footer, ""].join("\n");
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
   <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;border-top:4px solid ${accent};">
-    <p style="margin:0 0 16px;font-weight:700;font-size:18px;">${esc(vars.app_name ?? "")}</p>
-    <h1 style="margin:0 0 12px;font-size:20px;">${esc(f.heading)}</h1>
+    <p style="margin:0 0 16px;font-weight:700;font-size:18px;color:#0f172a;">${esc(vars.app_name ?? "")}</p>
+    <h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:700;color:#0f172a;">${esc(f.heading)}</h1>
     ${paragraphs}
-    ${code ? `<p style="margin:0 0 20px;font-size:30px;letter-spacing:6px;font-weight:700;font-family:ui-monospace,Menlo,monospace;">${esc(code)}</p>` : ""}
+    ${code ? `<p style="margin:0 0 20px;font-size:30px;letter-spacing:6px;font-weight:700;font-family:ui-monospace,Menlo,monospace;color:#0f172a;">${esc(code)}</p>` : ""}
     ${
       link
         ? `<p style="margin:0 0 20px;"><a href="${esc(link)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:8px;">${esc(f.action)}</a></p>
