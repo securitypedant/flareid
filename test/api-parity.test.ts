@@ -95,6 +95,7 @@ const CONSOLE_ONLY: Record<string, string> = {
   // token is not a person and has nothing to re-enter.
   "POST /admin/reauth": "step-up re-authentication (password or code)",
   "POST /admin/reauth/passkey": "step-up re-authentication (passkey)",
+  "POST /admin/reauth/email/send": "step-up re-authentication (emailed code)",
 };
 
 /** Routes on the API app that are not operations in the document. */

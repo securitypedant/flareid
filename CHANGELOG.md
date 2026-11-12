@@ -6,6 +6,15 @@ may break things.
 
 ## [Unreleased]
 
+### Security
+
+- **Step-up re-authentication asks for an emailed code** when email codes are
+  someone's second factor (no authenticator app): "Confirm it's you" now
+  offers **Email me a code** and needs it with the password, instead of the
+  password alone - weaker than their sign-in. A passkey still confirms on its
+  own; security questions never do. Audited as `admin.step_up_code_sent` and
+  `admin.step_up` with `method: "password+email_otp"`.
+
 ## [3.6.0] - 2026-11-12
 
 Every release is treated as a fresh install for now. Migrations `0021`-`0025`

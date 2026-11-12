@@ -1,3 +1,4 @@
+import { accountScope, EMAIL_OTP_MINUTES, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recordRateAttempt } from "../lib/rate-limit.js";
 import { verifyPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
@@ -182,6 +183,8 @@ admin.get("/admin/reauth", async (c) => {
   const user = c.get("user");
   const next = safeNext(c.req.query("next"));
   const hasPasskey = await userHasPasskey(c.env, user.id);
+  const emailStep = await reauthNeedsEmailCode(c.env, user);
+  const sentTo = c.req.query("sent");
   return c.html(
     layout(
       c,
@@ -194,7 +197,14 @@ admin.get("/admin/reauth", async (c) => {
           <label for="password">Password</label>
           <input type="password" id="password" name="password" required autocomplete="current-password" style="max-width:320px;" />
           ${user.mfa_enabled ? `<label for="code">Authenticator code or backup code</label><input type="text" id="code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px;" />` : ""}
-          <div class="form-actions"><button class="primary" type="submit">Confirm</button>${cancelLink(next)}</div>
+          ${
+            emailStep
+              ? `<label for="email_code">Code from your email</label>
+                 <input type="text" id="email_code" name="email_code" inputmode="numeric" maxlength="6" required autocomplete="one-time-code" style="max-width:160px;" />
+                 <p class="muted" style="margin-top:-6px;">${sentTo ? `Sent to ${escapeHtml(sentTo)}. It works for ${EMAIL_OTP_MINUTES} minutes.` : "Send yourself a code first."}</p>`
+              : ""
+          }
+          <div class="form-actions"><button class="primary" type="submit">Confirm</button>${emailStep ? `<button class="secondary" type="submit" formaction="/admin/reauth/email/send" formnovalidate>${sentTo ? "Send another code" : "Email me a code"}</button>` : ""}${cancelLink(next)}</div>
         </form>
         ${
           hasPasskey
@@ -231,9 +241,32 @@ admin.post("/admin/reauth", async (c) => {
     const ok = (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) || (await verifyAndConsumeBackupCode(c.env, user.id, code));
     if (!ok) return fail("That code is not right.");
   }
+  // Without an authenticator app, email codes are this person's second factor at
+  // sign-in, so confirming needs one too - a password alone is weaker than their sign-in.
+  const emailStep = await reauthNeedsEmailCode(c.env, user);
+  if (emailStep) {
+    const verdict = await verifyEmailOtp(c.env, accountScope(c.get("sessionId")), user.id, "stepup", String(body.email_code ?? "").trim().slice(0, 6));
+    if (verdict !== "ok") return fail(verdict === "wrong" ? "That code is not right." : "That code has expired or was already used. Send yourself a new one.");
+  }
   await markSteppedUp(c.env, c.get("sessionId"));
-  await logAudit(c.env, user, "admin.step_up", user.upn, { method: user.mfa_enabled ? "password+totp" : "password" }, c.req.raw);
+  await logAudit(c.env, user, "admin.step_up", user.upn, { method: user.mfa_enabled ? "password+totp" : emailStep ? "password+email_otp" : "password" }, c.req.raw);
   return c.redirect(next, 302);
+});
+
+/** Whether confirming needs an emailed code: no authenticator app, but email codes enrolled and usable. */
+async function reauthNeedsEmailCode(env: Env, user: UserRow): Promise<boolean> {
+  return !user.mfa_enabled && (await userHasEmailOtp(env, user));
+}
+
+admin.post("/admin/reauth/email/send", async (c) => {
+  const user = c.get("user");
+  const next = safeNext(String((await c.req.parseBody()).next ?? ""));
+  const back = (q: string) => c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&${q}`, 302);
+  if (!(await reauthNeedsEmailCode(c.env, user))) return back("error=" + encodeURIComponent("Email codes are not set up for your account."));
+  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), "stepup", c.get("appName"));
+  if (!sent.ok) return back("error=" + encodeURIComponent(sent.reason === "rate_limited" ? "Too many codes requested. Please wait a few minutes." : "The code could not be sent."));
+  await logAudit(c.env, user, "admin.step_up_code_sent", user.upn, undefined, c.req.raw);
+  return back(`sent=${encodeURIComponent(maskEmail(sent.to))}`);
 });
 
 admin.get("/admin/reauth/passkey/options", async (c) => {

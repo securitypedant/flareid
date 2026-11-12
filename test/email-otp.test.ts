@@ -339,3 +339,35 @@ describe("email one-time codes", () => {
     expect((await post(email, "/login/mfa/email", { mfa_id: mfaId!, code })).status).toBe(400);
   });
 });
+
+describe("admin step-up with email codes", () => {
+  it("asks an administrator whose only factor is email codes for one, not just the password", async () => {
+    const { adminCookie: _fresh } = await setup();
+    const email = fakeEmail();
+    await factor(email, _fresh, "email_otp", true);
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    await env.DB.prepare("UPDATE users SET email_otp_enabled = 1, email = 'admin@personal.test' WHERE id = ?").bind(adminId).run();
+    const { setCookie, sessionId } = await createSession(env, adminId, ["pwd", "otp", "mfa"], new Request(BASE));
+    const cookie = setCookie.split(";")[0]!;
+    await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").bind(new Date(Date.now() - 30 * 60 * 1000).toISOString(), sessionId).run();
+    const next = "/admin/integrations/api-keys";
+
+    const page = await (await call(email, `/admin/reauth?next=${encodeURIComponent(next)}`, { headers: { Cookie: cookie } })).text();
+    expect(page).toContain('name="email_code"');
+    expect(page).toContain("Email me a code");
+
+    // The password alone no longer confirms.
+    const pwOnly = await post(email, "/admin/reauth", { password: "test-admin-password-1", next }, cookie);
+    expect(pwOnly.headers.get("Location")).toContain("error=");
+    expect((await env.DB.prepare("SELECT stepped_up_at FROM sessions WHERE id = ?").bind(sessionId).first<{ stepped_up_at: string | null }>())!.stepped_up_at).toBeNull();
+
+    const sent = await post(email, "/admin/reauth/email/send", { next }, cookie);
+    expect(sent.headers.get("Location")).toContain("sent=");
+    expect(sent.headers.get("Location")).not.toContain("admin%40personal.test");
+    const code = email.lastCode();
+    expect((await post(email, "/admin/reauth", { password: "test-admin-password-1", email_code: wrongCode(code), next }, cookie)).headers.get("Location")).toContain("error=");
+    const ok = await post(email, "/admin/reauth", { password: "test-admin-password-1", email_code: code, next }, cookie);
+    expect(ok.headers.get("Location")).toBe(next);
+    expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'admin.step_up' AND details LIKE '%email_otp%'").first()).not.toBeNull();
+  });
+});

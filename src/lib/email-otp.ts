@@ -23,7 +23,7 @@ export function emailOtpSendKey(userId: number): string {
   return `email_otp:send:${userId}`;
 }
 
-export type EmailOtpPurpose = "login" | "enrol" | "disable";
+export type EmailOtpPurpose = "login" | "enrol" | "disable" | "stepup";
 
 interface StoredCode {
   hash: string;
