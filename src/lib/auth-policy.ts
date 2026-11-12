@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { getUserGroupNames } from "./db.js";
+import { isEmailConfigured } from "./email.js";
 import { getSetting, setSetting } from "./settings.js";
 
 /**
@@ -10,9 +11,9 @@ import { getSetting, setSetting } from "./settings.js";
  * multi-factor on its own). Policies are assigned to groups; the matching one
  * with the lowest priority number wins, otherwise the default applies.
  *
- * Factors are the second-factor methods the instance offers. Today:
- * authenticator app (TOTP, with backup codes) and passkeys. The list is the
- * extension point for email one-time codes and the like.
+ * Factors are the second-factor methods the instance offers: authenticator
+ * app (TOTP, with backup codes), passkeys and email one-time codes. The list
+ * is the extension point for further methods.
  */
 
 export type Requirement = "password" | "mfa";
@@ -30,16 +31,44 @@ export interface AuthPolicyRow {
 export const FACTORS = [
   { key: "totp", label: "Authenticator app", description: "Six-digit codes from an app such as 1Password, Google Authenticator or Authy, with single-use backup codes.", available: true },
   { key: "passkey", label: "Passkeys", description: "WebAuthn credentials on a device or security key. Multi-factor on their own, and can replace the password.", available: true },
-  { key: "email_otp", label: "Email one-time code", description: "A code sent to the user's email address.", available: false },
+  { key: "email_otp", label: "Email one-time code", description: "A six-digit code sent to the user's email address, using the Sign-in code email template. Needs email to be configured.", available: true },
   { key: "security_questions", label: "Security questions", description: "Answers chosen by the user at enrolment.", available: false },
 ] as const;
-export type FactorKey = "totp" | "passkey";
+export type FactorKey = "totp" | "passkey" | "email_otp";
+export const FACTOR_KEYS: readonly FactorKey[] = ["totp", "passkey", "email_otp"];
 
+export function isFactorKey(key: string): key is FactorKey {
+  return (FACTOR_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * The administrator's switch for a factor. TOTP and passkeys are on unless
+ * switched off; email codes depend on email being configured, so they are off
+ * until switched on.
+ */
 export async function isFactorEnabled(env: Env, key: FactorKey): Promise<boolean> {
-  return (await getSetting(env, `factor_${key}_enabled`)) !== "false";
+  const value = await getSetting(env, `factor_${key}_enabled`);
+  return key === "email_otp" ? value === "true" : value !== "false";
 }
 export async function setFactorEnabled(env: Env, key: FactorKey, on: boolean): Promise<void> {
   await setSetting(env, `factor_${key}_enabled`, on ? "true" : "false");
+}
+
+/** Whether a factor actually works right now: switched on, and (for email codes) email can be sent. */
+export async function isFactorUsable(env: Env, key: FactorKey): Promise<boolean> {
+  if (!(await isFactorEnabled(env, key))) return false;
+  return key === "email_otp" ? isEmailConfigured(env) : true;
+}
+
+/** How many users have each factor enrolled (passkeys: users with at least one). */
+export async function factorEnrolmentCounts(env: Env): Promise<Record<string, number>> {
+  const [totp, passkey, email] = await env.DB.batch([
+    env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
+    env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials"),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE email_otp_enabled = 1"),
+  ]);
+  const n = (r: D1Result | undefined) => (r!.results[0] as { n: number }).n;
+  return { totp: n(totp), passkey: n(passkey), email_otp: n(email) };
 }
 
 export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[] })[]> {
@@ -69,9 +98,17 @@ export async function mfaRequiredFor(env: Env, userId: number): Promise<boolean>
 }
 
 /** Whether the user has a second factor enrolled that the instance currently accepts. */
-export async function hasSecondFactor(env: Env, user: { id: number; mfa_enabled: number }): Promise<boolean> {
+export async function hasSecondFactor(env: Env, user: SecondFactorUser): Promise<boolean> {
   if (user.mfa_enabled && (await isFactorEnabled(env, "totp"))) return true;
+  if (user.email_otp_enabled && (await isFactorUsable(env, "email_otp"))) return true;
   return (await userHasPasskey(env, user.id)) && (await isFactorEnabled(env, "passkey"));
+}
+
+/** What the second-factor checks need to know about a user. */
+export interface SecondFactorUser {
+  id: number;
+  mfa_enabled: number;
+  email_otp_enabled: number;
 }
 
 export async function userHasPasskey(env: Env, userId: number): Promise<boolean> {
@@ -97,7 +134,7 @@ export async function defaultRequirement(env: Env): Promise<Requirement> {
  *  - "enrol": the policy needs a second factor and the user has none - send them to set one up;
  *  - "login": they have one but this session did not use it - they must sign in again.
  */
-export async function secondFactorGate(env: Env, user: { id: number; mfa_enabled: number }, amr: string[]): Promise<"ok" | "enrol" | "login"> {
+export async function secondFactorGate(env: Env, user: SecondFactorUser, amr: string[]): Promise<"ok" | "enrol" | "login"> {
   if (amr.some((a) => a === "mfa" || a === "hwk" || a === "mfa_remembered_device")) return "ok";
   if (!(await mfaRequiredFor(env, user.id))) return "ok";
   return (await hasSecondFactor(env, user)) ? "login" : "enrol";

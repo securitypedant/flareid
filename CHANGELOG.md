@@ -8,6 +8,27 @@ may break things.
 
 ### Added
 
+- **Email one-time codes as a second factor.** Switched on under Security >
+  Factors (off on a fresh install, and only possible once email is
+  configured; the page says why otherwise). People turn them on in My account
+  > Security > Email codes by entering a code sent to their address, or on the
+  forced-enrolment page, which then resumes the sign-in. At sign-in the second
+  step offers **Email me a code** (alongside the authenticator app and
+  passkeys, or on its own); codes are six random digits sent with the
+  customisable Sign-in code template, stored hashed in KV for ten minutes,
+  single use, and invalidated after five wrong guesses; sends are limited to
+  five per user per 15 minutes. A verified code signs in with amr
+  `["pwd","otp","mfa"]` and counts toward any policy that requires a second
+  factor, including the "last factor on" guard. Turning email codes off takes
+  a fresh code. Admin > Users shows whether they are enrolled, and **Reset
+  MFA** (and `POST /api/v1/users/{username}/reset-mfa`) clears them. Users in
+  the API gain `email_otp_enabled`; factors gain `usable`. Sends, failures,
+  enrolment and removal are audited (`login.email_otp_sent`,
+  `login.mfa_failed` with `method: "email_otp"`, `user.email_otp_enabled`,
+  `user.email_otp_disabled`, ...); the code itself is never logged. Migration
+  `0024_email_otp.sql`.
+- Every `/login/...` endpoint now counts toward the edge "auth" rate limit
+  (the passkey second step was missing).
 - **The provisioning API covers everything the admin console does.** New
   endpoints for users (get, update - attributes, schema, email, status -
   delete, password and MFA resets, sessions, passkeys, connected apps),

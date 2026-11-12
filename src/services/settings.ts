@@ -1,5 +1,5 @@
-import { isFactorEnabled, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
-import { isEmailAddress, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
+import { FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabled } from "../lib/auth-policy.js";
+import { isEmailAddress, isEmailConfigured, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
 import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { escapeHtml } from "../lib/html.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
@@ -95,11 +95,16 @@ export async function saveRequireMfa(ctx: ServiceCtx, required: boolean): Promis
 
 /** Turning a factor off is refused while a policy requires a second factor and it is the last one on. */
 export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean): Promise<void> {
-  if (key !== "totp" && key !== "passkey") throw new ServiceError(400, "Unknown factor.");
+  if (!isFactorKey(key)) throw new ServiceError(400, "Unknown factor.");
+  // Email codes can only be sent with email set up; switching them on before
+  // that would offer people a factor that cannot work.
+  if (enabled && key === "email_otp" && !(await isEmailConfigured(ctx.env))) {
+    throw new ServiceError(400, "Email one-time codes need email: set up sending under Integrations > Email first.");
+  }
   if (!enabled) {
-    const other: FactorKey = key === "totp" ? "passkey" : "totp";
     const mfaPolicies = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>();
-    if (!(await isFactorEnabled(ctx.env, other)) && (mfaPolicies?.n ?? 0) > 0) {
+    const othersUsable = await Promise.all(FACTOR_KEYS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
+    if (!othersUsable.some(Boolean) && (mfaPolicies?.n ?? 0) > 0) {
       throw new ServiceError(400, "At least one second factor must stay on while a policy requires one.");
     }
   }

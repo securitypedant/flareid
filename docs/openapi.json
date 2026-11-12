@@ -145,7 +145,12 @@
             ]
           },
           "mfa_enabled": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "An authenticator app (TOTP) is enrolled."
+          },
+          "email_otp_enabled": {
+            "type": "boolean",
+            "description": "Email one-time codes are enrolled as a second factor."
           },
           "job_title": {
             "type": "string"
@@ -221,6 +226,7 @@
           "external_id",
           "status",
           "mfa_enabled",
+          "email_otp_enabled",
           "job_title",
           "department",
           "employee_number",
@@ -892,7 +898,12 @@
             "type": "boolean"
           },
           "enabled": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The administrator's switch."
+          },
+          "usable": {
+            "type": "boolean",
+            "description": "Switched on and able to work now: email one-time codes also need email to be configured."
           },
           "enrolled_users": {
             "type": [
@@ -907,6 +918,7 @@
           "description",
           "available",
           "enabled",
+          "usable",
           "enrolled_users"
         ]
       },
@@ -2045,7 +2057,7 @@
           "Users"
         ],
         "summary": "Reset multi-factor authentication",
-        "description": "Clears the authenticator, backup codes and remembered devices; they enrol again at next sign-in.",
+        "description": "Clears the authenticator, backup codes, email one-time codes and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).",
         "security": [
           {
             "bearer": []
@@ -6465,7 +6477,7 @@
           "Security"
         ],
         "summary": "Turn a second factor on or off",
-        "description": "At least one factor must stay on while a policy requires a second factor.",
+        "description": "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.",
         "security": [
           {
             "bearer": []
@@ -6478,7 +6490,8 @@
               "type": "string",
               "enum": [
                 "totp",
-                "passkey"
+                "passkey",
+                "email_otp"
               ]
             },
             "required": true,

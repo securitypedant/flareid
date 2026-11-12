@@ -1,17 +1,20 @@
 import { canSignIn } from "../lib/admin-roles.js";
-import { hasSecondFactor, isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
+import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
+import { EMAIL_OTP_MINUTES, loginScope, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
+import type { UserRow } from "../lib/types.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage } from "../lib/login-views.js";
+import { AUTH_MESSAGES, loginForm, mfaForm, renderAuthMessage, type MfaFactors } from "../lib/login-views.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { hashPassword, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
   deleteLoginFlow,
   deletePendingMfa,
+  extendPendingMfa,
   getLoginFlow,
   getPendingMfa,
   sealLoginFlow,
@@ -63,6 +66,16 @@ function dummyPasswordHash(env: Env): Promise<StoredPassword> {
   return dummyHashes.get(key)!;
 }
 
+/** The second-step methods this user can use now: enrolled, and switched on by the administrator. */
+async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
+  const [totpOn, passkeyOn, emailOtp] = await Promise.all([isFactorEnabled(env, "totp"), isFactorEnabled(env, "passkey"), userHasEmailOtp(env, user)]);
+  return {
+    totp: Boolean(user.mfa_enabled) && totpOn,
+    passkey: passkeyOn && (await userHasPasskey(env, user.id)),
+    emailOtp,
+  };
+}
+
 /** Direct login entry point for /account and /admin - not tied to an OIDC request. */
 login.get("/login", async (c) => {
   const next = safeNextPath(c.req.query("next"));
@@ -109,7 +122,7 @@ async function completeLoginFlow(
   userId: number,
   amr: string[],
   request: Request,
-  user: { mfa_enabled: number }
+  user: { mfa_enabled: number; email_otp_enabled: number }
 ): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
   // Roles decide whether this account may sign in at all (permission "signin").
   if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookie: clearSessionCookie() };
@@ -129,7 +142,7 @@ async function completeLoginFlow(
   // login to a relying party.
   // The user's authentication policy decides; a passkey sign-in (amr "hwk") is
   // already multi-factor.
-  if ((await secondFactorGate(env, { id: userId, mfa_enabled: user.mfa_enabled }, amr)) !== "ok") {
+  if ((await secondFactorGate(env, { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled }, amr)) !== "ok") {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
@@ -204,13 +217,14 @@ login.post("/login", async (c) => {
   }
 
   // Second step: the authenticator app when enrolled (unless this device is
-  // remembered); otherwise a passkey when the user's policy needs a second factor.
-  const totp = Boolean(user.mfa_enabled) && (await isFactorEnabled(c.env, "totp"));
-  const passkey = (await isFactorEnabled(c.env, "passkey")) && (await userHasPasskey(c.env, user.id));
-  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : passkey && (await mfaRequiredFor(c.env, user.id));
+  // remembered); otherwise email codes when enrolled; otherwise a passkey when
+  // the user's policy needs a second factor.
+  const factors = await secondStepFactors(c.env, user);
+  const { totp, passkey, emailOtp } = factors;
+  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : emailOtp || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, { totp, passkey }));
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors));
   }
 
   const amr = totp ? ["pwd", "mfa_remembered_device"] : ["pwd"];
@@ -289,7 +303,8 @@ login.post("/login/mfa/passkey", async (c) => {
   const user = await getUserById(c.env, pending.userId);
   if (!user || user.status !== "active" || provedUser !== pending.userId) {
     await logAudit(c.env, null, "login.mfa_failed", user?.upn, { method: "passkey" }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "That passkey could not confirm it's you.", { totp: Boolean(user?.mfa_enabled), passkey: true }));
+    const factors = user ? await secondStepFactors(c.env, user) : { totp: false, passkey: true };
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "That passkey could not confirm it's you.", { ...factors, passkey: true }));
   }
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);
@@ -330,7 +345,7 @@ login.post("/login/mfa", async (c) => {
   // the password step can reach this namespace.
   if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again."));
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
   }
 
   let amr = ["pwd", "mfa"];
@@ -341,7 +356,7 @@ login.post("/login/mfa", async (c) => {
     const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
     if (!validBackupCode) {
       await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
-      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Incorrect code, please try again."));
+      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Incorrect code, please try again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
     }
     amr = ["pwd", "mfa", "backup_code"];
     await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
@@ -368,5 +383,90 @@ login.post("/login/mfa", async (c) => {
   if (outcome.type === "saml-post") {
     return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   }
+  return c.redirect(outcome.to, 302);
+});
+
+// The second step with a code sent by email. Sending is a POST of its own, so
+// a code goes out only when the person asks for one (and again on "Send a new
+// code", within the per-user send budget in email-otp.ts).
+login.post("/login/mfa/email/send", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await getLoginAppearance(c.env);
+  const factors = await secondStepFactors(c.env, user);
+  if (!factors.emailOtp) {
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
+  }
+  const sent = await sendEmailOtp(c.env, user, loginScope(mfaId), "login", c.get("appName"));
+  if (!sent.ok) {
+    if (sent.reason === "rate_limited") {
+      await logAudit(c.env, null, "login.email_otp_rate_limited", user.upn, { ip: getClientIp(c.req.raw) }, c.req.raw);
+      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many codes requested. Please wait a few minutes before asking for another.", factors));
+    }
+    await logAudit(c.env, null, "login.email_otp_send_failed", user.upn, { error: sent.error }, c.req.raw);
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "We couldn't send the email. Try again in a moment, or use another method.", factors));
+  }
+  // The code is good for ten minutes; the pending step gets as long.
+  await extendPendingMfa(c.env, mfaId, pending, EMAIL_OTP_MINUTES * 60);
+  await logAudit(c.env, null, "login.email_otp_sent", user.upn, undefined, c.req.raw);
+  return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, { sent: true, to: maskEmail(sent.to), minutes: EMAIL_OTP_MINUTES }));
+});
+
+login.post("/login/mfa/email", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const code = String(body.code ?? "").slice(0, 32);
+  const ip = getClientIp(c.req.raw);
+
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await getLoginAppearance(c.env);
+  const factors = await secondStepFactors(c.env, user);
+  if (!factors.emailOtp) {
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
+  }
+
+  // The same per-user bucket as the authenticator code: a second method is
+  // not a second budget.
+  if (await recordMfaAttempt(c.env, user.id, ip)) {
+    await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip, method: "email_otp" }, c.req.raw);
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors));
+  }
+
+  const result = await verifyEmailOtp(c.env, loginScope(mfaId), user.id, "login", code);
+  if (result !== "ok") {
+    await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip, method: "email_otp", reason: result }, c.req.raw);
+    const message =
+      result === "wrong"
+        ? "Incorrect code, please try again."
+        : result === "locked"
+          ? "Too many incorrect codes. Request a new code."
+          : "That code has expired or was already used. Request a new one.";
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, message, factors, { sent: result === "wrong", minutes: EMAIL_OTP_MINUTES }));
+  }
+
+  await clearMfaAttempts(c.env, user.id, ip);
+  const flow = await getLoginFlow(c.env, pending.flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  await deletePendingMfa(c.env, mfaId);
+  await deleteLoginFlow(c.env, pending.flowId);
+
+  const amr = ["pwd", "otp", "mfa"];
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  c.header("Set-Cookie", setCookie);
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return c.redirect(outcome.to, 302);
 });

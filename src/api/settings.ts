@@ -2,7 +2,7 @@ import { z } from "@hono/zod-openapi";
 import type { Env } from "../env.js";
 import { listRoles, rolePermissions } from "../lib/admin-roles.js";
 import { expand } from "../lib/permissions.js";
-import { FACTORS, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { FACTORS, factorEnrolmentCounts, isFactorEnabled, isFactorUsable, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getEmailSettings, isEmailAddress, isEmailConfigured, isEmailEnabled } from "../lib/email.js";
 import { DEFAULT_TEMPLATES, getAccent, getTemplate, TEMPLATE_INFO, type TemplateKey } from "../lib/email-templates.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
@@ -465,13 +465,30 @@ defineRoute(
 // Factors
 // ---------------------------------------------------------------------------
 
-const FactorSchema = z.object({ key: z.string(), label: z.string(), description: z.string(), available: z.boolean(), enabled: z.boolean(), enrolled_users: z.number().nullable() }).openapi("Factor");
+const FactorSchema = z
+  .object({
+    key: z.string(),
+    label: z.string(),
+    description: z.string(),
+    available: z.boolean(),
+    enabled: z.boolean().openapi({ description: "The administrator's switch." }),
+    usable: z.boolean().openapi({ description: "Switched on and able to work now: email one-time codes also need email to be configured." }),
+    enrolled_users: z.number().nullable(),
+  })
+  .openapi("Factor");
 
 async function factorsJson(env: Env) {
-  const [totp, passkey] = await env.DB.batch([env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"), env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials")]);
-  const enrolled: Record<string, number> = { totp: (totp!.results[0] as { n: number }).n, passkey: (passkey!.results[0] as { n: number }).n };
+  const enrolled = await factorEnrolmentCounts(env);
   return Promise.all(
-    FACTORS.map(async (f) => ({ key: f.key, label: f.label, description: f.description, available: f.available, enabled: f.available ? await isFactorEnabled(env, f.key as FactorKey) : false, enrolled_users: enrolled[f.key] ?? null }))
+    FACTORS.map(async (f) => ({
+      key: f.key,
+      label: f.label,
+      description: f.description,
+      available: f.available,
+      enabled: f.available ? await isFactorEnabled(env, f.key as FactorKey) : false,
+      usable: f.available ? await isFactorUsable(env, f.key as FactorKey) : false,
+      enrolled_users: enrolled[f.key] ?? null,
+    }))
   );
 }
 
@@ -487,8 +504,8 @@ defineRoute(
     tag: "Security",
     permission: "security:write",
     summary: "Turn a second factor on or off",
-    description: "At least one factor must stay on while a policy requires a second factor.",
-    params: z.object({ key: z.enum(["totp", "passkey"]) }),
+    description: "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.",
+    params: z.object({ key: z.enum(["totp", "passkey", "email_otp"]) }),
     body: z.object({ enabled: z.boolean() }),
     response: z.object({ factors: z.array(FactorSchema) }),
   },

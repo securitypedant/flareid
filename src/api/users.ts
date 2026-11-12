@@ -38,7 +38,7 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
   const binds = opts.username !== undefined ? [opts.username] : [];
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.upn, u.username, u.email, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
-            u.mfa_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
+            u.mfa_enabled, u.email_otp_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
             u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
             (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,
             (SELECT name FROM schemas s WHERE s.id = u.schema_id) AS schema_name,
@@ -46,7 +46,7 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
        FROM users u ${where} ORDER BY u.id LIMIT ? OFFSET ?`
   )
     .bind(...binds, opts.limit, opts.offset)
-    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; custom_attributes: string }>();
+    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; email_otp_enabled: number; custom_attributes: string }>();
 
   // Dynamic groups don't live in group_members, so resolve them once per
   // request and fold them into each user's groups.
@@ -54,9 +54,10 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
   const { results: pageUsers } = await env.DB.prepare(`SELECT * FROM users u ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...binds, opts.limit, opts.offset).all<UserRow>();
   const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => { const r = parseRule(g.rule); return r !== null && userMatchesRule(u, r); }).map((g) => g.name)]));
 
-  return results.map(({ group_names, mfa_enabled, custom_attributes, id, ...user }) => ({
+  return results.map(({ group_names, mfa_enabled, email_otp_enabled, custom_attributes, id, ...user }) => ({
     ...user,
     mfa_enabled: mfa_enabled === 1,
+    email_otp_enabled: email_otp_enabled === 1,
     attributes: parseCustomAttributes(custom_attributes),
     groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
   }));
@@ -244,7 +245,7 @@ defineRoute(
     tag: "Users",
     permission: "users:write",
     summary: "Reset multi-factor authentication",
-    description: "Clears the authenticator, backup codes and remembered devices; they enrol again at next sign-in.",
+    description: "Clears the authenticator, backup codes, email one-time codes and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).",
     errors: [404],
   },
   async (c) => {

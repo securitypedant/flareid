@@ -15,6 +15,8 @@ export interface UserRow {
   /** The last TOTP time-step counter accepted - a code at or below it is a replay. */
   totp_last_counter: number | null;
   mfa_enabled: number;
+  /** 1 when the user enrolled email one-time codes as a second factor (email-otp.ts). */
+  email_otp_enabled: number;
   /** Legacy attribute - no longer used for authorization. Membership in the "Super Admins" group is authoritative. */
   is_admin: number;
   status: "active" | "disabled";

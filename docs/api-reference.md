@@ -194,7 +194,8 @@ Response `200`:
 | `family_name` | string | yes |  |
 | `external_id` | string | yes |  |
 | `status` | "active" \| "disabled" | yes |  |
-| `mfa_enabled` | boolean | yes |  |
+| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
+| `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -254,7 +255,8 @@ Response `200`:
 | `family_name` | string | yes |  |
 | `external_id` | string | yes |  |
 | `status` | "active" \| "disabled" | yes |  |
-| `mfa_enabled` | boolean | yes |  |
+| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
+| `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -326,7 +328,7 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 Reset multi-factor authentication.
 
-Clears the authenticator, backup codes and remembered devices; they enrol again at next sign-in.
+Clears the authenticator, backup codes, email one-time codes and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).
 
 Permission: `users:write`
 
@@ -2101,13 +2103,13 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Turn a second factor on or off.
 
-At least one factor must stay on while a policy requires a second factor.
+At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.
 
 Permission: `security:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "totp" \\| "passkey" |
+| `key` | path | yes | "totp" \\| "passkey" \\| "email_otp" |
 
 Request body:
 

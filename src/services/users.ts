@@ -251,10 +251,10 @@ export async function resetUserPassword(ctx: ServiceCtx, id: number, chosen: str
   return { password, user };
 }
 
-/** Clears the authenticator, backup codes and remembered devices; they enrol again at next sign-in. */
+/** Clears the authenticator, backup codes, email codes and remembered devices; they enrol again at next sign-in. */
 export async function resetUserMfa(ctx: ServiceCtx, id: number): Promise<void> {
   await assertMayTouchUser(ctx, id);
-  await ctx.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, updated_at = ? WHERE id = ?")
+  await ctx.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, email_otp_enabled = 0, updated_at = ? WHERE id = ?")
     .bind(new Date().toISOString(), id)
     .run();
   await deleteBackupCodes(ctx.env, id);

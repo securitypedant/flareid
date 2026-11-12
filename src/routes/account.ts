@@ -1,5 +1,7 @@
 import { grants } from "../lib/permissions.js";
 import { isFactorEnabled } from "../lib/auth-policy.js";
+import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
+import { recipientFor } from "../lib/email.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context } from "hono";
@@ -63,10 +65,17 @@ const SAVED_MESSAGES: Record<string, string> = {
   session: "That session has been signed out.",
   device: "That device will need a verification code next time.",
   app: "Access for that app has been revoked.",
+  "email-otp-enabled": "Email codes are on: you'll be asked for one when you sign in.",
+  "email-otp-disabled": "Email codes are now off.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
   "mfa-code": "That code was not correct, so two-factor authentication is still enabled. Try again with a current code or an unused backup code.",
+  "too-many": "Too many attempts. Please wait a few minutes before trying again.",
+  "email-code": "That code was not correct, or it has expired. Check the latest email, or send a new code.",
+  "email-send": "We couldn't send the email. Try again in a moment.",
+  "email-limit": "Too many codes requested. Please wait a few minutes before asking for another.",
+  "email-unavailable": "Email codes aren't available right now.",
 };
 
 function savedBanner(c: Context<{ Bindings: Env }>): string {
@@ -102,6 +111,7 @@ account.get("/account", async (c) => {
   const sessions = await listActiveSessionsForUser(c.env, user.id);
   const devices = await listTrustedDevices(c.env, user.id);
   const passkeys = await listPasskeys(c.env, user.id);
+  const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
      JOIN oauth_clients oc ON oc.client_id = at.client_id
@@ -224,6 +234,7 @@ account.get("/account", async (c) => {
         ${scriptTag(PASSKEY_REGISTER_SCRIPT)}
       `)}
 
+      ${emailCard}
 
       <h2 class="section-title">Sessions and devices</h2>
       ${cardSection(`
@@ -305,6 +316,40 @@ account.get("/account", async (c) => {
     )
   );
 });
+
+/**
+ * My account > Security: email one-time codes. Turning them on and off each
+ * takes a code sent to the address, so only someone who reads that inbox can
+ * do either. `step` is "enrol" or "disable" once a code has been sent.
+ */
+function emailCodesCard(user: UserRow, step: string): string {
+  const to = escapeHtml(recipientFor(user));
+  const enrolled = Boolean(user.email_otp_enabled);
+  const codeForm = (action: string, button: string, danger: boolean) => `
+    <form method="POST" action="${action}" ${danger ? confirmAttrs("You will no longer be able to sign in with a code sent to your email.", { title: "Turn off email codes?", action: "Turn off", danger: true }) : ""}>
+      <label for="email_otp_code">Enter the 6-digit code we sent to ${to}</label>
+      <div class="field-row" style="align-items:flex-start;">
+        <input type="text" id="email_otp_code" name="code" inputmode="numeric" maxlength="6" required autocomplete="one-time-code" style="max-width:160px" />
+        <div></div>
+      </div>
+      <button class="${danger ? "danger" : "primary"}" type="submit">${button}</button>
+    </form>`;
+  const sendForm = (purpose: "enrol" | "disable", label: string, cls: string) =>
+    `<form method="POST" action="/account/mfa/email/send" style="margin-top:8px;"><input type="hidden" name="purpose" value="${purpose}" /><button class="${cls}" type="submit">${label}</button></form>`;
+  const body = !enrolled
+    ? step === "enrol"
+      ? codeForm("/account/mfa/email/enable", "Turn on email codes", false) + sendForm("enrol", "Send a new code", "link-button")
+      : `<p class="muted" style="margin-top:8px;">Get a one-time code by email when you sign in.</p>${sendForm("enrol", `Send a code to ${to}`, "primary")}`
+    : step === "disable"
+      ? codeForm("/account/mfa/email/disable", "Turn off email codes", true) + sendForm("disable", "Send a new code", "link-button")
+      : `<p class="muted" style="margin-top:8px;">When you sign in, you can ask for a code sent to ${to}. Turning this off takes a code sent there too.</p>${sendForm("disable", "Turn off", "secondary")}`;
+  return cardSection(`
+    <div class="row between" id="email-codes">
+      <h2 style="margin:0;">Email codes</h2>
+      <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
+    </div>
+    ${body}`);
+}
 
 account.post("/account/profile", async (c) => {
   const user = c.get("user");
@@ -471,7 +516,28 @@ account.get("/account/mfa/setup", async (c) => {
   const user = c.get("user");
   const resume = c.req.query("resume") ?? "";
   if (user.mfa_enabled) return c.redirect("/account", 302);
-  const [totpOn, passkeyOn] = await Promise.all([isFactorEnabled(c.env, "totp"), isFactorEnabled(c.env, "passkey")]);
+  const [totpOn, passkeyOn, emailAvailable] = await Promise.all([isFactorEnabled(c.env, "totp"), isFactorEnabled(c.env, "passkey"), emailOtpAvailable(c.env)]);
+  const emailOn = emailAvailable && !user.email_otp_enabled;
+  const emailError = ERROR_MESSAGES[c.req.query("error") ?? ""];
+  const to = escapeHtml(recipientFor(user));
+  const emailHidden = `<input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />`;
+  const emailCard = !emailOn
+    ? ""
+    : cardSection(`
+        <h2>${passkeyOn ? "Or use email codes" : "Use email codes"}</h2>
+        <p class="muted">A one-time code sent to ${to} each time you sign in.</p>
+        ${emailError ? `<p class="error">${escapeHtml(emailError)}</p>` : ""}
+        ${
+          c.req.query("email_code") === "enrol"
+            ? `<form method="POST" action="/account/mfa/email/enable">
+                ${emailHidden}
+                <label for="email_otp_code">Enter the 6-digit code we sent to ${to}</label>
+                <input type="text" id="email_otp_code" name="code" inputmode="numeric" maxlength="6" required autofocus autocomplete="one-time-code" style="max-width:160px;" />
+                <button class="primary" type="submit">Turn on email codes</button>
+              </form>
+              <form method="POST" action="/account/mfa/email/send" style="margin-top:8px;">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="link-button" type="submit">Send a new code</button></form>`
+            : `<form method="POST" action="/account/mfa/email/send">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="${passkeyOn ? "secondary" : "primary"}" type="submit">Send a code to ${to}</button></form>`
+        }`);
 
   let secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) {
@@ -497,11 +563,12 @@ account.get("/account/mfa/setup", async (c) => {
         <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
         ${scriptTag(PASSKEY_REGISTER_SCRIPT)}`)
         : "") +
+      emailCard +
       (!totpOn ? "" : cardSection(`
         <div style="text-align:center;">
-          ${passkeyOn ? "<h2>Or use an authenticator app</h2>" : ""}
+          ${passkeyOn || emailOn ? "<h2>Or use an authenticator app</h2>" : ""}
           ${resume ? '<p class="sub">Multi-factor authentication is required before you can continue.</p>' : ""}
-          ${c.req.query("error") ? '<p class="error">Incorrect code, please try again.</p>' : ""}
+          ${c.req.query("error") === "1" ? '<p class="error">Incorrect code, please try again.</p>' : ""}
           <p class="sub">Scan this with Google Authenticator, Authy, or any standard TOTP app.</p>
           <div>${qrSvg}</div>
           <p class="muted">Or enter this code manually: <code>${escapeHtml(secret)}</code></p>
@@ -578,7 +645,7 @@ account.post("/account/mfa/setup", async (c) => {
 });
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
-async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string): Promise<string> {
+async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string, amr: string[] = ["pwd", "mfa"]): Promise<string> {
   // Only a flow this user parked after authenticating: never a sealed
   // anonymous one, which would let enrolment stand in for a fresh login.
   if (isSealedFlowId(resumeFlowId)) return "/account";
@@ -600,9 +667,84 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, s
   }
 
   await deleteLoginFlow(env, resumeFlowId);
-  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, ["pwd", "mfa"], sessionId);
+  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
   return redirectTo;
 }
+
+// ---------- Email one-time codes ----------
+// Under /account/mfa so a session that still owes its policy a second factor
+// (forced enrolment) can reach them, like the other enrolment routes.
+
+/** Where an email-code action goes back to: the forced-enrolment page it came from, or My account. */
+function emailCodeReturn(body: Record<string, unknown>, query: string): string {
+  if (body.from === "setup") return `/account/mfa/setup?resume=${encodeURIComponent(String(body.resume ?? ""))}&${query}`;
+  return `/account?${query}#email-codes`;
+}
+
+account.post("/account/mfa/email/send", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const purpose = body.purpose === "disable" ? "disable" : "enrol";
+  if (!(await emailOtpAvailable(c.env))) return c.redirect(emailCodeReturn(body, "error=email-unavailable"), 302);
+  if ((purpose === "enrol") === Boolean(user.email_otp_enabled)) return c.redirect("/account", 302);
+  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), purpose, c.get("appName"));
+  if (!sent.ok) {
+    if (sent.reason === "rate_limited") {
+      await logAudit(c.env, user, "user.email_otp_rate_limited", user.upn, { purpose }, c.req.raw);
+      return c.redirect(emailCodeReturn(body, "error=email-limit"), 302);
+    }
+    await logAudit(c.env, user, "user.email_otp_send_failed", user.upn, { purpose, error: sent.error }, c.req.raw);
+    return c.redirect(emailCodeReturn(body, "error=email-send"), 302);
+  }
+  await logAudit(c.env, user, "user.email_otp_code_sent", user.upn, { purpose }, c.req.raw);
+  return c.redirect(emailCodeReturn(body, `email_code=${purpose}`), 302);
+});
+
+/** Enrolment: the code sent to the address proves it is theirs; finishes a forced enrolment like the passkey path. */
+account.post("/account/mfa/email/enable", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const resume = String(body.resume ?? "");
+  const sessionId = c.get("sessionId");
+  if (!(await emailOtpAvailable(c.env))) return c.redirect(emailCodeReturn(body, "error=email-unavailable"), 302);
+  if (user.email_otp_enabled) return c.redirect("/account", 302);
+  const result = await verifyEmailOtp(c.env, accountScope(sessionId), user.id, "enrol", String(body.code ?? ""));
+  if (result !== "ok") {
+    await logAudit(c.env, user, "user.email_otp_enrol_failed", user.upn, { reason: result }, c.req.raw);
+    // A wrong code leaves the code form up; a used-up one goes back to "send".
+    return c.redirect(emailCodeReturn(body, result === "wrong" ? "email_code=enrol&error=email-code" : "error=email-code"), 302);
+  }
+
+  await c.env.DB.prepare("UPDATE users SET email_otp_enabled = 1, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
+  // As with the authenticator: every other session predates the second factor.
+  await revokeAllSessionsForUser(c.env, user.id, sessionId);
+  const current = await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(sessionId).first<{ amr: string }>();
+  let previous: string[] = [];
+  try {
+    previous = current ? (JSON.parse(current.amr) as string[]) : [];
+  } catch {
+    previous = [];
+  }
+  const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "otp", "mfa"])];
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
+  await logAudit(c.env, user, "user.email_otp_enabled", user.upn, undefined, c.req.raw);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account?saved=email-otp-enabled", 302);
+});
+
+/** Turning email codes off takes a fresh code, within the step-up budget - as disabling the authenticator does. */
+account.post("/account/mfa/email/disable", async (c) => {
+  const user = c.get("user");
+  if (!user.email_otp_enabled) return c.redirect("/account", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many#email-codes", 302);
+  const result = await verifyEmailOtp(c.env, accountScope(c.get("sessionId")), user.id, "disable", String((await c.req.parseBody()).code ?? ""));
+  if (result !== "ok") {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "email_otp_disable", reason: result }, c.req.raw);
+    return c.redirect(`/account?${result === "wrong" ? "email_code=disable&" : ""}error=email-code#email-codes`, 302);
+  }
+  await c.env.DB.prepare("UPDATE users SET email_otp_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
+  await logAudit(c.env, user, "user.email_otp_disabled", user.upn, undefined, c.req.raw);
+  return c.redirect("/account?saved=email-otp-disabled", 302);
+});
 
 function backupCodesPage(codes: string[], continueTo = "/account"): string {
   const fileContents = `${codes.join("\n")}\n`;

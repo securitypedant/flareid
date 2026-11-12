@@ -24,7 +24,8 @@ import { getClientIp, rateLimitAddress } from "./rate-limit.js";
 type Group = "auth" | "api";
 
 function routeGroup(method: string, path: string): Group | null {
-  if (path === "/login" || path === "/login/mfa" || path.startsWith("/login/passkey") || path === "/authorize" || path === "/saml/sso" || path === "/saml/complete") return "auth";
+  // Every sign-in step: the password, the second steps (code, passkey, email code and its send).
+  if (path === "/login" || path.startsWith("/login/") || path === "/authorize" || path === "/saml/sso" || path === "/saml/complete") return "auth";
   if (path.startsWith("/api/") || path === "/token" || path === "/introspect" || path === "/revoke" || path === "/userinfo") return "api";
   if (path.startsWith("/scim/v2/")) return "api";
   if (method === "POST" && (path === "/forgot-password" || path.startsWith("/reset-password") || path.startsWith("/invite/"))) return "auth";

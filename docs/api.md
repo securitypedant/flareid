@@ -104,6 +104,14 @@ does - in summary:
 | Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
 | Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
 
+Second factors: `GET /security/factors` lists `totp`, `passkey` and
+`email_otp` (email one-time codes), each with `enabled` (the switch) and
+`usable` (switched on and able to work - email codes also need email to be
+configured). `PUT /security/factors/email_otp` with `{"enabled": true}` is a
+`400` until email is configured. Users carry `email_otp_enabled` next to
+`mfa_enabled` (the authenticator app), and `POST /users/{username}/reset-mfa`
+clears both.
+
 Request bodies are validated against the schema in the spec: a wrong type is a
 `400` with `error: "invalid_request"` and a `message` naming the field.
 

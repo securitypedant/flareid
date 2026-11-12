@@ -154,41 +154,98 @@ export function loginForm(appName: string, flowId: string, appearance: LoginAppe
   );
 }
 
-export function mfaForm(appName: string, mfaId: string, appearance: LoginAppearance, error?: string, factors: { totp: boolean; passkey: boolean } = { totp: true, passkey: false }): string {
+/** The second-step methods a sign-in can offer. */
+export interface MfaFactors {
+  totp: boolean;
+  passkey: boolean;
+  emailOtp?: boolean;
+}
+
+/** State of the email-code option on the second step: whether a code was just sent, and where (masked). */
+export interface EmailCodeState {
+  sent: boolean;
+  to?: string;
+  minutes?: number;
+}
+
+export function mfaForm(
+  appName: string,
+  mfaId: string,
+  appearance: LoginAppearance,
+  error?: string,
+  factors: MfaFactors = { totp: true, passkey: false },
+  email: EmailCodeState = { sent: false }
+): string {
+  const id = escapeHtml(mfaId);
+  const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
   const passkey = factors.passkey
     ? `<div class="auth-passkey">
-        <button class="${factors.totp ? "secondary" : "primary"}" type="button" data-passkey-login data-param="mfa_id" data-flow="${escapeHtml(mfaId)}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey" style="width:100%;">Use a passkey</button>
+        <button class="${factors.totp || factors.emailOtp ? "secondary" : "primary"}" type="button" data-passkey-login data-param="mfa_id" data-flow="${id}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey" style="width:100%;">Use a passkey</button>
         <p class="muted" id="passkey-login-status" style="margin:6px 0 0; font-size:0.8125rem;"></p>
       </div>
       ${scriptTag(PASSKEY_LOGIN_SCRIPT)}`
     : "";
-  if (!factors.totp) {
-    return authPage("Two-factor authentication", appName, appearance, `
-    <h1>Two-step verification</h1>
-    <p class="sub">Confirm it's you with one of your passkeys.</p>
-    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-    ${passkey}`);
-  }
-  return authPage(
-    "Two-factor authentication",
-    appName,
-    appearance,
-    `
-    <h1>Two-step verification</h1>
-    <p class="sub">Enter the 6-digit code from your authenticator app, or one of your backup codes if you've lost access to it.</p>
-    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-    <form method="POST" action="/login/mfa">
-      <input type="hidden" name="mfa_id" value="${escapeHtml(mfaId)}" />
+  const totpForm = (autofocus: boolean) => `<form method="POST" action="/login/mfa">
+      <input type="hidden" name="mfa_id" value="${id}" />
       <label for="code">Authenticator code or backup code</label>
-      <input type="text" id="code" name="code" maxlength="12" required autofocus />
+      <input type="text" id="code" name="code" maxlength="12" required ${autofocus ? "autofocus" : ""} autocomplete="one-time-code" />
       <label style="display:flex; align-items:center; gap:6px; font-weight:400;">
         <input type="checkbox" name="remember_device" value="1" style="width:auto;" /> Remember this device for 30 days
       </label>
+      <div class="row"><button class="${autofocus ? "primary" : "secondary"}" type="submit">Verify</button></div>
+    </form>`;
+  const sendForm = (label: string, primary: boolean) => `<form method="POST" action="/login/mfa/email/send">
+      <input type="hidden" name="mfa_id" value="${id}" />
+      <div class="row"><button class="${primary ? "primary" : "secondary"}" type="submit">${escapeHtml(label)}</button></div>
+    </form>`;
+
+  // A code is on its way: entering it is the main action.
+  if (factors.emailOtp && email.sent) {
+    return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Check your email</h1>
+    <p class="sub">We sent a 6-digit code${email.to ? ` to <strong>${escapeHtml(email.to)}</strong>` : ""}. It works once, for the next ${email.minutes ?? 10} minutes.</p>
+    ${errorHtml}
+    <form method="POST" action="/login/mfa/email">
+      <input type="hidden" name="mfa_id" value="${id}" />
+      <label for="email_code">Code from the email</label>
+      <input type="text" id="email_code" name="code" inputmode="numeric" maxlength="6" pattern="[0-9 ]*" required autofocus autocomplete="one-time-code" />
       <div class="row"><button class="primary" type="submit">Verify</button></div>
     </form>
+    ${sendForm("Send a new code", false)}
+    ${factors.totp ? `<p class="auth-alt muted">Or use your authenticator app</p>${totpForm(false)}` : ""}
+    ${passkey}`);
+  }
+
+  if (factors.totp) {
+    return authPage(
+      "Two-factor authentication",
+      appName,
+      appearance,
+      `
+    <h1>Two-step verification</h1>
+    <p class="sub">Enter the 6-digit code from your authenticator app, or one of your backup codes if you've lost access to it.</p>
+    ${errorHtml}
+    ${totpForm(true)}
+    ${factors.emailOtp ? sendForm("Email me a code", false) : ""}
     ${passkey}
     `
-  );
+    );
+  }
+
+  if (factors.emailOtp) {
+    return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Two-step verification</h1>
+    <p class="sub">We'll email you a 6-digit code to confirm it's you.</p>
+    ${errorHtml}
+    ${sendForm("Email me a code", true)}
+    ${passkey}`);
+  }
+
+  return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Two-step verification</h1>
+    <p class="sub">Confirm it's you with one of your passkeys.</p>
+    ${errorHtml}
+    ${passkey}`);
 }
 
 export interface AuthMessage {

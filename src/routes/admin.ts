@@ -8,7 +8,7 @@ import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js"
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { FACTORS, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { FACTORS, factorEnrolmentCounts, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
@@ -1340,12 +1340,13 @@ admin.get("/admin/users/:id", async (c) => {
         }
         <div class="sec-row">
           <div>
-            <h3>Multi-factor authentication <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enrolled" : "Not enrolled"}</span></h3>
-            <p class="muted">Resetting clears their authenticator, backup codes and remembered devices; they enrol again at next sign-in.</p>
+            <h3>Multi-factor authentication <span class="badge ${user.mfa_enabled || user.email_otp_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled || user.email_otp_enabled ? "Enrolled" : "Not enrolled"}</span></h3>
+            <p class="muted">Authenticator app: ${user.mfa_enabled ? "enrolled" : "not enrolled"} &middot; Email codes: ${user.email_otp_enabled ? "enrolled" : "not enrolled"}</p>
+            <p class="muted">Resetting clears their authenticator, backup codes, email codes and remembered devices; they enrol again at next sign-in.</p>
           </div>
           <form method="POST" action="/admin/users/${id}/reset-mfa"
-            ${confirmAttrs("Their authenticator, backup codes and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
-            <button class="secondary" type="submit" ${user.mfa_enabled ? "" : "disabled"}>Reset MFA</button>
+            ${confirmAttrs("Their authenticator, backup codes, email codes and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
+            <button class="secondary" type="submit" ${user.mfa_enabled || user.email_otp_enabled ? "" : "disabled"}>Reset MFA</button>
           </form>
         </div>
         <div class="sec-row">
@@ -4051,12 +4052,15 @@ admin.post("/admin/security/roles/:id/delete", async (c) => {
 
 admin.get("/admin/security/factors", async (c) => {
   const states = await Promise.all(FACTORS.filter((f) => f.available).map(async (f) => [f.key, await isFactorEnabled(c.env, f.key as FactorKey)] as const));
-  const on = new Map(states);
-  const counts = await c.env.DB.batch([
-    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
-    c.env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials"),
-  ]);
-  const enrolled: Record<string, number> = { totp: (counts[0]!.results[0] as { n: number }).n, passkey: (counts[1]!.results[0] as { n: number }).n };
+  const on = new Map<string, boolean>(states);
+  const enrolled = await factorEnrolmentCounts(c.env);
+  // Email codes need email: say so instead of offering a switch that cannot work.
+  const emailReady = await isEmailConfigured(c.env);
+  const blocked = (key: string) => key === "email_otp" && !emailReady;
+  const note = (key: string) =>
+    blocked(key)
+      ? `<br /><span class="muted"><strong>${on.get(key) ? "Not working: no codes can be sent until email is configured under" : "Needs email to be configured first, under"} <a href="/admin/integrations/email">Integrations &rarr; Email</a>.</strong></span>`
+      : "";
   return c.html(
     layout(
       c,
@@ -4068,9 +4072,9 @@ admin.get("/admin/security/factors", async (c) => {
           <tr><td><strong>Password</strong><br /><span class="muted">Always on; rules are under Security &rarr; Settings.</span></td><td>&mdash;</td><td><span class="badge badge-active">On</span></td><td></td></tr>
           ${FACTORS.map((f) =>
             f.available
-              ? `<tr><td><strong>${escapeHtml(f.label)}</strong><br /><span class="muted">${escapeHtml(f.description)}</span></td><td>${enrolled[f.key] ?? 0}</td>
+              ? `<tr><td><strong>${escapeHtml(f.label)}</strong><br /><span class="muted">${escapeHtml(f.description)}</span>${note(f.key)}</td><td>${enrolled[f.key] ?? 0}</td>
                   <td><span class="badge ${on.get(f.key) ? "badge-active" : "badge-disabled"}">${on.get(f.key) ? "On" : "Off"}</span></td>
-                  <td style="text-align:right;"><form method="POST" action="/admin/security/factors/${f.key}"><input type="hidden" name="enabled" value="${on.get(f.key) ? "0" : "1"}" /><button class="secondary" type="submit">${on.get(f.key) ? "Turn off" : "Turn on"}</button></form></td></tr>`
+                  <td style="text-align:right;"><form method="POST" action="/admin/security/factors/${f.key}"><input type="hidden" name="enabled" value="${on.get(f.key) ? "0" : "1"}" /><button class="secondary" type="submit" ${!on.get(f.key) && blocked(f.key) ? "disabled" : ""}>${on.get(f.key) ? "Turn off" : "Turn on"}</button></form></td></tr>`
               : `<tr><td><strong>${escapeHtml(f.label)}</strong><br /><span class="muted">${escapeHtml(f.description)}</span></td><td>&mdash;</td><td><span class="pill">Planned</span></td><td></td></tr>`
           ).join("")}
         </tbody></table>

@@ -169,6 +169,14 @@ export async function getPendingMfa(env: Env, mfaId: string): Promise<PendingMfa
   return raw ? (JSON.parse(raw) as PendingMfa) : null;
 }
 
+/**
+ * Gives a pending second step longer to finish - an emailed code is valid for
+ * ten minutes, and reading email takes longer than opening an authenticator.
+ */
+export async function extendPendingMfa(env: Env, mfaId: string, pending: PendingMfa, seconds: number): Promise<void> {
+  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify({ userId: pending.userId, flowId: pending.flowId }), { expirationTtl: Math.max(MFA_TTL_SECONDS, seconds) });
+}
+
 export async function deletePendingMfa(env: Env, mfaId: string): Promise<void> {
   await env.SESSIONS_KV.delete(`mfa:${mfaId}`);
 }
