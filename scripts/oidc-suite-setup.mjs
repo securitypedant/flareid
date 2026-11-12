@@ -71,6 +71,25 @@ const login = {
   ],
 };
 
+// Modules that want a screenshot get one from the scripted browser: a "wait"
+// for text on the page with update-image-placeholder records it, the way the
+// suite's own CI configuration does. Each override replaces the browser
+// script for that module only.
+const capture = (text, optional = false) => ["wait", "xpath", "//*", 10, text, optional ? "update-image-placeholder-optional" : "update-image-placeholder"];
+const secondLogin = {
+  ...login,
+  tasks: login.tasks.map((t) => (t.task === "Sign in" ? { ...t, commands: [capture("Sign in", true), ...t.commands] } : t)),
+};
+const errorPage = { match: `${issuer}/authorize*`, tasks: [{ task: "Expect an error page", match: `${issuer}/authorize*`, commands: [capture("This app can.t sign you in")] }] };
+const override = {
+  // prompt=login / max_age=1: the second authorization must show the sign-in page again.
+  "oidcc-prompt-login": { browser: [secondLogin] },
+  "oidcc-max-age-1": { browser: [secondLogin] },
+  // An unregistered redirect_uri, or one only inside a request object, must end on an error page, not a redirect.
+  "oidcc-ensure-registered-redirect-uri": { browser: [errorPage] },
+  "oidcc-ensure-request-object-with-redirect-uri": { browser: [errorPage] },
+};
+
 const config = {
   alias,
   description: `FlareID ${issuer}`,
@@ -79,7 +98,7 @@ const config = {
   client2: { ...clients[1], scope: "openid email profile" },
   client_secret_post: { ...clients[0] },
   browser: [login],
-  override: {},
+  override,
 };
 writeFileSync(new URL("../conformance/suite-config.json", import.meta.url), JSON.stringify(config, null, 2));
 console.log(`seeded ${clients.length} clients and ${upn}; wrote conformance/suite-config.json (alias ${alias})`);
