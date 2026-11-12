@@ -6,7 +6,7 @@ import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINUTES } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
-import { adminRolesFor, ROLE_GROUP_NAMES, visibleSections, type AdminRole } from "../lib/admin-roles.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, visibleSections, type Access } from "../lib/admin-roles.js";
 import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -105,11 +105,10 @@ admin.use("/admin/*", async (c, next) => {
   if (c.req.method !== "POST" || c.get("isSuperAdmin")) return next();
   const path = c.req.path;
   const forbid = (why: string) => c.text(`Forbidden: ${why} needs a Super Admin.`, 403);
-  const roleGroupIds = new Set(
-    (await c.env.DB.prepare("SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ROLE_GROUP_NAMES)).all<{ id: number }>()).results.map((r) => r.id)
-  );
+  const roleGroupIds = await adminRoleGroupIds(c.env);
+  const roleGroupNames = await adminRoleGroupNames(c.env);
   const userMatch = /^\/admin\/users\/(\d+)(\/|$)/.exec(path);
-  if (userMatch && (await adminRolesFor(c.env, Number(userMatch[1]))).size > 0) return forbid("changing an account that holds an admin role");
+  if (userMatch && (await accessFor(c.env, Number(userMatch[1]))).isAdmin) return forbid("changing an account that holds an admin role");
   const groupMatch = /^\/admin\/groups\/(\d+)(\/|$)/.exec(path);
   if (groupMatch && roleGroupIds.has(Number(groupMatch[1]))) return forbid("changing an admin role group");
   if (path === "/admin/users" || userMatch || path === "/admin/groups") {
@@ -117,7 +116,7 @@ admin.use("/admin/*", async (c, next) => {
     const ids = form ? [...form.getAll("group_ids"), ...form.getAll("add_group_ids")].map(Number) : [];
     if (ids.some((id) => roleGroupIds.has(id))) return forbid("giving someone an admin role");
     const name = String(form?.get("name") ?? "").trim();
-    if (path === "/admin/groups" && ROLE_GROUP_NAMES.includes(name)) return forbid("creating an admin role group");
+    if (path === "/admin/groups" && roleGroupNames.includes(name)) return forbid("creating an admin role group");
   }
   return next();
 });
@@ -231,7 +230,7 @@ const CRUMB_SECTIONS: Record<string, string> = {
 };
 
 function layout(
-  c: { get: ((k: "appName") => string) & ((k: "adminRoles") => Set<AdminRole> | undefined) },
+  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) },
   title: string,
   body: string,
   crumbs?: Breadcrumb[],
@@ -256,7 +255,7 @@ function layout(
   return page(
     `${title}`,
     `<div class="admin-shell">
-      <aside class="admin-side">${adminNav(section, sub, visibleSections(c.get("adminRoles") ?? new Set(["super"])))}</aside>
+      <aside class="admin-side">${adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined)}</aside>
       <div class="admin-main">
         <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
         ${body}
@@ -832,7 +831,7 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
   const { results: sampleGroups } = await c.env.DB.prepare(
     `SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`
   )
-    .bind(JSON.stringify(ROLE_GROUP_NAMES))
+    .bind(JSON.stringify(await adminRoleGroupNames(c.env)))
     .all<GroupRow>();
 
   // The shared deletion (every users(id)-referencing table), with the remote
@@ -842,7 +841,7 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
     ...sampleUsers.filter((u) => u.scim_id).map((u) => queueScimDeprovision(c.env, "user", u.scim_id!, u.upn)),
     ...sampleGroups.filter((g) => g.scim_id).map((g) => queueScimDeprovision(c.env, "group", g.scim_id!, g.name)),
     ...(sampleUserIds.length > 0 ? deleteUserStatements(c.env, ...sampleUserIds) : []),
-    c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ROLE_GROUP_NAMES)),
+    c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(JSON.stringify(await adminRoleGroupNames(c.env))),
   ]);
   if (await scimConfigured(c.env)) await drainScimDeprovisionQueue(c.env);
 }

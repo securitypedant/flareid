@@ -1,3 +1,4 @@
+import { grants } from "../lib/permissions.js";
 import { isFactorEnabled } from "../lib/auth-policy.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
@@ -27,6 +28,13 @@ export const account = new Hono<{ Bindings: Env }>();
 
 account.use("/account/*", requireSession);
 account.use("/account", requireSession);
+// Self-service is a permission like any other (the default "User" role grants both).
+account.use("/account/*", async (c, next) => {
+  const need = c.req.method === "GET" || c.req.method === "HEAD" ? "account:read" : "account:write";
+  if (!grants(c.get("access").perms, need)) return c.text("Your role does not allow changes to your account here.", 403);
+  return next();
+});
+account.use("/account", async (c, next) => (grants(c.get("access").perms, "account:read") ? next() : c.text("Your role does not include My account.", 403)));
 
 function layout(c: Context<{ Bindings: Env }>, title: string, body: string, headerMeta?: string) {
   const appName = c.get("appName");
@@ -35,7 +43,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, (c.get("adminRoles")?.size ?? 0) > 0)
+    nav(appName, Boolean(c.get("access")?.isAdmin))
   );
 }
 

@@ -1,3 +1,4 @@
+import { canSignIn } from "../lib/admin-roles.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
@@ -158,7 +159,7 @@ saml.get("/saml/sso", async (c) => {
     const user = session ? await getUserById(c.env, session.userId) : null;
     const gate = session && user ? await secondFactorGate(c.env, user, session.amr) : "ok";
     // A session that did not use the second factor the user's policy needs is not reused: they sign in again.
-    if (session && user && user.status === "active" && gate !== "login") {
+    if (session && user && user.status === "active" && gate !== "login" && (await canSignIn(c.env, user.id))) {
       // Same rule as /authorize: a password-only session minted before forced
       // enrolment parks the request and goes through MFA setup first.
       if (gate === "enrol") {

@@ -5,6 +5,7 @@ import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
 import { canAccess } from "../src/lib/admin-roles.js";
+import { expand } from "../src/lib/permissions.js";
 
 beforeEach(resetDatabase);
 const FORM = { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE };
@@ -37,16 +38,20 @@ const post = (path: string, cookie: string, body: Record<string, string> = {}) =
   SELF.fetch(`${BASE}${path}`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: new URLSearchParams(body).toString(), redirect: "manual" });
 
 describe("admin roles", () => {
-  it("maps each role to its console areas", () => {
-    const r = (x: string[]) => new Set(x as never[]);
-    expect(canAccess(r(["directory"]), "POST", "/admin/users/5")).toBe(true);
-    expect(canAccess(r(["directory"]), "GET", "/admin/integrations/oidc")).toBe(false);
-    expect(canAccess(r(["applications"]), "POST", "/admin/clients")).toBe(true);
-    expect(canAccess(r(["applications"]), "GET", "/admin/integrations/api-keys")).toBe(false);
-    expect(canAccess(r(["auditor"]), "GET", "/admin/users")).toBe(true);
-    expect(canAccess(r(["auditor"]), "POST", "/admin/users/5")).toBe(false);
-    expect(canAccess(r(["auditor"]), "GET", "/admin/security")).toBe(false);
-    expect(canAccess(r([]), "GET", "/admin")).toBe(false);
+  it("maps each role's permissions to its console areas", () => {
+    const r = (perms: string[]) => ({ perms: expand(perms), roles: [], isSuper: perms.includes("*"), isAdmin: true });
+    const dir = r(["users:write", "groups:write", "domains:write", "schemas:write", "import:write", "audit:read", "performance:read"]);
+    const aud = r(["users:read", "groups:read", "oidc:read", "audit:read"]);
+    expect(canAccess(dir, "POST", "/admin/users/5")).toBe(true);
+    expect(canAccess(dir, "GET", "/admin/integrations/oidc")).toBe(false);
+    expect(canAccess(r(["oidc:write", "saml:write"]), "POST", "/admin/clients")).toBe(true);
+    expect(canAccess(r(["oidc:write"]), "GET", "/admin/integrations/api-keys")).toBe(false);
+    expect(canAccess(aud, "GET", "/admin/users")).toBe(true);
+    expect(canAccess(aud, "POST", "/admin/users/5")).toBe(false);
+    expect(canAccess(aud, "GET", "/admin/security")).toBe(false);
+    expect(canAccess({ ...r(["signin", "account:read"]), isAdmin: false }, "GET", "/admin")).toBe(false);
+    expect(canAccess(r(["*"]), "POST", "/admin/setup")).toBe(true);
+    expect(canAccess(dir, "POST", "/admin/setup")).toBe(false);
   });
 
   it("lets each role in only where it belongs, and filters the sidebar", async () => {
@@ -118,5 +123,17 @@ describe("self-deactivation", () => {
     const imp = await SELF.fetch(`${BASE}/admin/users/import`, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, Cookie: cookie }, body: JSON.stringify({ version: 1, users: [{ username: "admin", status: "disabled" }] }) });
     expect(imp.status).toBe(400);
     expect((await env.DB.prepare("SELECT status FROM users WHERE id = ?").bind(id).first<{ status: string }>())!.status).toBe("active");
+  });
+});
+
+describe("self-service permissions", () => {
+  it("everyone holds the default User role; removing signin from it blocks sign-in", async () => {
+    const { pat } = await setup();
+    expect((await get("/account", pat)).status).toBe(200);
+    await env.DB.prepare("UPDATE admin_roles SET permissions = '[\"account:read\"]' WHERE is_default = 1").run();
+    const res = await get("/account", pat);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/login?denied=1");
+    expect(await (await SELF.fetch(`${BASE}/login?denied=1`)).text()).toContain("not allowed to sign in");
   });
 });

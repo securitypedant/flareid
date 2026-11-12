@@ -1,3 +1,4 @@
+import { canSignIn } from "../lib/admin-roles.js";
 import { claimGroupsFromParameter } from "../lib/oidc.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono, type Context } from "hono";
@@ -163,7 +164,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   const session = await getSession(c.req.raw, c.env);
   const user = session ? await getUserById(c.env, session.userId) : null;
   const sessionAge = session ? (Date.now() - new Date(session.createdAt).getTime()) / 1000 : Infinity;
-  const reusable = session && user && user.status === "active" && !prompts.has("login") && (maxAge === undefined || sessionAge <= maxAge);
+  const reusable = session && user && user.status === "active" && !prompts.has("login") && (maxAge === undefined || sessionAge <= maxAge) && (await canSignIn(c.env, user.id));
   if (reusable) {
     // A password-only session minted before forced enrollment must not mint
     // credentials either: park this request and send the browser through MFA

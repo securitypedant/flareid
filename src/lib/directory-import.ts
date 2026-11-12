@@ -5,7 +5,7 @@ import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
-import { ROLE_GROUP_NAMES } from "./admin-roles.js";
+import { adminRoleGroupNames } from "./admin-roles.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
@@ -176,7 +176,7 @@ async function ensureDomain(env: Env, domain: string): Promise<void> {
  */
 async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; groups: GroupRow[] }> {
   // Replace keeps the administrators - everyone holding an admin role - and the role groups themselves.
-  const roles = JSON.stringify(ROLE_GROUP_NAMES);
+  const roles = JSON.stringify(await adminRoleGroupNames(env));
   const { results: doomed } = await env.DB.prepare(
     `SELECT * FROM users
       WHERE id NOT IN (
@@ -220,6 +220,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   const { users, groups } = validateBundle(bundle);
 
   if (!opts.allowPrivileged) {
+    const ROLE_GROUP_NAMES = await adminRoleGroupNames(env);
     const { results: adminRows } = await env.DB.prepare(
       `SELECT u.username FROM users u
        JOIN group_members gm ON gm.user_id = u.id

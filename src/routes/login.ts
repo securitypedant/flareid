@@ -1,3 +1,4 @@
+import { canSignIn } from "../lib/admin-roles.js";
 import { hasSecondFactor, isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
@@ -72,7 +73,8 @@ login.get("/login", async (c) => {
   // Sealed rather than stored: this page is anonymous, and a KV write per page
   // load let anyone spend the deployment's write quota (see sealLoginFlow).
   const flowId = await sealLoginFlow(c.env, { kind: "direct", next });
-  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env)));
+  const denied = c.req.query("denied") ? "This account is not allowed to sign in. Ask an administrator." : undefined;
+  return c.html(loginForm(c.get("appName"), flowId, await getLoginAppearance(c.env), denied));
 });
 
 login.post("/logout", async (c) => {
@@ -109,6 +111,8 @@ async function completeLoginFlow(
   request: Request,
   user: { mfa_enabled: number }
 ): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
+  // Roles decide whether this account may sign in at all (permission "signin").
+  if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookie: clearSessionCookie() };
   const { sessionId, setCookie } = await createSession(env, userId, amr, request);
 
   // Until initial setup is complete, always land on the setup wizard -
