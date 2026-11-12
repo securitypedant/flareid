@@ -1,5 +1,4 @@
 import type { Env } from "../env.js";
-import { escapeHtml } from "./html.js";
 import { getSetting, setSetting } from "./settings.js";
 import type { UserRow } from "./types.js";
 
@@ -77,48 +76,4 @@ export async function sendEmail(env: Env, message: OutboundEmail): Promise<SendR
     const e = error as { code?: string; message?: string };
     return { ok: false, error: `${e.code ?? "error"}: ${e.message ?? String(error)}` };
   }
-}
-
-/** One plain, readable layout for every email: a heading, a paragraph, a button, and the link as text. */
-function linkEmail(opts: { appName: string; heading: string; body: string; action: string; url: string; footer: string }): { text: string; html: string } {
-  const text = `${opts.heading}\n\n${opts.body}\n\n${opts.action}: ${opts.url}\n\n${opts.footer}\n`;
-  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
-  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;">
-    <p style="margin:0 0 16px;font-weight:700;font-size:18px;">${escapeHtml(opts.appName)}</p>
-    <h1 style="margin:0 0 12px;font-size:20px;">${escapeHtml(opts.heading)}</h1>
-    <p style="margin:0 0 20px;line-height:1.5;color:#334155;">${escapeHtml(opts.body)}</p>
-    <p style="margin:0 0 20px;"><a href="${escapeHtml(opts.url)}" style="display:inline-block;background:#f6821f;color:#fff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:8px;">${escapeHtml(opts.action)}</a></p>
-    <p style="margin:0 0 6px;font-size:13px;color:#64748b;">Or paste this link into your browser:</p>
-    <p style="margin:0 0 20px;font-size:13px;word-break:break-all;"><a href="${escapeHtml(opts.url)}" style="color:#f6821f;">${escapeHtml(opts.url)}</a></p>
-    <p style="margin:0;font-size:13px;color:#64748b;">${escapeHtml(opts.footer)}</p>
-  </div></body></html>`;
-  return { text, html };
-}
-
-export function passwordResetEmail(appName: string, url: string): Omit<OutboundEmail, "to"> {
-  return {
-    subject: `Reset your ${appName} password`,
-    ...linkEmail({
-      appName,
-      heading: "Reset your password",
-      body: `Someone - hopefully you - asked to reset the password for your ${appName} account. The link works once, for the next hour.`,
-      action: "Choose a new password",
-      url,
-      footer: "If you didn't ask for this, ignore this email: your password stays the same.",
-    }),
-  };
-}
-
-export function invitationEmail(appName: string, displayName: string, url: string): Omit<OutboundEmail, "to"> {
-  return {
-    subject: `You've been invited to ${appName}`,
-    ...linkEmail({
-      appName,
-      heading: `Welcome, ${displayName}`,
-      body: `An administrator has set up a ${appName} account for you. Choose a password to activate it. The link works once, for the next 7 days.`,
-      action: "Activate your account",
-      url,
-      footer: "If you weren't expecting this, you can ignore this email.",
-    }),
-  };
 }

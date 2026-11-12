@@ -1171,6 +1171,11 @@ admin.post("/admin/users/import", async (c) => {
   // The console is Super Admin authority already; replace mode is not offered here.
   bundle.mode = "merge";
   try {
+    // Same rule as the Active switch: an import cannot deactivate your own account.
+    const me = c.get("user").username;
+    if ((bundle.users ?? []).some((u) => String(u.username ?? "").trim().toLowerCase() === me && u.status !== undefined && u.status !== "active")) {
+      return c.json({ error: "invalid_request", message: `The import would deactivate your own account (${me}). Remove that row or set it to active.` }, 400);
+    }
     // Only Super Admins may assign admin roles or overwrite role holders through an import.
     const result = await importDirectory(c.env, bundle, { allowPrivileged: c.get("isSuperAdmin") });
     await logAudit(c.env, c.get("user"), "directory.imported", result.domain, { via: "csv", users: result.users, groups: result.groups, errors: result.errors.length }, c.req.raw);

@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import { issueAccountToken } from "./account-tokens.js";
-import { invitationEmail, passwordResetEmail, recipientFor, sendEmail, type SendResult } from "./email.js";
+import { recipientFor, sendEmail, type SendResult } from "./email.js";
+import { buildEmail } from "./email-templates.js";
 import { getAppName } from "./settings.js";
 import type { UserRow } from "./types.js";
 
@@ -13,11 +14,11 @@ import type { UserRow } from "./types.js";
 export async function sendInvitation(env: Env, user: UserRow): Promise<SendResult> {
   const token = await issueAccountToken(env, user.id, "invite");
   const appName = await getAppName(env);
-  return sendEmail(env, { to: recipientFor(user), ...invitationEmail(appName, user.display_name || user.username, `${env.ISSUER_URL}/invite/${token}`) });
+  return sendEmail(env, { to: recipientFor(user), ...(await buildEmail(env, "invitation", { app_name: appName, name: user.display_name || user.username }, `${env.ISSUER_URL}/invite/${token}`)) });
 }
 
 export async function sendPasswordReset(env: Env, user: UserRow): Promise<SendResult> {
   const token = await issueAccountToken(env, user.id, "reset");
   const appName = await getAppName(env);
-  return sendEmail(env, { to: recipientFor(user), ...passwordResetEmail(appName, `${env.ISSUER_URL}/reset-password/${token}`) });
+  return sendEmail(env, { to: recipientFor(user), ...(await buildEmail(env, "password_reset", { app_name: appName, name: user.display_name || user.username }, `${env.ISSUER_URL}/reset-password/${token}`)) });
 }

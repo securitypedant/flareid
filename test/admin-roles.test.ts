@@ -106,3 +106,17 @@ describe("step-up re-authentication", () => {
     expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).not.toBeNull();
   });
 });
+
+describe("self-deactivation", () => {
+  it("an admin cannot deactivate their own account by the switch or by an import", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const page = await (await get(`/admin/users/${id}`, cookie)).text();
+    expect(page).toContain("You cannot deactivate your own account");
+    expect((await post(`/admin/users/${id}/status`, cookie, { status: "disabled" })).status).toBe(400);
+    const imp = await SELF.fetch(`${BASE}/admin/users/import`, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, Cookie: cookie }, body: JSON.stringify({ version: 1, users: [{ username: "admin", status: "disabled" }] }) });
+    expect(imp.status).toBe(400);
+    expect((await env.DB.prepare("SELECT status FROM users WHERE id = ?").bind(id).first<{ status: string }>())!.status).toBe("active");
+  });
+});
