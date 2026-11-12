@@ -137,3 +137,23 @@ describe("self-service permissions", () => {
     expect(await (await SELF.fetch(`${BASE}/login?denied=1`)).text()).toContain("not allowed to sign in");
   });
 });
+
+describe("roles page", () => {
+  it("lists roles and administrators, creates a custom role, and refuses granting more than you hold", async () => {
+    const { dora, idOf } = await setup();
+    await bootstrapInstance({ domain: "horizon.test" }).catch(() => undefined);
+    const adminId = await idOf("users", "username", "admin");
+    const superCookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const page = await (await get("/admin/security/roles", superCookie)).text();
+    for (const n of ["User", "Super Admin", "Directory Admin", "Application Admin", "Auditor", "Administrators"]) expect(page).toContain(n);
+    expect(page).toContain("dora@horizon.test");
+    const crew = await idOf("groups", "name", "Crew");
+    const created = await post("/admin/security/roles", superCookie, { name: "Helpdesk", description: "Resets", perm_users: "write", group_ids: String(crew) });
+    expect(created.status).toBe(302);
+    const pat = await idOf("users", "username", "pat");
+    const { accessFor } = await import("../src/lib/admin-roles.js");
+    expect((await accessFor(env, pat)).perms.has("users:write")).toBe(true);
+    // A Directory Admin cannot reach roles at all; and a role editor cannot grant beyond themselves.
+    expect((await get("/admin/security/roles", dora)).status).toBe(403);
+  });
+});

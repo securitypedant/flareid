@@ -6,8 +6,8 @@ import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINUTES } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
-import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
-import { AREAS, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
+import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -70,7 +70,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
-import { resolveGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
+import { resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -247,7 +247,7 @@ function layout(
     section === "overview"
       ? (crumbs?.[1]?.label === "Performance" ? "performance" : "dashboard")
       : section === "security"
-      ? ({ Policies: "policies", Factors: "factors" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
+      ? ({ Policies: "policies", Factors: "factors", Roles: "roles" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -327,7 +327,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
           .join("");
       }
       if (key === "security" && active === "security") {
-        return link + [["settings", "/admin/security", "Settings"], ["policies", "/admin/security/policies", "Policies"], ["factors", "/admin/security/factors", "Factors"]]
+        return link + [["settings", "/admin/security", "Settings"], ["policies", "/admin/security/policies", "Policies"], ["factors", "/admin/security/factors", "Factors"], ["roles", "/admin/security/roles", "Roles"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "settings") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
@@ -4217,6 +4217,166 @@ admin.post("/admin/security/policies/:id/delete", async (c) => {
   await c.env.DB.batch([c.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id), c.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(id)]);
   await logAudit(c.env, c.get("user"), "auth_policy.deleted", p.name, undefined, c.req.raw);
   return c.redirect("/admin/security/policies?saved=1", 302);
+});
+
+// ---------- Roles ----------
+
+const ROLE_CRUMBS = (extra: Breadcrumb[] = []): Breadcrumb[] => [{ label: "Admin", href: "/admin" }, { label: "Security", href: "/admin/security" }, { label: "Roles", href: "/admin/security/roles" }, ...extra];
+
+function permissionSummary(perms: string[]): string {
+  if (perms.includes("*")) return "<strong>Everything</strong>";
+  const byArea = AREAS.map((a) => (perms.includes(`${a.key}:write`) ? `${a.label} (change)` : perms.includes(`${a.key}:read`) ? `${a.label} (read)` : "")).filter(Boolean);
+  const self = SELF_PERMISSIONS.filter((p) => perms.includes(p.key)).map((p) => p.label);
+  return escapeHtml([...byArea, ...self].join(", ") || "Nothing");
+}
+
+/** The people each role reaches through its groups (or everyone, for a default role). */
+async function roleMembers(env: Env, roles: Awaited<ReturnType<typeof listRoles>>): Promise<Map<number, number[]>> {
+  const groupIds = [...new Set(roles.flatMap((r) => r.groups.map((g) => g.id)))];
+  const groups = groupIds.length ? (await env.DB.prepare("SELECT * FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(groupIds)).all<GroupRow>()).results : [];
+  const members = await resolveManyGroupMemberUserIds(env, groups);
+  return new Map(roles.map((r) => [r.id, [...new Set(r.groups.flatMap((g) => members.get(g.id) ?? []))]]));
+}
+
+admin.get("/admin/security/roles", async (c) => {
+  const roles = await listRoles(c.env);
+  const members = await roleMembers(c.env, roles);
+  const totalUsers = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>())?.n ?? 0;
+  // Administrators: everyone a non-default role reaches, with the roles that do it.
+  const adminIds = [...new Set(roles.filter((r) => !r.is_default).flatMap((r) => members.get(r.id) ?? []))];
+  const admins = adminIds.length
+    ? (await c.env.DB.prepare("SELECT id, display_name, upn, status FROM users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY display_name").bind(JSON.stringify(adminIds)).all<{ id: number; display_name: string; upn: string; status: string }>()).results
+    : [];
+  const rolesOf = (uid: number) => roles.filter((r) => !r.is_default && (members.get(r.id) ?? []).includes(uid));
+  return c.html(
+    layout(
+      c,
+      "Roles",
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${cardSection(`
+        <div class="card-head"><p class="muted" style="margin:0;">A role is a set of permissions, given to groups. Everyone's access is the default role plus the roles of their groups. API keys use the same permissions.</p>
+          <a href="/admin/security/roles/new"><button class="primary" type="button">+ New role</button></a></div>
+        <table><thead><tr><th>Role</th><th>Permissions</th><th>Granted to</th><th>People</th><th></th></tr></thead><tbody>
+          ${roles.map((r) => `<tr>
+            <td><strong>${escapeHtml(r.name)}</strong>${r.is_default ? ' <span class="badge badge-active">Default</span>' : ""}${r.builtin ? ' <span class="pill">Built in</span>' : ""}<br /><span class="muted">${escapeHtml(r.description)}</span></td>
+            <td style="max-width:420px;">${permissionSummary(rolePermissions(r))}</td>
+            <td>${r.is_default ? '<span class="muted">Everyone</span>' : r.groups.map((g) => `<a class="pill" href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>`).join(" ") || '<span class="muted">No groups</span>'}</td>
+            <td>${r.is_default ? totalUsers : (members.get(r.id) ?? []).length}</td>
+            <td style="text-align:right;"><a href="/admin/security/roles/${r.id}">${r.name === SUPER_ROLE ? "View" : "Edit"}</a></td></tr>`).join("")}
+        </tbody></table>
+      `)}
+      ${cardSection(`
+        <h2>Administrators</h2>
+        <p class="muted">Everyone with more than the default role, and what they can do.</p>
+        ${
+          admins.length
+            ? `<table><thead><tr><th>Person</th><th>Roles</th><th>Can</th></tr></thead><tbody>${admins
+                .map((u) => {
+                  const rs = rolesOf(u.id);
+                  return `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a><br /><span class="muted">${escapeHtml(u.upn)}</span>${u.status !== "active" ? ' <span class="badge badge-disabled">Inactive</span>' : ""}</td><td>${rs.map((r) => escapeHtml(r.name)).join(", ")}</td><td style="max-width:460px;">${permissionSummary(rs.flatMap(rolePermissions))}</td></tr>`;
+                })
+                .join("")}</tbody></table>`
+            : '<p class="muted">Nobody yet.</p>'
+        }
+      `)}`,
+      ROLE_CRUMBS().slice(0, 3).concat([{ label: "Roles" }])
+    )
+  );
+});
+
+async function roleForm(c: { env: Env }, role: (Awaited<ReturnType<typeof listRoles>>)[number] | null): Promise<string> {
+  const groups = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
+  const locked = role?.name === SUPER_ROLE;
+  return cardSection(`
+    <form method="POST" action="${role ? `/admin/security/roles/${role.id}` : "/admin/security/roles"}">
+      <div class="field-row">
+        <div><label for="r_name">Name</label><input type="text" id="r_name" name="name" required maxlength="80" value="${escapeHtml(role?.name ?? "")}" ${role?.builtin ? "readonly" : ""} /></div>
+        <div><label for="r_desc">Description</label><input type="text" id="r_desc" name="description" maxlength="200" value="${escapeHtml(role?.description ?? "")}" /></div>
+      </div>
+      ${
+        locked
+          ? '<p class="muted">Super Admin holds every permission and cannot be changed. Who holds it is set by membership of the Super Admins group.</p>'
+          : `<h3 style="margin-top:12px;">Permissions</h3>${permissionMatrix(new Set(role ? rolePermissions(role) : []), { self: true })}
+             <h3 style="margin-top:16px;">Granted to</h3>
+             ${role?.is_default ? '<p class="muted">The default role applies to everyone.</p>' : multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(role?.groups.map((g) => g.id) ?? []), "Search groups...")}`
+      }
+      <div class="form-actions end">
+        ${role && !role.builtin ? `<button class="danger" type="submit" formaction="/admin/security/roles/${role.id}/delete" formnovalidate ${confirmAttrs("Everyone who holds it through its groups loses these permissions.", { title: `Delete the role "${role.name}"?`, action: "Delete role", danger: true })}>Delete role</button>` : ""}
+        ${cancelLink("/admin/security/roles")}
+        ${locked ? "" : `<button class="primary" type="submit">${role ? "Save" : "Create role"}</button>`}
+      </div>
+    </form>`);
+}
+
+admin.get("/admin/security/roles/new", async (c) => c.html(layout(c, "New role", await roleForm(c, null), ROLE_CRUMBS([{ label: "New role" }]))));
+
+admin.get("/admin/security/roles/:id", async (c) => {
+  const role = (await listRoles(c.env)).find((r) => r.id === Number(c.req.param("id")));
+  if (!role) return c.text("Not found", 404);
+  return c.html(layout(c, role.name, await roleForm(c, role), ROLE_CRUMBS([{ label: role.name }])));
+});
+
+/** Reads and checks a role form: nobody can grant a permission they do not hold themselves. */
+async function readRoleForm(c: { env: Env; get: (k: "access") => Access; req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }) {
+  const body = await c.req.parseBody({ all: true });
+  const name = String(body.name ?? "").trim().slice(0, 80);
+  if (!name) throw new Error("A role needs a name.");
+  const permissions = readPermissionMatrix(body);
+  const mine = c.get("access");
+  const beyond = permissions.filter((p) => (p === "*" ? !mine.isSuper : !grants(mine.perms, p)));
+  if (beyond.length) throw new Error(`You cannot grant permissions you do not hold: ${beyond.join(", ")}.`);
+  const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).map(Number).filter(Boolean);
+  return { name, description: String(body.description ?? "").trim().slice(0, 200), permissions, groupIds: list(body.group_ids) };
+}
+
+async function saveRoleGroups(env: Env, roleId: number, groupIds: number[]) {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM admin_role_groups WHERE role_id = ?").bind(roleId),
+    env.DB.prepare("INSERT OR IGNORE INTO admin_role_groups (role_id, group_id) SELECT ?, id FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(roleId, JSON.stringify(groupIds)),
+  ]);
+}
+
+admin.post("/admin/security/roles", async (c) => {
+  let f;
+  try {
+    f = await readRoleForm(c);
+  } catch (e) {
+    return c.text((e as Error).message, 400);
+  }
+  if (await c.env.DB.prepare("SELECT 1 FROM admin_roles WHERE name = ?").bind(f.name).first()) return c.text("A role with that name already exists.", 400);
+  const row = await c.env.DB.prepare("INSERT INTO admin_roles (name, description, permissions, created_at) VALUES (?, ?, ?, ?) RETURNING id").bind(f.name, f.description, JSON.stringify(f.permissions), new Date().toISOString()).first<{ id: number }>();
+  await saveRoleGroups(c.env, row!.id, f.groupIds);
+  await logAudit(c.env, c.get("user"), "role.created", f.name, { permissions: f.permissions, groups: f.groupIds.length }, c.req.raw);
+  return c.redirect("/admin/security/roles?saved=1", 302);
+});
+
+admin.post("/admin/security/roles/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const role = await c.env.DB.prepare("SELECT * FROM admin_roles WHERE id = ?").bind(id).first<RoleRow>();
+  if (!role) return c.text("Not found", 404);
+  if (role.name === SUPER_ROLE) return c.text("Super Admin cannot be changed.", 400);
+  let f;
+  try {
+    f = await readRoleForm(c);
+  } catch (e) {
+    return c.text((e as Error).message, 400);
+  }
+  const name = role.builtin ? role.name : f.name;
+  if (await c.env.DB.prepare("SELECT 1 FROM admin_roles WHERE name = ? AND id != ?").bind(name, id).first()) return c.text("A role with that name already exists.", 400);
+  await c.env.DB.prepare("UPDATE admin_roles SET name = ?, description = ?, permissions = ? WHERE id = ?").bind(name, f.description, JSON.stringify(f.permissions), id).run();
+  if (!role.is_default) await saveRoleGroups(c.env, id, f.groupIds);
+  await logAudit(c.env, c.get("user"), "role.updated", name, { permissions: f.permissions, groups: f.groupIds.length }, c.req.raw);
+  return c.redirect("/admin/security/roles?saved=1", 302);
+});
+
+admin.post("/admin/security/roles/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const role = await c.env.DB.prepare("SELECT * FROM admin_roles WHERE id = ?").bind(id).first<RoleRow>();
+  if (!role) return c.text("Not found", 404);
+  if (role.builtin) return c.text("Built-in roles cannot be deleted; edit their permissions or groups instead.", 400);
+  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM admin_role_groups WHERE role_id = ?").bind(id), c.env.DB.prepare("DELETE FROM admin_roles WHERE id = ?").bind(id)]);
+  await logAudit(c.env, c.get("user"), "role.deleted", role.name, undefined, c.req.raw);
+  return c.redirect("/admin/security/roles?saved=1", 302);
 });
 
 admin.get("/admin/security/factors", async (c) => {
