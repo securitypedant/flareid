@@ -8,11 +8,16 @@
 // node:crypto everywhere) can consume X.509 but not mint it - so this is an
 // offline step, exactly like scripts/generate-keypair.mjs for the OIDC key.
 //
-// Two outputs:
+// Two outputs, both set as Worker secrets:
 //   - the private key (PKCS8 PEM) -> wrangler secret put SAML_SIGNING_KEY_PKCS8
-//   - the certificate (PEM)       -> wrangler.jsonc vars.SAML_SIGNING_CERT
-//     It is NOT a secret: it is embedded in every signed response's KeyInfo
-//     and published at /saml/metadata.
+//   - the certificate (PEM)       -> wrangler secret put SAML_SIGNING_CERT
+//     The certificate is not confidential - it is embedded in every signed
+//     response's KeyInfo and published at /saml/metadata - but keeping it out
+//     of wrangler.jsonc keeps that file deployable by anyone as it stands.
+//
+// Without --out-dir, writes saml-key.pem and saml-cert.pem to a new private
+// temporary directory and prints the two commands that set them; delete the
+// directory afterwards (the key must not linger on disk).
 //
 // With --out-dir <dir>, writes machine-readable files instead of printing, for
 // scripts/deploy.mjs:
@@ -26,8 +31,9 @@
 // Uses node-forge (a devDependency): it never ships to the Worker, it is a
 // build-time tool only.
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import forge from "node-forge";
 
 const outDir = process.argv.indexOf("--out-dir") !== -1 ? process.argv[process.argv.indexOf("--out-dir") + 1] : null;
@@ -55,11 +61,20 @@ if (outDir) {
   writeFileSync(resolve(outDir, ".saml-key.pem"), keyPem);
   writeFileSync(resolve(outDir, ".saml-cert.pem"), certPem);
 } else {
-  console.log("=== Private key (set as a secret) ===");
-  console.log("wrangler secret put SAML_SIGNING_KEY_PKCS8");
-  console.log("--- paste this when prompted ---");
-  console.log(keyPem);
+  // Files rather than paste-at-a-prompt: a multi-line PEM pasted into
+  // `wrangler secret put` keeps only its first line in some terminals.
+  const dir = mkdtempSync(join(tmpdir(), "flareid-saml-"));
+  writeFileSync(join(dir, "saml-key.pem"), keyPem, { mode: 0o600 });
+  writeFileSync(join(dir, "saml-cert.pem"), certPem);
+  console.log(`Wrote the SAML signing key and certificate to ${dir}. Set both as Worker secrets:
 
-  console.log("=== Certificate (paste into wrangler.jsonc vars.SAML_SIGNING_CERT) ===");
-  console.log(JSON.stringify(certPem));
+  npx wrangler secret put SAML_SIGNING_KEY_PKCS8 < ${join(dir, "saml-key.pem")}
+  npx wrangler secret put SAML_SIGNING_CERT < ${join(dir, "saml-cert.pem")}
+
+(or paste each file's contents into Settings -> Variables and Secrets in the
+dashboard), then delete the directory:
+
+  rm -r ${dir}
+
+For local development, put both in .dev.vars instead, as quoted multi-line values.`);
 }

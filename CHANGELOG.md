@@ -6,7 +6,47 @@ may break things.
 
 ## [Unreleased]
 
+### Added
+
+- **Deploy to Cloudflare button.** The README has the button and a
+  step-by-step walkthrough: Cloudflare copies the repository into your
+  GitHub/GitLab, provisions D1 and KV, asks for the two secrets listed in the
+  new `.dev.vars.example` (`BOOTSTRAP_TOKEN`, `KEY_ENCRYPTION_KEY`, described
+  in `package.json` `cloudflare.bindings`), applies the migrations and
+  deploys.
+- **First-run setup in a browser at `/setup`**: the bootstrap token, the
+  primary domain and the first Super Admin (username, display name,
+  password - policy and breached-password check apply). It runs the same
+  `runSetup()` as `POST /api/v1/setup` (now in `services/setup.ts`), then
+  sends the administrator to sign in and enrol a second factor. Rate-limited,
+  origin-checked like every form, audited (`via: "setup_page"`; a wrong token
+  as `idp.setup_token_rejected`), and inert once setup is complete. `/` and
+  `/login` send a visitor there while the instance has no one to sign in as.
+  Unset or `replace-me` placeholder secrets get instructions instead, and the
+  placeholders are never accepted as a bootstrap token by the API either.
+
 ### Changed
+
+- **`ISSUER_URL` is empty by default and worked out at runtime**: before setup,
+  the request's https origin (http only on localhost; other plain-http
+  requests are refused); setup stores the issuer it completed on
+  (`idp_settings.issuer_url`, from the console, the API or `/setup`) and it is
+  fixed from then on, whatever Host a request arrives with. A non-empty
+  `ISSUER_URL` still pins it. Add a custom domain before running setup.
+- **`wrangler.jsonc` carries nothing of one deployment**: `ISSUER_URL` is
+  `""`, and `SIGNING_PUBLIC_JWK`, `SIGNING_KEY_ID` and `SAML_SIGNING_CERT` are
+  gone from vars. Signing keys are generated in D1 under `KEY_ENCRYPTION_KEY`;
+  SAML needs `SAML_SIGNING_KEY_PKCS8` and `SAML_SIGNING_CERT` both set as
+  secrets (`npm run saml:keygen` now writes them to a private temporary
+  directory and prints the two `wrangler secret put` commands). Sealed login
+  flows fall back to `KEY_ENCRYPTION_KEY` when neither `SIGNING_KEY_PKCS8` nor
+  `COOKIE_ENCRYPTION_KEY` is set, so they stay free of KV writes.
+- **`npm run deploy` is migrate-and-deploy** (`wrangler d1 migrations apply DB
+  --remote && wrangler deploy`), as Workers Builds runs it. The terminal
+  helper is now `npm run deploy:cli`; it sets `KEY_ENCRYPTION_KEY` (fresh
+  installs only) and the SAML pair as secrets, no longer generates an RS256
+  keypair or sets `COOKIE_ENCRYPTION_KEY`, deploys once, and points at
+  `/setup`. The `db:migrations:*` scripts use the binding name.
 
 - **Errors are pages, not bare text.** Every refused or failed action in the
   admin console (a duplicate group or schema name, a missing item, a role

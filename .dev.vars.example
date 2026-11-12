@@ -1,0 +1,9 @@
+# Worker secrets FlareID needs. The Deploy to Cloudflare button asks for each
+# of these; for local development copy this file to .dev.vars (gitignored) and
+# replace the values. Values starting "replace-me" are refused.
+
+# Authenticates first-run setup at /setup (and POST /api/v1/setup). Generate: openssl rand -hex 32
+BOOTSTRAP_TOKEN=replace-me-with-openssl-rand-hex-32
+
+# Encrypts the signing keys stored in D1. Never change it later. Generate: openssl rand -base64 48
+KEY_ENCRYPTION_KEY=replace-me-with-openssl-rand-base64-48

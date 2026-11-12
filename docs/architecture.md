@@ -99,9 +99,9 @@ a user at all. Actions taken that way appear in the audit log with a null
 
 Token signing keys live in D1 (`signing_keys`, migration 0021), one active key
 per algorithm (RS256 and ES256), private halves encrypted with AES-256-GCM
-under the `KEY_ENCRYPTION_KEY` secret. On first use the RS256 key from
-`SIGNING_KEY_PKCS8` / `SIGNING_PUBLIC_JWK` is imported with its kid, and an
-ES256 key is generated.
+under the `KEY_ENCRYPTION_KEY` secret. On first use both are generated - or,
+when `SIGNING_KEY_PKCS8` / `SIGNING_PUBLIC_JWK` are set, that RS256 key is
+imported with its kid instead.
 
 Each OIDC client picks its id_token algorithm (`id_token_signed_response_alg`,
 RS256 by default, ES256 allowed) in the console or through the API.
@@ -116,7 +116,8 @@ step-up action.
 
 Two ways in, deliberately:
 
-- **A browser**, for a human: `/admin/setup` and the admin pages.
+- **A browser**, for a human: `/setup` on a fresh instance, then the admin
+  pages.
 - **`/api/v1`**, for everything else.
 
 The API is not a thin wrapper over the UI; the directory import in particular
@@ -127,7 +128,19 @@ the directory it describes.
 
 A fresh instance has no users, so the first call cannot be authenticated by a
 password. `BOOTSTRAP_TOKEN`, a Worker secret, fills that gap and retires itself
-when setup completes.
+when setup completes. `/setup` (routes/setup.ts) and `POST /api/v1/setup` both
+run `runSetup()` in services/setup.ts.
+
+## The issuer
+
+`ISSUER_URL` is empty in the shipped `wrangler.jsonc`, so a deployment made
+with the Deploy to Cloudflare button needs no configuration. `src/index.ts`
+resolves it before the app runs (lib/issuer.ts): the var when set; else the
+issuer stored in `idp_settings.issuer_url` when setup completed; else, before
+setup, the request's own origin - https only, or http on localhost. Workers
+only receives requests for hostnames routed to it, so the Host cannot name an
+arbitrary site. Completing setup (`markSetupCompleted`) stores the issuer in
+effect once and never overwrites it.
 
 ## Testing
 

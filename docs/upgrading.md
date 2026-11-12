@@ -24,7 +24,7 @@ This is now genuinely cheap, which is the point of the provisioning API.
 npx wrangler d1 export flareid-db --remote --output flareid-backup.sql
 
 npx wrangler d1 delete flareid-db
-npm run deploy                     # creates it, migrates it, deploys
+npm run deploy:cli                 # creates it, migrates it, deploys
 ```
 
 Then re-run your provisioning: `POST /api/v1/setup` for the administrator and
@@ -115,6 +115,7 @@ set, rather than setting every password in the directory to the empty string.
 - **`npm run seed:generate`** and `scripts/generate-seed.mjs` are gone. They
   read another repository's migrations to emit a FlareID migration. Directory
   data now arrives over the API.
-- **`npm run deploy`** now runs `scripts/deploy.mjs`, which does rather more
+- **`npm run deploy:cli`** runs `scripts/deploy.mjs`, which does rather more
   than `wrangler deploy` - creating resources, migrating, generating keys and
-  setting secrets. `npm run deploy:worker-only` is the old behaviour.
+  setting secrets. `npm run deploy` applies the migrations and deploys;
+  `npm run deploy:worker-only` only deploys.

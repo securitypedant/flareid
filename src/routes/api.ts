@@ -17,6 +17,7 @@ import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { apiCtx } from "../services/context.js";
 import { applyScimScope } from "../services/scim-sync.js";
 import { sendUserLink } from "../services/users.js";
+import { runSetup, SetupAdminError, type SetupInput } from "../services/setup.js";
 import { resolveGroupMemberUserIds } from "../lib/groups.js";
 import {
   listSchemas,
@@ -35,26 +36,7 @@ import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
-import {
-  getAppName,
-  getCursorTrail,
-  getSessionPolicy,
-  isHexColor,
-  isSetupCompleted,
-  setCursorTrail,
-  setSessionPolicy,
-  markSetupCompleted,
-  setAppName,
-  setDefaultPassword,
-  setLoginGradient,
-  setLoginSubtitle,
-  setMfaRequired,
-  setNewUserPasswordMode,
-  setPasswordPolicy,
-  setScimConfig,
-  type PasswordPolicy,
-} from "../lib/settings.js";
-import { setRateLimitPolicy } from "../lib/rate-limit.js";
+import { getAppName, isSetupCompleted, setScimConfig } from "../lib/settings.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
@@ -126,30 +108,7 @@ defineRoute({
 // First-run setup
 // ---------------------------------------------------------------------------
 
-interface SetupBody {
-  domain?: string;
-  admin?: { username?: string; password?: string; display_name?: string; given_name?: string; family_name?: string };
-  default_password?: string;
-  app_name?: string;
-  login_subtitle?: string;
-  login_gradient?: { from?: string; to?: string };
-  require_mfa?: boolean;
-  new_user_password_mode?: "default" | "random";
-  password_policy?: Partial<PasswordPolicy>;
-  rate_limit?: { max_attempts?: number; window_minutes?: number };
-  cursor_trail?: { enabled?: boolean; characters?: string };
-  session_limits?: { max_hours?: number; idle_minutes?: number };
-  complete?: boolean;
-}
-
-/**
- * Settings first, then the administrator, then the completion flag - and that
- * order matters. The account is created with whatever `new_user_password_mode`
- * and `default_password` say, so applying those afterwards would mint an
- * administrator with the wrong credential; and `complete` is last because it is
- * what stops the bootstrap token working, so anything after it would be locked
- * out of its own setup call.
- */
+/** The body: the same fields runSetup (services/setup.ts) takes, applied in its order. */
 const SetupBody = z.object({
   domain: z.string().optional(),
   admin: z.object({ username: z.string().optional(), password: z.string().optional(), display_name: z.string().optional(), given_name: z.string().optional(), family_name: z.string().optional() }).optional(),
@@ -173,137 +132,13 @@ defineRoute({
   body: SetupBody,
   response: z.object({ ok: z.literal(true), applied: z.array(z.string()), setup_completed: z.boolean(), admin: z.object({ upn: z.string(), password: z.string().optional() }).optional() }),
 }, async (c) => {
-  const body = await readJson<SetupBody>(c);
-  const actor = c.get("apiActor");
-  // Creating or resetting an administrator grants Super Admin, and with it key
-  // minting - that is admin authority, not settings authority. Refuse it
-  // before anything is applied so a rejected request has no partial effects.
-  if (body.admin?.username && !hasScope(actor.scopes, "admin")) {
-    return c.json({ error: "forbidden", message: 'Creating an administrator requires the "admin" scope.' }, 403);
+  try {
+    const result = await runSetup(apiCtx(c), await readJson<SetupInput>(c), "api");
+    return c.json({ ok: true as const, ...result });
+  } catch (err) {
+    if (err instanceof SetupAdminError) return c.json({ error: "setup_failed", message: err.message, details: err.details }, 400);
+    throw err;
   }
-  // Validated with everything else, before anything is applied.
-  if (body.login_gradient !== undefined && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) {
-    return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
-  }
-  const applied: string[] = [];
-
-  if (body.domain !== undefined) {
-    const domain = String(body.domain).trim().toLowerCase();
-    if (!domain) return c.json(badRequest("domain cannot be empty."), 400);
-    const existing = await listDomains(c.env);
-    if (!existing.some((d) => d.domain === domain)) await addDomain(c.env, domain);
-    const row = (await listDomains(c.env)).find((d) => d.domain === domain);
-    if (row) await setDefaultDomain(c.env, row.id);
-    applied.push(`domain=${domain}`);
-  }
-
-  if (body.default_password !== undefined) {
-    await setDefaultPassword(c.env, String(body.default_password));
-    applied.push("default_password");
-  }
-  if (body.new_user_password_mode !== undefined) {
-    await setNewUserPasswordMode(c.env, body.new_user_password_mode === "default" ? "default" : "random");
-    applied.push(`new_user_password_mode=${body.new_user_password_mode}`);
-  }
-  if (body.app_name !== undefined) {
-    await setAppName(c.env, String(body.app_name));
-    applied.push("app_name");
-  }
-  if (body.login_subtitle !== undefined) {
-    await setLoginSubtitle(c.env, String(body.login_subtitle));
-    applied.push("login_subtitle");
-  }
-  if (body.login_gradient?.from && body.login_gradient?.to) {
-    await setLoginGradient(c.env, { from: body.login_gradient.from, to: body.login_gradient.to });
-    applied.push("login_gradient");
-  }
-  if (body.require_mfa !== undefined) {
-    await setMfaRequired(c.env, Boolean(body.require_mfa));
-    applied.push(`require_mfa=${Boolean(body.require_mfa)}`);
-  }
-  if (body.password_policy !== undefined) {
-    const p = body.password_policy;
-    await setPasswordPolicy(c.env, {
-      minLength: Number(p.minLength ?? 8),
-      requireUppercase: Boolean(p.requireUppercase),
-      requireLowercase: Boolean(p.requireLowercase),
-      requireNumber: Boolean(p.requireNumber),
-      requireSymbol: Boolean(p.requireSymbol),
-    });
-    applied.push("password_policy");
-  }
-  if (body.rate_limit !== undefined) {
-    await setRateLimitPolicy(c.env, {
-      maxAttempts: Number(body.rate_limit.max_attempts ?? 5),
-      windowMinutes: Number(body.rate_limit.window_minutes ?? 15),
-    });
-    applied.push("rate_limit");
-  }
-  if (body.cursor_trail !== undefined) {
-    const current = await getCursorTrail(c.env);
-    await setCursorTrail(c.env, {
-      enabled: body.cursor_trail.enabled ?? current.enabled,
-      characters: body.cursor_trail.characters !== undefined ? String(body.cursor_trail.characters) : current.characters,
-    });
-    applied.push("cursor_trail");
-  }
-  if (body.session_limits !== undefined) {
-    const current = await getSessionPolicy(c.env);
-    await setSessionPolicy(c.env, {
-      maxHours: body.session_limits.max_hours ?? current.maxHours,
-      idleMinutes: body.session_limits.idle_minutes ?? current.idleMinutes,
-    });
-    applied.push("session_limits");
-  }
-
-  // The administrator, routed through the ordinary import so there is exactly
-  // one code path that creates a user.
-  let admin: { upn: string; password?: string } | undefined;
-  if (body.admin?.username) {
-    const username = String(body.admin.username).trim().toLowerCase();
-    const result = await importDirectory(
-      c.env,
-      {
-        version: 1,
-        domain: body.domain,
-        groups: [{ name: SUPER_ADMINS_GROUP, description: "Members can administer this directory" }],
-        users: [
-          {
-            username,
-            display_name: body.admin.display_name ?? "Administrator",
-            given_name: body.admin.given_name ?? "Administrator",
-            family_name: body.admin.family_name ?? "",
-            password: body.admin.password ?? null,
-            status: "active",
-            super_admin: true,
-          },
-        ],
-      },
-      // The admin check already ran above; this bundle is built internally.
-      { allowPrivileged: true }
-    );
-
-    if (result.errors.length > 0) {
-      return c.json({ error: "setup_failed", message: "Could not create the administrator.", details: result.errors }, 400);
-    }
-    const upn = `${username}@${result.domain}`;
-    admin = { upn, ...(result.generated_passwords[upn] ? { password: result.generated_passwords[upn] } : {}) };
-    applied.push(`admin=${upn}`);
-  }
-
-  if (body.complete) {
-    await markSetupCompleted(c.env);
-    applied.push("setup_completed");
-  }
-
-  await logAudit(c.env, auditActor(actor), "idp.setup_completed", body.domain, { applied, via: "api" }, c.req.raw);
-
-  return c.json({
-    ok: true,
-    applied,
-    setup_completed: await isSetupCompleted(c.env),
-    ...(admin ? { admin } : {}),
-  });
 });
 
 // ---------------------------------------------------------------------------

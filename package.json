@@ -26,15 +26,47 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p test",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "node scripts/deploy.mjs",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy:cli": "node scripts/deploy.mjs",
     "deploy:worker-only": "wrangler deploy",
-    "db:migrations:local": "wrangler d1 migrations apply flareid-db --local",
-    "db:migrations:remote": "wrangler d1 migrations apply flareid-db --remote",
+    "db:migrations:local": "wrangler d1 migrations apply DB --local",
+    "db:migrations:remote": "wrangler d1 migrations apply DB --remote",
     "keygen": "node scripts/generate-keypair.mjs",
     "saml:keygen": "node scripts/generate-saml-cert.mjs",
     "test-data": "node scripts/generate-test-directory.mjs",
     "oidc:conformance": "node scripts/oidc-conformance.mjs",
     "docs:api": "node scripts/api-docs.mjs"
+  },
+  "cloudflare": {
+    "bindings": {
+      "BOOTSTRAP_TOKEN": {
+        "description": "A long random string, e.g. the output of `openssl rand -hex 32`. Keep it: you enter it on `/setup` to create the first administrator. It stops working once setup is complete."
+      },
+      "KEY_ENCRYPTION_KEY": {
+        "description": "Encrypts the token-signing keys FlareID generates and stores in D1. Generate it with `openssl rand -base64 48`. **Never change it later** - stored keys could no longer be decrypted."
+      },
+      "DB": {
+        "description": "The D1 database holding the directory, clients, sessions, settings and audit log. Migrations run on every deploy."
+      },
+      "SESSIONS_KV": {
+        "description": "KV namespace for short-lived sign-in state (login flows, pending second-factor challenges). Nothing in it needs to survive being lost."
+      },
+      "METRICS": {
+        "description": "Analytics Engine dataset for per-request performance data, shown on the admin overview."
+      },
+      "EMAIL": {
+        "description": "Cloudflare Email Sending, for password recovery, invitations and email codes. Works only once a sending domain is onboarded (`wrangler email sending enable`) and a From address is set in **Admin → Integrations → Email**."
+      },
+      "ISSUER_URL": {
+        "description": "Leave empty: the issuer becomes the address you complete `/setup` on, and is then fixed. Add a custom domain **before** running setup, or set this (e.g. `https://idp.example.com`) to pin it."
+      },
+      "CF_ACCOUNT_ID": {
+        "description": "Optional: your account id, for the performance dashboard on the admin overview. Needs a `CF_ANALYTICS_TOKEN` secret too (an API token with __Account Analytics: Read__)."
+      },
+      "APP_NAME": {
+        "description": "The product name shown on sign-in and admin pages. Can be changed later in **Admin → Branding**."
+      }
+    }
   },
   "dependencies": {
     "@hono/zod-openapi": "1.6.3",

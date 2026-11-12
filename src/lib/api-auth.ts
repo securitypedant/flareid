@@ -57,9 +57,18 @@ function bearerToken(c: Context<{ Bindings: Env }>): string | null {
  * is loudly audited. Removing the secret from the Worker disables even that.
  */
 export async function bootstrapTokenValid(env: Env, token: string): Promise<boolean> {
-  if (!env.BOOTSTRAP_TOKEN) return false;
+  if (!env.BOOTSTRAP_TOKEN || isPlaceholderSecret(env.BOOTSTRAP_TOKEN)) return false;
   const [presented, expected] = await Promise.all([sha256Hex(token), sha256Hex(env.BOOTSTRAP_TOKEN)]);
   return timingSafeEqualHex(presented, expected);
+}
+
+/**
+ * The values .dev.vars.example ships with all start "replace-me". The Deploy
+ * to Cloudflare flow offers them as defaults, so a deployer who clicks through
+ * would otherwise have a bootstrap token printed in a public repository.
+ */
+export function isPlaceholderSecret(value: string): boolean {
+  return value.trim().toLowerCase().startsWith("replace-me");
 }
 
 /**

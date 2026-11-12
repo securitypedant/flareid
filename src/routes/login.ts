@@ -93,6 +93,11 @@ login.get("/login", async (c) => {
   const existingUserId = await getSessionUserId(c.req.raw, c.env);
   if (existingUserId) return c.redirect(next, 302);
 
+  // A fresh deployment: nobody to sign in as until /setup creates someone.
+  // (An administrator created over the API before setup completes can sign in,
+  // and lands on /admin/setup.)
+  if (!(await isSetupCompleted(c.env)) && !(await c.env.DB.prepare("SELECT 1 FROM users LIMIT 1").first())) return c.redirect("/setup", 302);
+
   // Sealed rather than stored: this page is anonymous, and a KV write per page
   // load let anyone spend the deployment's write quota (see sealLoginFlow).
   const flowId = await sealLoginFlow(c.env, { kind: "direct", next });

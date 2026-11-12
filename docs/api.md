@@ -30,7 +30,10 @@ shows both.
 
 ### The bootstrap token
 
-`BOOTSTRAP_TOKEN`, a Worker secret set at deploy time.
+`BOOTSTRAP_TOKEN`, a Worker secret set at deploy time. (The browser page at
+`/setup` takes the same token in a form and runs the same setup as
+`POST /api/v1/setup` with `complete: true`.) Values starting `replace-me` - the
+placeholders in `.dev.vars.example` - are never accepted.
 
 A freshly migrated FlareID has no users and no default password, so there is
 nothing to log in as - this is the only way in. It is accepted for every

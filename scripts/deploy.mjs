@@ -1,21 +1,25 @@
 #!/usr/bin/env node
-// Deploys FlareID from a bare clone into a Cloudflare account.
+// Deploys FlareID from a bare clone into a Cloudflare account, from a
+// terminal - the alternative to the Deploy to Cloudflare button (README).
 //
 //   npm install
 //   npx wrangler login          # or set CLOUDFLARE_API_TOKEN
-//   npm run deploy
+//   npm run deploy:cli
 //
 // What it does: creates the D1 database and KV namespace, applies the
-// migrations, generates an RS256 signing keypair, sets the three secrets,
-// decides on an issuer, deploys, and prints the one command you need to
-// configure the result.
+// migrations, sets the BOOTSTRAP_TOKEN and KEY_ENCRYPTION_KEY secrets, mints
+// a SAML signing key and certificate (both secrets), pins the issuer when it
+// is known up front, deploys, and prints where to finish setup.
+//
+// (`npm run deploy` is the plain migrate-and-deploy the button's Workers
+// Builds runs; it creates nothing.)
 //
 // IT WRITES TO wrangler.jsonc, AND THAT IS DELIBERATE
 //
-// The account id, the D1 and KV ids, the issuer URL and the signing key's
-// public half all end up in that file, because they are what the Worker is
-// deployed with and they differ per account. Expect a dirty working tree
-// afterwards; it is not a bug.
+// The D1 and KV ids, the Worker name and - with ZONE_NAME or
+// FLAREID_ISSUER_URL - the issuer end up in that file, because they are what
+// the Worker is deployed with and they differ per account. Expect a dirty
+// working tree afterwards; it is not a bug.
 //
 // Configuration, all optional, from the environment:
 //   CLOUDFLARE_ACCOUNT_ID      required if your token can see more than one account
@@ -25,10 +29,13 @@
 //   FLAREID_SUBDOMAIN          default "idp"
 //   FLAREID_ISSUER_URL         set the issuer explicitly, overriding the above
 //   FLAREID_WORKER_NAME        default "flareid-idp"
-//   FORCE_ROTATE_SIGNING_KEY   "true" to mint a new signing keypair on a redeploy.
-//                              Off by default: rotating invalidates every id_token
-//                              already issued and every relying party has to refetch
-//                              the JWKS.
+//
+// Without ZONE_NAME or FLAREID_ISSUER_URL, ISSUER_URL stays empty and the
+// issuer is fixed by first-run setup to the origin it is completed on (see
+// src/lib/issuer.ts) - so add any custom domain before running setup.
+//
+// Signing keys are not made here: the Worker generates them in D1 on first
+// use, encrypted with KEY_ENCRYPTION_KEY. Rotate them in Admin -> Security.
 //
 // Token permissions, if you are using one:
 //   Account > Workers Scripts > Edit     (deploy, secrets, KV)
@@ -60,7 +67,6 @@ const zoneName = process.env.ZONE_NAME ?? "";
 const subdomain = process.env.FLAREID_SUBDOMAIN || "idp";
 const workerName = process.env.FLAREID_WORKER_NAME || "flareid-idp";
 const explicitIssuer = process.env.FLAREID_ISSUER_URL ?? "";
-const rotateSigningKey = /^(1|true|yes)$/i.test(process.env.FORCE_ROTATE_SIGNING_KEY ?? "");
 
 const DB_NAME = "flareid-db";
 const KV_NAME = "flareid-idp-sessions";
@@ -154,12 +160,19 @@ async function main() {
   patch("id", await ensureKv(ROOT, KV_NAME));
 
   log("Migrations");
-  await applyMigrations(ROOT, DB_NAME);
+  // By binding name, as the deploy script does: the database's name may differ.
+  await applyMigrations(ROOT, "DB");
 
   log("Secrets");
-  await setSecretOnce(ROOT, "COOKIE_ENCRYPTION_KEY", randomBytes(32).toString("hex"), {
-    reason: "rotating it signs everyone out",
-  });
+  // Encrypts the signing keys in D1, so it must never change once keys exist.
+  // A deployment that already has SIGNING_KEY_PKCS8 encrypted its keys with a
+  // key derived from that instead (signing-keys.ts); adding this now would
+  // make them unreadable, so it is only ever set on a fresh install.
+  if (!(await hasSecret(ROOT, "KEY_ENCRYPTION_KEY")) && !(await hasSecret(ROOT, "SIGNING_KEY_PKCS8"))) {
+    await setSecret(ROOT, "KEY_ENCRYPTION_KEY", randomBytes(48).toString("base64"));
+  } else {
+    detail("KEY_ENCRYPTION_KEY (or SIGNING_KEY_PKCS8) already set, leaving it - it must never change");
+  }
 
   // Printed at the end, so it has to be known here. Regenerated on every run
   // when it is missing; left alone when it is already set, because a lab or a
@@ -178,48 +191,33 @@ async function main() {
   const removeKeys = () => rmSync(keyDir, { recursive: true, force: true });
   process.on("exit", removeKeys);
 
-  if (rotateSigningKey || !(await hasSecret(ROOT, "SIGNING_KEY_PKCS8"))) {
-    detail("generating an RS256 signing keypair...");
-    await runOrExit("node", ["scripts/gen-secrets-for-deploy.mjs", keyDir], { cwd: ROOT }, "signing key generation");
-
-    const keyPath = join(keyDir, ".signing-key.pem");
-    const jwkPath = join(keyDir, ".signing-public-jwk.txt");
-    await setSecret(ROOT, "SIGNING_KEY_PKCS8", readFileSync(keyPath, "utf8"));
-    // Arrives pre-escaped as a JSON string literal, which patchJsonField uses
-    // verbatim when it is already quoted.
-    patch("SIGNING_PUBLIC_JWK", readFileSync(jwkPath, "utf8").trim());
-    patch("SIGNING_KEY_ID", "flareid-key-1");
-  } else {
-    detail("SIGNING_KEY_PKCS8 already set, leaving it (FORCE_ROTATE_SIGNING_KEY=true to rotate)");
-  }
-
   // SAML needs a certificate, not just a keypair: service providers consume a
   // cert, and it is embedded in every signed response's KeyInfo. Minted once
   // and left alone afterwards - rotating breaks SAML logins until every SP is
   // updated, so there is deliberately no FORCE_ROTATE flag here.
+  //
+  // Both halves are secrets, so wrangler.jsonc carries nothing per-deployment.
+  // The key is set last because its presence is what a re-run takes to mean
+  // "done": a failure in between regenerates both.
   if (!(await hasSecret(ROOT, "SAML_SIGNING_KEY_PKCS8"))) {
-    // Checked before a key exists: storing the secret and then failing to
-    // record the matching certificate left a live key with no certificate (and,
-    // before keys moved out of the repo, the key file in the working tree).
-    if (!readFileSync(WRANGLER_CONFIG, "utf8").includes('"SAML_SIGNING_CERT"')) {
-      error('wrangler.jsonc has no vars.SAML_SIGNING_CERT field to record the certificate in. Add `"SAML_SIGNING_CERT": ""` under vars (see the shipped wrangler.jsonc) and re-run.');
-      process.exit(1);
-    }
     detail("generating a SAML signing certificate (RSA-3072, 10y)...");
     await runOrExit("node", ["scripts/generate-saml-cert.mjs", "--out-dir", keyDir], { cwd: ROOT }, "SAML certificate generation");
 
     const samlKeyPath = join(keyDir, ".saml-key.pem");
     const samlCertPath = join(keyDir, ".saml-cert.pem");
+    await setSecret(ROOT, "SAML_SIGNING_CERT", readFileSync(samlCertPath, "utf8").trim());
     await setSecret(ROOT, "SAML_SIGNING_KEY_PKCS8", readFileSync(samlKeyPath, "utf8"));
-    patch("SAML_SIGNING_CERT", readFileSync(samlCertPath, "utf8").trim());
+  } else if (!(await hasSecret(ROOT, "SAML_SIGNING_CERT"))) {
+    warn("SAML_SIGNING_KEY_PKCS8 is set but the SAML_SIGNING_CERT secret is not, so SAML answers 503.");
+    warn("Set the matching certificate: npx wrangler secret put SAML_SIGNING_CERT < saml-cert.pem");
   } else {
-    detail("SAML_SIGNING_KEY_PKCS8 already set, leaving it");
+    detail("SAML_SIGNING_KEY_PKCS8 and SAML_SIGNING_CERT already set, leaving them");
   }
 
   let issuer;
   if (explicitIssuer || zoneName) {
-    // The hostname is known before the deploy, so ISSUER_URL can be baked in
-    // and the Worker never exists claiming an issuer it is not served from.
+    // The hostname is known before the deploy, so ISSUER_URL is pinned and the
+    // Worker never exists claiming an issuer it is not served from.
     issuer = explicitIssuer || `https://${subdomain}.${zoneName}`;
     log(`Issuer ${issuer}`);
     patch("ISSUER_URL", issuer);
@@ -232,22 +230,14 @@ async function main() {
       await attachCustomDomain(`${subdomain}.${zoneName}`);
     }
   } else {
-    // No zone and no explicit issuer, so the issuer is the workers.dev URL -
-    // which is not known until after a deploy. Hence two: the first to learn
-    // the hostname, the second to bake it in. The issuer in an id_token has to
-    // match exactly, and a relying party will reject the token rather than tell
-    // you why.
-    log("Deploy (first pass, to discover the workers.dev hostname)");
-    const workersDevUrl = await deployWorker(ROOT, { quiet: true });
-    if (!workersDevUrl) {
-      error("The deploy did not report a workers.dev URL, so the issuer cannot be set");
-      error("automatically. Set ZONE_NAME or FLAREID_ISSUER_URL and re-run.");
-      process.exit(1);
+    // No zone and no explicit issuer: ISSUER_URL stays empty and setup fixes
+    // the issuer to the workers.dev origin it is completed on.
+    log("Deploy");
+    issuer = await deployWorker(ROOT);
+    if (!issuer) {
+      warn("The deploy did not report a workers.dev URL. Open /setup on whichever hostname serves the Worker.");
+      issuer = "https://<your-worker>.<your-subdomain>.workers.dev";
     }
-    issuer = workersDevUrl;
-    log(`Issuer ${issuer} - deploying again to bake it in`);
-    patch("ISSUER_URL", issuer);
-    await deployWorker(ROOT);
   }
 
   summary(issuer, bootstrapIsNew ? bootstrapToken : null);
@@ -267,19 +257,24 @@ OIDC endpoints:
   userinfo    ${issuer}/userinfo
 
 There are no users yet, and no default password - that is deliberate. Create
-the first administrator with the bootstrap token:
+the first administrator in a browser, with the bootstrap token below:
+
+  ${issuer}/setup
+
+or over the API:
 
   curl -X POST ${issuer}/api/v1/setup \\
     -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \\
     -H "Content-Type: application/json" \\
     -d '{"domain":"example.com","admin":{"username":"admin"},"complete":true}'
 
-It answers with the generated administrator password. Sign in at
-${issuer}/login and go to /admin from there.
+(which answers with a generated administrator password). Then sign in at
+${issuer}/login; an administrator is made to enrol a second factor first.
 
-The bootstrap token stops working once setup completes, except for the
-break-glass route documented in docs/api.md. Mint an ordinary API key from
-Admin -> Integrations for anything ongoing.`);
+Completing setup fixes the issuer to the address it was completed on, unless
+ISSUER_URL is pinned in wrangler.jsonc. The bootstrap token stops working once
+setup completes, except for the break-glass route documented in docs/api.md.
+Mint an ordinary API key from Admin -> Integrations for anything ongoing.`);
 
   if (bootstrapToken) {
     blank();
@@ -293,7 +288,7 @@ BOOTSTRAP_TOKEN (shown once - it is a Worker secret from here on)
     lines(`BOOTSTRAP_TOKEN was already set, so it is not reprinted - a secret cannot
 be read back out of a Worker. If you no longer have it:
 
-  npx wrangler secret delete BOOTSTRAP_TOKEN && npm run deploy`);
+  npx wrangler secret delete BOOTSTRAP_TOKEN && npm run deploy:cli`);
   }
 
   if (!zoneName && !explicitIssuer) {

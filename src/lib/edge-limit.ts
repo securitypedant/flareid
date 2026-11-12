@@ -29,6 +29,7 @@ function routeGroup(method: string, path: string): Group | null {
   if (path === "/login" || path.startsWith("/login/") || path === "/authorize" || path === "/saml/sso" || path === "/saml/complete") return "auth";
   if (path.startsWith("/api/") || path === "/token" || path === "/introspect" || path === "/revoke" || path === "/userinfo") return "api";
   if (path.startsWith("/scim/v2/")) return "api";
+  if (path === "/setup") return "auth";
   if (method === "POST" && (path === "/forgot-password" || path.startsWith("/reset-password") || path.startsWith("/invite/"))) return "auth";
   if (path === "/forgot-password" || path.startsWith("/reset-password/") || path.startsWith("/invite/")) return "auth";
   if (path === "/logout" || path.startsWith("/oidc/logout") || path === "/saml/slo" || path.startsWith("/consent/")) return "auth";

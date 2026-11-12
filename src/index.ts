@@ -23,6 +23,9 @@ import { purgeRetiredKeys } from "./lib/signing-keys.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 import { edgeRateLimit } from "./lib/edge-limit.js";
 import { recordRequestMetrics } from "./lib/metrics.js";
+import { scheduledEnv, withResolvedIssuer } from "./lib/issuer.js";
+import { isSetupCompleted } from "./lib/settings.js";
+import { setup } from "./routes/setup.js";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -52,8 +55,10 @@ app.use("*", async (c, next) => {
 // Browser routes only - the API above authenticates with bearer tokens.
 app.use("*", csrfProtection);
 
-app.get("/", (c) => c.redirect("/account", 302));
+// A fresh deployment has nobody to sign in as: send the visitor to first-run setup.
+app.get("/", async (c) => c.redirect((await isSetupCompleted(c.env)) ? "/account" : "/setup", 302));
 
+app.route("/", setup);
 app.route("/", discovery);
 app.route("/", authorize);
 app.route("/", saml);
@@ -75,11 +80,25 @@ app.onError((err, c) => {
 app.notFound((c) => errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 404, "There's no page at this address. Check the link, or go back."));
 
 export default {
-  fetch: app.fetch,
+  // ISSUER_URL is resolved here, once, before anything reads it: the pinned
+  // var, else the issuer stored at setup, else (before setup) the request's
+  // own https origin - see lib/issuer.ts. Everything downstream sees a
+  // non-empty c.env.ISSUER_URL.
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const resolved = await withResolvedIssuer(env, request);
+    if (resolved instanceof Response) return resolved;
+    return app.fetch(request, resolved, ctx);
+  },
   // Hourly Cron Trigger (wrangler.jsonc): garbage-collect expired codes, tokens,
   // sessions, devices and old audit entries. Logged so a run is visible in
   // Workers logs; failures surface there too rather than failing silently.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+  //
+  // There is no request to take an issuer from, so ISSUER_URL is the pinned or
+  // stored one, or "" before setup. None of the jobs below depends on it (none
+  // mints a token or builds a link); a future one that does must skip when it
+  // is empty.
+  async scheduled(_controller: ScheduledController, rawEnv: Env, ctx: ExecutionContext) {
+    const env = await scheduledEnv(rawEnv);
     ctx.waitUntil(
       purgeExpiredState(env).then(
         (removed) => console.log(JSON.stringify({ event: "cleanup", removed })),

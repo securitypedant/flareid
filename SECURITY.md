@@ -47,9 +47,14 @@ Novel findings, or anything materially worse than the above, are very welcome.
 ## Things that are deliberate, and why
 
 - **A deployment starts with no users and no default password.** There is no
-  shipped credential to find. The first administrator is created through the
-  provisioning API using the `BOOTSTRAP_TOKEN` Worker secret, which stops
-  working once setup completes.
+  shipped credential to find. The first administrator is created at `/setup`
+  or through the provisioning API using the `BOOTSTRAP_TOKEN` Worker secret,
+  which stops working once setup completes. Until then `/setup` is public, and
+  the token is all that guards it - so a deployer sets it before anyone else
+  knows the address, and the `replace-me` placeholders are refused.
+- **With `ISSUER_URL` empty, the issuer comes from the request until setup
+  completes**, then is stored and fixed. Only hostnames routed to the Worker
+  reach it, and only https origins (or http on localhost) are accepted.
 - **`BOOTSTRAP_TOKEN` keeps answering one route after setup**
   (`POST /api/v1/recovery/admin-reset`), because the alternative for a
   locked-out deployment is hand-editing the database. It is audited loudly, and

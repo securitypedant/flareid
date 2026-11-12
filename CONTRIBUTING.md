@@ -22,21 +22,16 @@ The P0 section is where help is most useful.
 
 ```bash
 npm install
-npm run keygen                     # once
+cp .dev.vars.example .dev.vars     # gitignored; replace both values
 npm run db:migrations:local
 npm run dev                        # http://localhost:8790
 ```
 
-`.dev.vars` (gitignored):
-
-```
-COOKIE_ENCRYPTION_KEY=<any random string>
-SIGNING_KEY_PKCS8="<private key PEM from npm run keygen>"
-BOOTSTRAP_TOKEN=<any random string>
-```
-
-A fresh database has no users, so create the first administrator through the
-API - see [docs/api.md](docs/api.md).
+A fresh database has no users, so create the first administrator at
+`http://localhost:8790/setup` with the `BOOTSTRAP_TOKEN` from `.dev.vars`, or
+through the API - see [docs/api.md](docs/api.md). With `ISSUER_URL` empty the
+issuer is `http://localhost:8790`; to use SAML locally, add the pair from
+`npm run saml:keygen` to `.dev.vars`.
 
 ## Before you open a pull request
 

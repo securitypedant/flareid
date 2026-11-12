@@ -2,6 +2,8 @@
 
 ![FlareID admin console](public/FlareID-screenshot-01.png)
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/securitypedant/flareid)
+
 A small, standalone OpenID Connect identity provider that runs on Cloudflare
 Workers and D1. One Worker, no build step, no client-side framework: server
 -rendered HTML for login, MFA, self-service and admin, plus the OIDC endpoints.
@@ -69,42 +71,54 @@ section 4 of that document.
 
 ## It starts empty, on purpose
 
-A freshly migrated FlareID has **no users and no default password**. There is
+A freshly deployed FlareID has **no users and no default password**. There is
 nothing to log in as.
 
 That is deliberate. The obvious alternative is to seed an administrator in a
 migration, which means committing a password hash to a public repository, which
 means every deployment that forgets to change it shares one known credential.
-So instead the first administrator is created over the API, authenticated by a
-`BOOTSTRAP_TOKEN` secret set at deploy time, and the token retires itself once
-setup completes.
+So instead the first administrator is created at `/setup` (or over the API),
+authenticated by a `BOOTSTRAP_TOKEN` secret you set when deploying, and the
+token retires itself once setup completes.
 
-`npm run deploy` prints the token and the single call that uses it.
+## Deploy to your Cloudflare account
 
-## Deploying
+1. Click **Deploy to Cloudflare** above and sign in to Cloudflare.
+2. Connect GitHub or GitLab. Cloudflare copies FlareID into a new repository
+   in your account, and redeploys from it on every push.
+3. Choose names for the repository, the Worker, the D1 database and the KV
+   namespace, or keep the defaults. They are created for you.
+4. Enter the two secrets, and keep a copy of the first:
+   - `BOOTSTRAP_TOKEN`: `openssl rand -hex 32`. You type it in at `/setup`.
+   - `KEY_ENCRYPTION_KEY`: `openssl rand -base64 48`. It encrypts the
+     signing keys. **Never change it.**
 
-```bash
-npm install
-npx wrangler login                 # or export CLOUDFLARE_API_TOKEN
-npm run deploy
-```
-
-That creates the D1 database and KV namespace, applies the migrations,
-generates an RS256 signing keypair, sets the three secrets, picks an issuer,
-deploys, and prints what to do next. **It writes to `wrangler.jsonc`** - the
-resource ids, the issuer and the signing key's public half all live there
-because they are what the Worker is deployed with, so expect a dirty working
-tree afterwards.
-
-Useful environment variables:
-
-| Variable | Effect |
-|---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | Required if your token can see more than one account |
-| `ZONE_NAME` | Puts FlareID on `idp.<ZONE_NAME>` and makes that the issuer |
-| `FLAREID_SUBDOMAIN` | Default `idp` |
-| `FLAREID_ISSUER_URL` | Set the issuer explicitly |
-| `FORCE_ROTATE_SIGNING_KEY` | `true` to mint a new signing keypair on redeploy |
+   Leave `ISSUER_URL` empty unless you want to pin the issuer.
+5. **Deploy.** The build applies the D1 migrations, then deploys the Worker.
+6. *(Optional, but do it now if at all.)* Add a custom domain under
+   **Workers & Pages → your Worker → Settings → Domains & Routes → Add →
+   Custom domain**. Do this **before** step 7: the address you complete setup
+   on becomes the issuer for good, and relying parties must match it exactly.
+   (To pin it instead, set the `ISSUER_URL` variable, e.g.
+   `https://idp.example.com`.)
+7. Open `https://<worker>.<your-subdomain>.workers.dev/setup`, or `/setup` on
+   your custom domain. Enter the bootstrap token, the domain for user names
+   (`example.com` makes `admin@example.com`), and the administrator's username,
+   display name and password.
+8. Sign in at `/login`. Administrators must enrol a second factor (an
+   authenticator app, a passkey or email codes) before going further.
+9. Next steps, all optional:
+   - **Email** (password recovery, invitations, email codes): onboard a
+     sending domain with `npx wrangler email sending enable <domain>`, then set
+     a From address in **Admin → Integrations → Email**. Until then, email
+     features stay off.
+   - **SAML**: `npm run saml:keygen` and set the `SAML_SIGNING_KEY_PKCS8` and
+     `SAML_SIGNING_CERT` secrets it prints. Without them `/saml/*` answers 503.
+   - **Bot protection**: Cloudflare Turnstile, in **Admin → Security**.
+   - **Performance dashboard**: set the `CF_ACCOUNT_ID` variable and a
+     `CF_ANALYTICS_TOKEN` secret (Account Analytics: Read).
+   - **Cloudflare Access**: use FlareID as an identity provider, as described in
+     [website/guides/CLOUDFLARE.md](website/guides/CLOUDFLARE.md).
 
 ### A note on `workers.dev` and Zero Trust
 
@@ -113,10 +127,37 @@ hostname, which answers unauthenticated requests with `error code: 1050`. That
 is fatal for an identity provider specifically: browsers and relying parties
 have to reach it *before* they are authenticated, so it fails in the middle of
 a login rather than at deploy time. Either add an Access bypass policy for the
-hostname, or set `ZONE_NAME` and use a custom domain. The deploy script says so
-too.
+hostname, or use a custom domain.
 
-## First-run setup
+## Deploying from a terminal
+
+```bash
+npm install
+npx wrangler login                 # or export CLOUDFLARE_API_TOKEN
+npm run deploy:cli
+```
+
+That creates the D1 database and KV namespace, applies the migrations, sets the
+`BOOTSTRAP_TOKEN` and `KEY_ENCRYPTION_KEY` secrets, generates the SAML signing
+key and certificate (both secrets), deploys, and prints the token and where to
+finish setup. **It writes to `wrangler.jsonc`** - the resource ids it created
+(and a pinned issuer, when it knows one) - so expect a dirty working tree
+afterwards. `npm run deploy` is just migrate-and-deploy, what Workers Builds
+runs for a button deployment.
+
+Useful environment variables:
+
+| Variable | Effect |
+|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | Required if your token can see more than one account |
+| `ZONE_NAME` | Puts FlareID on `idp.<ZONE_NAME>` and pins that as the issuer |
+| `FLAREID_SUBDOMAIN` | Default `idp` |
+| `FLAREID_ISSUER_URL` | Pin the issuer explicitly |
+
+## First-run setup over the API
+
+`/setup` in a browser is one way; the same thing over the API, with the same
+rules:
 
 ```bash
 curl -X POST https://idp.example.com/api/v1/setup \
@@ -132,6 +173,12 @@ curl -X POST https://idp.example.com/api/v1/setup \
 The response carries the generated administrator password. Sign in at `/login`
 and go to `/admin`.
 
+**The issuer.** With `ISSUER_URL` empty, FlareID answers as whatever https
+address a request arrived on until setup completes, then stores the address
+setup was completed on and keeps it, whatever hostname later requests use.
+Plain http is refused except on `localhost`. A non-empty `ISSUER_URL` always
+wins.
+
 For anything ongoing - CI, Terraform, a provisioning script - mint an API key
 from **Admin → Integrations** instead; the bootstrap token only answers the
 documented break-glass route once setup is complete.
@@ -140,20 +187,13 @@ documented break-glass route once setup is complete.
 
 ```bash
 npm install
-npm run keygen                     # once, or to rotate the signing key
+cp .dev.vars.example .dev.vars     # then replace both values
 npm run db:migrations:local
 npm run dev                        # http://localhost:8790
 ```
 
-`.dev.vars` (gitignored) needs:
-
-```
-COOKIE_ENCRYPTION_KEY=<any random string>
-SIGNING_KEY_PKCS8="<private key PEM from npm run keygen>"
-BOOTSTRAP_TOKEN=<any random string>
-```
-
-Then run the setup call above against `http://localhost:8790`.
+Then open `http://localhost:8790/setup`, or run the setup call above against
+it.
 
 ### Workers plan
 
@@ -170,7 +210,7 @@ Admin → Security.
 ## Tests
 
 ```bash
-npm test          # 121 tests: crypto, OIDC and SAML flows, the provisioning API, security
+npm test          # crypto, OIDC and SAML flows, the provisioning API, first-run setup, security
 npm run typecheck
 ```
 
@@ -189,7 +229,7 @@ test is the schema that ships. CI runs both plus a `wrangler deploy --dry-run`.
 | Provisioning API keys | D1: `api_keys` (SHA-256 hashes only) |
 | Settings, audit log | D1: `idp_settings`, `audit_log` |
 | Short-lived login-flow and pending-MFA state, rate limits | KV: `SESSIONS_KV` |
-| `id_token` signing | RS256 via `jose`; keypair from `scripts/generate-keypair.mjs` |
+| `id_token` signing | RS256 and ES256 via `jose`; keys generated in D1 (`signing_keys`), encrypted with `KEY_ENCRYPTION_KEY`, rotated from Admin → Security |
 | Password hashing | PBKDF2-SHA256 via Web Crypto, iteration count stored per row |
 | TOTP | RFC 6238 by hand (HMAC-SHA1, 6 digits, 30s), authenticator-app compatible |
 

@@ -2,12 +2,21 @@ export interface Env {
   DB: D1Database;
   SESSIONS_KV: KVNamespace;
   APP_NAME: string;
+  /**
+   * The issuer. Empty in wrangler.jsonc by default: src/index.ts resolves it
+   * before the app runs (the issuer stored at setup, else the request's https
+   * origin - lib/issuer.ts), so inside the app it is never empty. Set the var
+   * to pin it.
+   */
   ISSUER_URL: string;
-  /** Public half of the *current* signing key as a JSON JWK string - safe to be non-secret. Published at /jwks.json. */
-  SIGNING_PUBLIC_JWK: string;
-  /** Key id for the current signing key. Bump this whenever you rotate SIGNING_KEY_PKCS8. */
+  /**
+   * Optional: an RS256 keypair to import as the first signing key (with
+   * SIGNING_KEY_ID as its kid) instead of generating one. Signing keys live
+   * in D1 (lib/signing-keys.ts); these are read only while D1 has no RS256 key.
+   */
+  SIGNING_PUBLIC_JWK?: string;
   SIGNING_KEY_ID?: string;
-  /** PKCS8 PEM of the RS256 private key used to sign id_tokens. Set via `wrangler secret put SIGNING_KEY_PKCS8`. */
+  /** PKCS8 PEM of that RS256 private key, as a secret. Optional - see SIGNING_PUBLIC_JWK. */
   SIGNING_KEY_PKCS8?: string;
   /**
    * Public half of the *previous* signing key + its kid, kept published at
@@ -17,14 +26,15 @@ export interface Env {
    */
   SIGNING_PUBLIC_JWK_PREVIOUS?: string;
   SIGNING_KEY_ID_PREVIOUS?: string;
-  /** Any random string, signs the IdP session cookie. Set via `wrangler secret put COOKIE_ENCRYPTION_KEY`. */
+  /** Optional random string; keys the MAC on sealed login flows (lib/authorize-state.ts) when SIGNING_KEY_PKCS8 is not set. */
   COOKIE_ENCRYPTION_KEY?: string;
 
   /**
    * PEM X.509 certificate presented in SAML signatures' KeyInfo and published
-   * in /saml/metadata. Not a secret - it is handed to every service provider.
-   * The counterpart of SAML_SIGNING_KEY_PKCS8; generate the pair with
-   * `npm run saml:keygen`.
+   * in /saml/metadata. Not confidential - it is handed to every service
+   * provider - but set as a secret beside SAML_SIGNING_KEY_PKCS8, so the
+   * committed wrangler.jsonc stays deployable by anyone. Generate the pair with
+   * `npm run saml:keygen`. Without both, SAML answers 503.
    */
   SAML_SIGNING_CERT?: string;
   /** PKCS8 PEM of the RSA private key that signs SAML Responses and Assertions. */

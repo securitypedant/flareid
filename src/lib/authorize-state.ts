@@ -83,8 +83,8 @@ export async function storeLoginFlow(env: Env, flow: LoginFlow): Promise<string>
  * flow in KV for each meant every anonymous page load was a KV write - an easy
  * way to burn a plan's write quota (1,000 a day on the Free plan) and break
  * sign-in for everyone. A sealed flow carries its own state in the form instead:
- * the flow and an expiry, MACed with a key derived from the deployment's
- * signing key, so a client can neither forge nor alter one - an OIDC flow's
+ * the flow and an expiry, MACed with a key derived from one of the deployment's
+ * secrets, so a client can neither forge nor alter one - an OIDC flow's
  * redirect_uri was checked against the client's allowlist when it was sealed,
  * and must not be changeable afterwards.
  *
@@ -95,7 +95,8 @@ export async function storeLoginFlow(env: Env, flow: LoginFlow): Promise<string>
 const SEALED_PREFIX = "s.";
 
 async function flowSealKey(env: Env): Promise<CryptoKey | null> {
-  const material = env.SIGNING_KEY_PKCS8 ?? env.COOKIE_ENCRYPTION_KEY;
+  // KEY_ENCRYPTION_KEY last: a Deploy to Cloudflare install has only that one.
+  const material = env.SIGNING_KEY_PKCS8 || env.COOKIE_ENCRYPTION_KEY || env.KEY_ENCRYPTION_KEY;
   if (!material) return null;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`flareid login-flow seal v1\n${material}`));
   return crypto.subtle.importKey("raw", digest, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);

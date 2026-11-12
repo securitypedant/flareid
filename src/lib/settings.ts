@@ -117,8 +117,21 @@ export async function isSetupCompleted(env: Env): Promise<boolean> {
   return (await getSetting(env, "setup_completed")) === "true";
 }
 
+/**
+ * Marks first-run setup complete, and fixes the issuer: the one in effect for
+ * this request (the pinned ISSUER_URL, or the origin setup was run from) is
+ * stored unless one already is, and from then on it is what lib/issuer.ts
+ * resolves to whatever hostname a request arrives on. Written once, never
+ * overwritten - an issuer that changes breaks every relying party.
+ */
 export async function markSetupCompleted(env: Env): Promise<void> {
-  await setSetting(env, "setup_completed", "true");
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO idp_settings (key, value, updated_at) VALUES ('setup_completed', 'true', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(now),
+    ...(env.ISSUER_URL ? [env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES ('issuer_url', ?, ?) ON CONFLICT(key) DO NOTHING").bind(env.ISSUER_URL, now)] : []),
+  ]);
 }
 
 /**

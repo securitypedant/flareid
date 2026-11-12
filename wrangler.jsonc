@@ -1,9 +1,13 @@
 {
-  // Placeholders, not configuration. `npm run deploy` (scripts/deploy.mjs)
-  // creates the D1 database and KV namespace, generates a signing keypair, and
-  // writes the real values into this file - so expect it to be dirty in your
-  // working tree afterwards. That is the design: a Worker is deployed with the
-  // ids it is bound to, and those ids differ per account.
+  // Deployable as it stands, by anyone: the Deploy to Cloudflare button (see
+  // README) provisions the D1 database and KV namespace below in the
+  // deployer's own account and rewrites their ids, and nothing here belongs to
+  // one particular deployment. Secrets go in Worker secrets - the ones a
+  // deployment needs are listed in .dev.vars.example.
+  //
+  // `npm run deploy:cli` (scripts/deploy.mjs) does the same from a terminal and
+  // writes the ids it creates into this file, so expect it to be dirty in your
+  // working tree afterwards.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "flareid-idp",
   "main": "src/index.ts",
@@ -21,33 +25,25 @@
   },
   "vars": {
     // Public app name shown on the login and admin pages. Also editable at
-    // runtime from Admin -> Security, which takes precedence over this.
+    // runtime from Admin -> Branding, which takes precedence over this.
     "APP_NAME": "FlareID",
-    // The issuer this IdP identifies itself as, in OIDC discovery and in every
-    // id_token. It MUST exactly match the issuer configured in each relying
-    // party - a mismatch is rejected by the relying party, usually without
-    // explaining why. Set to the deployed hostname before going anywhere near a
-    // real client; left as localhost so that `npm run dev` works untouched.
+    // Account id for the performance dashboard on the admin overview, read
+    // back from Analytics Engine with the CF_ANALYTICS_TOKEN secret. Optional.
     "CF_ACCOUNT_ID": "",
-    "ISSUER_URL": "https://idp.tmesandbox.com",
-    // Public half of the RS256 signing keypair. Not a secret - this is exactly
-    // what /jwks.json publishes - but it must be the counterpart of the
-    // SIGNING_KEY_PKCS8 secret, so generate the pair together with
-    // `npm run keygen` rather than editing either by hand.
-    "SIGNING_PUBLIC_JWK": "{\"kty\":\"RSA\",\"n\":\"oYCu6FYtrLVGc_alzGx1SO2nZPjtB5pqoYDmO8bTbfg5aoiejvbctASmvCCh-Fb1X3OpR_pmFn_6zA387ZG_q7PW-0_PLWU1PKgVrUNH4loO7O-_WDg5kmpmy8Bs8pIrigGsgooBwDGUr9JLbPM0oltC6tM8NbxUWv7UlZJOIGkbZgp5OyLMWU7PLMML1_Iv7nVupofxzo2MQGvKg9sgXg_tw43DvPfR9OehNAqQB7pu_LP6U--lhnHz-1Z-lglPW1VZN8g8Sx6bZGdMNQ2N96rPFCjQKrWNj38AUm9OdWH_ZaJK6clfrmoKBKLSYE_gE7R5J5UK3KU_Rk2eC8YE0w\",\"e\":\"AQAB\"}",
-    // Key id for the current signing key. Bump it when rotating - see
-    // scripts/generate-keypair.mjs for the procedure.
-    "SIGNING_KEY_ID": "flareid-key-1",
-    // PEM X.509 certificate embedded in signed SAML responses and published
-    // at /saml/metadata. Not a secret - but it must be the counterpart of the
-    // SAML_SIGNING_KEY_PKCS8 secret, so generate the pair with
-    // `npm run saml:keygen`. Without it, the /saml endpoints answer 503.
-    "SAML_SIGNING_CERT": "-----BEGIN CERTIFICATE-----\r\nMIIDtzCCAh+gAwIBAgIBATANBgkqhkiG9w0BAQsFADAfMR0wGwYDVQQDExRGbGFy\r\nZUlEIFNBTUwgc2lnbmluZzAeFw0yNjEwMzEwODE5MjNaFw0zNjEwMzEwODE5MjNa\r\nMB8xHTAbBgNVBAMTFEZsYXJlSUQgU0FNTCBzaWduaW5nMIIBojANBgkqhkiG9w0B\r\nAQEFAAOCAY8AMIIBigKCAYEAuEO31+EX5J/wcALSfPCv/YRepiL6zaGEsxf09u1j\r\nYsblgRDty+NoxgVrzV408AOh0QuKIJqmeLEKnEuHMMdFk2dY2/avhAurgertsi20\r\nadw/XYV5TL8sloibEcxRvGxJMYrsvFDMF5cFNymYGveO7vdKCTW7XQtCiRjr4ato\r\nnrBUTHBTMg7FRMFyHx2fappC51KVNjf5p+ZFvbUbhFqqK1XgoXKnAQsljV7XPnVR\r\nlpyraf/kCUsbPVwE5pCexe7wbXLyWHdMk+cJ40Ps2IOQ943SV0ljE/7+NV8LAWBU\r\nRHTsIAOTrUdSoM2ruIaCMJR2tiNvfvuF+T6WFduWlCiI6/cyuNy9STllvrfh60va\r\nU+nr/sVwjsYnYgcGM65gqh+33HuWPmDt2nKGHO2+FZJsP3osV7rHa8eqh+FAmlGS\r\nL+jOKIM8nkT8Kl2mx10SjugdoQDxrNJyQne3+bcppQIPtSwwWVSBHWBiRROHbIah\r\ntfhWyTqlRGHCoTSmV3zdTL3RAgMBAAEwDQYJKoZIhvcNAQELBQADggGBABT9kbyb\r\n4/s9/N1aLJZwAMYHfwVTzMAWQBCnV3Lcg773dTt2OYYs4eFK6BB3iL4odBu17qLX\r\nL1xHbmOb5e1o/RnZfCboEXuAgDb0nIq8N1NWuQQ2WQIlvsbSBCzKt9E0623hx0Fv\r\nU3fLwwH7mdz92btpOlyL8ZlRDZF7FBzjdJ7SO0/t1pZW2+vcP86yz0S/J4R2tLHM\r\nfApbwijidvgv59NWKC7MvMM4sD6u59esGPmmW3eXjroqvOehmqIOkCtff5ji0YD7\r\n93gHbsHm9bKP0HGG2iFWiv6R4O+yVkwCRJyKK2H7bY61BrhJfqGpSF9b5fzYhdw4\r\neXppTscPrQhVKWTR38wsmYUT9OlSJsNmo+ZmZGfpc2yekxyXhXVJ1AGzlSBqEEO4\r\nJhRdPkeYU7FLfMzUyZeDGWhTl7976uLMk1e+Z7pKvuNCP6/V9DgS2d1xe2pqhVh8\r\nxX89KIL2f40LnzbpsHJakfl6WhFgZyh0DpmNdc8J+Qh6q6vagt8VNXEP0w==\r\n-----END CERTIFICATE-----"
-    // During a rotation window, also set these two to the *previous* key's
-    // public JWK and id, so tokens signed just before the rotation stay
-    // verifiable until they expire:
-    //   "SIGNING_PUBLIC_JWK_PREVIOUS": "...",
-    //   "SIGNING_KEY_ID_PREVIOUS": "flareid-key-1"
+    // The issuer this IdP identifies itself as, in OIDC discovery, every
+    // id_token and the SAML metadata. Relying parties must match it exactly.
+    // Empty: worked out at runtime (src/lib/issuer.ts) - the origin first-run
+    // setup at /setup was completed on, stored then and never changed. So add
+    // a custom domain BEFORE running setup and open /setup on it, or set this
+    // to pin the issuer (it then wins over the stored one).
+    "ISSUER_URL": ""
+    // Signing keys are generated and kept in D1, encrypted with the
+    // KEY_ENCRYPTION_KEY secret (src/lib/signing-keys.ts) - nothing here. To
+    // import an existing RS256 key instead, set SIGNING_KEY_PKCS8 (secret) and
+    // SIGNING_PUBLIC_JWK / SIGNING_KEY_ID here before the first token is signed.
+    //
+    // SAML is off until SAML_SIGNING_KEY_PKCS8 and SAML_SIGNING_CERT are both
+    // set as secrets: `npm run saml:keygen` prints the pair.
   },
   "assets": {
     // Static files - the logo and favicons - served directly, falling through
@@ -87,15 +83,16 @@
     { "name": "AUTH_LIMITER", "namespace_id": "7341", "simple": { "limit": 120, "period": 60 } },
     { "name": "API_LIMITER", "namespace_id": "7342", "simple": { "limit": 600, "period": 60 } }
   ]
-  // Secrets, set with `wrangler secret put` rather than stored here:
-  //   SIGNING_KEY_PKCS8     - PKCS8 PEM of the RS256 private key that signs
-  //                           id_tokens. Generate with `npm run keygen`.
-  //   COOKIE_ENCRYPTION_KEY - any random string; signs the IdP session cookie.
-  //   BOOTSTRAP_TOKEN       - one-shot provisioning secret for /api/v1. A fresh
-  //                           deployment has no users, so this is the only way
-  //                           to create the first administrator. It stops
-  //                           working once setup completes, except for the
-  //                           documented break-glass route. See docs/api.md.
-  //   SAML_SIGNING_KEY_PKCS8 - PKCS8 PEM of the RSA-3072 key that signs SAML
-  //                           responses. Generate with `npm run saml:keygen`.
+  // Secrets, set with `wrangler secret put` (or the dashboard) rather than
+  // stored here - see .dev.vars.example:
+  //   BOOTSTRAP_TOKEN        - required. Authenticates first-run setup, at /setup
+  //                            or POST /api/v1/setup. It stops working once setup
+  //                            completes, except for the documented break-glass
+  //                            route. See docs/api.md.
+  //   KEY_ENCRYPTION_KEY     - required. Encrypts the signing keys stored in D1.
+  //                            Never change it afterwards.
+  //   SAML_SIGNING_KEY_PKCS8 - optional, with SAML_SIGNING_CERT: SAML signing,
+  //   SAML_SIGNING_CERT        from `npm run saml:keygen`.
+  //   CF_ANALYTICS_TOKEN     - optional, Account Analytics:Read, with CF_ACCOUNT_ID.
+  //   TURNSTILE_SECRET_KEY   - optional, overrides the one saved in the console.
 }
