@@ -7,38 +7,32 @@ import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINU
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
-import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { FACTORS, isFactorEnabled, listPolicies, setFactorEnabled, type FactorKey } from "../lib/auth-policy.js";
-import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
+import { AREAS, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
+import { FACTORS, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
-import { generateTempPassword, hashPassword } from "../lib/password.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
-import type { AuditLogRow, GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
+import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, deleteDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import {
-  applyDefaultPasswordToAllUsers,
   getDefaultPassword,
   getPasswordPolicy,
   isSetupCompleted,
   markSetupCompleted,
-  resolveNewAccountPassword,
   setDefaultPassword,
-  setPasswordPolicy,
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { getScimConfig, getScimScope, setScimConfig, setScimScope } from "../lib/settings.js";
-import { getRateLimitPolicy, setRateLimitPolicy } from "../lib/rate-limit.js";
-import { getNewUserPasswordMode, isMfaRequired, setMfaRequired, setNewUserPasswordMode } from "../lib/settings.js";
+import { getScimConfig, getScimScope, setScimConfig } from "../lib/settings.js";
+import { getRateLimitPolicy } from "../lib/rate-limit.js";
+import { getNewUserPasswordMode, isMfaRequired } from "../lib/settings.js";
 import {
-  AUDIT_RETENTION_DEFAULT_DAYS,
   AUDIT_RETENTION_MAX_DAYS,
   AUDIT_RETENTION_MIN_DAYS,
   getAuditRetentionDays,
-  setAuditRetentionDays,
 } from "../lib/settings.js";
 import {
   passwordPolicySummary,
@@ -47,22 +41,14 @@ import {
   getLoginGradient,
   getLoginSubtitle,
   getSessionPolicy,
+  isHexColor,
   SESSION_IDLE_MINUTES_RANGE,
   SESSION_MAX_HOURS_RANGE,
-  setAppName,
-  setCursorTrail,
-  setLoginGradient,
-  setLoginSubtitle,
-  setSessionPolicy,
 } from "../lib/settings.js";
-import { deleteBackupCodes } from "../lib/backup-codes.js";
-import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
-import { getEmailSettings, isEmailAddress, isEmailConfigured, isEmailEnabled, recipientFor, sendEmail, setEmailEnabled, setEmailSettings } from "../lib/email.js";
-import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
-import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
-import { deleteUserStatements, listActiveSessionsForUser, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { deactivateUserScim, deleteGroupScim, deleteUserScim, pushGroup, pushUser, syncAll, testScimConnection, drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision, syncGroups } from "../lib/scim-client.js";
+import { getEmailSettings, isEmailConfigured, isEmailEnabled, recipientFor } from "../lib/email.js";
+import { deleteUserStatements, listActiveSessionsForUser } from "../lib/sessions.js";
+import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, revokeApiKey, type ApiScope } from "../lib/api-keys.js";
@@ -70,7 +56,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
-import { resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
+import { resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -79,12 +65,9 @@ import {
   defaultSchemaId,
   parseCustomAttributes,
   userAttributeValue,
-  splitUserAttributes,
-  conformUserAttributes,
   attributesLostOnMove,
   createSchema,
   saveSchemaAttributes,
-  userEditableAttributeNames,
   applySchemaToAll,
   countConforming,
   attributeInput,
@@ -92,7 +75,54 @@ import {
   type SchemaAttributeRow,
 } from "../lib/schemas.js";
 
+import { consoleCtx, ServiceError } from "../services/context.js";
+import { scimConfigured, applyScimScope } from "../services/scim-sync.js";
+import {
+  createUser,
+  deleteUser,
+  connectedApps,
+  resetUserMfa,
+  resetUserPassword,
+  revokeUserAppAccess,
+  revokeUserSessions,
+  sendUserLink,
+  setUserStatus,
+  updateUserProfile,
+} from "../services/users.js";
+import { assertRuleAllowed, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
+import { deleteClient, getClientById, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
+import {
+  applyDefaultPasswordToAll,
+  saveAppName,
+  saveAuditRetention,
+  saveCursorTrail,
+  saveDefaultPassword,
+  saveEmailSettings,
+  saveFactor,
+  saveLoginGradient,
+  saveLoginSubtitle,
+  saveNewUserPasswordMode,
+  savePasswordPolicy,
+  saveRateLimit,
+  saveRequireMfa,
+  saveSessionLimits,
+  sendTestEmail,
+  switchEmail,
+} from "../services/settings.js";
+import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
+import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
+
+export { validFrontchannelUri };
+
 export const admin = new Hono<{ Bindings: Env }>();
+
+// A refusal from a shared service (src/services) is rendered as the console
+// always rendered its refusals: the message as text, with the status.
+admin.onError((err, c) => {
+  if (err instanceof ServiceError) return c.text(err.message, err.status);
+  console.error(err);
+  return c.text("Internal server error", 500);
+});
 
 admin.use("/admin", requireSession, requireAdmin);
 admin.use("/admin/*", requireSession, requireAdmin);
@@ -340,49 +370,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
     .join("");
 }
 
-/** Either the shared default password, or a freshly generated one that respects the configured complexity policy - per the "New account password" setting on /admin/security. */
-async function generateAccountPassword(env: Env): Promise<string> {
-  return (await resolveNewAccountPassword(env)).password;
-}
-
-async function scimConfigured(env: Env): Promise<boolean> {
-  const { endpoint, secret } = await getScimConfig(env);
-  return !!endpoint && !!secret;
-}
-
-/** Best-effort push - never blocks the admin action if SCIM isn't configured or the remote call fails. */
-async function syncUserBestEffort(c: { env: Env; get: (k: "user") => UserRow; req: { raw: Request } }, userId: number, action: "push" | "deactivate" | "delete") {
-  if (!(await scimConfigured(c.env))) return;
-  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>();
-  if (!user && action !== "delete") return;
-
-  const result =
-    action === "push" && user
-      ? await pushUser(c.env, user)
-      : action === "deactivate" && user
-        ? await deactivateUserScim(c.env, user)
-        : { ok: true };
-
-  if (!result.ok) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", user?.upn, { action, error: result.error }, c.req.raw);
-}
-
-async function syncGroupBestEffort(c: { env: Env; get: (k: "user") => UserRow; req: { raw: Request } }, groupId: number) {
-  if (!(await scimConfigured(c.env))) return;
-  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(groupId).first<GroupRow>();
-  if (!group) return;
-
-  const memberIds = await resolveGroupMemberUserIds(c.env, group);
-  const { results: memberRows } = memberIds.length
-    ? await c.env.DB.prepare(
-        `SELECT scim_id as scimId, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) AND scim_id IS NOT NULL`
-      )
-        .bind(JSON.stringify(memberIds))
-        .all<{ scimId: string; upn: string }>()
-    : { results: [] as { scimId: string; upn: string }[] };
-
-  const result = await pushGroup(c.env, group, memberRows);
-  if (!result.ok) await logAudit(c.env, c.get("user"), "scim.group_sync_failed", group.name, { error: result.error }, c.req.raw);
-}
+// The account-password and SCIM helpers moved to src/services, shared with the API.
 
 function splitUpn(upn: string): { username: string; domain: string } {
   const at = upn.lastIndexOf("@");
@@ -485,27 +473,10 @@ async function domainSelect(env: Env, name: string, selectedDomain?: string) {
 
 // ---------- Dashboard ----------
 
-const DASHBOARD_DAYS = 30;
-
-/** YYYY-MM-DD for a day offset from today, in UTC to match the audit log's timestamps. */
-function dayKey(offsetDays: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + offsetDays);
-  return d.toISOString().slice(0, 10);
-}
-
-const PERF_RANGES = {
-  "1h": { hours: 1, bucket: 5, label: "Last hour", fmt: (d: Date) => d.toISOString().slice(11, 16) },
-  "24h": { hours: 24, bucket: 60, label: "Last 24 hours", fmt: (d: Date) => d.toISOString().slice(11, 13) + "h" },
-  "7d": { hours: 168, bucket: 360, label: "Last 7 days", fmt: (d: Date) => d.toISOString().slice(5, 10) + " " + d.toISOString().slice(11, 13) + "h" },
-} as const;
+// DASHBOARD_DAYS, dayKey and PERF_RANGES live in services/monitoring.ts, shared with the API.
 
 admin.get("/admin/performance", async (c) => {
-  const key = (c.req.query("range") ?? "24h") as keyof typeof PERF_RANGES;
-  const range = PERF_RANGES[key] ?? PERF_RANGES["24h"];
-  const rangeKey = PERF_RANGES[key] ? key : "24h";
-  const family = /^[a-z]+$/.test(c.req.query("endpoint") ?? "") ? c.req.query("endpoint")! : "";
-  const [series, totals] = await Promise.all([readPerformanceSeries(c.env, range.hours, range.bucket, family || undefined), readPerformance(c.env, range.hours)]);
+  const { rangeKey, range, family, series, totals } = await performanceReport(c.env, c.req.query("range"), c.req.query("endpoint"));
   const tabs = `<div class="range-tabs">${(Object.keys(PERF_RANGES) as (keyof typeof PERF_RANGES)[])
     .map((k) => `<a href="/admin/performance?range=${k}${family ? `&endpoint=${family}` : ""}" class="${k === rangeKey ? "active" : ""}">${PERF_RANGES[k].label}</a>`)
     .join("")}</div>`;
@@ -560,97 +531,15 @@ admin.get("/admin/performance", async (c) => {
 });
 
 admin.get("/admin", async (c) => {
-  const since = `${dayKey(-(DASHBOARD_DAYS - 1))}T00:00:00.000Z`;
-
-  const [
-    { results: userCount },
-    { results: groupCount },
-    { results: clientCount },
-    { results: activeSessions },
-    { results: mfaCount },
-    { results: loginsByDay },
-    { results: outcomes },
-    { results: topActions },
-    { results: topUsers },
-  ] = await Promise.all([
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM users").all<{ n: number }>(),
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM groups").all<{ n: number }>(),
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM oauth_clients").all<{ n: number }>(),
-    // Sessions carry no expiry column - validity is created_at plus the 12h TTL
-    // in lib/sessions.ts, so the same rule is applied here rather than inventing
-    // one that would over-count long-dead sessions.
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM sessions WHERE revoked_at IS NULL AND created_at > ?")
-      .bind(new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString())
-      .all<{ n: number }>(),
-    c.env.DB.prepare("SELECT COUNT(*) as n FROM users WHERE mfa_enabled = 1").all<{ n: number }>(),
-
-    // The audit log is the source of truth for activity: login.success and
-    // login.failed have been recorded since the first version, so these charts
-    // need no new instrumentation - just grouping.
-    c.env.DB.prepare(
-      `SELECT substr(at, 1, 10) AS day,
-              SUM(CASE WHEN action = 'login.success' THEN 1 ELSE 0 END) AS ok,
-              SUM(CASE WHEN action LIKE 'login.failed%' OR action LIKE 'login.mfa_failed%' THEN 1 ELSE 0 END) AS bad
-         FROM audit_log
-        WHERE at >= ? AND action LIKE 'login.%'
-        GROUP BY day ORDER BY day`
-    )
-      .bind(since)
-      .all<{ day: string; ok: number; bad: number }>(),
-    c.env.DB.prepare(
-      `SELECT action, COUNT(*) AS n FROM audit_log
-        WHERE at >= ? AND action LIKE 'login.%' GROUP BY action ORDER BY n DESC`
-    )
-      .bind(since)
-      .all<{ action: string; n: number }>(),
-    c.env.DB.prepare(
-      `SELECT action, COUNT(*) AS n FROM audit_log
-        WHERE at >= ? AND action NOT LIKE 'login.%' GROUP BY action ORDER BY n DESC LIMIT 6`
-    )
-      .bind(since)
-      .all<{ action: string; n: number }>(),
-    c.env.DB.prepare(
-      `SELECT actor_upn AS upn, COUNT(*) AS n FROM audit_log
-        WHERE at >= ? AND action = 'login.success' AND actor_upn IS NOT NULL
-        GROUP BY actor_upn ORDER BY n DESC LIMIT 6`
-    )
-      .bind(since)
-      .all<{ upn: string; n: number }>(),
-  ]);
-
-  // Fill the gaps: a day with no logins has to be a zero-height bar, not a
-  // missing one, or the shape of the chart lies about the period.
-  const byDay = new Map(loginsByDay.map((r) => [r.day, r]));
-  const days = Array.from({ length: DASHBOARD_DAYS }, (_, i) => dayKey(-(DASHBOARD_DAYS - 1 - i)));
-  const successSeries = days.map((day) => ({
+  // The same numbers GET /api/v1/stats returns (services/monitoring.ts).
+  const [stats, perf] = await Promise.all([overviewStats(c.env), readPerformance(c.env, 24)]);
+  const successSeries = stats.last_30d.sign_ins_by_day.map(({ day, success }) => ({
     label: day.slice(8, 10) === "01" ? day.slice(5, 10) : day.slice(8, 10),
-    value: byDay.get(day)?.ok ?? 0,
+    value: success,
   }));
-
-  const day = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const [ops, perf] = await Promise.all([
-    c.env.DB.batch([
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM saml_service_providers"),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL"),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'active'"),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'login.success'").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND (action LIKE 'login.failed%' OR action LIKE 'login.mfa_failed%')").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'login.rate_limited'").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'api.request'").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'api.auth_failed'").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action LIKE 'scim.%failed'").bind(day),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue"),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM refresh_tokens WHERE revoked_at IS NULL AND rotated_at IS NULL AND expires_at > ?").bind(new Date().toISOString()),
-      c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE at >= ? AND action = 'user.step_up_failed'").bind(day),
-    ]),
-    readPerformance(c.env, 24),
-  ]);
-  const op = ops.map((r) => (r.results[0] as { n: number } | undefined)?.n ?? 0);
-  const [samlApps, apiKeys, activeUsers, ok24, bad24, limited24, api24, apiBad24, scimFail24, scimQueue, refreshLive, stepUpBad24] = op;
-  const successTotal = loginsByDay.reduce((sum, r) => sum + (r.ok ?? 0), 0);
-  const failedTotal = loginsByDay.reduce((sum, r) => sum + (r.bad ?? 0), 0);
-  const users = userCount[0]?.n ?? 0;
-  const mfaEnrolled = mfaCount[0]?.n ?? 0;
+  const { users, groups, oidc_clients: oidcClients, saml_apps: samlApps, active_api_keys: apiKeys, active_users: activeUsers, active_sessions: activeSessions, mfa_enrolled: mfaEnrolled, live_refresh_grants: refreshLive, scim_deletions_queued: scimQueue } = stats.counts;
+  const { sign_ins: ok24, failed_sign_ins: bad24, rate_limited_sign_ins: limited24, failed_step_ups: stepUpBad24, api_calls: api24, rejected_api_keys: apiBad24, scim_sync_failures: scimFail24 } = stats.last_24h;
+  const { sign_ins: successTotal, failed_sign_ins: failedTotal, outcomes, top_actions: topActions, top_users: topUsers } = stats.last_30d;
 
   return c.html(
     layout(
@@ -659,8 +548,8 @@ admin.get("/admin", async (c) => {
       `
             <div class="stat-grid">
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${users}</h2><p>Users</p></div></a>
-        <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groupCount[0]?.n ?? 0}</h2><p>Groups</p></div></a>
-        <a class="stat-card" href="/admin/clients"><div class="card"><h2>${clientCount[0]?.n ?? 0}</h2><p>OIDC Clients</p></div></a>
+        <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groups}</h2><p>Groups</p></div></a>
+        <a class="stat-card" href="/admin/clients"><div class="card"><h2>${oidcClients}</h2><p>OIDC Clients</p></div></a>
         <a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>
       </div>
       <div class="stat-grid">
@@ -728,7 +617,7 @@ admin.get("/admin", async (c) => {
         ${cardSection(`
           <h2>Posture</h2>
           ${attrGrid([
-            attr("Active sessions", activeSessions[0]?.n ?? 0),
+            attr("Active sessions", activeSessions),
             attr("MFA enrolled", `${mfaEnrolled} of ${users}`),
             attr("MFA coverage", users ? `${Math.round((mfaEnrolled / users) * 100)}%` : "—"),
             attr("Failed sign-ins (30d)", failedTotal),
@@ -1245,73 +1134,24 @@ admin.get("/admin/users/new", async (c) => {
 
 admin.post("/admin/users", async (c) => {
   const body = await c.req.parseBody({ all: true });
-  const username = String(body.username ?? "").trim().toLowerCase();
-  const domain = String(body.domain ?? "").trim().toLowerCase();
-  const upn = `${username}@${domain}`;
-  const givenName = String(body.given_name ?? "").trim();
-  const familyName = String(body.family_name ?? "").trim();
-  const displayName = `${givenName} ${familyName}`.trim();
-  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "user"));
-  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
-  const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
-  const { columns, custom } = splitUserAttributes(schemaAttrs, attrValues);
+  const schemaId = Number(body.schema_id) || undefined;
+  const attributes = Object.fromEntries(Object.entries(body).filter(([k]) => k.startsWith("attr_")).map(([k, v]) => [k.slice(5), String(v ?? "")]));
   const postedGroupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
-  const staticIds = new Set((await c.env.DB.prepare("SELECT id FROM groups WHERE rule = ''").all<{ id: number }>()).results.map((g) => g.id));
-  const groupIds = postedGroupIds.filter((gid) => staticIds.has(gid));
-
-  if (!username || !domain || !givenName) return c.text("username, domain, and first name are required", 400);
-
-  const existingUsername = await c.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
-  if (existingUsername) {
-    return c.text(`Username "${username}" is already taken by another account (usernames must be unique across every domain).`, 409);
-  }
-
-  const tempPassword = await generateAccountPassword(c.env);
-  const { hash, salt, iterations } = await hashPassword(tempPassword, c.env);
-  const now = new Date().toISOString();
-  const externalId = crypto.randomUUID();
-
-  const result = await c.env.DB.prepare(
-    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, manager_external_id, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, status, schema_id, custom_attributes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?, ?, ?, ?)`
-  )
-    .bind(
-      upn,
-      username,
-      displayName,
-      givenName,
-      familyName,
-      externalId,
-      String(columns.job_title ?? ""),
-      String(columns.department ?? ""),
-      (columns.manager_external_id as string | null) ?? null,
-      String(columns.employee_number ?? ""),
-      String(columns.hire_date ?? ""),
-      String(columns.employment_status ?? ""),
-      String(columns.employment_type ?? ""),
-      String(columns.location ?? ""),
-      hash,
-      salt,
-      iterations,
-      schemaId,
-      JSON.stringify(custom),
-      now,
-      now
-    )
-    .run();
-
-  const userId = result.meta.last_row_id;
-  if (groupIds.length > 0) {
-    await c.env.DB.batch(
-      groupIds.map((gid) =>
-        c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId)
-      )
-    );
-  }
-
-  await logAudit(c.env, c.get("user"), "user.created", upn, undefined, c.req.raw);
-  await syncUserBestEffort(c, userId, "push");
-  for (const gid of groupIds) await syncGroupBestEffort(c, gid);
+  // Shared with POST /api/v1/users (services/users.ts). New accounts start inactive.
+  const created = await createUser(consoleCtx(c), {
+    username: String(body.username ?? ""),
+    domain: String(body.domain ?? ""),
+    givenName: String(body.given_name ?? ""),
+    familyName: String(body.family_name ?? ""),
+    schemaId,
+    attributes,
+    groupIds: postedGroupIds,
+    status: "disabled",
+  });
+  const userId = created.id;
+  const upn = created.upn;
+  const tempPassword = created.password;
+  const displayName = `${String(body.given_name ?? "").trim()} ${String(body.family_name ?? "").trim()}`.trim();
 
   return c.html(
     layout(
@@ -1353,17 +1193,7 @@ admin.get("/admin/users/:id", async (c) => {
     .all<{ group_id: number }>();
   const memberGroupIds = new Set(memberships.map((m) => m.group_id));
   const sessions = await listActiveSessionsForUser(c.env, id);
-  const { results: connectedApps } = await c.env.DB.prepare(
-    `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
-     JOIN oauth_clients oc ON oc.client_id = at.client_id
-     WHERE at.user_id = ? AND at.expires_at > ?
-     UNION
-     SELECT DISTINCT oc.id, oc.name FROM refresh_tokens rt
-     JOIN oauth_clients oc ON oc.client_id = rt.client_id
-     WHERE rt.user_id = ? AND rt.revoked_at IS NULL`
-  )
-    .bind(id, new Date().toISOString(), id)
-    .all<{ id: number; name: string }>();
+  const apps = await connectedApps(c.env, id);
   const { username, domain } = splitUpn(user.upn);
   const isSelf = id === c.get("user").id;
 
@@ -1539,11 +1369,11 @@ admin.get("/admin/users/:id", async (c) => {
       ${cardSection(`
         <h2>Connected apps</h2>
         ${
-          connectedApps.length > 0
+          apps.length > 0
             ? `<table>
                 <thead><tr><th>App</th><th></th></tr></thead>
                 <tbody>
-                  ${connectedApps
+                  ${apps
                     .map(
                       (app) =>
                         `<tr><td>${escapeHtml(app.name)}</td><td><form method="POST" action="/admin/users/${id}/apps/${app.id}/revoke" ${confirmAttrs(`${user.display_name} will need to sign in to ${app.name} again.`, { title: `Revoke access to ${app.name}?`, action: "Revoke access", danger: true })}><button class="link-button" type="submit">Revoke access</button></form></td></tr>`
@@ -1577,105 +1407,27 @@ admin.get("/admin/users/:id", async (c) => {
 
 admin.post("/admin/users/:id/status", async (c) => {
   const id = Number(c.req.param("id"));
-  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
-  if (!user) return c.text("Not found", 404);
-  if (id === c.get("user").id) return c.text("You cannot deactivate your own account.", 400);
-
   const status = String((await c.req.parseBody()).status ?? "") === "active" ? "active" : "disabled";
-  await c.env.DB.prepare("UPDATE users SET status = ?, updated_at = ? WHERE id = ?").bind(status, new Date().toISOString(), id).run();
-  // Deactivation should take effect now, not at the next sign-in - and not at
-  // the next introspection or refresh grant either.
-  if (status === "disabled") {
-    await revokeAllSessionsForUser(c.env, id);
-    await revokeTokensForUser(c.env, id);
-  }
-
-  await logAudit(c.env, c.get("user"), status === "active" ? "user.activated" : "user.deactivated", user.upn, undefined, c.req.raw);
-  await syncUserBestEffort(c, id, status === "active" ? "push" : "deactivate");
+  await setUserStatus(consoleCtx(c), id, status);
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.parseBody({ all: true });
-  const username = String(body.username ?? "").trim().toLowerCase();
-  const domain = String(body.domain ?? "").trim().toLowerCase();
-  const upn = `${username}@${domain}`;
-  const givenName = String(body.given_name ?? "").trim();
-  const familyName = String(body.family_name ?? "").trim();
-  const displayName = `${givenName} ${familyName}`.trim();
-  const existingRow = await c.env.DB.prepare("SELECT external_id, status, upn FROM users WHERE id = ?").bind(id).first<{ external_id: string; status: string; upn: string }>();
-  if (!existingRow) return c.text("Not found", 404);
-  const status = existingRow.status; // changed only through the account switch (/status)
-
-  // Only static groups take explicit members - dynamic membership follows the rule.
   const postedGroupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
-  const { results: staticGroupRows } = await c.env.DB.prepare("SELECT id FROM groups WHERE rule = ''").all<{ id: number }>();
-  const staticIds = new Set(staticGroupRows.map((g) => g.id));
-  const groupIds = postedGroupIds.filter((gid) => staticIds.has(gid));
-
-  // Conform to the chosen schema: what it defines is saved (same-named values
-  // were carried into the form), everything else is cleared.
-  const schemaId = Number(body.schema_id) || (await defaultSchemaId(c.env, "user"));
-  const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
-  const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]));
-  const { columns, custom } = conformUserAttributes(schemaAttrs, attrValues);
-  const mergedCustom = custom;
-
-  let managerExternalId = (columns.manager_external_id as string | null) ?? null;
-  if (managerExternalId && managerExternalId === existingRow.external_id) managerExternalId = null; // can't manage yourself
-
-  const usernameTaken = await c.env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
-  if (usernameTaken) {
-    return c.text(`Username "${username}" is already taken by another account (usernames must be unique across every domain).`, 409);
-  }
-
-  // A rename moves the address recovery mail goes to: links sent to the old one are void.
-  if (existingRow.upn !== upn) await revokeAccountTokens(c.env, id);
-  await c.env.DB.prepare(
-    `UPDATE users SET upn = ?, username = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?, manager_external_id = ?,
-     employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?, status = ?, schema_id = ?, custom_attributes = ?, updated_at = ? WHERE id = ?`
-  )
-    .bind(
-      upn,
-      username,
-      displayName,
-      givenName,
-      familyName,
-      String(columns.job_title ?? ""),
-      String(columns.department ?? ""),
-      managerExternalId,
-      String(columns.employee_number ?? ""),
-      String(columns.hire_date ?? ""),
-      String(columns.employment_status ?? ""),
-      String(columns.employment_type ?? ""),
-      String(columns.location ?? ""),
-      status,
-      schemaId,
-      JSON.stringify(mergedCustom),
-      new Date().toISOString(),
-      id
-    )
-    .run();
-
-  const { results: previous } = await c.env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?").bind(id).all<{ group_id: number }>();
-  await c.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id).run();
-  if (groupIds.length > 0) {
-    await c.env.DB.batch(
-      groupIds.map((gid) =>
-        c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, id)
-      )
-    );
-  }
-
-  await logAudit(c.env, c.get("user"), "user.updated", upn, undefined, c.req.raw);
-  await syncUserBestEffort(c, id, status === "active" ? "push" : "deactivate");
-  // Groups they left, groups they joined, and every dynamic group - an
-  // attribute edit can move them in or out of any rule.
-  const { results: dynamicRows } = await c.env.DB.prepare("SELECT id FROM groups WHERE rule != ''").all<{ id: number }>();
-  const affected = new Set([...previous.map((p) => p.group_id), ...groupIds, ...dynamicRows.map((g) => g.id)]);
-  for (const gid of affected) await syncGroupBestEffort(c, gid);
-
+  // The form carries every value of the chosen schema (same-named values were
+  // carried into it), so this is a full replace - PATCH /api/v1/users merges
+  // into the current values and calls the same function.
+  await updateUserProfile(consoleCtx(c), id, {
+    username: String(body.username ?? ""),
+    domain: String(body.domain ?? ""),
+    givenName: String(body.given_name ?? ""),
+    familyName: String(body.family_name ?? ""),
+    schemaId: Number(body.schema_id) || undefined,
+    attributes: Object.fromEntries(Object.entries(body).filter(([k]) => k.startsWith("attr_")).map(([k, v]) => [k.slice(5), String(v ?? "")])),
+    groupIds: postedGroupIds,
+  });
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
@@ -1684,8 +1436,7 @@ async function emailUserLink(c: Context<{ Bindings: Env }>, kind: "invite" | "re
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return c.text("Not found", 404);
-  const result = kind === "invite" ? await sendInvitation(c.env, user) : await sendPasswordReset(c.env, user);
-  await logAudit(c.env, c.get("user"), kind === "invite" ? "user.invitation_sent" : "user.password_reset_link_sent", user.upn, { to: recipientFor(user), sent: result.ok, ...(result.ok ? {} : { error: result.error }) }, c.req.raw);
+  const result = await sendUserLink(consoleCtx(c), user, kind);
   return c.redirect(`/admin/users/${id}?${result.ok ? `sent=${kind}` : `send_error=${encodeURIComponent(result.error)}`}`, 302);
 }
 
@@ -1694,12 +1445,7 @@ admin.post("/admin/users/:id/send-reset", (c) => emailUserLink(c, "reset"));
 
 admin.post("/admin/users/:id/reset-mfa", async (c) => {
   const id = Number(c.req.param("id"));
-  await c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, updated_at = ? WHERE id = ?")
-    .bind(new Date().toISOString(), id)
-    .run();
-  await deleteBackupCodes(c.env, id);
-  await deleteTrustedDevicesForUser(c.env, id);
-  await logAudit(c.env, c.get("user"), "user.mfa_reset", String(id), undefined, c.req.raw);
+  await resetUserMfa(consoleCtx(c), id);
   return c.redirect(`/admin/users/${id}`, 302);
 });
 
@@ -1736,20 +1482,9 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
     );
   }
 
-  const password = chosen || (await generateAccountPassword(c.env));
-  const { hash, salt, iterations } = await hashPassword(password, c.env);
-  await c.env.DB.prepare(
-    "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?"
-  )
-    .bind(hash, salt, iterations, new Date().toISOString(), id)
-    .run();
-
-  // A reset is a compromise response too: every existing session ends, same
-  // as the self-service change keeps only its own.
-  await revokeAllSessionsForUser(c.env, id);
-  await revokeTokensForUser(c.env, id);
-
-  await logAudit(c.env, c.get("user"), "user.password_reset", user.upn, { chosen: Boolean(chosen) }, c.req.raw);
+  // A reset is a compromise response too: every existing session ends
+  // (services/users.ts, shared with POST /api/v1/users/{username}/reset-password).
+  const { password } = await resetUserPassword(consoleCtx(c), id, chosen);
 
   return c.html(
     layout(
@@ -1771,51 +1506,18 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
 
 admin.post("/admin/users/:id/sessions/revoke-all", async (c) => {
   const id = Number(c.req.param("id"));
-  const count = await revokeAllSessionsForUser(c.env, id);
-  await logAudit(c.env, c.get("user"), "user.sessions_revoked_all", String(id), { count }, c.req.raw);
+  await revokeUserSessions(consoleCtx(c), id);
   return c.redirect(`/admin/users/${id}`, 302);
 });
 
 admin.post("/admin/users/:id/apps/:clientDbId/revoke", async (c) => {
   const id = Number(c.req.param("id"));
-  const clientDbId = Number(c.req.param("clientDbId"));
-  const client = await c.env.DB.prepare("SELECT client_id, name FROM oauth_clients WHERE id = ?")
-    .bind(clientDbId)
-    .first<{ client_id: string; name: string }>();
-  if (!client) return c.redirect(`/admin/users/${id}`, 302);
-
-  await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ? AND client_id = ?").bind(id, client.client_id),
-    c.env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND client_id = ?").bind(
-      new Date().toISOString(),
-      id,
-      client.client_id
-    ),
-  ]);
-  await logAudit(c.env, c.get("user"), "user.app_access_revoked", client.name, { userId: id }, c.req.raw);
-
+  await revokeUserAppAccess(consoleCtx(c), id, Number(c.req.param("clientDbId")));
   return c.redirect(`/admin/users/${id}`, 302);
 });
 
 admin.post("/admin/users/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
-  if (!user) return c.text("Not found", 404);
-  if (id === c.get("user").id) return c.text("You cannot delete your own account.", 400);
-
-  // Local first, in one batch, and only then the remote delete. The other way
-  // round, a local failure (a trusted_devices row the batch didn't cover, once)
-  // left the user deleted downstream but alive here.
-  await c.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(c.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(c.env, id)]);
-
-  if (await scimConfigured(c.env)) {
-    // A failure stays queued and is retried by every sync and the hourly cron.
-    const result = await drainScimDeprovisionQueue(c.env);
-    if (result.failed) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", user.upn, { action: "delete", queued: result.remaining }, c.req.raw);
-  }
-
-  await logAudit(c.env, c.get("user"), "user.deleted", user.upn, undefined, c.req.raw);
-
+  await deleteUser(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/users", 302);
 });
 
@@ -2044,13 +1746,9 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
   const dynamic = !superAdmins && String(body.membership ?? "static") === "dynamic";
   const rule = dynamic ? ruleFromForm(list(body.rule_schema), list(body.rule_field), list(body.rule_op), list(body.rule_value)) : "";
   if (dynamic && !rule) throw new Error("A dynamic group needs at least one condition.");
-  if (dynamic) {
-    // The reverse of the schema-side check: a rule on a field users can set
-    // themselves would let anyone choose their own groups.
-    const editable = await userEditableAttributeNames(c.env);
-    const clash = (parseRule(rule)?.all ?? []).map((cond) => cond.field.replace(/^custom\./, "")).find((f) => editable.has(f));
-    if (clash) throw new Error(`"${clash}" is user-editable in a schema, so it cannot drive group membership. Turn off "User can edit" for it first.`);
-  }
+  // The reverse of the schema-side check: a rule on a field users can set
+  // themselves would let anyone choose their own groups (shared with the API).
+  if (dynamic) await assertRuleAllowed(c.env, rule);
   // A new group posts its full member list; an existing static group posts only
   // additions (current members are removed one by one from the members panel).
   const userIds = dynamic ? [] : list(body.user_ids).map(Number).filter(Boolean);
@@ -2158,20 +1856,7 @@ admin.post("/admin/groups", async (c) => {
   } catch (e) {
     return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
   }
-  if (await c.env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(form.name).first()) {
-    return c.text(`A group named "${form.name}" already exists.`, 409);
-  }
-
-  const result = await c.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes) VALUES (?, ?, ?, ?, ?)")
-    .bind(form.name, form.description || null, form.rule, form.schemaId, JSON.stringify(form.custom))
-    .run();
-  const id = Number(result.meta.last_row_id);
-  if (form.userIds.length > 0) {
-    await c.env.DB.batch(form.userIds.map((uid) => c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
-  }
-
-  await logAudit(c.env, c.get("user"), "group.created", form.name, form.rule ? { rule: form.rule } : undefined, c.req.raw);
-  await syncGroupBestEffort(c, id);
+  const id = await createGroup(consoleCtx(c), form, form.userIds);
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
@@ -2185,20 +1870,7 @@ const MEMBERS_PER_PAGE = 30;
 async function groupMembersPanel(env: Env, group: GroupRow, search: string, page: number): Promise<string> {
   const rule = parseRule(group.rule);
   const needle = search.trim().toLowerCase();
-  let total: number;
-  let rows: UserRow[];
-  if (rule) {
-    const { results } = await env.DB.prepare("SELECT * FROM users ORDER BY display_name").all<UserRow>();
-    const all = results.filter((u) => userMatchesRule(u, rule));
-    const hits = needle ? all.filter((u) => `${u.display_name} ${u.upn} ${u.username}`.toLowerCase().includes(needle)) : all;
-    total = hits.length;
-    rows = hits.slice((page - 1) * MEMBERS_PER_PAGE, page * MEMBERS_PER_PAGE);
-  } else {
-    const like = `%${needle}%`;
-    const where = "FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND (lower(u.display_name) LIKE ? OR lower(u.upn) LIKE ? OR u.username LIKE ?)";
-    total = (await env.DB.prepare(`SELECT COUNT(*) AS n ${where}`).bind(group.id, like, like, like).first<{ n: number }>())?.n ?? 0;
-    rows = (await env.DB.prepare(`SELECT u.* ${where} ORDER BY u.display_name LIMIT ? OFFSET ?`).bind(group.id, like, like, like, MEMBERS_PER_PAGE, (page - 1) * MEMBERS_PER_PAGE).all<UserRow>()).results;
-  }
+  const { total, rows } = await groupMembers(env, group, search, MEMBERS_PER_PAGE, (page - 1) * MEMBERS_PER_PAGE);
   const pages = Math.max(1, Math.ceil(total / MEMBERS_PER_PAGE));
   const base = `/admin/groups/${group.id}?${search ? `msearch=${encodeURIComponent(search)}&` : ""}mpage=`;
   return cardSection(`
@@ -2228,34 +1900,13 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
 
 admin.post("/admin/groups/:id/members/:uid/remove", async (c) => {
   const id = Number(c.req.param("id"));
-  const uid = Number(c.req.param("uid"));
-  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
-  if (!group || group.rule) return c.text("Members of a dynamic group follow its rule.", 400);
-  if (group.name === SUPER_ADMINS_GROUP && uid === c.get("user").id) return c.text("You cannot remove yourself from Super Admins.", 400);
-  const user = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
-  await c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(id, uid).run();
-  await logAudit(c.env, c.get("user"), "group.member_removed", group.name, { user: user?.upn }, c.req.raw);
-  await syncGroupBestEffort(c, id);
-  if (await scimConfigured(c.env)) await pushUsersById(c.env, [uid]);
+  await removeGroupMember(consoleCtx(c), id, Number(c.req.param("uid")));
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/groups/:id/freeze", async (c) => {
   const id = Number(c.req.param("id"));
-  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
-  const rule = group ? parseRule(group.rule) : null;
-  if (!group || !rule) return c.text("Only a dynamic group can be converted to static.", 400);
-  const { results } = await c.env.DB.prepare("SELECT * FROM users").all<UserRow>();
-  const ids = results.filter((u) => userMatchesRule(u, rule)).map((u) => u.id);
-  // Rule off and the matches written as assigned rows in one batch, so the
-  // group never has a moment with neither.
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE groups SET rule = '' WHERE id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id),
-    c.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) SELECT ?, value FROM json_each(?)").bind(id, JSON.stringify(ids)),
-  ]);
-  await logAudit(c.env, c.get("user"), "group.converted_to_static", group.name, { members: ids.length, rule: group.rule }, c.req.raw);
-  await syncGroupBestEffort(c, id);
+  await freezeGroup(consoleCtx(c), id);
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
@@ -2290,65 +1941,16 @@ admin.post("/admin/groups/:id", async (c) => {
   } catch (e) {
     return c.text(e instanceof Error ? e.message : "Invalid group.", 400);
   }
-  if (await c.env.DB.prepare("SELECT id FROM groups WHERE name = ? AND id != ?").bind(form.name, id).first()) {
-    return c.text(`A group named "${form.name}" already exists.`, 409);
-  }
-  // Console authority is membership of the group with exactly this name, so
-  // the built-in group keeps it: renamed away, the name would be free for any
-  // directory writer (SCIM, import) to claim for a group it controls.
-  const current = await c.env.DB.prepare("SELECT name, rule FROM groups WHERE id = ?").bind(id).first<{ name: string; rule: string }>();
-  // The type is fixed at creation; dynamic -> static only via /freeze, which keeps the members.
-  if (current && (current.rule !== "") !== (form.rule !== "")) {
-    return c.text("A group's type cannot be changed here. A dynamic group can be converted to static from its page.", 400);
-  }
-  if ((current?.name === SUPER_ADMINS_GROUP) !== (form.name === SUPER_ADMINS_GROUP)) {
-    return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be renamed, and no other group can take its name.`, 400);
-  }
+  // The form posts only additions to a static group (current members are
+  // removed one by one from the members panel), so its set is the union.
   const { results: before } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
-  if (!form.rule) form.userIds = [...new Set([...before.map((b) => b.user_id), ...form.userIds, ...form.addUserIds])];
-
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(
-      form.name,
-      form.description || null,
-      form.rule,
-      form.schemaId,
-      JSON.stringify(form.custom),
-      id
-    ),
-    // A dynamic group holds no explicit rows; a static one holds exactly the posted set.
-    c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id),
-    ...form.userIds.map((uid) => c.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)),
-  ]);
-
-  await logAudit(c.env, c.get("user"), "group.updated", form.name, form.rule ? { rule: form.rule } : undefined, c.req.raw);
-  await syncGroupBestEffort(c, id);
-  // Members this edit removed are re-pushed: leaving a SCIM-scoped group can take them out of scope.
-  if (await scimConfigured(c.env)) {
-    const kept = new Set(form.rule ? [] : form.userIds);
-    const r = await pushUsersById(c.env, before.map((b) => b.user_id).filter((uid) => !kept.has(uid)));
-    if (!r.ok) await logAudit(c.env, c.get("user"), "scim.user_sync_failed", form.name, { action: "membership_removed", error: r.error }, c.req.raw);
-  }
+  const members = form.rule ? [] : [...new Set([...before.map((b) => b.user_id), ...form.userIds, ...form.addUserIds])];
+  await updateGroup(consoleCtx(c), id, form, members);
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/groups/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
-  if (group?.name === SUPER_ADMINS_GROUP) return c.text(`The ${SUPER_ADMINS_GROUP} group cannot be deleted.`, 400);
-
-  const { results: members } = await c.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
-  // Local first with the remote id queued in the same batch, as for users.
-  await c.env.DB.batch([
-    ...(group?.scim_id ? [queueScimDeprovision(c.env, "group", group.scim_id, group.name)] : []),
-    c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
-  ]);
-  if (group && (await scimConfigured(c.env))) {
-    const drained = await drainScimDeprovisionQueue(c.env);
-    const pushed = await pushUsersById(c.env, members.map((m) => m.user_id));
-    if (drained.failed || !pushed.ok) await logAudit(c.env, c.get("user"), "scim.group_sync_failed", group.name, { action: "delete", queued: drained.remaining, error: pushed.error }, c.req.raw);
-  }
-  await logAudit(c.env, c.get("user"), "group.deleted", group?.name, undefined, c.req.raw);
+  await deleteGroup(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/groups", 302);
 });
 
@@ -2574,31 +2176,23 @@ admin.get("/admin/integrations/email", async (c) => {
 });
 
 admin.post("/admin/email/enabled", async (c) => {
-  const on = String((await c.req.parseBody()).enabled) === "1";
-  await setEmailEnabled(c.env, on);
-  await logAudit(c.env, c.get("user"), "settings.email_switched", undefined, { enabled: on }, c.req.raw);
+  await switchEmail(consoleCtx(c), String((await c.req.parseBody()).enabled) === "1");
   return c.redirect("/admin/integrations/email?saved=1", 302);
 });
 
 admin.post("/admin/email", async (c) => {
   const body = await c.req.parseBody();
-  const fromAddress = String(body.from_address ?? "").trim();
-  if (fromAddress && !isEmailAddress(fromAddress)) return c.redirect(`/admin/integrations/email?error=${encodeURIComponent("That is not a valid email address.")}`, 302);
-  const saved = await setEmailSettings(c.env, { fromAddress, fromName: String(body.from_name ?? "") });
-  await logAudit(c.env, c.get("user"), "settings.email_changed", saved.fromAddress || undefined, { ...saved }, c.req.raw);
+  try {
+    await saveEmailSettings(consoleCtx(c), String(body.from_address ?? ""), String(body.from_name ?? ""));
+  } catch (e) {
+    if (e instanceof ServiceError) return c.redirect(`/admin/integrations/email?error=${encodeURIComponent(e.message)}`, 302);
+    throw e;
+  }
   return c.redirect("/admin/integrations/email?saved=1", 302);
 });
 
 admin.post("/admin/email/test", async (c) => {
-  const me = c.get("user");
-  const appName = c.get("appName");
-  const result = await sendEmail(c.env, {
-    to: recipientFor(me),
-    subject: `${appName} test email`,
-    text: `This is a test email from ${appName}. Email delivery is working.`,
-    html: `<p>This is a test email from <strong>${escapeHtml(appName)}</strong>. Email delivery is working.</p>`,
-  });
-  await logAudit(c.env, me, "settings.email_test_sent", recipientFor(me), { sent: result.ok, ...(result.ok ? {} : { error: result.error }) }, c.req.raw);
+  const result = await sendTestEmail(consoleCtx(c), recipientFor(c.get("user")), c.get("appName"));
   return c.redirect(result.ok ? "/admin/integrations/email?test=sent" : `/admin/integrations/email?error=${encodeURIComponent(result.error)}`, 302);
 });
 
@@ -2955,14 +2549,7 @@ function readClientSettings(body: Record<string, string | File | (string | File)
   };
 }
 
-/** https only (frames from an http page would be blocked anyway); anything else is dropped. */
-export function validFrontchannelUri(u: string): string {
-  try {
-    return u && new URL(u).protocol === "https:" ? new URL(u).toString() : "";
-  } catch {
-    return "";
-  }
-}
+// validFrontchannelUri lives in services/clients.ts (re-exported above).
 
 admin.get("/admin/clients/new", async (c) => {
   return c.html(
@@ -3090,35 +2677,19 @@ admin.post("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.parseBody({ all: true });
   const settings = readClientSettings(body);
-  const name = String(body.name ?? "").trim();
   const redirectUris = String(body.redirect_uris ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-
-  await c.env.DB.prepare("UPDATE oauth_clients SET name = ?, redirect_uris = ?, trusted = ?, allowed_claims = ?, post_logout_redirect_uris = ? WHERE id = ?")
-    .bind(name, JSON.stringify(redirectUris), settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris, id)
-    .run();
-  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE id = ?").bind(settings.frontchannelLogoutUri, id).run();
-
-  await logAudit(c.env, c.get("user"), "oidc_client.updated", name, undefined, c.req.raw);
-
+  await updateClient(consoleCtx(c), id, { name: String(body.name ?? "").trim(), redirectUris, ...settings });
   return c.redirect(`/admin/clients/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/clients/:id/rotate-secret", async (c) => {
   const id = Number(c.req.param("id"));
-  const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
+  const client = await getClientById(c.env, id);
   if (!client) return c.text("Not found", 404);
-  if (client.client_type === "public") return c.text("Public clients have no secret.", 400);
-
-  const clientSecret = randomToken(24);
-  const clientSecretHash = await sha256Hex(clientSecret);
-  await c.env.DB.prepare("UPDATE oauth_clients SET client_secret_hash = ? WHERE id = ?")
-    .bind(clientSecretHash, id)
-    .run();
-
-  await logAudit(c.env, c.get("user"), "oidc_client.secret_rotated", client.name, undefined, c.req.raw);
+  const clientSecret = await rotateClientSecret(consoleCtx(c), client);
 
   return c.html(
     layout(
@@ -3135,20 +2706,9 @@ admin.post("/admin/clients/:id/rotate-secret", async (c) => {
 });
 
 admin.post("/admin/clients/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
+  const client = await getClientById(c.env, Number(c.req.param("id")));
   if (!client) return c.text("Not found", 404);
-
-  await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM auth_codes WHERE client_id = ?").bind(client.client_id),
-    c.env.DB.prepare("DELETE FROM access_tokens WHERE client_id = ?").bind(client.client_id),
-    c.env.DB.prepare("DELETE FROM refresh_tokens WHERE client_id = ?").bind(client.client_id),
-    c.env.DB.prepare("DELETE FROM oauth_consents WHERE client_id = ?").bind(client.client_id),
-    c.env.DB.prepare("DELETE FROM oauth_clients WHERE id = ?").bind(id),
-  ]);
-
-  await logAudit(c.env, c.get("user"), "oidc_client.deleted", client.name, undefined, c.req.raw);
-
+  await deleteClient(consoleCtx(c), client);
   return c.redirect("/admin/integrations/oidc?saved=1", 302);
 });
 
@@ -3919,12 +3479,7 @@ admin.get("/admin/security", async (c) => {
 });
 
 admin.post("/admin/security/default-password", async (c) => {
-  const body = await c.req.parseBody();
-  const password = String(body.default_password ?? "");
-  if (password) {
-    await setDefaultPassword(c.env, password);
-    await logAudit(c.env, c.get("user"), "settings.default_password_changed", undefined, undefined, c.req.raw);
-  }
+  await saveDefaultPassword(consoleCtx(c), String((await c.req.parseBody()).default_password ?? ""));
   return c.redirect("/admin/security?saved=1", 302);
 });
 
@@ -3995,18 +3550,11 @@ admin.get("/admin/branding", async (c) => {
 admin.post("/admin/branding/app-name", async (c) => {
   const body = await c.req.parseBody();
   const name = String(body.app_name ?? "").trim();
-  if (name) {
-    await setAppName(c.env, name);
-    await logAudit(c.env, c.get("user"), "settings.app_name_changed", name, undefined, c.req.raw);
-  }
+  if (name) await saveAppName(consoleCtx(c), name);
 
   // Empty is a valid choice here - it means "show no message" - so this is
   // saved whenever the field is present rather than only when non-empty.
-  if (body.login_subtitle !== undefined) {
-    const subtitle = String(body.login_subtitle ?? "").trim();
-    await setLoginSubtitle(c.env, subtitle);
-    await logAudit(c.env, c.get("user"), "settings.login_subtitle_changed", undefined, { subtitle }, c.req.raw);
-  }
+  if (body.login_subtitle !== undefined) await saveLoginSubtitle(consoleCtx(c), String(body.login_subtitle ?? ""));
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
@@ -4014,32 +3562,19 @@ admin.post("/admin/branding/login-gradient", async (c) => {
   const body = await c.req.parseBody();
   const from = String(body.from ?? "").trim();
   const to = String(body.to ?? "").trim();
-  const isHexColor = (v: string) => /^#[0-9a-fA-F]{6}$/.test(v);
-
-  if (isHexColor(from) && isHexColor(to)) {
-    await setLoginGradient(c.env, { from, to });
-    await logAudit(c.env, c.get("user"), "settings.login_gradient_changed", undefined, { from, to }, c.req.raw);
-  }
+  // Anything but two #rrggbb values is ignored, as the colour pickers never send one.
+  if (isHexColor(from) && isHexColor(to)) await saveLoginGradient(consoleCtx(c), from, to);
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
 admin.post("/admin/branding/cursor-trail", async (c) => {
   const body = await c.req.parseBody();
-  const trail = await setCursorTrail(c.env, { enabled: !!body.enabled, characters: String(body.characters ?? "") });
-  await logAudit(c.env, c.get("user"), "settings.cursor_trail_changed", undefined, { ...trail }, c.req.raw);
+  await saveCursorTrail(consoleCtx(c), { enabled: !!body.enabled, characters: String(body.characters ?? "") });
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
 admin.post("/admin/security/apply-default-password", async (c) => {
-  const body = await c.req.parseBody();
-  const password = String(body.default_password ?? "");
-  if (password) {
-    await setDefaultPassword(c.env, password);
-    await logAudit(c.env, c.get("user"), "settings.default_password_changed", undefined, undefined, c.req.raw);
-  }
-
-  const count = await applyDefaultPasswordToAllUsers(c.env);
-  await logAudit(c.env, c.get("user"), "settings.default_password_applied_to_all", undefined, { count }, c.req.raw);
+  const count = await applyDefaultPasswordToAll(consoleCtx(c), String((await c.req.parseBody()).default_password ?? ""));
   return c.html(
     layout(
       c,
@@ -4054,23 +3589,12 @@ admin.post("/admin/security/apply-default-password", async (c) => {
 });
 
 admin.post("/admin/security/new-user-password-mode", async (c) => {
-  const body = await c.req.parseBody();
-  const mode = body.mode === "default" ? "default" : "random";
-  await setNewUserPasswordMode(c.env, mode);
-  await logAudit(c.env, c.get("user"), "settings.new_user_password_mode_changed", undefined, { mode }, c.req.raw);
+  await saveNewUserPasswordMode(consoleCtx(c), (await c.req.parseBody()).mode);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
 admin.post("/admin/security/password-policy", async (c) => {
-  const body = await c.req.parseBody();
-  await setPasswordPolicy(c.env, {
-    minLength: Number(body.minLength) || 8,
-    requireUppercase: !!body.requireUppercase,
-    requireLowercase: !!body.requireLowercase,
-    requireNumber: !!body.requireNumber,
-    requireSymbol: !!body.requireSymbol,
-  });
-  await logAudit(c.env, c.get("user"), "settings.password_policy_changed", undefined, undefined, c.req.raw);
+  await savePasswordPolicy(consoleCtx(c), await c.req.parseBody());
   return c.redirect("/admin/security?saved=1", 302);
 });
 
@@ -4120,23 +3644,7 @@ admin.get("/admin/security/policies", async (c) => {
 async function readPolicyForm(c: { req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }) {
   const body = await c.req.parseBody({ all: true });
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
-  const name = String(body.name ?? "").trim().slice(0, 80);
-  if (!name) throw new Error("A policy name is required.");
-  return {
-    name,
-    description: String(body.description ?? "").trim().slice(0, 200),
-    requirement: String(body.requirement) === "password" ? "password" : "mfa",
-    priority: Math.min(1000, Math.max(1, Math.floor(Number(body.priority)) || 100)),
-    groupIds: list(body.group_ids).map(Number).filter(Boolean),
-    makeDefault: Boolean(body.make_default),
-  };
-}
-
-async function savePolicyGroups(env: Env, policyId: number, groupIds: number[]) {
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(policyId),
-    env.DB.prepare("INSERT OR IGNORE INTO auth_policy_groups (policy_id, group_id) SELECT ?, g.id FROM groups g WHERE g.id IN (SELECT value FROM json_each(?))").bind(policyId, JSON.stringify(groupIds)),
-  ]);
+  return normalizePolicy({ ...body, groupIds: list(body.group_ids), makeDefault: body.make_default });
 }
 
 admin.post("/admin/security/policies", async (c) => {
@@ -4146,12 +3654,7 @@ admin.post("/admin/security/policies", async (c) => {
   } catch (e) {
     return c.text((e as Error).message, 400);
   }
-  if (await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ?").bind(f.name).first()) return c.text("A policy with that name already exists.", 400);
-  const row = await c.env.DB.prepare("INSERT INTO auth_policies (name, description, requirement, priority, is_default, created_at) VALUES (?, ?, ?, ?, 0, ?) RETURNING id")
-    .bind(f.name, f.description, f.requirement, f.priority, new Date().toISOString())
-    .first<{ id: number }>();
-  await savePolicyGroups(c.env, row!.id, f.groupIds);
-  await logAudit(c.env, c.get("user"), "auth_policy.created", f.name, { requirement: f.requirement, groups: f.groupIds.length }, c.req.raw);
+  await createPolicy(consoleCtx(c), f);
   return c.redirect("/admin/security/policies?saved=1", 302);
 });
 
@@ -4191,31 +3694,19 @@ admin.get("/admin/security/policies/:id", async (c) => {
 
 admin.post("/admin/security/policies/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  const current = await c.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string }>();
-  if (!current) return c.text("Not found", 404);
+  if (!(await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE id = ?").bind(id).first())) return c.text("Not found", 404);
   let f;
   try {
     f = await readPolicyForm(c);
   } catch (e) {
     return c.text((e as Error).message, 400);
   }
-  if (await c.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ? AND id != ?").bind(f.name, id).first()) return c.text("A policy with that name already exists.", 400);
-  await c.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, id).run();
-  await savePolicyGroups(c.env, id, f.groupIds);
-  if (!current.is_default && f.makeDefault) {
-    await c.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id).run();
-  }
-  await logAudit(c.env, c.get("user"), "auth_policy.updated", f.name, { requirement: f.requirement, default: Boolean(current.is_default || f.makeDefault) }, c.req.raw);
+  await updatePolicy(consoleCtx(c), id, f);
   return c.redirect("/admin/security/policies?saved=1", 302);
 });
 
 admin.post("/admin/security/policies/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const p = await c.env.DB.prepare("SELECT name, is_default FROM auth_policies WHERE id = ?").bind(id).first<{ name: string; is_default: number }>();
-  if (!p) return c.text("Not found", 404);
-  if (p.is_default) return c.text("The default policy cannot be deleted; make another policy the default first.", 400);
-  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id), c.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(id)]);
-  await logAudit(c.env, c.get("user"), "auth_policy.deleted", p.name, undefined, c.req.raw);
+  await deletePolicy(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/security/policies?saved=1", 302);
 });
 
@@ -4316,24 +3807,11 @@ admin.get("/admin/security/roles/:id", async (c) => {
   return c.html(layout(c, role.name, await roleForm(c, role), ROLE_CRUMBS([{ label: role.name }])));
 });
 
-/** Reads and checks a role form: nobody can grant a permission they do not hold themselves. */
+/** Reads and checks a role form: nobody can grant a permission they do not hold themselves (services/access.ts). */
 async function readRoleForm(c: { env: Env; get: (k: "access") => Access; req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }) {
   const body = await c.req.parseBody({ all: true });
-  const name = String(body.name ?? "").trim().slice(0, 80);
-  if (!name) throw new Error("A role needs a name.");
-  const permissions = readPermissionMatrix(body);
-  const mine = c.get("access");
-  const beyond = permissions.filter((p) => (p === "*" ? !mine.isSuper : !grants(mine.perms, p)));
-  if (beyond.length) throw new Error(`You cannot grant permissions you do not hold: ${beyond.join(", ")}.`);
-  const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).map(Number).filter(Boolean);
-  return { name, description: String(body.description ?? "").trim().slice(0, 200), permissions, groupIds: list(body.group_ids) };
-}
-
-async function saveRoleGroups(env: Env, roleId: number, groupIds: number[]) {
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM admin_role_groups WHERE role_id = ?").bind(roleId),
-    env.DB.prepare("INSERT OR IGNORE INTO admin_role_groups (role_id, group_id) SELECT ?, id FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(roleId, JSON.stringify(groupIds)),
-  ]);
+  const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]);
+  return normalizeRole({ name: body.name, description: body.description, permissions: readPermissionMatrix(body), groupIds: list(body.group_ids) }, c.get("access").perms);
 }
 
 admin.post("/admin/security/roles", async (c) => {
@@ -4343,10 +3821,7 @@ admin.post("/admin/security/roles", async (c) => {
   } catch (e) {
     return c.text((e as Error).message, 400);
   }
-  if (await c.env.DB.prepare("SELECT 1 FROM admin_roles WHERE name = ?").bind(f.name).first()) return c.text("A role with that name already exists.", 400);
-  const row = await c.env.DB.prepare("INSERT INTO admin_roles (name, description, permissions, created_at) VALUES (?, ?, ?, ?) RETURNING id").bind(f.name, f.description, JSON.stringify(f.permissions), new Date().toISOString()).first<{ id: number }>();
-  await saveRoleGroups(c.env, row!.id, f.groupIds);
-  await logAudit(c.env, c.get("user"), "role.created", f.name, { permissions: f.permissions, groups: f.groupIds.length }, c.req.raw);
+  await createRole(consoleCtx(c), f);
   return c.redirect("/admin/security/roles?saved=1", 302);
 });
 
@@ -4361,21 +3836,12 @@ admin.post("/admin/security/roles/:id", async (c) => {
   } catch (e) {
     return c.text((e as Error).message, 400);
   }
-  const name = role.builtin ? role.name : f.name;
-  if (await c.env.DB.prepare("SELECT 1 FROM admin_roles WHERE name = ? AND id != ?").bind(name, id).first()) return c.text("A role with that name already exists.", 400);
-  await c.env.DB.prepare("UPDATE admin_roles SET name = ?, description = ?, permissions = ? WHERE id = ?").bind(name, f.description, JSON.stringify(f.permissions), id).run();
-  if (!role.is_default) await saveRoleGroups(c.env, id, f.groupIds);
-  await logAudit(c.env, c.get("user"), "role.updated", name, { permissions: f.permissions, groups: f.groupIds.length }, c.req.raw);
+  await updateRole(consoleCtx(c), id, f);
   return c.redirect("/admin/security/roles?saved=1", 302);
 });
 
 admin.post("/admin/security/roles/:id/delete", async (c) => {
-  const id = Number(c.req.param("id"));
-  const role = await c.env.DB.prepare("SELECT * FROM admin_roles WHERE id = ?").bind(id).first<RoleRow>();
-  if (!role) return c.text("Not found", 404);
-  if (role.builtin) return c.text("Built-in roles cannot be deleted; edit their permissions or groups instead.", 400);
-  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM admin_role_groups WHERE role_id = ?").bind(id), c.env.DB.prepare("DELETE FROM admin_roles WHERE id = ?").bind(id)]);
-  await logAudit(c.env, c.get("user"), "role.deleted", role.name, undefined, c.req.raw);
+  await deleteRole(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/security/roles?saved=1", 302);
 });
 
@@ -4411,48 +3877,35 @@ admin.get("/admin/security/factors", async (c) => {
 });
 
 admin.post("/admin/security/factors/:key", async (c) => {
-  const key = c.req.param("key") as FactorKey;
-  if (key !== "totp" && key !== "passkey") return c.text("Unknown factor.", 400);
-  const enabled = String((await c.req.parseBody()).enabled) === "1";
-  if (!enabled) {
-    const other: FactorKey = key === "totp" ? "passkey" : "totp";
-    const mfaPolicies = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>();
-    if (!(await isFactorEnabled(c.env, other)) && (mfaPolicies?.n ?? 0) > 0) {
-      return c.redirect(`/admin/security/factors?error=${encodeURIComponent("At least one second factor must stay on while a policy requires one.")}`, 302);
-    }
+  try {
+    await saveFactor(consoleCtx(c), c.req.param("key"), String((await c.req.parseBody()).enabled) === "1");
+  } catch (e) {
+    if (!(e instanceof ServiceError)) throw e;
+    if (e.message === "Unknown factor.") return c.text(e.message, 400);
+    return c.redirect(`/admin/security/factors?error=${encodeURIComponent(e.message)}`, 302);
   }
-  await setFactorEnabled(c.env, key, enabled);
-  await logAudit(c.env, c.get("user"), "auth_factor.changed", key, { enabled }, c.req.raw);
   return c.redirect("/admin/security/factors?saved=1", 302);
 });
 
 admin.post("/admin/security/require-mfa", async (c) => {
-  const body = await c.req.parseBody();
-  await setMfaRequired(c.env, !!body.required);
-  await logAudit(c.env, c.get("user"), "settings.require_mfa_changed", undefined, { required: !!body.required }, c.req.raw);
+  await saveRequireMfa(consoleCtx(c), !!(await c.req.parseBody()).required);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
 admin.post("/admin/security/rate-limit", async (c) => {
   const body = await c.req.parseBody();
-  await setRateLimitPolicy(c.env, {
-    maxAttempts: Number(body.maxAttempts) || 5,
-    windowMinutes: Number(body.windowMinutes) || 15,
-  });
-  await logAudit(c.env, c.get("user"), "settings.rate_limit_changed", undefined, undefined, c.req.raw);
+  await saveRateLimit(consoleCtx(c), body.maxAttempts, body.windowMinutes);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
 admin.post("/admin/security/session-limits", async (c) => {
   const body = await c.req.parseBody();
-  const policy = await setSessionPolicy(c.env, { maxHours: Number(body.maxHours), idleMinutes: Number(body.idleMinutes) });
-  await logAudit(c.env, c.get("user"), "settings.session_limits_changed", undefined, { ...policy }, c.req.raw);
+  await saveSessionLimits(consoleCtx(c), body.maxHours, body.idleMinutes);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
 admin.post("/admin/security/audit-retention", async (c) => {
-  const days = await setAuditRetentionDays(c.env, Number((await c.req.parseBody()).days) || AUDIT_RETENTION_DEFAULT_DAYS);
-  await logAudit(c.env, c.get("user"), "settings.audit_retention_changed", undefined, { days }, c.req.raw);
+  await saveAuditRetention(consoleCtx(c), (await c.req.parseBody()).days);
   return c.redirect("/admin/security?saved=1", 302);
 });
 
@@ -4469,26 +3922,8 @@ admin.post("/admin/scim/scope", async (c) => {
   const body = await c.req.parseBody({ all: true });
   const mode = body.mode === "selected" ? "selected" : "all";
   const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
-
-  await setScimScope(c.env, { mode, groupIds });
-  await logAudit(c.env, c.get("user"), "settings.scim_scope_changed", undefined, { mode, groupIds }, c.req.raw);
-  // Everything already pushed is re-evaluated against the new scope: users
-  // out of scope are deactivated, groups out of scope removed (pushGroup).
-  // Failures are audited, as for every other SCIM writer.
-  if (await scimConfigured(c.env)) {
-    const actor = c.get("user");
-    const { results } = await c.env.DB.prepare("SELECT id FROM users WHERE scim_id IS NOT NULL").all<{ id: number }>();
-    c.executionCtx.waitUntil(
-      (async () => {
-        const users = await pushUsersById(c.env, results.map((r) => r.id));
-        const groups = await syncGroups(c.env);
-        if (!users.ok || groups.groupErrors) {
-          await logAudit(c.env, actor, "scim.user_sync_failed", undefined, { action: "scope_changed", error: users.error, group_errors: groups.groupErrors });
-        }
-      })()
-    );
-  }
-
+  // Re-evaluates everything already pushed against the new scope (services/scim-sync.ts).
+  await applyScimScope(consoleCtx(c), { mode, groupIds }, (p) => c.executionCtx.waitUntil(p));
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 
@@ -4519,35 +3954,7 @@ admin.post("/admin/scim/sync", async (c) => {
 // what older links and bookmarks use, /admin/log is what the name implies.
 admin.get("/admin/log", (c) => c.redirect(`/admin/audit${new URL(c.req.url).search}`, 302));
 
-/** Who did it: a person, an API key (or the bootstrap token), or nobody signed in (failed sign-ins, the scheduler). */
-const LOG_ACTORS: Record<string, { label: string; where: string }> = {
-  people: { label: "People", where: "actor_user_id IS NOT NULL" },
-  // Failed key attempts have no actor (the key did not authenticate) but belong here.
-  api: { label: "API keys", where: "(actor_upn LIKE 'api-key:%' OR actor_upn = 'bootstrap-token' OR action = 'api.auth_failed')" },
-  system: {
-    label: "Anonymous & system",
-    where:
-      "actor_user_id IS NULL AND action != 'api.auth_failed' AND (actor_upn IS NULL OR (actor_upn NOT LIKE 'api-key:%' AND actor_upn != 'bootstrap-token'))",
-  },
-};
-
-/** Action families, by the prefix before the dot. SAML covers both saml.* and saml_sp.*. */
-const LOG_CATEGORIES: Record<string, { label: string; like: string }> = {
-  login: { label: "Sign-ins", like: "login.%" },
-  user: { label: "Users", like: "user.%" },
-  group: { label: "Groups", like: "group.%" },
-  directory: { label: "Directory imports", like: "directory.%" },
-  api: { label: "API requests", like: "api.%" },
-  api_key: { label: "API keys", like: "api_key.%" },
-  oidc: { label: "OIDC", like: "oidc_client.%" },
-  oauth: { label: "OAuth tokens", like: "oauth.%" },
-  saml: { label: "SAML", like: "saml%" },
-  scim: { label: "SCIM", like: "scim.%" },
-  settings: { label: "Settings", like: "settings.%" },
-  domain: { label: "Domains", like: "domain.%" },
-  schema: { label: "Schemas", like: "schema.%" },
-  idp: { label: "Setup & recovery", like: "idp.%" },
-};
+// LOG_ACTORS and LOG_CATEGORIES live in services/monitoring.ts, shared with GET /api/v1/audit.
 
 function logSelect(name: string, current: string, allLabel: string, options: Record<string, { label: string }>): string {
   return `<select name="${name}" data-autosubmit style="margin-bottom:0; width:auto;">
@@ -4559,50 +3966,12 @@ function logSelect(name: string, current: string, allLabel: string, options: Rec
 }
 
 admin.get("/admin/audit", async (c) => {
-  const search = c.req.query("search") ?? "";
-  const actor = LOG_ACTORS[c.req.query("actor") ?? ""] ? c.req.query("actor")! : "";
-  const category = LOG_CATEGORIES[c.req.query("category") ?? ""] ? c.req.query("category")! : "";
-  const isDate = (v: string | undefined) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "");
-  const from = isDate(c.req.query("from"));
-  const to = isDate(c.req.query("to"));
+  const filters = logFilters({ search: c.req.query("search"), actor: c.req.query("actor"), category: c.req.query("category"), from: c.req.query("from"), to: c.req.query("to") });
+  const { search, actor, category, from, to } = filters;
   const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
   const page = Math.max(1, Number(c.req.query("page")) || 1);
-
-  const conditions: string[] = [];
-  const params: (string | number)[] = [];
-  if (search) {
-    const like = `%${search}%`;
-    conditions.push("(actor_upn LIKE ? OR action LIKE ? OR target LIKE ? OR details LIKE ? OR ip LIKE ?)");
-    params.push(like, like, like, like, like);
-  }
-  if (actor) conditions.push(LOG_ACTORS[actor]!.where);
-  if (category) {
-    conditions.push("action LIKE ?");
-    params.push(LOG_CATEGORIES[category]!.like);
-  }
-  // Dates are whole UTC days, inclusive at both ends.
-  if (from) {
-    conditions.push("at >= ?");
-    params.push(`${from}T00:00:00.000Z`);
-  }
-  if (to) {
-    conditions.push("at < ?");
-    params.push(new Date(Date.parse(`${to}T00:00:00.000Z`) + 86_400_000).toISOString());
-  }
-  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const filtered = Boolean(search || actor || category || from || to);
-
-  const batchResults = await c.env.DB.batch([
-    c.env.DB.prepare(`SELECT COUNT(*) as n FROM audit_log ${whereClause}`).bind(...params),
-    c.env.DB.prepare(`SELECT * FROM audit_log ${whereClause} ORDER BY at DESC LIMIT ? OFFSET ?`).bind(
-      ...params,
-      pageSize,
-      (page - 1) * pageSize
-    ),
-  ]);
-  const countRows = batchResults[0]!.results;
-  const entries = batchResults[1]!.results as AuditLogRow[];
-  const total = Number((countRows[0] as { n: number } | undefined)?.n ?? 0);
+  const { total, entries } = await queryAuditLog(c.env, filters, pageSize, (page - 1) * pageSize);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return c.html(
