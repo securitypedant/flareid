@@ -80,28 +80,26 @@ Items 12 (front-channel logout), 18 (passkeys), 19 (the official suite, as a
 CI workflow) and 21 (saml2int metadata refresh, subject-id/pairwise-id,
 published metadata) shipped in v3.2.0. Still open:
 
-22. **Large-directory performance:** a group's member picker still lists every
-    user, and listing groups resolves each dynamic group with a full users scan
-    (bounded per request, flagged by the audit as needing validation at scale).
+Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
 
 ## P2 - operational maturity
 
-22. Granular admin roles - today `Super Admins` is all or nothing. An auditor,
-    a user admin and a client admin are the obvious three.
-23. Step-up re-authentication for sensitive actions: minting API keys,
-    disabling MFA, rotating a client secret.
-24. Signing keys in D1 or KV rather than environment variables, so rotation
-    does not need a redeploy. ES256 alongside RS256, which SAML also wants.
-25. Breached-password check via the HIBP k-anonymity API; Turnstile on login
-    and recovery.
+~~22. Granular admin roles - today `Super Admins` is all or nothing. An auditor,
+    a user admin and a client admin are the obvious three.~~ (done in v3.4.0-v3.6.0)
+~~23. Step-up re-authentication for sensitive actions: minting API keys,
+    disabling MFA, rotating a client secret.~~ (done in v3.4.0-v3.6.0)
+~~24. Signing keys in D1 or KV rather than environment variables, so rotation
+    does not need a redeploy. ES256 alongside RS256, which SAML also wants.~~ (done in v3.4.0-v3.6.0)
+~~25. Breached-password check via the HIBP k-anonymity API; Turnstile on login
+    and recovery.~~ (done in v3.4.0-v3.6.0)
 26. Audit log export (Logpush or R2), a retention policy, and tamper-evidence.
 27. Observability: structured logs, login success and failure metrics,
     alerting.
 28. Documented backup, restore and disaster recovery for D1; a directory export
     endpoint.
-29. Scale: paginated and searchable group-membership editing - the current
+~~29. Scale: paginated and searchable group-membership editing - the current
     member checklist will not survive ten thousand users - and documented,
-    tested ceilings.
+    tested ceilings.~~ (done in v3.4.0-v3.6.0)
 30. Branding: logo upload, per-domain branding, custom CSS.
 31. An accessibility and internationalisation pass on the login, MFA and
     consent pages.

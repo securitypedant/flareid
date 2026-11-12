@@ -6,6 +6,18 @@ may break things.
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-11-12
+
+Every release is treated as a fresh install for now. Migrations `0021`-`0025`
+(signing keys, secure defaults, roles as data, email codes, security
+questions). Also in this release: secure defaults (the second-factor policy
+always applies to Super Admins and is the default on a fresh install), roles
+as data with a default User role and one permissions model shared by roles
+and API keys (Security > Roles), and the GitHub link beside the tagline.
+OpenID Foundation Basic OP plan against the live instance: 1,720 conditions
+passed; the only failures are the two screenshot-only error-page tests, plus
+the deliberate email-in-id_token and profile-claims warnings.
+
 ### Added
 
 - **Breached-password check** (Have I Been Pwned's Pwned Passwords,
