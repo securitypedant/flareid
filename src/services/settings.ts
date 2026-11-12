@@ -4,6 +4,16 @@ import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateK
 import { escapeHtml } from "../lib/html.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import {
+  enabledSecurityQuestions,
+  getKbaSettings,
+  KBA_MAX_QUESTION,
+  KBA_MAX_QUESTIONS,
+  KBA_MAX_REQUIRED,
+  setKbaSettings,
+  type KbaSettings,
+  type SecurityQuestionRow,
+} from "../lib/security-questions.js";
+import {
   AUDIT_RETENTION_DEFAULT_DAYS,
   applyDefaultPasswordToAllUsers,
   setAppName,
@@ -101,6 +111,11 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
   if (enabled && key === "email_otp" && !(await isEmailConfigured(ctx.env))) {
     throw new ServiceError(400, "Email one-time codes need email: set up sending under Integrations > Email first.");
   }
+  // People must be able to choose as many questions as they are asked to set.
+  if (enabled && key === "security_questions") {
+    const [{ required }, choices] = await Promise.all([getKbaSettings(ctx.env), enabledSecurityQuestions(ctx.env)]);
+    if (choices.length < required) throw new ServiceError(400, `Security questions need at least ${required} enabled questions to choose from.`);
+  }
   if (!enabled) {
     const mfaPolicies = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>();
     const othersUsable = await Promise.all(FACTOR_KEYS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
@@ -110,6 +125,87 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
   }
   await setFactorEnabled(ctx.env, key, enabled);
   await audit(ctx, "auth_factor.changed", key, { enabled });
+}
+
+// ---------------------------------------------------------------------------
+// Security questions (Security > Factors > Security questions)
+// ---------------------------------------------------------------------------
+
+async function enabledQuestionCount(ctx: ServiceCtx): Promise<number> {
+  return (await enabledSecurityQuestions(ctx.env)).length;
+}
+
+/**
+ * How many questions people set and how many are asked at sign-in. Fields not
+ * given keep their value; asked can be at most required, and required at most
+ * the number of enabled questions (people must be able to choose that many).
+ */
+export async function saveKbaSettings(ctx: ServiceCtx, input: { required?: unknown; asked?: unknown }): Promise<KbaSettings> {
+  const current = await getKbaSettings(ctx.env);
+  const required = input.required === undefined || input.required === "" ? current.required : Number(input.required);
+  const asked = input.asked === undefined || input.asked === "" ? current.asked : Number(input.asked);
+  if (!Number.isInteger(required) || required < 1 || required > KBA_MAX_REQUIRED) throw new ServiceError(400, `The number of questions each person sets must be between 1 and ${KBA_MAX_REQUIRED}.`);
+  if (!Number.isInteger(asked) || asked < 1 || asked > required) throw new ServiceError(400, "The number of questions asked at sign-in must be at least 1 and no more than the number each person sets.");
+  if (required > (await enabledQuestionCount(ctx))) throw new ServiceError(400, `Only ${await enabledQuestionCount(ctx)} questions are enabled: people could not choose ${required}.`);
+  const saved = { required, asked };
+  await setKbaSettings(ctx.env, saved);
+  // Someone who set fewer questions than a raised "required" keeps them, and is asked min(asked, theirs).
+  await audit(ctx, "settings.security_questions_changed", undefined, { ...saved });
+  return saved;
+}
+
+function questionText(text: unknown): string {
+  const t = String(text ?? "").normalize("NFKC").trim().replace(/\s+/g, " ");
+  if (t.length < 5) throw new ServiceError(400, "A question needs at least 5 characters.");
+  if (t.length > KBA_MAX_QUESTION) throw new ServiceError(400, `A question can be at most ${KBA_MAX_QUESTION} characters.`);
+  return t;
+}
+
+export async function addSecurityQuestion(ctx: ServiceCtx, text: unknown): Promise<SecurityQuestionRow> {
+  const t = questionText(text);
+  const count = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM security_questions").first<{ n: number }>();
+  if ((count?.n ?? 0) >= KBA_MAX_QUESTIONS) throw new ServiceError(400, `There can be at most ${KBA_MAX_QUESTIONS} questions.`);
+  if (await ctx.env.DB.prepare("SELECT 1 FROM security_questions WHERE lower(text) = lower(?)").bind(t).first()) throw new ServiceError(409, "That question is already in the list.");
+  const row = await ctx.env.DB.prepare("INSERT INTO security_questions (text, enabled, created_at) VALUES (?, 1, ?) RETURNING id, text, enabled, created_at")
+    .bind(t, new Date().toISOString())
+    .first<SecurityQuestionRow>();
+  await audit(ctx, "settings.security_question_added", t, { id: row!.id });
+  return row!;
+}
+
+async function questionById(ctx: ServiceCtx, id: number): Promise<SecurityQuestionRow> {
+  const row = Number.isInteger(id) ? await ctx.env.DB.prepare("SELECT id, text, enabled, created_at FROM security_questions WHERE id = ?").bind(id).first<SecurityQuestionRow>() : null;
+  if (!row) throw new ServiceError(404, "No such question.");
+  return row;
+}
+
+/**
+ * Enables or disables a question. A disabled question is no longer offered
+ * when people choose theirs; answers already given to it keep working.
+ */
+export async function setSecurityQuestionEnabled(ctx: ServiceCtx, id: number, enabled: boolean): Promise<SecurityQuestionRow> {
+  const q = await questionById(ctx, id);
+  if (!enabled && q.enabled) {
+    const { required } = await getKbaSettings(ctx.env);
+    if ((await enabledQuestionCount(ctx)) - 1 < required) throw new ServiceError(400, `At least ${required} questions must stay enabled, the number each person sets.`);
+  }
+  await ctx.env.DB.prepare("UPDATE security_questions SET enabled = ? WHERE id = ?").bind(enabled ? 1 : 0, id).run();
+  await audit(ctx, "settings.security_question_changed", q.text, { id, enabled });
+  return { ...q, enabled: enabled ? 1 : 0 };
+}
+
+/** Deletes a question nobody has answered; one with answers can only be disabled. */
+export async function deleteSecurityQuestion(ctx: ServiceCtx, id: number): Promise<void> {
+  const q = await questionById(ctx, id);
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_security_answers WHERE question_id = ? LIMIT 1").bind(id).first()) {
+    throw new ServiceError(409, "People have answered this question, so it can only be disabled.");
+  }
+  if (q.enabled) {
+    const { required } = await getKbaSettings(ctx.env);
+    if ((await enabledQuestionCount(ctx)) - 1 < required) throw new ServiceError(400, `At least ${required} questions must stay enabled, the number each person sets.`);
+  }
+  await ctx.env.DB.prepare("DELETE FROM security_questions WHERE id = ?").bind(id).run();
+  await audit(ctx, "settings.security_question_deleted", q.text, { id });
 }
 
 // ---------------------------------------------------------------------------

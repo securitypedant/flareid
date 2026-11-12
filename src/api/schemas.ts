@@ -42,6 +42,7 @@ export const UserSchema = z
     status: z.enum(["active", "disabled"]),
     mfa_enabled: z.boolean().openapi({ description: "An authenticator app (TOTP) is enrolled." }),
     email_otp_enabled: z.boolean().openapi({ description: "Email one-time codes are enrolled as a second factor." }),
+    security_questions_enabled: z.boolean().openapi({ description: "Security questions are set as a second factor." }),
     job_title: z.string(),
     department: z.string(),
     employee_number: z.string(),

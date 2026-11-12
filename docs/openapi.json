@@ -152,6 +152,10 @@
             "type": "boolean",
             "description": "Email one-time codes are enrolled as a second factor."
           },
+          "security_questions_enabled": {
+            "type": "boolean",
+            "description": "Security questions are set as a second factor."
+          },
           "job_title": {
             "type": "string"
           },
@@ -227,6 +231,7 @@
           "status",
           "mfa_enabled",
           "email_otp_enabled",
+          "security_questions_enabled",
           "job_title",
           "department",
           "employee_number",
@@ -920,6 +925,64 @@
           "enabled",
           "usable",
           "enrolled_users"
+        ]
+      },
+      "SecurityQuestions": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "The factor's switch (PUT /api/v1/security/factors/security_questions)."
+          },
+          "required": {
+            "type": "number",
+            "description": "How many questions each person sets."
+          },
+          "asked": {
+            "type": "number",
+            "description": "How many of them are asked, picked at random, at each sign-in."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecurityQuestion"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "required",
+          "asked",
+          "questions"
+        ]
+      },
+      "SecurityQuestion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "text": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Offered when people choose their questions. Answers to a disabled question keep working."
+          },
+          "answered_by": {
+            "type": "number",
+            "description": "How many people answered it. A question with answers cannot be deleted."
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "enabled",
+          "answered_by",
+          "created_at"
         ]
       },
       "Role": {
@@ -2057,7 +2120,7 @@
           "Users"
         ],
         "summary": "Reset multi-factor authentication",
-        "description": "Clears the authenticator, backup codes, email one-time codes and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).",
+        "description": "Clears the authenticator, backup codes, email one-time codes, security questions and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).",
         "security": [
           {
             "bearer": []
@@ -6477,7 +6540,7 @@
           "Security"
         ],
         "summary": "Turn a second factor on or off",
-        "description": "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.",
+        "description": "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
         "security": [
           {
             "bearer": []
@@ -6491,7 +6554,8 @@
               "enum": [
                 "totp",
                 "passkey",
-                "email_otp"
+                "email_otp",
+                "security_questions"
               ]
             },
             "required": true,
@@ -6561,6 +6625,407 @@
           },
           "403": {
             "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/security-questions": {
+      "get": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Read the security-questions settings and catalogue",
+        "description": "Answers are never exposed: they are stored only as salted hashes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityQuestions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Change how many security questions are set and asked",
+        "description": "`required` is 1-10 and at most the number of enabled questions; `asked` is 1 to `required`. Fields left out keep their value.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "type": "integer"
+                  },
+                  "asked": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityQuestions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/security-questions/questions": {
+      "post": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Add a security question",
+        "description": "5-200 characters; a question already in the list (ignoring case) is a 409.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityQuestion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/security-questions/questions/{id}": {
+      "patch": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Enable or disable a security question",
+        "description": "At least as many questions as each person sets must stay enabled.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityQuestion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Delete a security question",
+        "description": "Only a question nobody has answered (409 otherwise: disable it instead).",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
             "content": {
               "application/json": {
                 "schema": {

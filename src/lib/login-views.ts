@@ -159,6 +159,7 @@ export interface MfaFactors {
   totp: boolean;
   passkey: boolean;
   emailOtp?: boolean;
+  securityQuestions?: boolean;
 }
 
 /** State of the email-code option on the second step: whether a code was just sent, and where (masked). */
@@ -168,19 +169,25 @@ export interface EmailCodeState {
   minutes?: number;
 }
 
+/** The security questions this step asks, once picked (they stay the same for the step). */
+export interface KbaChallenge {
+  questions: { id: number; text: string }[];
+}
+
 export function mfaForm(
   appName: string,
   mfaId: string,
   appearance: LoginAppearance,
   error?: string,
   factors: MfaFactors = { totp: true, passkey: false },
-  email: EmailCodeState = { sent: false }
+  email: EmailCodeState = { sent: false },
+  kba?: KbaChallenge
 ): string {
   const id = escapeHtml(mfaId);
   const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
   const passkey = factors.passkey
     ? `<div class="auth-passkey">
-        <button class="${factors.totp || factors.emailOtp ? "secondary" : "primary"}" type="button" data-passkey-login data-param="mfa_id" data-flow="${id}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey" style="width:100%;">Use a passkey</button>
+        <button class="${factors.totp || factors.emailOtp || factors.securityQuestions ? "secondary" : "primary"}" type="button" data-passkey-login data-param="mfa_id" data-flow="${id}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey" style="width:100%;">Use a passkey</button>
         <p class="muted" id="passkey-login-status" style="margin:6px 0 0; font-size:0.8125rem;"></p>
       </div>
       ${scriptTag(PASSKEY_LOGIN_SCRIPT)}`
@@ -198,6 +205,13 @@ export function mfaForm(
       <input type="hidden" name="mfa_id" value="${id}" />
       <div class="row"><button class="${primary ? "primary" : "secondary"}" type="submit">${escapeHtml(label)}</button></div>
     </form>`;
+  const kbaButton = (primary: boolean) =>
+    factors.securityQuestions
+      ? `<form method="POST" action="/login/mfa/questions/start">
+      <input type="hidden" name="mfa_id" value="${id}" />
+      <div class="row"><button class="${primary ? "primary" : "secondary"}" type="submit">Answer security questions</button></div>
+    </form>`
+      : "";
 
   // A code is on its way: entering it is the main action.
   if (factors.emailOtp && email.sent) {
@@ -213,6 +227,28 @@ export function mfaForm(
     </form>
     ${sendForm("Send a new code", false)}
     ${factors.totp ? `<p class="auth-alt muted">Or use your authenticator app</p>${totpForm(false)}` : ""}
+    ${kbaButton(false)}
+    ${passkey}`);
+  }
+
+  // Security questions picked for this step: answering them is the main action.
+  if (factors.securityQuestions && kba && kba.questions.length) {
+    return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Security questions</h1>
+    <p class="sub">Answer ${kba.questions.length === 1 ? "your security question" : `these ${kba.questions.length} security questions`} to confirm it's you. Capitals and extra spaces don't matter.</p>
+    ${errorHtml}
+    <form method="POST" action="/login/mfa/questions">
+      <input type="hidden" name="mfa_id" value="${id}" />
+      ${kba.questions
+        .map(
+          (q, i) => `<label for="kba_${q.id}">${escapeHtml(q.text)}</label>
+      <input type="text" id="kba_${q.id}" name="answer_${q.id}" maxlength="100" required ${i === 0 ? "autofocus" : ""} autocomplete="off" autocapitalize="off" spellcheck="false" />`
+        )
+        .join("")}
+      <div class="row"><button class="primary" type="submit">Verify</button></div>
+    </form>
+    ${factors.totp ? `<p class="auth-alt muted">Or use your authenticator app</p>${totpForm(false)}` : ""}
+    ${factors.emailOtp ? sendForm("Email me a code", false) : ""}
     ${passkey}`);
   }
 
@@ -227,6 +263,7 @@ export function mfaForm(
     ${errorHtml}
     ${totpForm(true)}
     ${factors.emailOtp ? sendForm("Email me a code", false) : ""}
+    ${kbaButton(false)}
     ${passkey}
     `
     );
@@ -238,6 +275,16 @@ export function mfaForm(
     <p class="sub">We'll email you a 6-digit code to confirm it's you.</p>
     ${errorHtml}
     ${sendForm("Email me a code", true)}
+    ${kbaButton(false)}
+    ${passkey}`);
+  }
+
+  if (factors.securityQuestions) {
+    return authPage("Two-factor authentication", appName, appearance, `
+    <h1>Two-step verification</h1>
+    <p class="sub">Answer your security questions to confirm it's you.</p>
+    ${errorHtml}
+    ${kbaButton(true)}
     ${passkey}`);
   }
 

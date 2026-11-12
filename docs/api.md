@@ -101,16 +101,27 @@ does - in summary:
 | API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
 | Branding | `GET`/`PATCH /branding`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` |
-| Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
+| Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`, security questions at `/security/security-questions`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
 | Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
 
-Second factors: `GET /security/factors` lists `totp`, `passkey` and
-`email_otp` (email one-time codes), each with `enabled` (the switch) and
-`usable` (switched on and able to work - email codes also need email to be
-configured). `PUT /security/factors/email_otp` with `{"enabled": true}` is a
-`400` until email is configured. Users carry `email_otp_enabled` next to
-`mfa_enabled` (the authenticator app), and `POST /users/{username}/reset-mfa`
-clears both.
+Second factors: `GET /security/factors` lists `totp`, `passkey`,
+`email_otp` (email one-time codes) and `security_questions`, each with
+`enabled` (the switch) and `usable` (switched on and able to work - email
+codes also need email to be configured). `PUT /security/factors/email_otp`
+with `{"enabled": true}` is a `400` until email is configured, and
+`PUT /security/factors/security_questions` a `400` while fewer questions are
+enabled than each person must set. Users carry `email_otp_enabled` and
+`security_questions_enabled` next to `mfa_enabled` (the authenticator app),
+and `POST /users/{username}/reset-mfa` clears all three.
+
+Security questions: `GET /security/security-questions` returns the settings
+(`required`: how many each person sets, default 3; `asked`: how many are
+asked at sign-in, default 2) and the catalogue of questions people choose
+from; `PUT` changes the settings, and `POST .../questions`,
+`PATCH .../questions/{id}` (`{"enabled": false}`) and
+`DELETE .../questions/{id}` manage the catalogue (`security:write`). A question
+someone has answered cannot be deleted, only disabled; answers are never
+exposed (they are stored only as salted hashes).
 
 Request bodies are validated against the schema in the spec: a wrong type is a
 `400` with `error: "invalid_request"` and a `message` naming the field.

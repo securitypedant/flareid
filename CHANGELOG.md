@@ -8,6 +8,39 @@ may break things.
 
 ### Added
 
+- **Security questions as a second factor**, completing the initial set
+  (password, authenticator app, passkeys, email codes, security questions).
+  Off on a fresh install; switched on under Security > Factors, whose new
+  **Security questions** page holds the settings (how many questions each
+  person sets, default 3, and how many are asked at sign-in, default 2) and
+  the catalogue people choose from (ten seeded; administrators add, disable
+  and delete unanswered ones). People set theirs in My account > Security >
+  Security questions (changing or removing them takes the current password,
+  within the step-up attempt budget) or on the forced-enrolment page, which
+  then resumes the sign-in with amr `kba`/`mfa`. Answers must be 3-100
+  characters, for different questions, different from each other and from
+  the username; they are normalised (Unicode NFKC, trimmed, whitespace
+  collapsed, case-insensitive) and hashed with the password KDF and a salt of
+  their own, and never stored, logged or audited in clear. At sign-in the
+  second step offers **Answer security questions** (or asks them straight
+  away when they are the only method): the questions are picked at random and
+  bound to the pending step, so refreshing cannot re-roll them; all must be
+  right, and wrong answers count against the per-user MFA attempt limit. A
+  correct set signs in with amr `["pwd","kba","mfa"]` and counts toward
+  policies that require a second factor and the last-factor guard. Because
+  they are the weakest factor, the Factors page says so and recommends
+  keeping a stronger one on, and **a Super Admin whose sign-in used security
+  questions must re-authenticate on `/admin/reauth`** (password plus
+  authenticator, or a passkey - never the questions) before sensitive console
+  actions. Admin > Users shows whether they are set; **Reset MFA** (console
+  and `POST /api/v1/users/{username}/reset-mfa`) and user deletion remove
+  them. API: users gain `security_questions_enabled`; `PUT
+  /api/v1/security/factors/security_questions`; `GET`/`PUT
+  /api/v1/security/security-questions` and `POST`/`PATCH`/`DELETE
+  .../questions[/{id}]` for the catalogue (`security:write`). Audited as
+  `user.security_questions_enabled`/`_changed`/`_disabled`,
+  `login.mfa_failed` with `method: "security_questions"`,
+  `settings.security_question*`. Migration `0025_security_questions.sql`.
 - **Email one-time codes as a second factor.** Switched on under Security >
   Factors (off on a fresh install, and only possible once email is
   configured; the page says why otherwise). People turn them on in My account

@@ -9,6 +9,7 @@ import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { FACTORS, factorEnrolmentCounts, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
@@ -92,7 +93,11 @@ import {
 import { assertRuleAllowed, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import {
+  addSecurityQuestion,
   applyDefaultPasswordToAll,
+  deleteSecurityQuestion,
+  saveKbaSettings,
+  setSecurityQuestionEnabled,
   saveAppName,
   saveAuditRetention,
   saveCursorTrail,
@@ -160,7 +165,7 @@ admin.use("/admin/*", async (c, next) => {
 
 /** Sensitive actions need a recent sign-in or re-authentication (step-up.ts). */
 admin.use("/admin/*", async (c, next) => {
-  if (!isSensitive(c.req.method, c.req.path) || (await isFreshlyAuthenticated(c.env, c.get("sessionId")))) return next();
+  if (!isSensitive(c.req.method, c.req.path) || (await isFreshlyAuthenticated(c.env, c.get("sessionId"), { superAdmin: Boolean(c.get("isSuperAdmin")) }))) return next();
   // Back to the page the form was on, which the user resubmits after confirming.
   const ref = c.req.header("Referer");
   const back = ref && new URL(ref).origin === new URL(c.req.url).origin ? new URL(ref).pathname + new URL(ref).search : "/admin";
@@ -1209,6 +1214,7 @@ admin.get("/admin/users/:id", async (c) => {
   const apps = await connectedApps(c.env, id);
   const { username, domain } = splitUpn(user.upn);
   const isSelf = id === c.get("user").id;
+  const anyMfa = Boolean(user.mfa_enabled || user.email_otp_enabled || user.security_questions_enabled);
 
   // Schema: ?schema= previews a move before it is saved. The values shown
   // come from the user's row, so attributes with the same name in the target
@@ -1340,13 +1346,13 @@ admin.get("/admin/users/:id", async (c) => {
         }
         <div class="sec-row">
           <div>
-            <h3>Multi-factor authentication <span class="badge ${user.mfa_enabled || user.email_otp_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled || user.email_otp_enabled ? "Enrolled" : "Not enrolled"}</span></h3>
-            <p class="muted">Authenticator app: ${user.mfa_enabled ? "enrolled" : "not enrolled"} &middot; Email codes: ${user.email_otp_enabled ? "enrolled" : "not enrolled"}</p>
-            <p class="muted">Resetting clears their authenticator, backup codes, email codes and remembered devices; they enrol again at next sign-in.</p>
+            <h3>Multi-factor authentication <span class="badge ${anyMfa ? "badge-active" : "badge-disabled"}">${anyMfa ? "Enrolled" : "Not enrolled"}</span></h3>
+            <p class="muted">Authenticator app: ${user.mfa_enabled ? "enrolled" : "not enrolled"} &middot; Email codes: ${user.email_otp_enabled ? "enrolled" : "not enrolled"} &middot; Security questions: ${user.security_questions_enabled ? "enrolled" : "not enrolled"}</p>
+            <p class="muted">Resetting clears their authenticator, backup codes, email codes, security questions and remembered devices; they enrol again at next sign-in.</p>
           </div>
           <form method="POST" action="/admin/users/${id}/reset-mfa"
-            ${confirmAttrs("Their authenticator, backup codes, email codes and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
-            <button class="secondary" type="submit" ${user.mfa_enabled || user.email_otp_enabled ? "" : "disabled"}>Reset MFA</button>
+            ${confirmAttrs("Their authenticator, backup codes, email codes, security questions and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
+            <button class="secondary" type="submit" ${anyMfa ? "" : "disabled"}>Reset MFA</button>
           </form>
         </div>
         <div class="sec-row">
@@ -4057,10 +4063,18 @@ admin.get("/admin/security/factors", async (c) => {
   // Email codes need email: say so instead of offering a switch that cannot work.
   const emailReady = await isEmailConfigured(c.env);
   const blocked = (key: string) => key === "email_otp" && !emailReady;
-  const note = (key: string) =>
-    blocked(key)
-      ? `<br /><span class="muted"><strong>${on.get(key) ? "Not working: no codes can be sent until email is configured under" : "Needs email to be configured first, under"} <a href="/admin/integrations/email">Integrations &rarr; Email</a>.</strong></span>`
-      : "";
+  const kba = await getKbaSettings(c.env);
+  const note = (key: string) => {
+    if (blocked(key)) {
+      return `<br /><span class="muted"><strong>${on.get(key) ? "Not working: no codes can be sent until email is configured under" : "Needs email to be configured first, under"} <a href="/admin/integrations/email">Integrations &rarr; Email</a>.</strong></span>`;
+    }
+    if (key === "security_questions") {
+      return `<br /><span class="muted">People set ${kba.required} and are asked ${kba.asked} at sign-in. <a href="/admin/security/factors/security-questions">Questions and settings</a></span>${
+        on.get(key) ? `<br /><span class="muted"><strong>Recommended: keep a stronger factor on as well (authenticator app, passkeys or email codes) and encourage people to enrol one; security questions alone are easy to guess or research.</strong></span>` : ""
+      }`;
+    }
+    return "";
+  };
   return c.html(
     layout(
       c,
@@ -4082,6 +4096,86 @@ admin.get("/admin/security/factors", async (c) => {
       [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Factors" }]
     )
   );
+});
+
+admin.get("/admin/security/factors/security-questions", async (c) => {
+  const [questions, kba, on] = await Promise.all([listSecurityQuestions(c.env), getKbaSettings(c.env), isFactorEnabled(c.env, "security_questions")]);
+  const enabledCount = questions.filter((q) => q.enabled).length;
+  return c.html(
+    layout(
+      c,
+      "Security questions",
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">Security questions are <strong>${on ? "on" : "off"}</strong> (switched under <a href="/admin/security/factors">Factors</a>). They are the weakest second factor: answers can often be guessed, looked up or phished. Prefer the authenticator app, passkeys or email codes, and if you use questions, keep one of those on too. Answers are normalised (case, spacing, Unicode) and stored hashed like passwords; nobody can read them back. A sign-in with security questions never counts as the step-up re-authentication Super Admins need for sensitive console actions.</p>
+        <h2>Settings</h2>
+        <form method="POST" action="/admin/security/factors/security-questions/settings">
+          <div class="form-grid">
+            <div><label for="kba_required">Questions each person sets</label><input type="number" id="kba_required" name="required" min="1" max="${KBA_MAX_REQUIRED}" value="${kba.required}" required /></div>
+            <div><label for="kba_asked">Questions asked at sign-in</label><input type="number" id="kba_asked" name="asked" min="1" max="${KBA_MAX_REQUIRED}" value="${kba.asked}" required /></div>
+          </div>
+          <p class="muted">Every question asked must be answered correctly; wrong answers count toward the sign-in attempt limit under Security &rarr; Settings. Which questions are asked is chosen at random for each sign-in attempt.</p>
+          <div class="form-actions"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Questions</h2>
+        <p class="muted">${enabledCount} enabled. People choose from the enabled questions; disabling one stops it being offered, while answers already given to it keep working. A question someone has answered cannot be deleted.</p>
+        <table><thead><tr><th>Question</th><th>Answered by</th><th>Status</th><th></th></tr></thead><tbody>
+          ${questions
+            .map(
+              (q) => `<tr><td>${escapeHtml(q.text)}</td><td>${q.answered_by}</td>
+                <td><span class="badge ${q.enabled ? "badge-active" : "badge-disabled"}">${q.enabled ? "Enabled" : "Disabled"}</span></td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}" style="display:inline;"><input type="hidden" name="enabled" value="${q.enabled ? "0" : "1"}" /><button class="secondary" type="submit">${q.enabled ? "Disable" : "Enable"}</button></form>
+                  ${q.answered_by === 0 ? `<form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}/delete" style="display:inline;" ${confirmAttrs("The question is removed from the list.", { title: "Delete this question?", action: "Delete", danger: true })}><button class="link-button" type="submit">Delete</button></form>` : ""}
+                </td></tr>`
+            )
+            .join("")}
+        </tbody></table>
+        <form method="POST" action="/admin/security/factors/security-questions/questions" style="margin-top:14px;">
+          <label for="kba_new">Add a question</label>
+          <div class="row" style="justify-content:flex-start; gap:8px;">
+            <input type="text" id="kba_new" name="text" minlength="5" maxlength="${KBA_MAX_QUESTION}" required placeholder="What was the name of your first teacher?" style="max-width:480px; margin:0;" />
+            <button class="secondary" type="submit">Add</button>
+          </div>
+          <p class="muted">Good questions have answers that are memorable, don't change, and aren't on social media or in public records.</p>
+        </form>
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, SECURITY_CRUMB, { label: "Factors", href: "/admin/security/factors" }, { label: "Security questions" }]
+    )
+  );
+});
+
+/** Runs a security-questions change and goes back to its page, with the refusal as a message. */
+async function kbaAction(c: Context<{ Bindings: Env }>, run: () => Promise<unknown>) {
+  try {
+    await run();
+  } catch (e) {
+    if (!(e instanceof ServiceError)) throw e;
+    if (e.status === 404) return c.text(e.message, 404);
+    return c.redirect(`/admin/security/factors/security-questions?error=${encodeURIComponent(e.message)}`, 302);
+  }
+  return c.redirect("/admin/security/factors/security-questions?saved=1", 302);
+}
+
+admin.post("/admin/security/factors/security-questions/settings", async (c) => {
+  const body = await c.req.parseBody();
+  return kbaAction(c, () => saveKbaSettings(consoleCtx(c), { required: String(body.required ?? ""), asked: String(body.asked ?? "") }));
+});
+
+admin.post("/admin/security/factors/security-questions/questions", async (c) => {
+  const body = await c.req.parseBody();
+  return kbaAction(c, () => addSecurityQuestion(consoleCtx(c), String(body.text ?? "")));
+});
+
+admin.post("/admin/security/factors/security-questions/questions/:id", async (c) => {
+  const body = await c.req.parseBody();
+  return kbaAction(c, () => setSecurityQuestionEnabled(consoleCtx(c), Number(c.req.param("id")), String(body.enabled) === "1"));
+});
+
+admin.post("/admin/security/factors/security-questions/questions/:id/delete", async (c) => {
+  return kbaAction(c, () => deleteSecurityQuestion(consoleCtx(c), Number(c.req.param("id"))));
 });
 
 admin.post("/admin/security/factors/:key", async (c) => {

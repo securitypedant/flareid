@@ -21,6 +21,7 @@ import {
   isMfaRequired,
 } from "../lib/settings.js";
 import { listSigningKeys } from "../lib/signing-keys.js";
+import { getKbaSettings, listSecurityQuestions } from "../lib/security-questions.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
 import { apiCtx, ServiceError } from "../services/context.js";
 import { rotateKey } from "../services/platform.js";
@@ -34,6 +35,10 @@ import {
   saveEmailSettings,
   saveEmailTemplate,
   saveFactor,
+  saveKbaSettings,
+  addSecurityQuestion,
+  setSecurityQuestionEnabled,
+  deleteSecurityQuestion,
   saveLoginGradient,
   saveLoginSubtitle,
   saveNewUserPasswordMode,
@@ -504,14 +509,130 @@ defineRoute(
     tag: "Security",
     permission: "security:write",
     summary: "Turn a second factor on or off",
-    description: "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.",
-    params: z.object({ key: z.enum(["totp", "passkey", "email_otp"]) }),
+    description:
+      "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
+    params: z.object({ key: z.enum(["totp", "passkey", "email_otp", "security_questions"]) }),
     body: z.object({ enabled: z.boolean() }),
     response: z.object({ factors: z.array(FactorSchema) }),
   },
   async (c) => {
     await saveFactor(apiCtx(c), param(c, "key"), (await readJson<{ enabled: boolean }>(c)).enabled === true);
     return c.json({ factors: await factorsJson(c.env) });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Security questions
+// ---------------------------------------------------------------------------
+
+const SecurityQuestionSchema = z
+  .object({
+    id: z.number(),
+    text: z.string(),
+    enabled: z.boolean().openapi({ description: "Offered when people choose their questions. Answers to a disabled question keep working." }),
+    answered_by: z.number().openapi({ description: "How many people answered it. A question with answers cannot be deleted." }),
+    created_at: z.string(),
+  })
+  .openapi("SecurityQuestion");
+
+const SecurityQuestionsSchema = z
+  .object({
+    enabled: z.boolean().openapi({ description: "The factor's switch (PUT /api/v1/security/factors/security_questions)." }),
+    required: z.number().openapi({ description: "How many questions each person sets." }),
+    asked: z.number().openapi({ description: "How many of them are asked, picked at random, at each sign-in." }),
+    questions: z.array(SecurityQuestionSchema),
+  })
+  .openapi("SecurityQuestions");
+
+async function securityQuestionsJson(env: Env) {
+  const [kba, questions, enabled] = await Promise.all([getKbaSettings(env), listSecurityQuestions(env), isFactorEnabled(env, "security_questions")]);
+  return { enabled, required: kba.required, asked: kba.asked, questions: questions.map((q) => ({ id: q.id, text: q.text, enabled: q.enabled === 1, answered_by: q.answered_by, created_at: q.created_at })) };
+}
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/security/security-questions",
+    tag: "Security",
+    permission: "security:read",
+    summary: "Read the security-questions settings and catalogue",
+    description: "Answers are never exposed: they are stored only as salted hashes.",
+    response: SecurityQuestionsSchema,
+  },
+  async (c) => c.json(await securityQuestionsJson(c.env))
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/security-questions",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Change how many security questions are set and asked",
+    description: "`required` is 1-10 and at most the number of enabled questions; `asked` is 1 to `required`. Fields left out keep their value.",
+    body: z.object({ required: z.number().int().optional(), asked: z.number().int().optional() }),
+    response: SecurityQuestionsSchema,
+  },
+  async (c) => {
+    const body = await readJson<{ required?: number; asked?: number }>(c);
+    await saveKbaSettings(apiCtx(c), body);
+    return c.json(await securityQuestionsJson(c.env));
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/security/security-questions/questions",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Add a security question",
+    description: "5-200 characters; a question already in the list (ignoring case) is a 409.",
+    body: z.object({ text: z.string() }),
+    status: 201,
+    response: SecurityQuestionSchema,
+    errors: [409],
+  },
+  async (c) => {
+    const row = await addSecurityQuestion(apiCtx(c), (await readJson<{ text: string }>(c)).text);
+    return c.json({ id: row.id, text: row.text, enabled: row.enabled === 1, answered_by: 0, created_at: row.created_at }, 201);
+  }
+);
+
+defineRoute(
+  {
+    method: "patch",
+    path: "/api/v1/security/security-questions/questions/{id}",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Enable or disable a security question",
+    description: "At least as many questions as each person sets must stay enabled.",
+    params: IdParam,
+    body: z.object({ enabled: z.boolean() }),
+    response: SecurityQuestionSchema,
+    errors: [404],
+  },
+  async (c) => {
+    const id = Number(param(c, "id"));
+    await setSecurityQuestionEnabled(apiCtx(c), id, (await readJson<{ enabled: boolean }>(c)).enabled === true);
+    return c.json((await securityQuestionsJson(c.env)).questions.find((q) => q.id === id));
+  }
+);
+
+defineRoute(
+  {
+    method: "delete",
+    path: "/api/v1/security/security-questions/questions/{id}",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Delete a security question",
+    description: "Only a question nobody has answered (409 otherwise: disable it instead).",
+    params: IdParam,
+    errors: [404, 409],
+  },
+  async (c) => {
+    await deleteSecurityQuestion(apiCtx(c), Number(param(c, "id")));
+    return c.json({ ok: true });
   }
 );
 

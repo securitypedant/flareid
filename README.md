@@ -27,8 +27,10 @@ happens to run on Cloudflare's platform.
   per-user TOTP MFA, backup codes, trusted devices, and a setting to require
   MFA for everyone. Email password recovery and invitations (Cloudflare Email
   Sending), session lifetime limits, and edge rate limits on every anonymous
-  route. Passkeys (WebAuthn) for passwordless, multi-factor sign-in, and
-  email one-time codes as a second factor.
+  route. Passkeys (WebAuthn) for passwordless, multi-factor sign-in; email
+  one-time codes and security questions as further second factors (off by
+  default; security questions are the weakest and never count as a Super
+  Admin's step-up re-authentication).
 - **Directory**: users, flat groups (no nesting), multiple UPN domains, and
   HR-style attributes - job title, department, manager, employee number, hire
   date, employment status/type, location - exposed as claims so relying parties

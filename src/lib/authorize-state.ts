@@ -151,9 +151,11 @@ export async function deleteLoginFlow(env: Env, flowId: string): Promise<void> {
   await env.SESSIONS_KV.delete(`flow:${flowId}`);
 }
 
-interface PendingMfa {
+export interface PendingMfa {
   userId: number;
   flowId: string;
+  /** The security questions this step asks, once picked (security-questions.ts): fixed for the step's life. */
+  kba?: number[];
 }
 
 export async function storePendingMfa(env: Env, userId: number, flowId: string): Promise<string> {
@@ -174,7 +176,17 @@ export async function getPendingMfa(env: Env, mfaId: string): Promise<PendingMfa
  * ten minutes, and reading email takes longer than opening an authenticator.
  */
 export async function extendPendingMfa(env: Env, mfaId: string, pending: PendingMfa, seconds: number): Promise<void> {
-  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify({ userId: pending.userId, flowId: pending.flowId }), { expirationTtl: Math.max(MFA_TTL_SECONDS, seconds) });
+  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify(pendingRecord(pending)), { expirationTtl: Math.max(MFA_TTL_SECONDS, seconds) });
+}
+
+/** Binds the security questions picked for this step to it, so they cannot be re-rolled. */
+export async function setPendingMfaQuestions(env: Env, mfaId: string, pending: PendingMfa, questionIds: number[]): Promise<void> {
+  pending.kba = questionIds;
+  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify(pendingRecord(pending)), { expirationTtl: MFA_TTL_SECONDS });
+}
+
+function pendingRecord(p: PendingMfa): PendingMfa {
+  return { userId: p.userId, flowId: p.flowId, ...(p.kba ? { kba: p.kba } : {}) };
 }
 
 export async function deletePendingMfa(env: Env, mfaId: string): Promise<void> {

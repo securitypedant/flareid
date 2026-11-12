@@ -17,6 +17,8 @@ export interface UserRow {
   mfa_enabled: number;
   /** 1 when the user enrolled email one-time codes as a second factor (email-otp.ts). */
   email_otp_enabled: number;
+  /** 1 when the user set security questions as a second factor (security-questions.ts). */
+  security_questions_enabled: number;
   /** Legacy attribute - no longer used for authorization. Membership in the "Super Admins" group is authoritative. */
   is_admin: number;
   status: "active" | "disabled";

@@ -1,6 +1,7 @@
 import { canSignIn } from "../lib/admin-roles.js";
 import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey } from "../lib/auth-policy.js";
 import { EMAIL_OTP_MINUTES, loginScope, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
+import { challengeQuestions, KBA_MAX_ANSWER, userHasSecurityQuestions, verifyAnswers } from "../lib/security-questions.js";
 import type { UserRow } from "../lib/types.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
@@ -68,11 +69,17 @@ function dummyPasswordHash(env: Env): Promise<StoredPassword> {
 
 /** The second-step methods this user can use now: enrolled, and switched on by the administrator. */
 async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
-  const [totpOn, passkeyOn, emailOtp] = await Promise.all([isFactorEnabled(env, "totp"), isFactorEnabled(env, "passkey"), userHasEmailOtp(env, user)]);
+  const [totpOn, passkeyOn, emailOtp, securityQuestions] = await Promise.all([
+    isFactorEnabled(env, "totp"),
+    isFactorEnabled(env, "passkey"),
+    userHasEmailOtp(env, user),
+    userHasSecurityQuestions(env, user),
+  ]);
   return {
     totp: Boolean(user.mfa_enabled) && totpOn,
     passkey: passkeyOn && (await userHasPasskey(env, user.id)),
     emailOtp,
+    securityQuestions,
   };
 }
 
@@ -122,7 +129,7 @@ async function completeLoginFlow(
   userId: number,
   amr: string[],
   request: Request,
-  user: { mfa_enabled: number; email_otp_enabled: number }
+  user: { mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number }
 ): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
   // Roles decide whether this account may sign in at all (permission "signin").
   if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookie: clearSessionCookie() };
@@ -142,7 +149,8 @@ async function completeLoginFlow(
   // login to a relying party.
   // The user's authentication policy decides; a passkey sign-in (amr "hwk") is
   // already multi-factor.
-  if ((await secondFactorGate(env, { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled }, amr)) !== "ok") {
+  const gateUser = { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled, security_questions_enabled: user.security_questions_enabled };
+  if ((await secondFactorGate(env, gateUser, amr)) !== "ok") {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
   }
@@ -217,13 +225,19 @@ login.post("/login", async (c) => {
   }
 
   // Second step: the authenticator app when enrolled (unless this device is
-  // remembered); otherwise email codes when enrolled; otherwise a passkey when
-  // the user's policy needs a second factor.
+  // remembered); otherwise email codes or security questions when enrolled;
+  // otherwise a passkey when the user's policy needs a second factor.
   const factors = await secondStepFactors(c.env, user);
-  const { totp, passkey, emailOtp } = factors;
-  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : emailOtp || (passkey && (await mfaRequiredFor(c.env, user.id)));
+  const { totp, passkey, emailOtp, securityQuestions } = factors;
+  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : emailOtp || securityQuestions || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId);
+    // Security questions as the only method: ask them straight away.
+    if (securityQuestions && !totp && !emailOtp && !passkey) {
+      const pending = (await getPendingMfa(c.env, mfaId))!;
+      const questions = await challengeQuestions(c.env, mfaId, pending);
+      if (questions) return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+    }
     return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors));
   }
 
@@ -464,6 +478,83 @@ login.post("/login/mfa/email", async (c) => {
   await deleteLoginFlow(c.env, pending.flowId);
 
   const amr = ["pwd", "otp", "mfa"];
+  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  c.header("Set-Cookie", setCookie);
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  return c.redirect(outcome.to, 302);
+});
+
+// The second step with security questions. "start" picks the questions for
+// this pending step (or shows the ones already picked: they are bound to the
+// mfa id, so going back or refreshing cannot swap them for easier ones).
+login.post("/login/mfa/questions/start", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await getLoginAppearance(c.env);
+  const factors = await secondStepFactors(c.env, user);
+  const questions = factors.securityQuestions ? await challengeQuestions(c.env, mfaId, pending) : null;
+  if (!questions) {
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
+  }
+  return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+});
+
+login.post("/login/mfa/questions", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const ip = getClientIp(c.req.raw);
+
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await getLoginAppearance(c.env);
+  const factors = await secondStepFactors(c.env, user);
+  const bound = pending.kba ? [...pending.kba] : null;
+  const questions = factors.securityQuestions ? await challengeQuestions(c.env, mfaId, pending) : null;
+  if (!questions) {
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
+  }
+  const ids = questions.map((q) => q.id);
+  // Answers to questions that were not asked (never picked, or re-picked
+  // because the bound ones went stale) are not checked: show the questions.
+  if (!bound || ids.length !== bound.length || ids.some((id, i) => bound[i] !== id) || ids.some((id) => body[`answer_${id}`] === undefined)) {
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+  }
+
+  // The same per-user bucket as the authenticator code: a second method is
+  // not a second budget, and a wrong set of answers costs an attempt.
+  if (await recordMfaAttempt(c.env, user.id, ip)) {
+    await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip, method: "security_questions" }, c.req.raw);
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors, undefined, { questions }));
+  }
+
+  const answers = Object.fromEntries(ids.map((id) => [id, String(body[`answer_${id}`] ?? "").slice(0, KBA_MAX_ANSWER * 4)]));
+  const result = await verifyAnswers(c.env, user.id, ids, answers);
+  if (result !== "ok") {
+    // Which question was wrong is not said, and the answers are never logged.
+    await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip, method: "security_questions", reason: result }, c.req.raw);
+    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "One or more answers were not right. Please try again.", factors, undefined, { questions }));
+  }
+
+  await clearMfaAttempts(c.env, user.id, ip);
+  const flow = await getLoginFlow(c.env, pending.flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  await deletePendingMfa(c.env, mfaId);
+  await deleteLoginFlow(c.env, pending.flowId);
+
+  const amr = ["pwd", "kba", "mfa"];
   const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);

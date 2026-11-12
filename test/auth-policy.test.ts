@@ -96,7 +96,7 @@ describe("authentication policies", () => {
     const off = (k: string) => SELF.fetch(`${BASE}/admin/security/factors/${k}`, { method: "POST", headers: { ...FORM, Cookie: adminCookie }, body: "enabled=0", redirect: "manual" });
     expect((await off("totp")).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await off("passkey")).headers.get("Location")).toContain("error=");
-    expect(await (await SELF.fetch(`${BASE}/admin/security/factors`, { headers: { Cookie: adminCookie } })).text()).toContain("Planned");
+    expect(await (await SELF.fetch(`${BASE}/admin/security/factors`, { headers: { Cookie: adminCookie } })).text()).toContain("Security questions");
   });
 });
 

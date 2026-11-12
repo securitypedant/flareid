@@ -154,6 +154,7 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
     env.DB.prepare(`DELETE FROM webauthn_credentials WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM account_tokens WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM oauth_consents WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
+    env.DB.prepare(`DELETE FROM user_security_answers WHERE user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     // Per-user budgets keyed on the id (email-code sends, MFA and step-up
     // attempts): a later account must not inherit them.
     env.DB.prepare(

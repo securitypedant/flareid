@@ -259,7 +259,7 @@ describe("security", () => {
     expect((await call(apiKey, "PATCH", `/api/v1/security/policies/${made.body.id}`, { priority: 2 })).body).toMatchObject({ priority: 2, groups: ["Contractors"] });
 
     const factors = await call(apiKey, "GET", "/api/v1/security/factors");
-    expect(factors.body.factors.filter((f: { available: boolean }) => f.available).map((f: { key: string; enabled: boolean }) => [f.key, f.enabled])).toEqual([["totp", true], ["passkey", true], ["email_otp", false]]);
+    expect(factors.body.factors.filter((f: { available: boolean }) => f.available).map((f: { key: string; enabled: boolean }) => [f.key, f.enabled])).toEqual([["totp", true], ["passkey", true], ["email_otp", false], ["security_questions", false]]);
     // Email codes stay off until email is configured.
     expect((await call(apiKey, "PUT", "/api/v1/security/factors/email_otp", { enabled: true })).status).toBe(400);
     expect((await call(apiKey, "PUT", "/api/v1/security/factors/totp", { enabled: false })).status).toBe(200);

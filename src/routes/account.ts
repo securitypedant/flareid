@@ -2,6 +2,19 @@ import { grants } from "../lib/permissions.js";
 import { isFactorEnabled } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
+import {
+  answersFromForm,
+  checkAnswers,
+  clearAnswersStatements,
+  enabledSecurityQuestions,
+  getKbaSettings,
+  KBA_ERRORS,
+  KBA_MAX_ANSWER,
+  saveAnswers,
+  securityQuestionsAvailable,
+  userSecurityQuestions,
+  type SecurityQuestionRow,
+} from "../lib/security-questions.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context } from "hono";
@@ -67,6 +80,9 @@ const SAVED_MESSAGES: Record<string, string> = {
   app: "Access for that app has been revoked.",
   "email-otp-enabled": "Email codes are on: you'll be asked for one when you sign in.",
   "email-otp-disabled": "Email codes are now off.",
+  "kba-enabled": "Security questions are set: you can answer them when you sign in.",
+  "kba-changed": "Your security questions have been changed.",
+  "kba-removed": "Your security questions have been removed.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -112,6 +128,7 @@ account.get("/account", async (c) => {
   const devices = await listTrustedDevices(c.env, user.id);
   const passkeys = await listPasskeys(c.env, user.id);
   const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
+  const kbaCard = (await securityQuestionsAvailable(c.env)) ? await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "") : "";
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
      JOIN oauth_clients oc ON oc.client_id = at.client_id
@@ -236,6 +253,8 @@ account.get("/account", async (c) => {
 
       ${emailCard}
 
+      ${kbaCard}
+
       <h2 class="section-title">Sessions and devices</h2>
       ${cardSection(`
         <div class="row between">
@@ -346,6 +365,65 @@ function emailCodesCard(user: UserRow, step: string): string {
   return cardSection(`
     <div class="row between" id="email-codes">
       <h2 style="margin:0;">Email codes</h2>
+      <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
+    </div>
+    ${body}`);
+}
+
+/** The question pickers and answer boxes of an enrolment form: `count` rows, each a different question. */
+function kbaFields(choices: SecurityQuestionRow[], count: number): string {
+  return Array.from({ length: count }, (_, i) => {
+    const n = i + 1;
+    return `<div style="margin-bottom:10px;">
+        <label for="kba_q${n}">Question ${n}</label>
+        <select id="kba_q${n}" name="question_${n}" required>
+          <option value="">Choose a question</option>
+          ${choices.map((q, j) => `<option value="${q.id}" ${j === i ? "selected" : ""}>${escapeHtml(q.text)}</option>`).join("")}
+        </select>
+        <label for="kba_a${n}">Answer</label>
+        <input type="text" id="kba_a${n}" name="answer_${n}" minlength="3" maxlength="${KBA_MAX_ANSWER}" required autocomplete="off" autocapitalize="off" spellcheck="false" />
+      </div>`;
+  }).join("");
+}
+
+const KBA_HELP = "Pick answers that only you know and that won't change. Capitals and extra spaces don't matter. Answers are stored hashed, like a password, and nobody can read them back.";
+
+/**
+ * My account > Security: security questions. Setting them the first time
+ * needs only this session; changing or removing them needs the current
+ * password, within the step-up budget.
+ */
+async function securityQuestionsCard(env: Env, user: UserRow, error: string): Promise<string> {
+  const [choices, mine, { required }] = await Promise.all([enabledSecurityQuestions(env), userSecurityQuestions(env, user.id), getKbaSettings(env)]);
+  const enrolled = Boolean(user.security_questions_enabled);
+  const errorHtml = KBA_ERRORS[error] ? `<p class="error">${escapeHtml(KBA_ERRORS[error]!)}</p>` : "";
+  const notEnough = choices.length < required ? `<p class="muted">Not enough questions are available to choose from right now. Ask your administrator.</p>` : "";
+  const body = !enrolled
+    ? `<p class="muted" style="margin-top:8px;">Answer ${required} questions you can be asked when you sign in. ${escapeHtml(KBA_HELP)}</p>
+       ${errorHtml}
+       ${notEnough || `<form method="POST" action="/account/mfa/questions">${kbaFields(choices, required)}<button class="primary" type="submit">Save security questions</button></form>`}`
+    : `<p class="muted" style="margin-top:8px;">When you sign in you can answer some of these instead of using another method:</p>
+       <ul style="margin:0 0 12px; padding-left:20px;">${mine.map((q) => `<li>${escapeHtml(q.text)}</li>`).join("")}</ul>
+       ${errorHtml}
+       <details ${error && error !== "kba-password" ? "open" : ""}><summary>Change your questions</summary>
+         ${notEnough || `<form method="POST" action="/account/mfa/questions" style="margin-top:10px;">
+           <label for="kba_current_password">Current password</label>
+           <input type="password" id="kba_current_password" name="current_password" required autocomplete="current-password" style="max-width:320px;" />
+           ${kbaFields(choices, required)}
+           <button class="primary" type="submit">Save new questions</button>
+         </form>`}
+       </details>
+       <form method="POST" action="/account/mfa/questions/remove" style="margin-top:12px;" ${confirmAttrs("You will no longer be able to sign in by answering security questions.", { title: "Remove your security questions?", action: "Remove", danger: true })}>
+         <label for="kba_remove_password">Current password</label>
+         <div class="field-row" style="align-items:flex-start;">
+           <input type="password" id="kba_remove_password" name="current_password" required autocomplete="current-password" style="max-width:320px;" />
+           <div></div>
+         </div>
+         <button class="danger" type="submit">Remove security questions</button>
+       </form>`;
+  return cardSection(`
+    <div class="row between" id="security-questions">
+      <h2 style="margin:0;">Security questions</h2>
       <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
     </div>
     ${body}`);
@@ -516,8 +594,14 @@ account.get("/account/mfa/setup", async (c) => {
   const user = c.get("user");
   const resume = c.req.query("resume") ?? "";
   if (user.mfa_enabled) return c.redirect("/account", 302);
-  const [totpOn, passkeyOn, emailAvailable] = await Promise.all([isFactorEnabled(c.env, "totp"), isFactorEnabled(c.env, "passkey"), emailOtpAvailable(c.env)]);
+  const [totpOn, passkeyOn, emailAvailable, kbaAvailable] = await Promise.all([
+    isFactorEnabled(c.env, "totp"),
+    isFactorEnabled(c.env, "passkey"),
+    emailOtpAvailable(c.env),
+    securityQuestionsAvailable(c.env),
+  ]);
   const emailOn = emailAvailable && !user.email_otp_enabled;
+  const kbaOn = kbaAvailable && !user.security_questions_enabled;
   const emailError = ERROR_MESSAGES[c.req.query("error") ?? ""];
   const to = escapeHtml(recipientFor(user));
   const emailHidden = `<input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />`;
@@ -538,6 +622,24 @@ account.get("/account/mfa/setup", async (c) => {
               <form method="POST" action="/account/mfa/email/send" style="margin-top:8px;">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="link-button" type="submit">Send a new code</button></form>`
             : `<form method="POST" action="/account/mfa/email/send">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="${passkeyOn ? "secondary" : "primary"}" type="submit">Send a code to ${to}</button></form>`
         }`);
+
+  let kbaCard = "";
+  if (kbaOn) {
+    const [choices, { required }] = await Promise.all([enabledSecurityQuestions(c.env), getKbaSettings(c.env)]);
+    const kbaError = KBA_ERRORS[c.req.query("kba_error") ?? ""];
+    kbaCard =
+      choices.length < required
+        ? ""
+        : cardSection(`
+        <h2>${passkeyOn || emailOn ? "Or answer security questions" : "Answer security questions"}</h2>
+        <p class="muted">Answer ${required} questions; when you sign in you'll be asked some of them. ${escapeHtml(KBA_HELP)} Security questions are easier for someone else to guess than the other methods, so use another one too if you can.</p>
+        ${kbaError ? `<p class="error">${escapeHtml(kbaError)}</p>` : ""}
+        <form method="POST" action="/account/mfa/questions">
+          <input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />
+          ${kbaFields(choices, required)}
+          <button class="${passkeyOn || emailOn ? "secondary" : "primary"}" type="submit">Save security questions</button>
+        </form>`);
+  }
 
   let secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) {
@@ -564,9 +666,10 @@ account.get("/account/mfa/setup", async (c) => {
         ${scriptTag(PASSKEY_REGISTER_SCRIPT)}`)
         : "") +
       emailCard +
+      kbaCard +
       (!totpOn ? "" : cardSection(`
         <div style="text-align:center;">
-          ${passkeyOn || emailOn ? "<h2>Or use an authenticator app</h2>" : ""}
+          ${passkeyOn || emailOn || kbaCard ? "<h2>Or use an authenticator app</h2>" : ""}
           ${resume ? '<p class="sub">Multi-factor authentication is required before you can continue.</p>' : ""}
           ${c.req.query("error") === "1" ? '<p class="error">Incorrect code, please try again.</p>' : ""}
           <p class="sub">Scan this with Google Authenticator, Authy, or any standard TOTP app.</p>
@@ -744,6 +847,78 @@ account.post("/account/mfa/email/disable", async (c) => {
   await c.env.DB.prepare("UPDATE users SET email_otp_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
   await logAudit(c.env, user, "user.email_otp_disabled", user.upn, undefined, c.req.raw);
   return c.redirect("/account?saved=email-otp-disabled", 302);
+});
+
+// ---------- Security questions ----------
+// Under /account/mfa so a session that still owes its policy a second factor
+// (forced enrolment) can reach them, like the other enrolment routes.
+
+/** Where a security-questions action goes back to: the forced-enrolment page it came from, or My account. */
+function kbaReturn(body: Record<string, unknown>, query: string): string {
+  if (body.from === "setup") return `/account/mfa/setup?resume=${encodeURIComponent(String(body.resume ?? ""))}&${query}`;
+  return `/account?${query}#security-questions`;
+}
+
+/**
+ * Sets (or, with the current password, replaces) the user's security
+ * questions. Setting them the first time finishes a forced enrolment like the
+ * email-code path: other sessions end, this one gains "kba" and "mfa", and a
+ * paused sign-in resumes.
+ */
+account.post("/account/mfa/questions", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const resume = String(body.resume ?? "");
+  const sessionId = c.get("sessionId");
+  if (!(await securityQuestionsAvailable(c.env))) return c.redirect(kbaReturn(body, "kba_error=kba-unavailable"), 302);
+  const changing = Boolean(user.security_questions_enabled);
+  if (changing) {
+    if (await stepUpBudgetExceeded(c)) return c.redirect(kbaReturn(body, "kba_error=kba-too-many"), 302);
+    if (!(await verifyPassword(String(body.current_password ?? "").slice(0, 1024), user))) {
+      await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_change" }, c.req.raw);
+      return c.redirect(kbaReturn(body, "kba_error=kba-password"), 302);
+    }
+  }
+  const { required } = await getKbaSettings(c.env);
+  const entries = answersFromForm(body, required);
+  const problem = await checkAnswers(c.env, user, entries);
+  if (problem) return c.redirect(kbaReturn(body, `kba_error=${problem}`), 302);
+
+  await saveAnswers(c.env, user.id, entries);
+  // Which questions were chosen is recorded; the answers never are.
+  const details = { questions: entries.map((e) => e.questionId) };
+  if (changing) {
+    await logAudit(c.env, user, "user.security_questions_changed", user.upn, details, c.req.raw);
+    return c.redirect("/account?saved=kba-changed", 302);
+  }
+
+  // As with the other factors: every other session predates the second factor.
+  await revokeAllSessionsForUser(c.env, user.id, sessionId);
+  const current = await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(sessionId).first<{ amr: string }>();
+  let previous: string[] = [];
+  try {
+    previous = current ? (JSON.parse(current.amr) as string[]) : [];
+  } catch {
+    previous = [];
+  }
+  const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "kba", "mfa"])];
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
+  await logAudit(c.env, user, "user.security_questions_enabled", user.upn, details, c.req.raw);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account?saved=kba-enabled", 302);
+});
+
+/** Removing security questions takes the current password, within the step-up budget. */
+account.post("/account/mfa/questions/remove", async (c) => {
+  const user = c.get("user");
+  if (!user.security_questions_enabled) return c.redirect("/account", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?kba_error=kba-too-many#security-questions", 302);
+  if (!(await verifyPassword(String((await c.req.parseBody()).current_password ?? "").slice(0, 1024), user))) {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_remove" }, c.req.raw);
+    return c.redirect("/account?kba_error=kba-password#security-questions", 302);
+  }
+  await c.env.DB.batch(clearAnswersStatements(c.env, user.id));
+  await logAudit(c.env, user, "user.security_questions_disabled", user.upn, undefined, c.req.raw);
+  return c.redirect("/account?saved=kba-removed", 302);
 });
 
 function backupCodesPage(codes: string[], continueTo = "/account"): string {

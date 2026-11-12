@@ -196,6 +196,7 @@ Response `200`:
 | `status` | "active" \| "disabled" | yes |  |
 | `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
+| `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -257,6 +258,7 @@ Response `200`:
 | `status` | "active" \| "disabled" | yes |  |
 | `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
+| `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -328,7 +330,7 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 Reset multi-factor authentication.
 
-Clears the authenticator, backup codes, email one-time codes and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).
+Clears the authenticator, backup codes, email one-time codes, security questions and remembered devices; they enrol again at next sign-in. Passkeys are kept (remove them with the passkeys operations).
 
 Permission: `users:write`
 
@@ -1752,6 +1754,11 @@ Password, session, rate-limit and audit settings; authentication policies and fa
 | `DELETE` | `/api/v1/security/policies/{id}` | `security:write` | Delete an authentication policy |
 | `GET` | `/api/v1/security/factors` | `security:read` | List second factors |
 | `PUT` | `/api/v1/security/factors/{key}` | `security:write` | Turn a second factor on or off |
+| `GET` | `/api/v1/security/security-questions` | `security:read` | Read the security-questions settings and catalogue |
+| `PUT` | `/api/v1/security/security-questions` | `security:write` | Change how many security questions are set and asked |
+| `POST` | `/api/v1/security/security-questions/questions` | `security:write` | Add a security question |
+| `PATCH` | `/api/v1/security/security-questions/questions/{id}` | `security:write` | Enable or disable a security question |
+| `DELETE` | `/api/v1/security/security-questions/questions/{id}` | `security:write` | Delete a security question |
 
 ### `GET /api/v1/security`
 
@@ -2103,13 +2110,13 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Turn a second factor on or off.
 
-At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured.
+At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
 
 Permission: `security:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "totp" \\| "passkey" \\| "email_otp" |
+| `key` | path | yes | "totp" \\| "passkey" \\| "email_otp" \\| "security_questions" |
 
 Request body:
 
@@ -2124,6 +2131,137 @@ Response `200`:
 | `factors` | Factor[] | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/security/security-questions`
+
+Read the security-questions settings and catalogue.
+
+Answers are never exposed: they are stored only as salted hashes.
+
+Permission: `security:read`
+
+Response `200`:
+
+`SecurityQuestions`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes | The factor's switch (PUT /api/v1/security/factors/security_questions). |
+| `required` | number | yes | How many questions each person sets. |
+| `asked` | number | yes | How many of them are asked, picked at random, at each sign-in. |
+| `questions` | SecurityQuestion[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/security/security-questions`
+
+Change how many security questions are set and asked.
+
+`required` is 1-10 and at most the number of enabled questions; `asked` is 1 to `required`. Fields left out keep their value.
+
+Permission: `security:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `required` | integer | no |  |
+| `asked` | integer | no |  |
+
+Response `200`:
+
+`SecurityQuestions`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes | The factor's switch (PUT /api/v1/security/factors/security_questions). |
+| `required` | number | yes | How many questions each person sets. |
+| `asked` | number | yes | How many of them are asked, picked at random, at each sign-in. |
+| `questions` | SecurityQuestion[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/security/security-questions/questions`
+
+Add a security question.
+
+5-200 characters; a question already in the list (ignoring case) is a 409.
+
+Permission: `security:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `text` | string | yes |  |
+
+Response `201`:
+
+`SecurityQuestion`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `text` | string | yes |  |
+| `enabled` | boolean | yes | Offered when people choose their questions. Answers to a disabled question keep working. |
+| `answered_by` | number | yes | How many people answered it. A question with answers cannot be deleted. |
+| `created_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `409` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/security/security-questions/questions/{id}`
+
+Enable or disable a security question.
+
+At least as many questions as each person sets must stay enabled.
+
+Permission: `security:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+
+Response `200`:
+
+`SecurityQuestion`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `text` | string | yes |  |
+| `enabled` | boolean | yes | Offered when people choose their questions. Answers to a disabled question keep working. |
+| `answered_by` | number | yes | How many people answered it. A question with answers cannot be deleted. |
+| `created_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/security/security-questions/questions/{id}`
+
+Delete a security question.
+
+Only a question nobody has answered (409 otherwise: disable it instead).
+
+Permission: `security:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
 ## Roles
 
