@@ -99,12 +99,23 @@ that breaks a page cannot lock administrators out of fixing it.
 
 Stable selectors to style: `.auth-brand` (logo and name), `.auth-brand img`,
 `.auth-brand span`, `.center-wrap .card`, `button.primary`, `p.sub`,
-`.auth-foot`. For example, a logo that already contains the name:
+`.auth-foot`, `.auth-lang` (the language picker). Keep text readable when
+you restyle: the sign-in pages are built to WCAG 2.2 AA contrast (links and
+primary buttons use `--fi-accent: #c2410c`, 5.2:1 on white), and a custom
+stylesheet is the one thing that can undo that. For example, a logo that
+already contains the name:
 
 ```css
 .auth-brand span { display: none; }
 .auth-brand img { height: 56px; }
 ```
+
+## Language
+
+Branding → Settings → **Language** sets the sign-in pages' default language -
+the one shown when the browser asks for none FlareID has. It is the same for
+every brand. People can pick another from the sign-in page's footer. See
+[i18n.md](i18n.md) for the full order and for adding a language.
 
 ## Preview
 

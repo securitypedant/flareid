@@ -8,6 +8,36 @@ may break things.
 
 ### Added
 
+- **Languages.** The sign-in, second-step, consent, sign-out, recovery,
+  reset, invitation, setup and sign-in error pages are translated: English
+  (the source), French and German (machine-assisted, marked so in their files;
+  review welcome). The strings are JSON resource files in `locales/`, bundled
+  at build time, with `{placeholder}`s and `.one`/`.other` plural forms
+  (`src/lib/i18n.ts`); a missing key falls back to English, and
+  `test/i18n.test.ts` fails any locale whose keys or placeholders differ from
+  `en.json`. The language is `?lang=` (remembered in a `flareid_lang` cookie),
+  then that cookie, then the sign-in flow's language - carried in the sealed
+  flow and the pending second step, and seeded from OIDC `ui_locales` - then
+  `Accept-Language`, then a new **Default language** under Admin → Branding
+  (`default_language` on `GET`/`PATCH /api/v1/branding`, which also lists
+  `available_languages`). The sign-in page has a language picker
+  (`/login/language`, which keeps the sign-in in progress); Turnstile is asked
+  for the page's language. Pages set `<html lang>` and `dir` (a locale can
+  declare `"dir": "rtl"`). See [docs/i18n.md](docs/i18n.md), and
+  CONTRIBUTING.md, "Adding a language".
+- **Accessibility (WCAG 2.2 AA) on the same pages.** One `<h1>` each (visually
+  hidden on the sign-in page) and the card as the `<main>` landmark; errors in
+  a `role="alert"` region, tied to the inputs they concern with
+  `aria-invalid` and `aria-describedby`; password fields described by the
+  policy text; `autocomplete="username"`/`current-password`/`new-password`/
+  `one-time-code` throughout; every input, including "Remember this device",
+  with a `<label for>`; a visible focus outline; the passkey status line a
+  live region; the Turnstile widget a labelled group; "Sign in again"-style
+  actions are styled links rather than a button inside a link; the second
+  step's page titles name the method ("Check your email", "Security
+  questions"); the cursor trail is `aria-hidden` and does not run at all under
+  `prefers-reduced-motion: reduce`.
+
 - **Logo upload.** Admin → Branding takes a logo (PNG or JPEG, at most
   256 KB, validated by its magic bytes - not its name or declared type) shown
   on the sign-in pages, in the top bar and at the top of emails (by absolute
@@ -53,6 +83,18 @@ may break things.
 
 ### Changed
 
+- **Contrast on the sign-in pages.** Their accent colour (links, primary
+  buttons, focus) is `#c2410c` instead of Cloudflare orange `#f6821f`, whose
+  white button text and links measured 2.6:1; the new one is 5.2:1 on white
+  (WCAG 1.4.3 asks 4.5:1). Placeholders use the muted text colour (4.8:1). The
+  admin console keeps its colours.
+- Every page's `<html>` carries `lang` and `dir` (`page()` takes the language
+  as its last argument; the console is `en`); the centred-card layout's
+  wrapper is a `<main>`. `passwordPolicySummary`, `validatePassword`,
+  `newPasswordError` and `breachMessage` take an optional locale (English
+  wording unchanged); `loginForm`, `mfaForm` and `AuthMessage` take message
+  keys (`msg()`, `fieldMsg()`) or text, and `LoginAppearance` has the page's
+  `locale`.
 - `sendEmailOtp` and `buildEmail` take the recipient's brand instead of an app
   name; `getLoginAppearance` takes a brand, and the auth-page views
   (`authPage`, `loginForm`, `mfaForm`, `authMessagePage`) read the app name

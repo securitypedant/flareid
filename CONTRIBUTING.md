@@ -51,6 +51,26 @@ from the real migration files, so a test can exercise the whole Worker end to
 end - see `test/oidc.test.ts`, which drives a full authorization-code flow and
 verifies the resulting `id_token` against `/jwks.json`.
 
+## Adding a language
+
+The sign-in pages' text lives in `locales/`, one JSON file per language, with
+`locales/en.json` as the source. To add a language:
+
+1. Copy `locales/en.json` to `locales/<code>.json` (`es`, `pt-br`, ...).
+2. Fill in `_meta` - `code`, `name`, `nativeName`, `dir` (`"rtl"` for
+   right-to-left scripts) and `machineAssisted` (true unless a native speaker
+   wrote or reviewed it) - and translate every value in `messages`, keeping
+   each `{placeholder}` as it is.
+3. Import it in `locales/index.ts` and add it to `LOCALES`.
+4. Run `npm test`: `test/i18n.test.ts` lists any key that is missing or extra
+   and any placeholder that changed.
+
+Reviewing an existing translation is just as useful: fix what reads wrong, add
+your name to `_meta.reviewedBy`, and set `machineAssisted` to false once a
+native speaker has been through the whole file. A new English string needs its
+key in every locale file in the same change. See [docs/i18n.md](docs/i18n.md)
+for how the language is chosen and what is translated.
+
 ## House style
 
 A couple of conventions that are not obvious from the code:

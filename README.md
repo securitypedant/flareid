@@ -61,6 +61,12 @@ happens to run on Cloudflare's platform.
   the OIDC `login_hint`, a `?domain=` link, the hostname, and the person once
   identified (their second step, My account and every email). See
   [docs/branding.md](docs/branding.md).
+- **Languages and accessibility**: the sign-in, second-step, consent,
+  sign-out, recovery and setup pages in English, French and German
+  (machine-assisted, review welcome), chosen by a language picker, OIDC
+  `ui_locales`, `Accept-Language` or an instance default, and built to WCAG
+  2.2 AA. Translations are JSON files in `locales/` - adding one is a copy and
+  a pull request. See [docs/i18n.md](docs/i18n.md).
 - **Self-service** at `/account`: MFA enrolment, password change, profile
   editing for the attributes the user's schema allows, active sessions and
   connected applications.
