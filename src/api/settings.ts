@@ -10,6 +10,7 @@ import {
   getAppName,
   getAuditRetentionDays,
   getCursorTrail,
+  getDefaultLanguage,
   getDefaultPassword,
   getNewUserPasswordMode,
   getPasswordPolicy,
@@ -22,6 +23,7 @@ import {
   isMfaRequired,
 } from "../lib/settings.js";
 import { listSigningKeys } from "../lib/signing-keys.js";
+import { allLocales, isSupportedLocale, SUPPORTED_LOCALES } from "../lib/i18n.js";
 import { getKbaSettings, listSecurityQuestions } from "../lib/security-questions.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
 import { apiCtx, ServiceError } from "../services/context.js";
@@ -33,6 +35,7 @@ import {
   saveTurnstile,
   saveAuditRetention,
   saveCursorTrail,
+  saveDefaultLanguage,
   saveDefaultPassword,
   saveEmailAccent,
   saveEmailSettings,
@@ -155,6 +158,8 @@ const BrandingSchema = z
     login_subtitle: z.string(),
     login_gradient: GradientSchema,
     cursor_trail: z.object({ enabled: z.boolean(), characters: z.string() }),
+    default_language: z.string().openapi({ description: "The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`." }),
+    available_languages: z.array(z.object({ code: z.string(), name: z.string(), native_name: z.string(), machine_assisted: z.boolean() })).openapi({ description: "The languages the sign-in pages are translated into (locales/*.json)." }),
     email_accent: z.string(),
     logo_url: z.string().nullable().openapi({ description: "Path of the uploaded logo (`/brand/logo/<id>-<hash>.png|jpg`, cached as immutable), or null for FlareID's own mark." }),
     custom_css: z.string().openapi({ description: "The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none." }),
@@ -164,12 +169,14 @@ const BrandingSchema = z
   .openapi("Branding");
 
 async function brandingJson(env: Env) {
-  const [brand, trail, css] = await Promise.all([defaultBrand(env), getCursorTrail(env), defaultCustomCss(env)]);
+  const [brand, trail, css, language] = await Promise.all([defaultBrand(env), getCursorTrail(env), defaultCustomCss(env), getDefaultLanguage(env)]);
   return {
     app_name: brand.appName,
     login_subtitle: brand.subtitle,
     login_gradient: brand.gradient,
     cursor_trail: trail,
+    default_language: language,
+    available_languages: allLocales().map((l) => ({ code: l.code, name: l.name, native_name: l.nativeName, machine_assisted: l.machineAssisted })),
     email_accent: brand.accent,
     logo_url: brand.logoUrl,
     custom_css: css,
@@ -188,24 +195,26 @@ defineRoute(
     permission: "branding:write",
     summary: "Change the default brand",
     description:
-      "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
+      "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols; `default_language` must be one of `available_languages`. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
     body: z.object({
       app_name: z.string().optional(),
       login_subtitle: z.string().optional(),
       login_gradient: GradientSchema.optional(),
       cursor_trail: z.object({ enabled: z.boolean().optional(), characters: z.string().optional() }).optional(),
+      default_language: z.string().optional(),
       email_accent: z.string().optional(),
       custom_css: z.string().optional(),
     }),
     response: BrandingSchema,
   },
   async (c) => {
-    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; email_accent?: string; custom_css?: string }>(c);
+    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; default_language?: string; email_accent?: string; custom_css?: string }>(c);
     // Everything validated before anything is saved.
     if (body.app_name !== undefined && !body.app_name.trim()) return c.json(badRequest("app_name cannot be empty."), 400);
     if (body.login_gradient && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
     if (body.email_accent !== undefined && !isHexColor(body.email_accent)) return c.json(badRequest("email_accent must be a #rrggbb hex colour."), 400);
     if (body.custom_css !== undefined) cleanCustomCss(body.custom_css);
+    if (body.default_language !== undefined && !isSupportedLocale(body.default_language)) return c.json(badRequest(`default_language must be one of: ${SUPPORTED_LOCALES.join(", ")}.`), 400);
     const ctx = apiCtx(c);
     if (body.app_name !== undefined) await saveAppName(ctx, body.app_name.trim());
     if (body.login_subtitle !== undefined) await saveLoginSubtitle(ctx, body.login_subtitle);
@@ -214,6 +223,7 @@ defineRoute(
       const current = await getCursorTrail(c.env);
       await saveCursorTrail(ctx, { enabled: body.cursor_trail.enabled ?? current.enabled, characters: body.cursor_trail.characters ?? current.characters });
     }
+    if (body.default_language !== undefined) await saveDefaultLanguage(ctx, body.default_language);
     if (body.email_accent !== undefined) await saveEmailAccent(ctx, body.email_accent);
     if (body.custom_css !== undefined) await saveDefaultCustomCss(ctx, body.custom_css);
     return c.json(await brandingJson(c.env));

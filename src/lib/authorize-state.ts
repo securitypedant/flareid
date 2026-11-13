@@ -15,6 +15,8 @@ export interface PendingAuthorizeRequest {
   maxAge?: number;
   /** Claim groups named by the OIDC `claims` request parameter, per target. */
   claimGroups?: { id_token: string[]; userinfo: string[] };
+  /** The first supported language in OIDC `ui_locales`, for the pages that follow sign-in (consent). */
+  uiLocale?: string;
 }
 
 export interface PendingSamlRequest {
@@ -54,6 +56,11 @@ export type LoginFlow = (
    * ?login_hint= on /login. Only a look: it decides nothing else.
    */
   brandDomain?: string;
+  /**
+   * The language the sign-in page was shown in (i18n.ts), so the posts that
+   * follow answer in it even without the language cookie. Only a look, too.
+   */
+  locale?: string;
 };
 
 const FLOW_TTL_SECONDS = 600;
@@ -163,11 +170,13 @@ export interface PendingMfa {
   flowId: string;
   /** The security questions this step asks, once picked (security-questions.ts): fixed for the step's life. */
   kba?: number[];
+  /** The sign-in's language, carried from the flow. */
+  locale?: string;
 }
 
-export async function storePendingMfa(env: Env, userId: number, flowId: string): Promise<string> {
+export async function storePendingMfa(env: Env, userId: number, flowId: string, locale?: string): Promise<string> {
   const mfaId = randomToken(16);
-  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify({ userId, flowId }), {
+  await env.SESSIONS_KV.put(`mfa:${mfaId}`, JSON.stringify({ userId, flowId, ...(locale ? { locale } : {}) }), {
     expirationTtl: MFA_TTL_SECONDS,
   });
   return mfaId;
@@ -193,7 +202,7 @@ export async function setPendingMfaQuestions(env: Env, mfaId: string, pending: P
 }
 
 function pendingRecord(p: PendingMfa): PendingMfa {
-  return { userId: p.userId, flowId: p.flowId, ...(p.kba ? { kba: p.kba } : {}) };
+  return { userId: p.userId, flowId: p.flowId, ...(p.kba ? { kba: p.kba } : {}), ...(p.locale ? { locale: p.locale } : {}) };
 }
 
 export async function deletePendingMfa(env: Env, mfaId: string): Promise<void> {

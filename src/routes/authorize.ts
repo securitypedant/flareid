@@ -5,6 +5,7 @@ import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { domainFromHint } from "../lib/brands.js";
+import { uiLocalesPreference } from "../lib/i18n.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
@@ -144,6 +145,9 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   if (prompts.has("none") && prompts.size > 1) return fail("invalid_request", "prompt=none cannot be combined with other values.");
   const maxAge = maxAgeRaw !== null && /^\d+$/.test(maxAgeRaw) ? Number(maxAgeRaw) : undefined;
 
+  // OIDC ui_locales (Core 3.1.2.1): the first language FlareID has, for the
+  // sign-in page and the consent page after it (see requestLocale).
+  const uiLocale = uiLocalesPreference(url.searchParams.get("ui_locales"));
   const claimGroups = claimGroupsFromParameter(url.searchParams.get("claims"));
   if (claimGroups === "invalid") return fail("invalid_request", "The claims parameter is not valid JSON.");
   const pendingRequest: PendingAuthorizeRequest = {
@@ -157,6 +161,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
     codeChallengeMethod,
     ...(prompt ? { prompt } : {}),
     ...(maxAge !== undefined ? { maxAge } : {}),
+    ...(uiLocale ? { uiLocale } : {}),
   };
 
   // SSO: if there's already a valid FlareID session in this browser, skip the
@@ -193,6 +198,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
 
   // OIDC login_hint (Core 3.1.2.1): its domain brands the sign-in page.
   const brandDomain = domainFromHint(url.searchParams.get("login_hint"));
-  const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest, ...(brandDomain ? { brandDomain } : {}) });
-  return sendLoginForm(c, flowId, await loginAppearance(c, { domain: brandDomain }));
+  const appearance = await loginAppearance(c, { domain: brandDomain, locale: uiLocale });
+  const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest, ...(brandDomain ? { brandDomain } : {}), locale: appearance.locale });
+  return sendLoginForm(c, flowId, appearance);
 }

@@ -1677,6 +1677,8 @@ Response `200`:
 | `login_subtitle` | string | yes |  |
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
+| `default_language` | string | yes | The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`. |
+| `available_languages` | object[] | yes | The languages the sign-in pages are translated into (locales/*.json). |
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
@@ -1689,7 +1691,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Change the default brand.
 
-Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.
+Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols; `default_language` must be one of `available_languages`. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.
 
 Permission: `branding:write`
 
@@ -1701,6 +1703,7 @@ Request body:
 | `login_subtitle` | string | no |  |
 | `login_gradient` | object { from, to } | no |  |
 | `cursor_trail` | object { enabled, characters } | no |  |
+| `default_language` | string | no |  |
 | `email_accent` | string | no |  |
 | `custom_css` | string | no |  |
 
@@ -1714,6 +1717,8 @@ Response `200`:
 | `login_subtitle` | string | yes |  |
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
+| `default_language` | string | yes | The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`. |
+| `available_languages` | object[] | yes | The languages the sign-in pages are translated into (locales/*.json). |
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
@@ -1746,6 +1751,8 @@ Response `200`:
 | `login_subtitle` | string | yes |  |
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
+| `default_language` | string | yes | The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`. |
+| `available_languages` | object[] | yes | The languages the sign-in pages are translated into (locales/*.json). |
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
@@ -1772,6 +1779,8 @@ Response `200`:
 | `login_subtitle` | string | yes |  |
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
+| `default_language` | string | yes | The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`. |
+| `available_languages` | object[] | yes | The languages the sign-in pages are translated into (locales/*.json). |
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |

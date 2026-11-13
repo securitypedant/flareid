@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import { escapeHtml, scriptTag } from "./html.js";
+import { DEFAULT_LOCALE, t, type Locale } from "./i18n.js";
 import { getClientIp } from "./rate-limit.js";
 import { activeTurnstileSiteKey, getTurnstileConfig } from "./settings.js";
 
@@ -34,7 +35,7 @@ export const TURNSTILE_CSP_HEADER = "X-FlareID-Turnstile";
 
 export type TurnstileAction = "login" | "recovery";
 
-/** Shown whenever the check fails, whatever the reason. */
+/** Shown whenever the check fails, whatever the reason (the English text of "turnstile.failed"). */
 export const TURNSTILE_FAILED_MESSAGE = "Please complete the check and try again.";
 
 const MAX_TOKEN_LENGTH = 2048;
@@ -47,15 +48,20 @@ window.flareidTurnstileReady = function () {
   window.turnstile.render(el, {
     sitekey: el.getAttribute("data-sitekey"),
     action: el.getAttribute("data-action"),
-    theme: el.getAttribute("data-theme") || "light"
+    theme: el.getAttribute("data-theme") || "light",
+    language: el.getAttribute("data-language") || "auto"
   });
 };
 `;
 
-/** The widget container plus its scripts, for inside a <form>. Empty when no site key. */
-export function turnstileWidget(siteKey: string | null, action: TurnstileAction): string {
+/**
+ * The widget container plus its scripts, for inside a <form>. Empty when no
+ * site key. A labelled group, so a screen reader announces what the frame
+ * inside it is for; the widget speaks the page's language.
+ */
+export function turnstileWidget(siteKey: string | null, action: TurnstileAction, locale: Locale = DEFAULT_LOCALE): string {
   if (!siteKey) return "";
-  return `<div id="turnstile-widget" class="turnstile-widget" data-sitekey="${escapeHtml(siteKey)}" data-action="${action}" data-theme="light" style="margin-top:14px; min-height:65px;"></div>
+  return `<div id="turnstile-widget" class="turnstile-widget" role="group" aria-label="${escapeHtml(t(locale, "turnstile.label"))}" data-sitekey="${escapeHtml(siteKey)}" data-action="${action}" data-theme="light" data-language="${escapeHtml(locale)}" style="margin-top:14px; min-height:65px;"></div>
       ${scriptTag(RENDER_SCRIPT)}
       <script src="${TURNSTILE_SCRIPT_URL}" async defer></script>`;
 }

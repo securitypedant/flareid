@@ -40,12 +40,14 @@ import {
   passwordPolicySummary,
   CURSOR_TRAIL_MAX_CHARACTERS,
   getCursorTrail,
+  getDefaultLanguage,
   getSessionPolicy,
   isHexColor,
   SESSION_IDLE_MINUTES_RANGE,
   SESSION_MAX_HOURS_RANGE,
 } from "../lib/settings.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
+import { allLocales } from "../lib/i18n.js";
 import { getEmailSettings, isEmailConfigured, isEmailEnabled, recipientFor } from "../lib/email.js";
 import { deleteUserStatements, listActiveSessionsForUser } from "../lib/sessions.js";
 import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
@@ -102,6 +104,7 @@ import {
   saveAppName,
   saveAuditRetention,
   saveCursorTrail,
+  saveDefaultLanguage,
   saveDefaultPassword,
   saveEmailAccent,
   saveEmailSettings,
@@ -3691,7 +3694,7 @@ async function uploadedBytes(c: Context<{ Bindings: Env }>): Promise<Uint8Array>
 }
 
 admin.get("/admin/branding", async (c) => {
-  const [brand, cursorTrail, css] = await Promise.all([defaultBrand(c.env), getCursorTrail(c.env), defaultCustomCss(c.env)]);
+  const [brand, cursorTrail, css, defaultLanguage] = await Promise.all([defaultBrand(c.env), getCursorTrail(c.env), defaultCustomCss(c.env), getDefaultLanguage(c.env)]);
   const q = c.req.query();
 
   return c.html(
@@ -3746,6 +3749,20 @@ admin.get("/admin/branding", async (c) => {
         </form>
       `)}
       ${cardSection(`
+        <h2>Language</h2>
+        <p class="muted">The sign-in, second-step, consent, sign-out, recovery and setup pages are translated. Each person sees the language they picked on the sign-in page, else the one their browser asks for (or an app asks for with OIDC <code>ui_locales</code>); this is the language when none of those is available. The same for every brand.</p>
+        <form method="POST" action="/admin/branding/language">
+          <label for="default_language">Default language</label>
+          <select id="default_language" name="default_language">
+            ${allLocales()
+              .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === defaultLanguage ? "selected" : ""}>${escapeHtml(l.nativeName === l.name ? l.name : `${l.name} (${l.nativeName})`)}${l.machineAssisted ? " - machine-assisted translation" : ""}</option>`)
+              .join("")}
+          </select>
+          <p class="muted" style="margin-top:-8px;">Translations live in <code>locales/</code> in the repository; see <a href="https://github.com/securitypedant/flareid/blob/main/docs/i18n.md">docs/i18n.md</a> to add one.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
         <h2>Email templates</h2>
         <p class="muted">The wording of the invitation, password reset and sign-in code emails, and the accent colour they share.</p>
         <a href="/admin/branding/email-templates"><button class="secondary" type="button">Edit email templates</button></a>
@@ -3782,6 +3799,16 @@ admin.post("/admin/branding/login-gradient", async (c) => {
   const to = String(body.to ?? "").trim();
   // Anything but two #rrggbb values is ignored, as the colour pickers never send one.
   if (isHexColor(from) && isHexColor(to)) await saveLoginGradient(consoleCtx(c), from, to);
+  return c.redirect("/admin/branding?saved=1", 302);
+});
+
+admin.post("/admin/branding/language", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await saveDefaultLanguage(consoleCtx(c), String(body.default_language ?? ""));
+  } catch (e) {
+    return c.redirect(brandingBack("/admin/branding", e), 302);
+  }
   return c.redirect("/admin/branding?saved=1", 302);
 });
 

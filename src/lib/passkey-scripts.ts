@@ -36,6 +36,8 @@ export const PASSKEY_REGISTER_SCRIPT = `(function(){
   });
 })();`;
 
+// The failure message is read from the button's data-failed attribute (the
+// page's language), so this text - and its CSP hash - is the same in every locale.
 export const PASSKEY_LOGIN_SCRIPT = `(function(){
   ${HELPERS}
   var btn=document.querySelector("[data-passkey-login]"); if(!btn) return;
@@ -56,6 +58,6 @@ export const PASSKEY_LOGIN_SCRIPT = `(function(){
         [[param,flow],["attempt",attempt],["response",JSON.stringify(resp)]].forEach(function(p){var i=document.createElement("input");i.type="hidden";i.name=p[0];i.value=p[1];f.appendChild(i);});
         document.body.appendChild(f); f.submit();
       });
-    }).catch(function(e){btn.disabled=false; if(status) status.textContent="Passkey sign-in was cancelled or failed.";});
+    }).catch(function(e){btn.disabled=false; if(status) status.textContent=btn.getAttribute("data-failed")||"Passkey sign-in was cancelled or failed.";});
   });
 })();`;

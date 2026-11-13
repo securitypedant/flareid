@@ -2,6 +2,7 @@ import { ADMIN_FACTORS, FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabl
 import { isEmailAddress, isEmailConfigured, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
 import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { escapeHtml } from "../lib/html.js";
+import { isSupportedLocale, SUPPORTED_LOCALES } from "../lib/i18n.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import {
   enabledSecurityQuestions,
@@ -23,6 +24,7 @@ import {
   type TurnstileMode,
   setAuditRetentionDays,
   setCursorTrail,
+  setDefaultLanguage,
   setDefaultPassword,
   setLoginGradient,
   setLoginSubtitle,
@@ -264,6 +266,13 @@ export async function saveLoginSubtitle(ctx: ServiceCtx, subtitle: string): Prom
 export async function saveLoginGradient(ctx: ServiceCtx, from: string, to: string): Promise<void> {
   await setLoginGradient(ctx.env, { from, to });
   await audit(ctx, "settings.login_gradient_changed", undefined, { from, to });
+}
+
+/** The sign-in pages' language when the request names none FlareID has (i18n.ts). 400 for an unknown code. */
+export async function saveDefaultLanguage(ctx: ServiceCtx, code: string): Promise<void> {
+  if (!isSupportedLocale(code)) throw new ServiceError(400, `Unknown language "${code}". Available: ${SUPPORTED_LOCALES.join(", ")}.`);
+  await setDefaultLanguage(ctx.env, code);
+  await audit(ctx, "settings.default_language_changed", code);
 }
 
 export async function saveCursorTrail(ctx: ServiceCtx, trail: CursorTrail): Promise<CursorTrail> {

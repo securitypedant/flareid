@@ -81,6 +81,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/branding/app-name": "PATCH /api/v1/branding",
   "POST /admin/branding/login-gradient": "PATCH /api/v1/branding",
   "POST /admin/branding/cursor-trail": "PATCH /api/v1/branding",
+  "POST /admin/branding/language": "PATCH /api/v1/branding",
   "POST /admin/branding/email-templates/:key": "PUT /api/v1/branding/email-templates/{key}",
   "POST /admin/branding/email-templates/:key/reset": "DELETE /api/v1/branding/email-templates/{key}",
   "POST /admin/branding/email-accent": "PATCH /api/v1/branding",

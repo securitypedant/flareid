@@ -6,7 +6,7 @@ import { getSpByEntityId } from "../lib/saml/service-providers.js";
 import { idpEntityId } from "../lib/saml/messages.js";
 import { signingKey } from "../lib/saml/sign.js";
 import { b64encode, el, escapeXmlText, samlId, samlInstant } from "../lib/saml/xml.js";
-import { renderAuthMessage } from "../lib/login-views.js";
+import { msg, renderAuthMessage } from "../lib/login-views.js";
 import { clearSessionCookie, getSession, revokeSession } from "../lib/sessions.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { logAudit } from "../lib/audit.js";
@@ -46,19 +46,19 @@ async function logoutResponseUrl(env: Env, sloUrl: string, inResponseTo: string,
 
 samlSlo.get("/saml/slo", async (c) => {
   const raw = rawQueryParams(c.req.url);
-  if (!raw.SAMLRequest) return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "No SAMLRequest was sent.", action: null });
+  if (!raw.SAMLRequest) return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "No SAMLRequest was sent.", action: null });
 
   let xml: string;
   try {
     xml = await inflateAuthnRequest(decodeURIComponent(raw.SAMLRequest));
   } catch (e) {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: e instanceof Error ? e.message : "Unreadable SAMLRequest.", action: null });
+    return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: e instanceof Error ? e.message : "Unreadable SAMLRequest.", action: null });
   }
-  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "DOCTYPE is not allowed.", action: null });
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "DOCTYPE is not allowed.", action: null });
   const doc = new DOMParser().parseFromString(xml, "text/xml");
   const req = doc.documentElement;
   if (!req || req.localName !== "LogoutRequest" || req.namespaceURI !== NS_SAMLP) {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "Expected a LogoutRequest.", action: null });
+    return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "Expected a LogoutRequest.", action: null });
   }
   const issuer = req.getElementsByTagNameNS(NS_SAML, "Issuer")[0]?.textContent?.trim() ?? "";
   const requestId = req.getAttribute("ID") ?? "";
@@ -68,10 +68,10 @@ samlSlo.get("/saml/slo", async (c) => {
   const destination = req.getAttribute("Destination");
 
   const sp = issuer ? await getSpByEntityId(c.env, issuer) : null;
-  if (!sp || !sp.slo_url) return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "This app is not registered for Single Logout.", action: null });
+  if (!sp || !sp.slo_url) return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "This app is not registered for Single Logout.", action: null });
   // Unsigned logout requests are refused: anyone could otherwise link users into being signed out.
   if ((await verifyRedirectSignature(sp, raw)) !== "ok") {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "The LogoutRequest must be signed with the app's registered certificate.", action: null });
+    return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "The LogoutRequest must be signed with the app's registered certificate.", action: null });
   }
   // A signature proves the SP sent it once - not that it is fresh, meant for
   // this IdP, or unused. Without these a captured request is a reusable
@@ -83,11 +83,11 @@ samlSlo.get("/saml/slo", async (c) => {
     (notOnOrAfter && Date.parse(notOnOrAfter) < Date.now() - 60_000) ||
     (destination !== null && destination !== `${c.env.ISSUER_URL}/saml/slo`)
   ) {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "The LogoutRequest is malformed, expired or addressed elsewhere.", action: null });
+    return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "The LogoutRequest is malformed, expired or addressed elsewhere.", action: null });
   }
   const replayKey = `saml:slo:${await sha256Hex(`${sp.id}\n${requestId}`)}`;
   if (await c.env.SESSIONS_KV.get(replayKey)) {
-    return renderAuthMessage(c, 400, { title: "This sign-out request can't be completed", message: "This LogoutRequest was already used.", action: null });
+    return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "This LogoutRequest was already used.", action: null });
   }
   await c.env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: Math.ceil((2 * SLO_MAX_SKEW_MS) / 1000) + 60 });
 

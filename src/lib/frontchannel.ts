@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { escapeHtml, page, scriptTag } from "./html.js";
+import { DEFAULT_LOCALE, localeInfo, t as translate, tPlural, type Locale, type MessageKey } from "./i18n.js";
 import { oidcSid } from "./sessions.js";
 
 /**
@@ -35,19 +36,27 @@ const CONTINUE_SCRIPT = `(function(){
   setTimeout(go, 4000);
 })();`;
 
-/** The interstitial page; `frameSrc` goes into the response CSP. */
-export function frontchannelLogoutPage(appName: string, targets: string[], next: string | null): { html: string; frameSrc: string } {
+/** The interstitial page, in the sign-in pages' language; `frameSrc` goes into the response CSP. */
+export function frontchannelLogoutPage(appName: string, targets: string[], next: string | null, locale: Locale = DEFAULT_LOCALE): { html: string; frameSrc: string } {
   const origins = [...new Set(targets.map((t) => new URL(t).origin))];
+  const tx = (key: MessageKey) => escapeHtml(translate(locale, key));
+  const { code, dir } = localeInfo(locale);
   const html = page(
-    "Signing out",
-    `<h1>Signing you out</h1>
-     <p class="sub">Signing you out of ${targets.length} connected app${targets.length === 1 ? "" : "s"}...</p>
+    translate(locale, "logout.progress.title"),
+    `<h1>${tx("logout.progress.heading")}</h1>
+     <p class="sub" role="status">${escapeHtml(tPlural(locale, "logout.progress.apps", targets.length))}</p>
      <div id="fcl" data-next="${escapeHtml(next ?? "")}">
-       ${targets.map((t) => `<iframe src="${escapeHtml(t)}" title="Sign-out" style="display:none;" width="0" height="0"></iframe>`).join("")}
+       ${targets.map((t) => `<iframe src="${escapeHtml(t)}" title="${tx("logout.progress.frame")}" style="display:none;" width="0" height="0"></iframe>`).join("")}
      </div>
-     <p id="fcl-done" hidden>You have been signed out. <a href="/login">Sign in again</a></p>
+     <p id="fcl-done" role="status" hidden>${tx("logout.progress.done")} <a href="/login">${tx("common.signInAgain")}</a></p>
      ${scriptTag(CONTINUE_SCRIPT)}`,
-    appName
+    appName,
+    false,
+    "",
+    "",
+    "",
+    "",
+    { code, dir }
   );
   return { html, frameSrc: origins.join(" ") };
 }

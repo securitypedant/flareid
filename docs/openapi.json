@@ -731,6 +731,37 @@
               "characters"
             ]
           },
+          "default_language": {
+            "type": "string",
+            "description": "The sign-in pages' language when the browser asks for none FlareID has (no ?lang=, language cookie, OIDC ui_locales or supported Accept-Language). One of `available_languages`."
+          },
+          "available_languages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "native_name": {
+                  "type": "string"
+                },
+                "machine_assisted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "name",
+                "native_name",
+                "machine_assisted"
+              ]
+            },
+            "description": "The languages the sign-in pages are translated into (locales/*.json)."
+          },
           "email_accent": {
             "type": "string"
           },
@@ -762,6 +793,8 @@
           "login_subtitle",
           "login_gradient",
           "cursor_trail",
+          "default_language",
+          "available_languages",
           "email_accent",
           "logo_url",
           "custom_css",
@@ -5315,7 +5348,7 @@
           "Branding"
         ],
         "summary": "Change the default brand",
-        "description": "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
+        "description": "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols; `default_language` must be one of `available_languages`. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
         "security": [
           {
             "bearer": []
@@ -5362,6 +5395,9 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "default_language": {
+                    "type": "string"
                   },
                   "email_accent": {
                     "type": "string"

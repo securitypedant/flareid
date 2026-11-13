@@ -2,7 +2,7 @@ import { canSignIn } from "../lib/admin-roles.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginAppearance, msg, renderAuthMessage, sendLoginForm, type AuthMessage } from "../lib/login-views.js";
 import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
@@ -27,9 +27,9 @@ export const saml = new Hono<{ Bindings: Env }>();
 
 const REQUEST_ID_TTL_SECONDS = 600;
 
-const ALREADY_ANSWERED = {
-  title: "This sign-in was already completed",
-  message: "That sign-in request has already been answered. Go back to the app and start again.",
+const ALREADY_ANSWERED: AuthMessage = {
+  title: msg("msg.alreadyAnswered.title"),
+  message: msg("msg.alreadyAnswered.message"),
   action: null,
 };
 
@@ -177,9 +177,11 @@ saml.get("/saml/sso", async (c) => {
     return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
-  const flowId = await sealLoginFlow(c.env, { kind: "saml", request: pending });
-  // An AuthnRequest carries no hint FlareID reads: the hostname or the default brand.
-  return sendLoginForm(c, flowId, await loginAppearance(c));
+  // An AuthnRequest carries no hint FlareID reads: the hostname or the default
+  // brand, and the request's language.
+  const appearance = await loginAppearance(c);
+  const flowId = await sealLoginFlow(c.env, { kind: "saml", request: pending, locale: appearance.locale });
+  return sendLoginForm(c, flowId, appearance);
 });
 
 /**
@@ -208,7 +210,7 @@ saml.get("/saml/complete", async (c) => {
     return c.redirect(`/login?next=${encodeURIComponent(`/saml/complete?flow=${flowId}`)}`, 302);
   }
   if (user.id !== boundUserId) {
-    return renderAuthMessage(c, 400, { title: "Signed in as someone else", message: "This sign-in was started by a different account than the one signed in now. Sign out and start again from the app." });
+    return renderAuthMessage(c, 400, { title: msg("msg.otherAccount.title"), message: msg("msg.otherAccount.message") });
   }
 
   const sp = await getSpById(c.env, flow.request.spId);

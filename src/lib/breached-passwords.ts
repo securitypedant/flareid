@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { getPasswordPolicy, isBreachedPasswordCheckEnabled, validatePassword, type PasswordPolicy } from "./settings.js";
+import { DEFAULT_LOCALE, tPlural, type Locale } from "./i18n.js";
 
 /**
  * Breached-password check against Have I Been Pwned's Pwned Passwords range
@@ -51,15 +52,15 @@ export async function breachCount(password: string): Promise<number | null> {
   }
 }
 
-export function breachMessage(count: number): string {
-  return `This password has appeared in a data breach ${count.toLocaleString("en-US")} ${count === 1 ? "time" : "times"}; choose another.`;
+export function breachMessage(count: number, locale: Locale = DEFAULT_LOCALE): string {
+  return tPlural(locale, "password.error.breached", count);
 }
 
 /** The breach check alone: a message when the check is on and the password is known breached, otherwise null. */
-export async function breachedPasswordError(env: Env, password: string): Promise<string | null> {
+export async function breachedPasswordError(env: Env, password: string, locale: Locale = DEFAULT_LOCALE): Promise<string | null> {
   if (!password || !(await isBreachedPasswordCheckEnabled(env))) return null;
   const count = await breachCount(password);
-  return count ? breachMessage(count) : null;
+  return count ? breachMessage(count, locale) : null;
 }
 
 /**
@@ -67,6 +68,6 @@ export async function breachedPasswordError(env: Env, password: string): Promise
  * (when switched on) the breach check. The cheap policy check runs first, so a
  * too-short password never costs a request. Generated passwords skip this.
  */
-export async function newPasswordError(env: Env, password: string, policy?: PasswordPolicy): Promise<string | null> {
-  return validatePassword(password, policy ?? (await getPasswordPolicy(env))) ?? (await breachedPasswordError(env, password));
+export async function newPasswordError(env: Env, password: string, policy?: PasswordPolicy, locale: Locale = DEFAULT_LOCALE): Promise<string | null> {
+  return validatePassword(password, policy ?? (await getPasswordPolicy(env)), locale) ?? (await breachedPasswordError(env, password, locale));
 }

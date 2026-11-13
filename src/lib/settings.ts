@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import type { Brand } from "./brands.js";
 import { generateTempPassword, hashPassword } from "./password.js";
+import { DEFAULT_LOCALE, formatList, isSupportedLocale, SUPPORTED_LOCALES, t, type Locale, type MessageKey } from "./i18n.js";
 
 export interface PasswordPolicy {
   minLength: number;
@@ -323,6 +324,22 @@ export async function setCursorTrail(env: Env, trail: CursorTrail): Promise<Curs
   return clean;
 }
 
+/**
+ * The language of the sign-in pages when nothing about the request picks one
+ * (no ?lang=, no language cookie, no ui_locales, no supported Accept-Language).
+ * An instance setting, under Branding; English unless changed.
+ */
+export async function getDefaultLanguage(env: Env): Promise<Locale> {
+  const value = await getSetting(env, "default_language");
+  return value && isSupportedLocale(value) ? value : DEFAULT_LOCALE;
+}
+
+/** Throws a RangeError for a language FlareID has no translation for. */
+export async function setDefaultLanguage(env: Env, code: string): Promise<void> {
+  if (!isSupportedLocale(code)) throw new RangeError(`Unknown language "${code}". Available: ${SUPPORTED_LOCALES.join(", ")}.`);
+  await setSetting(env, "default_language", code);
+}
+
 /** Everything the sign-in, MFA and sign-in error pages need to look like the brand in force (brands.ts). */
 export interface LoginAppearance {
   appName: string;
@@ -337,10 +354,12 @@ export interface LoginAppearance {
   recoveryEnabled: boolean;
   /** The Turnstile site key when bot protection is on (the sign-in and recovery forms render the widget), else null. */
   turnstileSiteKey: string | null;
+  /** The language the page is rendered in (negotiated per request: see requestLocale in login-views.ts). */
+  locale: Locale;
 }
 
 /** The appearance for a brand; resolve the brand with brandFor (brands.ts) or loginAppearance (login-views.ts). */
-export async function getLoginAppearance(env: Env, brand: Brand, opts: { customCss?: boolean } = {}): Promise<LoginAppearance> {
+export async function getLoginAppearance(env: Env, brand: Brand, opts: { customCss?: boolean; locale?: Locale } = {}): Promise<LoginAppearance> {
   const [cursorTrail, fromAddress, emailSwitch, turnstile] = await Promise.all([
     getCursorTrail(env),
     getSetting(env, "email_from_address"),
@@ -357,6 +376,7 @@ export async function getLoginAppearance(env: Env, brand: Brand, opts: { customC
     cursorTrail,
     recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false",
     turnstileSiteKey: activeTurnstileSiteKey(turnstile),
+    locale: opts.locale && isSupportedLocale(opts.locale) ? opts.locale : DEFAULT_LOCALE,
   };
 }
 
@@ -406,22 +426,32 @@ export async function setSessionPolicy(env: Env, policy: SessionPolicy): Promise
 }
 
 /** "At least 12 characters, with an uppercase letter and a number." - the policy as a sentence, shown next to password fields. */
-export function passwordPolicySummary(policy: PasswordPolicy): string {
-  const needs = [
-    policy.requireUppercase && "an uppercase letter",
-    policy.requireLowercase && "a lowercase letter",
-    policy.requireNumber && "a number",
-    policy.requireSymbol && "a symbol",
-  ].filter(Boolean) as string[];
-  const list = needs.length > 1 ? `${needs.slice(0, -1).join(", ")} and ${needs[needs.length - 1]}` : needs[0];
-  return `At least ${policy.minLength} characters${list ? `, with ${list}` : ""}.`;
+export function passwordPolicySummary(policy: PasswordPolicy, locale: Locale = DEFAULT_LOCALE): string {
+  const needs = (
+    [
+      policy.requireUppercase && "password.policy.uppercase",
+      policy.requireLowercase && "password.policy.lowercase",
+      policy.requireNumber && "password.policy.number",
+      policy.requireSymbol && "password.policy.symbol",
+    ].filter(Boolean) as MessageKey[]
+  ).map((key) => t(locale, key));
+  return needs.length
+    ? t(locale, "password.policy.lengthWith", { min: policy.minLength, requirements: formatList(locale, needs) })
+    : t(locale, "password.policy.length", { min: policy.minLength });
 }
 
-export function validatePassword(password: string, policy: PasswordPolicy): string | null {
-  if (password.length < policy.minLength) return `Password must be at least ${policy.minLength} characters.`;
-  if (policy.requireUppercase && !/[A-Z]/.test(password)) return "Password must contain an uppercase letter.";
-  if (policy.requireLowercase && !/[a-z]/.test(password)) return "Password must contain a lowercase letter.";
-  if (policy.requireNumber && !/[0-9]/.test(password)) return "Password must contain a number.";
-  if (policy.requireSymbol && !/[^A-Za-z0-9]/.test(password)) return "Password must contain a symbol.";
+/** The first rule of the policy the password breaks, or null. */
+export function passwordRuleBroken(password: string, policy: PasswordPolicy): "length" | "uppercase" | "lowercase" | "number" | "symbol" | null {
+  if (password.length < policy.minLength) return "length";
+  if (policy.requireUppercase && !/[A-Z]/.test(password)) return "uppercase";
+  if (policy.requireLowercase && !/[a-z]/.test(password)) return "lowercase";
+  if (policy.requireNumber && !/[0-9]/.test(password)) return "number";
+  if (policy.requireSymbol && !/[^A-Za-z0-9]/.test(password)) return "symbol";
   return null;
+}
+
+/** Why the password breaks the policy, as a sentence in the locale (English for the API and console), or null. */
+export function validatePassword(password: string, policy: PasswordPolicy, locale: Locale = DEFAULT_LOCALE): string | null {
+  const rule = passwordRuleBroken(password, policy);
+  return rule ? t(locale, `password.error.${rule}`, { min: policy.minLength }) : null;
 }

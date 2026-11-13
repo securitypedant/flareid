@@ -106,7 +106,7 @@ describe("admin console feedback 2", () => {
   it("keeps sign-in pages light, links GitHub, and signs out without Clear-Site-Data", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
     const login = await (await SELF.fetch(`${BASE}/login`)).text();
-    expect(login).toContain('<html data-theme="light">');
+    expect(login).toContain('<html lang="en" dir="ltr" data-theme="light">');
     expect(login).not.toContain("fi-theme");
     const admin = await (await get("/admin", await adminCookie())).text();
     expect(admin).toContain('href="https://github.com/securitypedant/flareid"');

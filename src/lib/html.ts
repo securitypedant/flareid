@@ -1198,12 +1198,17 @@ export function page(
   extraStyles = "",
   extraBodyHtml = "",
   /** Extra <head> markup after the styles: the auth pages' custom stylesheet <link>. */
-  headHtml = ""
+  headHtml = "",
+  /** The page's language and direction: the sign-in pages' negotiated locale; the console is English. */
+  lang: { code: string; dir: "ltr" | "rtl" } = { code: "en", dir: "ltr" }
 ): string {
   // Pages without the top bar are the branded sign-in pages: always light.
   const themed = Boolean(navHtml);
+  // The centred card (the sign-in pages) is the page's main landmark; the
+  // console's wide layout is left as it is.
+  const main = wide ? `<div class="page-wrap">${bodyHtml}</div>` : `<main class="center-wrap"><div class="card">${bodyHtml}</div></main>`;
   return `<!doctype html>
-<html${themed ? "" : ' data-theme="light"'}>
+<html lang="${escapeHtml(lang.code)}" dir="${lang.dir === "rtl" ? "rtl" : "ltr"}"${themed ? "" : ' data-theme="light"'}>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -1218,7 +1223,7 @@ export function page(
 <body>
   ${navHtml}
   ${extraBodyHtml}
-  ${wide ? `<div class="page-wrap">${bodyHtml}</div>` : `<div class="center-wrap"><div class="card">${bodyHtml}</div></div>`}
+  ${main}
   ${CONFIRM_DIALOG_HTML}
   ${scriptTag(MULTISELECT_SCRIPT)}
   ${scriptTag(COPY_SCRIPT)}
