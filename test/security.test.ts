@@ -49,6 +49,42 @@ describe("CSRF protection", () => {
     expect((await postRetention(cookie, { Referer: "https://evil.example/page" })).status).toBe(403);
   });
 
+  it("sends the refusal with the usual security headers, as a page and as text", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    for (const accept of ["text/html", "*/*"]) {
+      const res = await SELF.fetch(`${BASE}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: "https://evil.example", Accept: accept },
+        body: "flow_id=x&upn=admin@horizon.test&password=x",
+      });
+      expect(res.status).toBe(403);
+      expect(res.headers.get("Content-Security-Policy"), accept).toContain("frame-ancestors 'none'");
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+      expect(res.headers.get("Strict-Transport-Security")).toContain("max-age=");
+      expect(res.headers.get("Referrer-Policy")).toBe("same-origin");
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      if (accept === "text/html") {
+        expect(res.headers.get("Content-Security-Policy")).toContain("script-src");
+        expect(await res.text()).toContain("did not come from this site");
+      }
+    }
+  });
+
+  it("the CSRF middleware sets those headers on its refusal itself, whatever is mounted around it", async () => {
+    const { Hono } = await import("hono");
+    const { csrfProtection } = await import("../src/lib/security-headers.js");
+    const { env } = await import("cloudflare:test");
+    const bare = new Hono<{ Bindings: typeof env }>();
+    bare.use("*", csrfProtection);
+    bare.post("/x", (c) => c.text("ran"));
+    const res = await bare.request("https://idp.test/x", { method: "POST", headers: { Origin: "https://evil.example", Accept: "text/html" } }, env);
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+
   it("refuses a cookie-bearing POST that says nothing about where it came from", async () => {
     const cookie = await adminSession();
     expect((await postRetention(cookie, {})).status).toBe(403);

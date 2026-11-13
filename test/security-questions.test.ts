@@ -400,4 +400,37 @@ describe("security questions", () => {
     const sensitive = await post("/admin/security/factors/security-questions/settings", { required: "3", asked: "2" }, totpCookie);
     expect(sensitive.headers.get("Location")).toBe("/admin/security/factors/security-questions?saved=1");
   });
+
+  it("an administrator cannot set them, even by posting the form directly; My account says why", async () => {
+    const { adminId, qids } = await setup();
+    await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(adminId).run();
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+
+    const account = await page("/account", cookie);
+    expect(account).toContain("Security questions aren&#039;t available to administrators");
+    expect(account).not.toContain('action="/account/mfa/questions"');
+    expect(account).not.toContain('action="/account/mfa/questions/remove"');
+
+    // A direct POST - with a fully enrolled session, and from forced enrolment.
+    for (const amr of [["pwd", "mfa"], ["pwd"]]) {
+      const c = (await createSession(env, adminId, amr, new Request(BASE))).setCookie.split(";")[0]!;
+      const refused = await post("/account/mfa/questions", enrolForm(qids), c);
+      expect(refused.status, amr.join()).toBe(403);
+      const html = await refused.text();
+      expect(html).toContain("Security questions aren&#039;t available to administrators");
+      expect(html).toContain("error-card");
+    }
+    expect((await userRow(adminId)).security_questions_enabled).toBe(0);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM user_security_answers WHERE user_id = ?").bind(adminId).first<{ n: number }>())!.n).toBe(0);
+    expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.security_questions_refused'").first()).not.toBeNull();
+
+    // Questions set before the role was granted can still be removed.
+    await enrolDirectly(adminId, qids);
+    const enrolled = await page("/account", cookie);
+    expect(enrolled).toContain('action="/account/mfa/questions/remove"');
+    expect(enrolled).not.toContain('action="/account/mfa/questions"');
+    const removed = await post("/account/mfa/questions/remove", { current_password: "test-admin-password-1" }, cookie);
+    expect(removed.headers.get("Location")).toBe("/account?saved=kba-removed");
+    expect((await userRow(adminId)).security_questions_enabled).toBe(0);
+  });
 });

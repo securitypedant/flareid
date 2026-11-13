@@ -46,6 +46,22 @@ may break things.
   `security_questions`) - `mfa_enabled` still means the authenticator app -
   and `GET /api/v1/stats` gains a `second_factors` breakdown, with
   `counts.mfa_enrolled` now counting any factor.
+- **The CSRF refusal carries the security headers itself.** `csrfProtection`
+  now runs the same header code as every response (`applySecurityHeaders`,
+  factored out of `securityHeaders`) on its 403 - CSP, `X-Frame-Options`,
+  `nosniff`, HSTS, `no-store` - instead of relying on the middleware mounted
+  around it. (In the app as mounted, `securityHeaders` already wrapped it; the
+  refusal no longer depends on that.)
+
+### Security
+
+- **Administrators cannot set security questions.** A direct
+  `POST /account/mfa/questions` from anyone holding an admin role is refused
+  (403, on the styled error page, audited as
+  `user.security_questions_refused`), as the sign-in and forced-enrolment
+  pages already did not offer them. My account shows the Security questions
+  card without a form for administrators, with the reason - and the remove
+  form if they set questions before the role was granted.
 
 ## [3.7.0] - 2026-11-12
 

@@ -61,7 +61,12 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   else verdict = hasSessionCookie(c.req.raw) ? "unknown" : "ok";
 
   if (verdict !== "ok") {
-    return errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 403, "This request did not come from this site, so it was refused. Reload the page and try again.");
+    // With the same headers as every other response (CSP, frame and sniffing
+    // protection, no-store) set here, not left to whichever middleware runs
+    // outside this one.
+    const refusal = errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 403, "This request did not come from this site, so it was refused. Reload the page and try again.");
+    await applySecurityHeaders(c.req.url, refusal.headers);
+    return refusal;
   }
   return next();
 };
@@ -72,7 +77,15 @@ const PUBLIC_CACHEABLE = new Set(["/.well-known/openid-configuration", "/jwks.js
 /** Security response headers, on every response. */
 export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   await next();
-  const h = c.res.headers;
+  await applySecurityHeaders(c.req.url, c.res.headers);
+};
+
+/**
+ * Sets the security headers on a response's headers. A response given them
+ * early (the CSRF refusal, which carries no frame or Turnstile marker) gets
+ * the same values again when it passes back through securityHeaders.
+ */
+export async function applySecurityHeaders(requestUrl: string, h: Headers): Promise<void> {
   h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   h.set("X-Content-Type-Options", "nosniff");
   // Nothing of ours is meant to be framed: login, MFA and admin are exactly
@@ -89,7 +102,7 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   // carry an MFA seed, a SCIM secret, a freshly minted API key, a signed SAML
   // response, and /token responses carry tokens (RFC 6749 requires no-store).
   // Only the published, public documents are left cacheable.
-  if (!h.has("Cache-Control") && !PUBLIC_CACHEABLE.has(new URL(c.req.url).pathname)) {
+  if (!h.has("Cache-Control") && !PUBLIC_CACHEABLE.has(new URL(requestUrl).pathname)) {
     h.set("Cache-Control", "no-store");
   }
 
@@ -131,4 +144,4 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, n
   } else {
     h.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
   }
-};
+}

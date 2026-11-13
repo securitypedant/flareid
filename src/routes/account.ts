@@ -135,7 +135,11 @@ account.get("/account", async (c) => {
   const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
   const factors = enrolled.filter((_, i) => usable[i]);
   const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
-  const kbaCard = (await securityQuestionsAvailable(c.env)) ? await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "") : "";
+  const kbaCard = (await securityQuestionsAvailable(c.env))
+    ? c.get("access").isAdmin
+      ? adminSecurityQuestionsCard(user, c.req.query("kba_error") ?? "")
+      : await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "")
+    : "";
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
      JOIN oauth_clients oc ON oc.client_id = at.client_id
@@ -439,6 +443,39 @@ async function securityQuestionsCard(env: Env, user: UserRow, error: string): Pr
       <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
     </div>
     ${body}`);
+}
+
+/** Why an administrator cannot set security questions: shown on My account and on a refused POST. */
+const ADMIN_KBA_REFUSAL =
+  "Security questions aren't available to administrators: answers can often be guessed or found out, which is too weak for an account that can change the directory. Use an authenticator app, a passkey or email codes instead.";
+
+/**
+ * The security-questions card for someone holding an admin role: no form to
+ * set them, the reason, and - for questions set before the role was granted -
+ * a way to remove them.
+ */
+function adminSecurityQuestionsCard(user: UserRow, error: string): string {
+  const enrolled = Boolean(user.security_questions_enabled);
+  const errorHtml = KBA_ERRORS[error] ? `<p class="error">${escapeHtml(KBA_ERRORS[error]!)}</p>` : "";
+  return cardSection(`
+    <div class="row between" id="security-questions">
+      <h2 style="margin:0;">Security questions</h2>
+      <span class="badge badge-disabled">${enrolled ? "Not accepted" : "Unavailable"}</span>
+    </div>
+    <p class="muted" style="margin-top:8px;">${escapeHtml(ADMIN_KBA_REFUSAL)}</p>
+    ${errorHtml}
+    ${
+      enrolled
+        ? `<form method="POST" action="/account/mfa/questions/remove" style="margin-top:12px;" ${confirmAttrs("Your security questions are removed.", { title: "Remove your security questions?", action: "Remove", danger: true })}>
+         <label for="kba_remove_password">Current password</label>
+         <div class="field-row" style="align-items:flex-start;">
+           <input type="password" id="kba_remove_password" name="current_password" required autocomplete="current-password" style="max-width:320px;" />
+           <div></div>
+         </div>
+         <button class="danger" type="submit">Remove security questions</button>
+       </form>`
+        : ""
+    }`);
 }
 
 account.post("/account/profile", async (c) => {
@@ -888,6 +925,13 @@ account.post("/account/mfa/questions", async (c) => {
   const resume = String(body.resume ?? "");
   const sessionId = c.get("sessionId");
   if (!(await securityQuestionsAvailable(c.env))) return c.redirect(kbaReturn(body, "kba_error=kba-unavailable"), 302);
+  // Not a factor administrators may use (secondFactorGate, hasSecondFactor),
+  // so not one they may set either - the forms are not offered, and a direct
+  // POST is refused.
+  if (c.get("access").isAdmin) {
+    await logAudit(c.env, user, "user.security_questions_refused", user.upn, { reason: "administrator" }, c.req.raw);
+    return c.html(errorPage(c.get("appName"), 403, ADMIN_KBA_REFUSAL, safeBackHref(c.req.raw, "/account"), true), 403);
+  }
   const changing = Boolean(user.security_questions_enabled);
   if (changing) {
     if (await stepUpBudgetExceeded(c)) return c.redirect(kbaReturn(body, "kba_error=kba-too-many"), 302);

@@ -223,11 +223,12 @@ describe("administrators always need a strong second factor", () => {
     const { results } = await env.DB.prepare("SELECT id FROM security_questions ORDER BY id LIMIT 3").all<{ id: number }>();
     const form = Object.fromEntries(["Rex the Dog", "Springfield", "Hill Valley High"].flatMap((a, i) => [[`question_${i + 1}`, String(results[i]!.id)], [`answer_${i + 1}`, a]]));
     const posted = await SELF.fetch(`${BASE}/account/mfa/questions`, { method: "POST", headers: { ...FORM, Cookie: cookie }, redirect: "manual", body: new URLSearchParams({ ...form, from: "setup", resume }).toString() });
-    expect(posted.status).toBe(302);
-    expect(posted.headers.get("Location")).not.toContain("code=");
-    expect(posted.headers.get("Location")).not.toContain("rp.test");
-    expect(posted.headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+    // Refused outright: an administrator may not set them at all.
+    expect(posted.status).toBe(403);
+    expect(posted.headers.get("Location")).toBeNull();
+    expect(await posted.text()).toContain("available to administrators");
     expect(await env.DB.prepare("SELECT 1 FROM auth_codes").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT 1 FROM user_security_answers").first()).toBeNull();
   });
 
   it("refuses to turn off the last of the administrators' factors, even with no policy requiring one", async () => {
