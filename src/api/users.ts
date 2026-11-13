@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import type { Env } from "../env.js";
+import { enrolledFactors, hasPasskeySql } from "../lib/auth-policy.js";
 import { getDefaultDomain } from "../lib/domains.js";
 import { parseRule, userMatchesRule } from "../lib/groups.js";
 import { listPasskeys } from "../lib/passkeys.js";
@@ -42,11 +43,12 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
             u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
             (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,
             (SELECT name FROM schemas s WHERE s.id = u.schema_id) AS schema_name,
+            ${hasPasskeySql("u")} AS has_passkey,
             (SELECT GROUP_CONCAT(g.name, char(10)) FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = u.id) AS group_names
        FROM users u ${where} ORDER BY u.id LIMIT ? OFFSET ?`
   )
     .bind(...binds, opts.limit, opts.offset)
-    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number; custom_attributes: string }>();
+    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number; has_passkey: number; custom_attributes: string }>();
 
   // Dynamic groups don't live in group_members, so resolve them once per
   // request and fold them into each user's groups.
@@ -54,11 +56,12 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
   const { results: pageUsers } = await env.DB.prepare(`SELECT * FROM users u ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...binds, opts.limit, opts.offset).all<UserRow>();
   const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => { const r = parseRule(g.rule); return r !== null && userMatchesRule(u, r); }).map((g) => g.name)]));
 
-  return results.map(({ group_names, mfa_enabled, email_otp_enabled, security_questions_enabled, custom_attributes, id, ...user }) => ({
+  return results.map(({ group_names, mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey, custom_attributes, id, ...user }) => ({
     ...user,
     mfa_enabled: mfa_enabled === 1,
     email_otp_enabled: email_otp_enabled === 1,
     security_questions_enabled: security_questions_enabled === 1,
+    second_factors: enrolledFactors({ mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey }),
     attributes: parseCustomAttributes(custom_attributes),
     groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
   }));

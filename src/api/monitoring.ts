@@ -14,9 +14,19 @@ defineRoute(
     tag: "Monitoring",
     permission: "performance:read",
     summary: "Overview statistics",
-    description: "The numbers on the console's overview: directory counts, the last 24 hours and the last 30 days of sign-in activity (from the audit log).",
+    description:
+      "The numbers on the console's overview: directory counts, second-factor enrolment, the last 24 hours and the last 30 days of sign-in activity (from the audit log). `counts.mfa_enrolled` is the number of users with any second factor (authenticator app, passkey, email codes or security questions); `second_factors` breaks it down.",
     response: z.object({
       counts: z.record(z.string(), z.number()),
+      second_factors: z
+        .object({
+          any: z.number().openapi({ description: "Users with at least one second factor enrolled (= counts.mfa_enrolled)." }),
+          totp: z.number().openapi({ description: "Authenticator app." }),
+          passkey: z.number().openapi({ description: "At least one passkey." }),
+          email_otp: z.number().openapi({ description: "Email codes." }),
+          security_questions: z.number().openapi({ description: "Security questions (not accepted as an administrator's second factor)." }),
+        })
+        .openapi("SecondFactorCounts"),
       last_24h: z.record(z.string(), z.number()),
       last_30d: z.object({
         sign_ins: z.number(),

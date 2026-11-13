@@ -115,7 +115,10 @@ with `{"enabled": true}` is a `400` until email is configured, and
 `PUT /security/factors/security_questions` a `400` while fewer questions are
 enabled than each person must set. Users carry `email_otp_enabled` and
 `security_questions_enabled` next to `mfa_enabled` (the authenticator app),
-and `POST /users/{username}/reset-mfa` clears all three.
+and `POST /users/{username}/reset-mfa` clears all three. `second_factors`
+lists every factor a user has enrolled (`totp`, `passkey` - at least one -
+`email_otp`, `security_questions`); `GET /stats` counts users with any of them
+in `counts.mfa_enrolled` and per factor in `second_factors`.
 
 Security questions: `GET /security/security-questions` returns the settings
 (`required`: how many each person sets, default 3; `asked`: how many are

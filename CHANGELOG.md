@@ -32,6 +32,20 @@ may break things.
   person between two large groups is two PATCHes of under 300 bytes. This
   is what made `scripts/oidc-suite-setup.mjs` take over a minute and a half:
   its conformance user sits in the dynamic groups its empty attributes match.
+- **MFA columns count every factor.** "Has a second factor" now means an
+  authenticator app, at least one passkey, email codes or security questions
+  everywhere it is shown: the Users list's MFA column names them ("Authenticator
+  app, Passkey") and its MFA filter ("Has a second factor" / "No second
+  factor") uses the same SQL; the overview's "MFA enrolled" and coverage count
+  anyone with a factor, with a per-factor breakdown; the user page lists each
+  factor, including passkeys, and marks an administrator's security questions
+  as not counting; My account says which second factors you have (those
+  switched on), and its
+  former "Two-factor authentication" card is now called "Authenticator app".
+  API: user objects gain `second_factors` (`totp`, `passkey`, `email_otp`,
+  `security_questions`) - `mfa_enabled` still means the authenticator app -
+  and `GET /api/v1/stats` gains a `second_factors` breakdown, with
+  `counts.mfa_enrolled` now counting any factor.
 
 ## [3.7.0] - 2026-11-12
 

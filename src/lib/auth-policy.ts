@@ -69,6 +69,25 @@ export async function isFactorUsable(env: Env, key: FactorKey): Promise<boolean>
   return key === "email_otp" ? isEmailConfigured(env) : true;
 }
 
+/** Short names for a factor a person has enrolled (lists, status lines). */
+export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authenticator app", passkey: "Passkey", email_otp: "Email codes", security_questions: "Security questions" };
+
+/**
+ * What "has a second factor" means wherever it is counted, filtered or shown:
+ * an authenticator app, at least one passkey, email codes or security
+ * questions, enrolled (whether the factor is switched on right now is the
+ * sign-in's business, not the directory's). SQL for a users row named `alias`.
+ */
+export const hasPasskeySql = (alias: string) => `EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id = ${alias}.id)`;
+export const anySecondFactorSql = (alias: string) =>
+  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)})`;
+
+/** The factors a user row has enrolled, in FACTOR_KEYS order; `has_passkey` comes from hasPasskeySql. */
+export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean }): FactorKey[] {
+  const on: Record<FactorKey, boolean> = { totp: Boolean(u.mfa_enabled), passkey: Boolean(u.has_passkey), email_otp: Boolean(u.email_otp_enabled), security_questions: Boolean(u.security_questions_enabled) };
+  return FACTOR_KEYS.filter((k) => on[k]);
+}
+
 /** How many users have each factor enrolled (passkeys: users with at least one). */
 export async function factorEnrolmentCounts(env: Env): Promise<Record<string, number>> {
   const [totp, passkey, email, kba] = await env.DB.batch([
@@ -79,6 +98,19 @@ export async function factorEnrolmentCounts(env: Env): Promise<Record<string, nu
   ]);
   const n = (r: D1Result | undefined) => (r!.results[0] as { n: number }).n;
   return { totp: n(totp), passkey: n(passkey), email_otp: n(email), security_questions: n(kba) };
+}
+
+/** Users with any second factor (anySecondFactorSql), and with each one, in one pass over users. */
+export async function secondFactorCounts(env: Env): Promise<{ any: number } & Record<FactorKey, number>> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(${anySecondFactorSql("u")}), 0) AS any_factor,
+            COALESCE(SUM(u.mfa_enabled = 1), 0) AS totp,
+            COALESCE(SUM(${hasPasskeySql("u")}), 0) AS passkey,
+            COALESCE(SUM(u.email_otp_enabled = 1), 0) AS email_otp,
+            COALESCE(SUM(u.security_questions_enabled = 1), 0) AS security_questions
+       FROM users u`
+  ).first<{ any_factor: number; totp: number; passkey: number; email_otp: number; security_questions: number }>();
+  return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, email_otp: row?.email_otp ?? 0, security_questions: row?.security_questions ?? 0 };
 }
 
 export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[] })[]> {

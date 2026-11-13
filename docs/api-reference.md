@@ -194,9 +194,10 @@ Response `200`:
 | `family_name` | string | yes |  |
 | `external_id` | string | yes |  |
 | `status` | "active" \| "disabled" | yes |  |
-| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
+| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
 | `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
+| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -256,9 +257,10 @@ Response `200`:
 | `family_name` | string | yes |  |
 | `external_id` | string | yes |  |
 | `status` | "active" \| "disabled" | yes |  |
-| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. |
+| `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
 | `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
+| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -2519,7 +2521,7 @@ Overview statistics, performance and the audit log.
 
 Overview statistics.
 
-The numbers on the console's overview: directory counts, the last 24 hours and the last 30 days of sign-in activity (from the audit log).
+The numbers on the console's overview: directory counts, second-factor enrolment, the last 24 hours and the last 30 days of sign-in activity (from the audit log). `counts.mfa_enrolled` is the number of users with any second factor (authenticator app, passkey, email codes or security questions); `second_factors` breaks it down.
 
 Permission: `performance:read`
 
@@ -2528,6 +2530,7 @@ Response `200`:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `counts` | map of number | yes |  |
+| `second_factors` | SecondFactorCounts | yes |  |
 | `last_24h` | map of number | yes |  |
 | `last_30d` | object { sign_ins, failed_sign_ins, sign_ins_by_day, outcomes, top_actions, top_users } | yes |  |
 

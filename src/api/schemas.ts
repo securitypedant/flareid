@@ -40,9 +40,12 @@ export const UserSchema = z
     family_name: z.string(),
     external_id: z.string(),
     status: z.enum(["active", "disabled"]),
-    mfa_enabled: z.boolean().openapi({ description: "An authenticator app (TOTP) is enrolled." }),
+    mfa_enabled: z.boolean().openapi({ description: "An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them." }),
     email_otp_enabled: z.boolean().openapi({ description: "Email one-time codes are enrolled as a second factor." }),
     security_questions_enabled: z.boolean().openapi({ description: "Security questions are set as a second factor." }),
+    second_factors: z
+      .array(z.enum(["totp", "passkey", "email_otp", "security_questions"]))
+      .openapi({ description: "Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none." }),
     job_title: z.string(),
     department: z.string(),
     employee_number: z.string(),

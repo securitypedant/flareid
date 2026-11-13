@@ -1,6 +1,6 @@
 import { errorPage, safeBackHref } from "../lib/html.js";
 import { grants } from "../lib/permissions.js";
-import { isFactorEnabled, secondFactorGate } from "../lib/auth-policy.js";
+import { enrolledFactors, FACTOR_SHORT_LABELS, isFactorEnabled, isFactorUsable, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
 import {
@@ -129,6 +129,11 @@ account.get("/account", async (c) => {
   const sessions = await listActiveSessionsForUser(c.env, user.id);
   const devices = await listTrustedDevices(c.env, user.id);
   const passkeys = await listPasskeys(c.env, user.id);
+  const isAdmin = c.get("access").isAdmin;
+  // Only factors that work right now: one switched off is not offered here at all.
+  const enrolled = enrolledFactors({ ...user, has_passkey: passkeys.length > 0 });
+  const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
+  const factors = enrolled.filter((_, i) => usable[i]);
   const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
   const kbaCard = (await securityQuestionsAvailable(c.env)) ? await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "") : "";
   const { results: connectedApps } = await c.env.DB.prepare(
@@ -193,11 +198,16 @@ account.get("/account", async (c) => {
       `)}
 
       <h2 class="section-title">Security</h2>
+      <p class="muted" id="second-factors">${
+        factors.length
+          ? `Your second factors: ${factors.map((f) => FACTOR_SHORT_LABELS[f] + (f === "security_questions" && isAdmin ? " (not accepted for administrators)" : "")).join(", ")}.`
+          : "You have no second factor yet. Set up an authenticator app, a passkey or another factor below."
+      }</p>
       <div class="two-col">
         ${cardSection(`
           <div class="row between">
-            <h2 style="margin:0;">Two-factor authentication</h2>
-            <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enabled" : "Not enabled"}</span>
+            <h2 style="margin:0;">Authenticator app</h2>
+            <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enabled" : "Not set up"}</span>
           </div>
           ${
             user.mfa_enabled

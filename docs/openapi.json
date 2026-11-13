@@ -146,7 +146,7 @@
           },
           "mfa_enabled": {
             "type": "boolean",
-            "description": "An authenticator app (TOTP) is enrolled."
+            "description": "An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them."
           },
           "email_otp_enabled": {
             "type": "boolean",
@@ -155,6 +155,19 @@
           "security_questions_enabled": {
             "type": "boolean",
             "description": "Security questions are set as a second factor."
+          },
+          "second_factors": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "totp",
+                "passkey",
+                "email_otp",
+                "security_questions"
+              ]
+            },
+            "description": "Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none."
           },
           "job_title": {
             "type": "string"
@@ -232,6 +245,7 @@
           "mfa_enabled",
           "email_otp_enabled",
           "security_questions_enabled",
+          "second_factors",
           "job_title",
           "department",
           "employee_number",
@@ -1111,6 +1125,38 @@
           "created_at",
           "retired_at",
           "public_jwk"
+        ]
+      },
+      "SecondFactorCounts": {
+        "type": "object",
+        "properties": {
+          "any": {
+            "type": "number",
+            "description": "Users with at least one second factor enrolled (= counts.mfa_enrolled)."
+          },
+          "totp": {
+            "type": "number",
+            "description": "Authenticator app."
+          },
+          "passkey": {
+            "type": "number",
+            "description": "At least one passkey."
+          },
+          "email_otp": {
+            "type": "number",
+            "description": "Email codes."
+          },
+          "security_questions": {
+            "type": "number",
+            "description": "Security questions (not accepted as an administrator's second factor)."
+          }
+        },
+        "required": [
+          "any",
+          "totp",
+          "passkey",
+          "email_otp",
+          "security_questions"
         ]
       },
       "Performance": {
@@ -7748,7 +7794,7 @@
           "Monitoring"
         ],
         "summary": "Overview statistics",
-        "description": "The numbers on the console's overview: directory counts, the last 24 hours and the last 30 days of sign-in activity (from the audit log).",
+        "description": "The numbers on the console's overview: directory counts, second-factor enrolment, the last 24 hours and the last 30 days of sign-in activity (from the audit log). `counts.mfa_enrolled` is the number of users with any second factor (authenticator app, passkey, email codes or security questions); `second_factors` breaks it down.",
         "security": [
           {
             "bearer": []
@@ -7768,6 +7814,9 @@
                       "additionalProperties": {
                         "type": "number"
                       }
+                    },
+                    "second_factors": {
+                      "$ref": "#/components/schemas/SecondFactorCounts"
                     },
                     "last_24h": {
                       "type": "object",
@@ -7873,6 +7922,7 @@
                   },
                   "required": [
                     "counts",
+                    "second_factors",
                     "last_24h",
                     "last_30d"
                   ]

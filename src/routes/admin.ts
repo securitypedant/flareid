@@ -9,7 +9,7 @@ import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js"
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { FACTORS, factorEnrolmentCounts, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
@@ -679,6 +679,7 @@ admin.get("/admin", async (c) => {
             attr("Active sessions", activeSessions),
             attr("MFA enrolled", `${mfaEnrolled} of ${users}`),
             attr("MFA coverage", users ? `${Math.round((mfaEnrolled / users) * 100)}%` : "—"),
+            attr("By factor", (["totp", "passkey", "email_otp", "security_questions"] as const).map((f) => `${FACTOR_SHORT_LABELS[f]} ${stats.second_factors[f]}`).join(" · ")),
             attr("Failed sign-ins (30d)", failedTotal),
           ])}
           <div style="margin-top:14px;"><a href="/admin/log">View the full log</a></div>
@@ -806,6 +807,14 @@ async function superAdminUserIds(env: Env): Promise<Set<number>> {
   return new Set(results.map((r) => r.user_id));
 }
 
+/** A person's enrolled second factors, compact: "Authenticator app, Passkey", or "-". */
+function factorList(factors: FactorKey[]): string {
+  if (!factors.length) return '<span class="muted">-</span>';
+  return factors
+    .map((f) => (f === "security_questions" ? `<span title="Security questions do not count as an administrator's second factor">${FACTOR_SHORT_LABELS[f]}</span>` : FACTOR_SHORT_LABELS[f]))
+    .join(", ");
+}
+
 admin.get("/admin/users", async (c) => {
   const search = c.req.query("search") ?? "";
   const statusFilter = c.req.query("status") ?? "";
@@ -823,10 +832,9 @@ admin.get("/admin/users", async (c) => {
     conditions.push("status = ?");
     params.push(statusFilter);
   }
-  if (mfaFilter === "enabled" || mfaFilter === "disabled") {
-    conditions.push("mfa_enabled = ?");
-    params.push(mfaFilter === "enabled" ? 1 : 0);
-  }
+  // Any second factor, the same definition as the column and the overview.
+  if (mfaFilter === "enabled") conditions.push(anySecondFactorSql("users"));
+  else if (mfaFilter === "disabled") conditions.push(`NOT ${anySecondFactorSql("users")}`);
   if (roleFilter === "admin" || roleFilter === "regular") {
     conditions.push(
       `id ${roleFilter === "admin" ? "IN" : "NOT IN"} (SELECT user_id FROM group_members WHERE group_id = (SELECT id FROM groups WHERE name = '${SUPER_ADMINS_GROUP}'))`
@@ -840,7 +848,7 @@ admin.get("/admin/users", async (c) => {
 
   const batchResults = await c.env.DB.batch([
     c.env.DB.prepare(`SELECT COUNT(*) as n FROM users ${whereClause}`).bind(...params),
-    c.env.DB.prepare(`SELECT * FROM users ${whereClause} ORDER BY display_name LIMIT ? OFFSET ?`).bind(
+    c.env.DB.prepare(`SELECT *, ${hasPasskeySql("users")} AS has_passkey FROM users ${whereClause} ORDER BY display_name LIMIT ? OFFSET ?`).bind(
       ...params,
       pageSize,
       (page - 1) * pageSize
@@ -878,8 +886,8 @@ admin.get("/admin/users", async (c) => {
               ])}
               ${filterSelect("mfa", mfaFilter, [
                 ["", "All MFA"],
-                ["enabled", "MFA enabled"],
-                ["disabled", "MFA not enabled"],
+                ["enabled", "Has a second factor"],
+                ["disabled", "No second factor"],
               ])}
               ${filterSelect("role", roleFilter, [
                 ["", "All roles"],
@@ -899,13 +907,13 @@ admin.get("/admin/users", async (c) => {
         <table>
           <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th><th>Schema</th><th style="width:40px;"></th></tr></thead>
           <tbody>
-            ${(users as UserRow[])
+            ${(users as (UserRow & { has_passkey: number })[])
               .map(
                 (u) => `<tr>
                   <td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td>
                   <td>${escapeHtml(u.upn)}</td>
                   <td><span class="badge badge-${u.status}">${u.status}</span></td>
-                  <td>${u.mfa_enabled ? "Enabled" : "-"}</td>
+                  <td>${factorList(enrolledFactors(u))}</td>
                   <td>${admins.has(u.id) ? '<span class="badge badge-admin">Super Admin</span>' : "-"}</td>
                   <td>${u.schema_id && schemaNames.has(u.schema_id) ? escapeHtml(schemaNames.get(u.schema_id)!) : '<span class="muted">-</span>'}</td>
                   <td style="text-align:right;">${rowMenu(`
@@ -1255,7 +1263,12 @@ admin.get("/admin/users/:id", async (c) => {
   const apps = await connectedApps(c.env, id);
   const { username, domain } = splitUpn(user.upn);
   const isSelf = id === c.get("user").id;
+  // What Reset MFA clears (passkeys are removed one by one, below).
   const anyMfa = Boolean(user.mfa_enabled || user.email_otp_enabled || user.security_questions_enabled);
+  const factors = enrolledFactors({ ...user, has_passkey: await userHasPasskey(c.env, id) });
+  const userIsAdmin = await isAdministrator(c.env, id);
+  // An administrator's security questions are not a second factor they can use.
+  const countedFactors = userIsAdmin ? factors.filter((f) => f !== "security_questions") : factors;
 
   // Schema: ?schema= previews a move before it is saved. The values shown
   // come from the user's row, so attributes with the same name in the target
@@ -1387,8 +1400,10 @@ admin.get("/admin/users/:id", async (c) => {
         }
         <div class="sec-row">
           <div>
-            <h3>Multi-factor authentication <span class="badge ${anyMfa ? "badge-active" : "badge-disabled"}">${anyMfa ? "Enrolled" : "Not enrolled"}</span></h3>
-            <p class="muted">Authenticator app: ${user.mfa_enabled ? "enrolled" : "not enrolled"} &middot; Email codes: ${user.email_otp_enabled ? "enrolled" : "not enrolled"} &middot; Security questions: ${user.security_questions_enabled ? "enrolled" : "not enrolled"}</p>
+            <h3>Multi-factor authentication <span class="badge ${countedFactors.length ? "badge-active" : "badge-disabled"}">${countedFactors.length ? "Enrolled" : "Not enrolled"}</span></h3>
+            <p class="muted">${(["totp", "passkey", "email_otp", "security_questions"] as const)
+              .map((f) => `${f === "passkey" ? "Passkeys" : FACTOR_SHORT_LABELS[f]}: ${factors.includes(f) ? "enrolled" : "not enrolled"}${f === "security_questions" && userIsAdmin && factors.includes(f) ? " (does not count for an administrator)" : ""}`)
+              .join(" &middot; ")}</p>
             <p class="muted">Resetting clears their authenticator, backup codes, email codes, security questions and remembered devices; they enrol again at next sign-in.</p>
           </div>
           <form method="POST" action="/admin/users/${id}/reset-mfa"

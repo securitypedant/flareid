@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { secondFactorCounts } from "../lib/auth-policy.js";
 import { readPerformance, readPerformanceSeries } from "../lib/metrics.js";
 import type { AuditLogRow } from "../lib/types.js";
 
@@ -107,7 +108,7 @@ export async function overviewStats(env: Env) {
   const since = `${dayKey(-(DASHBOARD_DAYS - 1))}T00:00:00.000Z`;
   const day = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const n = (r: D1Result) => (r.results[0] as { n: number } | undefined)?.n ?? 0;
-  const [counts, loginsByDay, outcomes, topActions, topUsers] = await Promise.all([
+  const [counts, loginsByDay, outcomes, topActions, topUsers, factors] = await Promise.all([
     env.DB.batch([
       env.DB.prepare("SELECT COUNT(*) AS n FROM users"),
       env.DB.prepare("SELECT COUNT(*) AS n FROM groups"),
@@ -116,7 +117,6 @@ export async function overviewStats(env: Env) {
       // in lib/sessions.ts, so the same rule is applied here rather than inventing
       // one that would over-count long-dead sessions.
       env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE revoked_at IS NULL AND created_at > ?").bind(new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()),
-      env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
       env.DB.prepare("SELECT COUNT(*) AS n FROM saml_service_providers"),
       env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL"),
       env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'active'"),
@@ -152,14 +152,17 @@ export async function overviewStats(env: Env) {
     )
       .bind(since)
       .all<{ upn: string; n: number }>(),
+    secondFactorCounts(env),
   ]);
-  const [users, groups, oidcClients, activeSessions, mfaEnrolled, samlApps, apiKeys, activeUsers, ok24, bad24, limited24, api24, apiBad24, scimFail24, scimQueue, refreshLive, stepUpBad24] = counts.map(n);
+  const [users, groups, oidcClients, activeSessions, samlApps, apiKeys, activeUsers, ok24, bad24, limited24, api24, apiBad24, scimFail24, scimQueue, refreshLive, stepUpBad24] = counts.map(n);
   // Fill the gaps: a day with no logins has to be a zero, not a missing day,
   // or the shape of the chart lies about the period.
   const byDay = new Map(loginsByDay.results.map((r) => [r.day, r]));
   const signInsByDay = Array.from({ length: DASHBOARD_DAYS }, (_, i) => dayKey(-(DASHBOARD_DAYS - 1 - i))).map((d) => ({ day: d, success: byDay.get(d)?.ok ?? 0, failed: byDay.get(d)?.bad ?? 0 }));
   return {
-    counts: { users: users!, groups: groups!, oidc_clients: oidcClients!, saml_apps: samlApps!, active_api_keys: apiKeys!, active_users: activeUsers!, active_sessions: activeSessions!, mfa_enrolled: mfaEnrolled!, live_refresh_grants: refreshLive!, scim_deletions_queued: scimQueue! },
+    counts: { users: users!, groups: groups!, oidc_clients: oidcClients!, saml_apps: samlApps!, active_api_keys: apiKeys!, active_users: activeUsers!, active_sessions: activeSessions!, mfa_enrolled: factors.any, live_refresh_grants: refreshLive!, scim_deletions_queued: scimQueue! },
+    // Users with each second factor enrolled; `any` (= counts.mfa_enrolled) has at least one.
+    second_factors: factors,
     last_24h: { sign_ins: ok24!, failed_sign_ins: bad24!, rate_limited_sign_ins: limited24!, failed_step_ups: stepUpBad24!, api_calls: api24!, rejected_api_keys: apiBad24!, scim_sync_failures: scimFail24! },
     last_30d: {
       sign_ins: signInsByDay.reduce((s, d) => s + d.success, 0),
