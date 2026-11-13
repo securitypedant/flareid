@@ -6,6 +6,14 @@ may break things.
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-12
+
+Migrations `0026` (SCIM group state) and `0027` (brands). Branding (logo
+upload, per-domain brands, custom CSS), the sign-in pages in English, French
+and German with a WCAG 2.2 AA pass, SCIM group updates that send only the
+change, group lists that read the directory once, and second-factor columns
+that count every factor. Remaining roadmap items are GitHub issues #1-#8.
+
 ### Added
 
 - **Languages.** The sign-in, second-step, consent, sign-out, recovery,
