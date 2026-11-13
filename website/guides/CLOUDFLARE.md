@@ -10,7 +10,62 @@ identity provider:
   the policy builder.
 
 You need a running FlareID (for example `https://idp.example.com`), a Super
-Admin account on it, and a Cloudflare account with Zero Trust enabled.
+Admin account on it, and a Cloudflare account with Zero Trust enabled. If you
+don't have FlareID running yet, start with Part 0.
+
+---
+
+## Part 0: Deploy FlareID and create the first administrator
+
+### 0.1 Deploy with the button
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/securitypedant/flareid)
+
+1. Select **Deploy to Cloudflare** and sign in to the Cloudflare account that
+   should run FlareID (it can be the same account as your Zero Trust
+   organisation, or a different one).
+2. Connect GitHub or GitLab. Cloudflare copies the repository into your
+   account, so you can change and redeploy it later.
+3. Choose the Worker name and keep the suggested D1 database and KV namespace
+   (they are created for you).
+4. Fill in the two secrets:
+   - `BOOTSTRAP_TOKEN`: a long random string, for example from
+     `openssl rand -hex 32`. You type it once, on the setup page.
+   - `KEY_ENCRYPTION_KEY`: from `openssl rand -base64 48`. It encrypts the
+     token-signing keys. **Never change it later**, or the stored keys can no
+     longer be read.
+5. Select **Deploy**. Cloudflare applies the database migrations and deploys
+   the Worker to `https://<worker>.<your-subdomain>.workers.dev`.
+
+### 0.2 (Recommended) Add your own domain first
+
+The issuer URL is fixed when setup finishes, and every app trusts it from
+then on. If you want FlareID on your own hostname (for example
+`idp.example.com`), add it **before** step 0.3: Cloudflare dashboard →
+**Workers & Pages** → your Worker → **Settings** → **Domains & Routes** →
+**Add** → **Custom domain**.
+
+### 0.3 Run first-time setup in the browser
+
+1. Open `https://<your FlareID hostname>/setup` (the home page and sign-in
+   page send you there until setup is done).
+2. Enter the bootstrap token from step 0.1, your organisation's primary
+   domain (the part after `@` in usernames, such as `example.com`), and the
+   first administrator's username, name and password.
+3. Select **Create administrator and finish setup**. You're taken to the sign-in page. Sign in as the
+   new administrator; you'll be asked to set up a second factor (an
+   authenticator app, a passkey or email codes), which administrators always
+   need.
+
+After setup the page only says "Setup is complete"; the bootstrap token no
+longer opens anything except the documented recovery endpoint. Useful next
+steps: **Integrations → Email** (password recovery and invitations; the
+sending domain must be onboarded with `wrangler email sending enable
+<domain>`), **Branding** (logo, colours, per-domain brands), and
+`npm run saml:keygen` if you need SAML.
+
+Prefer the terminal? `npm install`, `npx wrangler login`, then
+`npm run deploy:cli` does the same from a clone (see the README).
 
 Throughout, replace:
 
