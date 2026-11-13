@@ -35,6 +35,14 @@ export interface SetupInput {
   login_subtitle?: string;
   login_gradient?: { from?: string; to?: string };
   require_mfa?: boolean;
+  /**
+   * Whether administrators need a second factor: true (what a fresh install
+   * does) keeps Super Admins in "Password and a second factor"; false takes
+   * them out of every policy that requires one and makes "Password only" the
+   * default, so the first administrator signs in with the password alone.
+   * Omitted leaves the policies as they are.
+   */
+  admin_mfa?: boolean;
   new_user_password_mode?: "default" | "random";
   password_policy?: Partial<PasswordPolicy>;
   rate_limit?: { max_attempts?: number; window_minutes?: number };
@@ -49,6 +57,23 @@ export interface SetupResult {
   admin?: { upn: string; password?: string };
 }
 
+/**
+ * Secure by default, but the instance's choice: Super Admins in (or out of)
+ * the policy that requires a second factor. Out also makes the password-only
+ * policy the default, or the default would still require one of them.
+ */
+async function setAdminMfa(env: ServiceCtx["env"], required: boolean): Promise<void> {
+  const group = await env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(SUPER_ADMINS_GROUP).first<{ id: number }>();
+  if (!group) return;
+  if (required) {
+    const policy = await env.DB.prepare("SELECT id FROM auth_policies WHERE requirement = 'mfa' ORDER BY name = 'Password and a second factor' DESC, priority, id LIMIT 1").first<{ id: number }>();
+    if (policy) await env.DB.prepare("INSERT OR IGNORE INTO auth_policy_groups (policy_id, group_id) VALUES (?, ?)").bind(policy.id, group.id).run();
+    return;
+  }
+  await env.DB.prepare("DELETE FROM auth_policy_groups WHERE group_id = ? AND policy_id IN (SELECT id FROM auth_policies WHERE requirement = 'mfa')").bind(group.id).run();
+  await setMfaRequired(env, false);
+}
+
 /** The administrator could not be created; `details` are the import's per-user errors. */
 export class SetupAdminError extends Error {
   constructor(public details: ImportResult["errors"]) {
@@ -57,8 +82,8 @@ export class SetupAdminError extends Error {
 }
 
 /**
- * Settings first, then the administrator, then the completion flag - and that
- * order matters. The account is created with whatever `new_user_password_mode`
+ * Settings first, then the administrator, then `admin_mfa`, then the
+ * completion flag - and that order matters. The account is created with whatever `new_user_password_mode`
  * and `default_password` say, so applying those afterwards would mint an
  * administrator with the wrong credential; and `complete` is last because it is
  * what stops the bootstrap token working, so anything after it would be locked
@@ -75,6 +100,14 @@ export async function runSetup(ctx: ServiceCtx, body: SetupInput, via: "api" | "
   // Validated with everything else, before anything is applied.
   if (body.login_gradient !== undefined && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) {
     throw new ServiceError(400, "login_gradient.from and .to must both be #rrggbb hex colours.");
+  }
+  // Letting administrators (Super Admins included) sign in with a password
+  // alone weakens administrator accounts: the same authority as creating one.
+  if (body.admin_mfa === false && !ctx.privileged) {
+    throw new ServiceError(403, 'admin_mfa: false requires the "admin" scope.');
+  }
+  if (body.admin_mfa === false && body.require_mfa === true) {
+    throw new ServiceError(400, "admin_mfa: false cannot be combined with require_mfa: true - the default policy would still make administrators use a second factor.");
   }
   const applied: string[] = [];
 
@@ -180,13 +213,20 @@ export async function runSetup(ctx: ServiceCtx, body: SetupInput, via: "api" | "
     applied.push(`admin=${upn}`);
   }
 
+  // After the administrator, so a rejected account (a weak password on the
+  // setup page) leaves the policies as they were for the next attempt.
+  if (body.admin_mfa !== undefined) {
+    await setAdminMfa(env, body.admin_mfa !== false);
+    applied.push(`admin_mfa=${body.admin_mfa !== false}`);
+  }
+
   // Also fixes the issuer (see markSetupCompleted).
   if (body.complete) {
     await markSetupCompleted(env);
     applied.push("setup_completed");
   }
 
-  await audit(ctx, "idp.setup_completed", body.domain, { applied, via });
+  await audit(ctx, "idp.setup_completed", body.domain, { applied, via, ...(body.admin_mfa === false ? { admin_mfa_relaxed: true } : {}) });
 
   return { applied, setup_completed: await isSetupCompleted(env), ...(admin ? { admin } : {}) };
 }

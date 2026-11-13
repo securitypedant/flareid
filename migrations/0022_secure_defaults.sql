@@ -1,4 +1,5 @@
--- Secure by default: administrators always need a second factor.
+-- Secure by default: administrators need a second factor (changeable: setup's
+-- admin_mfa, or taking Super Admins out of the policy under Security > Policies).
 -- "Password and a second factor" applies to Super Admins on every install
 -- (priority 1, ahead of anything else); a fresh install - nobody in the
 -- directory yet - also makes it the default policy for everyone.

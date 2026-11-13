@@ -26,8 +26,10 @@ happens to run on Cloudflare's platform.
   `auth_time`, `acr`, `at_hash`. Works with Cloudflare Access's Generic OIDC
   integration, or any standards-compliant relying party.
 - **Authentication**: username (or full UPN) and password, with optional
-  per-user TOTP MFA, backup codes, trusted devices, and a setting to require
-  MFA for everyone. Email password recovery and invitations (Cloudflare Email
+  per-user TOTP MFA, backup codes, trusted devices, and per-group
+  authentication policies - secure by default: a fresh install requires a
+  second factor of everyone, administrators included, and setup or the
+  policies can relax it. Email password recovery and invitations (Cloudflare Email
   Sending), session lifetime limits, and edge rate limits on every anonymous
   route. Passkeys (WebAuthn) for passwordless, multi-factor sign-in; email
   one-time codes and security questions as further second factors (off by
@@ -116,9 +118,13 @@ token retires itself once setup completes.
 7. Open `https://<worker>.<your-subdomain>.workers.dev/setup`, or `/setup` on
    your custom domain. Enter the bootstrap token, the domain for user names
    (`example.com` makes `admin@example.com`), and the administrator's username,
-   display name and password.
-8. Sign in at `/login`. Administrators must enrol a second factor (an
-   authenticator app, a passkey or email codes) before going further.
+   display name and password. Keep **Require a second factor for
+   administrators (recommended)** ticked unless this instance should let
+   administrators sign in with a password alone (you can change it later
+   under **Admin → Security → Policies**).
+8. Sign in at `/login`. With the box ticked, administrators must enrol a
+   second factor (an authenticator app, a passkey or email codes) before going
+   further.
 9. Next steps, all optional:
    - **Email** (password recovery, invitations, email codes): onboard a
      sending domain with `npx wrangler email sending enable <domain>`, then set

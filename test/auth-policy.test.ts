@@ -2,7 +2,7 @@
 // the second factor after a password, enrolment with a passkey, factor toggles.
 import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
-import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
+import { apiCall, BASE, BOOTSTRAP, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
 import { mfaRequiredFor, policyForUser } from "../src/lib/auth-policy.js";
 import { SoftAuthenticator } from "./fixtures/soft-authenticator.js";
@@ -101,7 +101,7 @@ describe("authentication policies", () => {
 });
 
 describe("secure defaults", () => {
-  it("a fresh install requires a second factor by default, and always for Super Admins", async () => {
+  it("a fresh install requires a second factor by default, and of Super Admins through their group", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test", secureDefaults: true });
     const def = await env.DB.prepare("SELECT name, requirement FROM auth_policies WHERE is_default = 1").first<{ name: string; requirement: string }>();
     expect(def).toEqual({ name: "Password and a second factor", requirement: "mfa" });
@@ -121,15 +121,21 @@ describe("secure defaults", () => {
   });
 });
 
-describe("administrators always need a strong second factor", () => {
+describe("administrators follow their policy: secure by default, but changeable", () => {
   const ADMIN_PASSWORD = "test-admin-password-1";
   const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
   const get = (path: string, cookie: string) => SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie }, redirect: "manual" });
   const sessionOf = async (userId: number, amr: string[]) => (await createSession(env, userId, amr, new Request(BASE))).setCookie.split(";")[0]!;
+  const policyId = async (name: string) => (await env.DB.prepare("SELECT id FROM auth_policies WHERE name = ?").bind(name).first<{ id: number }>())!.id;
+  const groupId = async (name: string) => (await env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(name).first<{ id: number }>())!.id;
 
-  /** The default "Password only" policy, a Super Admin ("admin"), a Directory Admin ("dora") and an ordinary user ("eng"). */
+  /**
+   * A fresh install's policies (Super Admins in "Password and a second
+   * factor", which is also the default), a Super Admin ("admin"), a Directory
+   * Admin ("dora") and an ordinary user ("eng").
+   */
   async function adminSetup() {
-    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test", secureDefaults: true });
     await apiCall("/api/v1/directory/import", {
       token: apiKey,
       body: { version: 1, users: [{ username: "dora", status: "active", password: PASSWORD, groups: ["Directory Admins"] }, { username: "eng", status: "active", password: PASSWORD }] },
@@ -138,34 +144,76 @@ describe("administrators always need a strong second factor", () => {
     return { apiKey, admin: await id("admin"), dora: await id("dora"), eng: await id("eng") };
   }
 
+  /** What an administrator does under Security > Policies to let admins sign in with a password: Super Admins out of the MFA policy, "Password only" the default. */
+  async function relax(cookie: string) {
+    const savePolicy = (id: number, fields: Record<string, string>) =>
+      SELF.fetch(`${BASE}/admin/security/policies/${id}`, { method: "POST", headers: { ...FORM, Cookie: cookie }, redirect: "manual", body: new URLSearchParams(fields).toString() });
+    const out = await savePolicy(await policyId("Password and a second factor"), { name: "Password and a second factor", requirement: "mfa", priority: "1" });
+    expect(out.headers.get("Location")).toBe("/admin/security/policies?saved=1");
+    const def = await savePolicy(await policyId("Password only"), { name: "Password only", requirement: "password", priority: "10", make_default: "1" });
+    expect(def.headers.get("Location")).toBe("/admin/security/policies?saved=1");
+  }
+
   async function login(upn: string, password: string, path = "/login") {
     const page = await (await SELF.fetch(`${BASE}${path}`)).text();
     const flowId = /name="flow_id" value="([^"]+)"/.exec(page)![1]!;
     return SELF.fetch(`${BASE}/login`, { method: "POST", headers: FORM, redirect: "manual", body: new URLSearchParams({ flow_id: flowId, upn, password }).toString() });
   }
 
-  it("sends an administrator's password-only session to enrolment whatever the policy, but not an ordinary user's", async () => {
+  it("sends a password-only administrator to enrol while a policy requires it, and lets them in with the password once it does not", async () => {
     const { admin, dora, eng } = await adminSetup();
-    for (const uid of [admin, dora, eng]) expect((await policyForUser(env, uid))!.requirement).toBe("password");
-    expect(await mfaRequiredFor(env, admin)).toBe(true);
-    expect(await mfaRequiredFor(env, dora)).toBe(true);
-    expect(await mfaRequiredFor(env, eng)).toBe(false);
-
+    for (const uid of [admin, dora, eng]) expect(await mfaRequiredFor(env, uid)).toBe(true);
     for (const [uid, path] of [[admin, "/admin"], [dora, "/admin/users"], [admin, "/account"], [dora, "/account"]] as const) {
       const res = await get(path, await sessionOf(uid, ["pwd"]));
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("/account/mfa/setup");
     }
-    expect((await get("/account", await sessionOf(eng, ["pwd"]))).status).toBe(200);
-
-    // Signing in with the password alone parks the administrator at enrolment; the ordinary user goes straight through.
     expect((await login("admin@horizon.test", ADMIN_PASSWORD)).headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
     expect((await login("dora@horizon.test", PASSWORD)).headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
-    expect((await login("eng@horizon.test", PASSWORD)).headers.get("Location")).toBe("/account");
-
     // A multi-factor session opens the console.
-    expect((await get("/admin", await sessionOf(admin, ["pwd", "mfa"]))).status).toBe(200);
-    expect((await get("/admin/users", await sessionOf(dora, ["pwd", "hwk", "mfa"]))).status).toBe(200);
+    const cookie = await sessionOf(admin, ["pwd", "mfa"]);
+    expect((await get("/admin", cookie)).status).toBe(200);
+    expect((await get("/admin/security/policies", cookie)).status).toBe(200);
+    expect(await (await get("/admin/security/policies", cookie)).text()).not.toContain('class="notice-warn"');
+
+    // The edit form asks before saving the policy that makes administrators use a second factor.
+    const edit = await (await get(`/admin/security/policies/${await policyId("Password and a second factor")}`, cookie)).text();
+    expect(edit).toContain("Change the administrators&#039; second-factor policy?");
+    // ...and before making the password-only policy the default, which would relax the rest.
+    const editPassword = await (await get(`/admin/security/policies/${await policyId("Password only")}`, cookie)).text();
+    expect(editPassword).toContain("Let administrators sign in with a password alone?");
+    expect(editPassword).toContain('data-confirm-when="input[name=&quot;make_default&quot;]"');
+
+    await relax(cookie);
+    for (const uid of [admin, dora, eng]) expect(await mfaRequiredFor(env, uid)).toBe(false);
+    // Audited: the change that left administrators on a password alone says so. Taking Super
+    // Admins out did not yet (the default still required a second factor); the new default did.
+    const { results: audits } = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'auth_policy.updated' ORDER BY id").all<{ details: string }>();
+    expect(audits.map((a) => JSON.parse(a.details).admin_mfa_relaxed ?? false)).toEqual([false, true]);
+    expect(JSON.parse(audits[1]!.details).admins_without_mfa).toBe(2);
+    // The Policies page warns while it holds, naming them.
+    const warned = await (await get("/admin/security/policies", cookie)).text();
+    expect(warned).toContain("<strong>2 administrators do not need a second factor.</strong>");
+    expect(warned).toContain("admin@horizon.test");
+    expect(warned).toContain("dora@horizon.test");
+
+    // Now the password is enough, for the console too.
+    expect((await get("/admin", await sessionOf(admin, ["pwd"]))).status).toBe(200);
+    expect((await get("/admin/users", await sessionOf(dora, ["pwd"]))).status).toBe(200);
+    expect((await login("admin@horizon.test", ADMIN_PASSWORD)).headers.get("Location")).toBe("/account");
+    expect((await login("dora@horizon.test", PASSWORD)).headers.get("Location")).toBe("/account");
+
+    // Putting an admin group back in the MFA policy requires it again.
+    const back = await SELF.fetch(`${BASE}/admin/security/policies/${await policyId("Password and a second factor")}`, {
+      method: "POST", headers: { ...FORM, Cookie: cookie }, redirect: "manual",
+      body: new URLSearchParams({ name: "Password and a second factor", requirement: "mfa", priority: "1", group_ids: String(await groupId("Super Admins")) }).toString(),
+    });
+    expect(back.status).toBe(302);
+    expect(await mfaRequiredFor(env, admin)).toBe(true);
+    expect(await mfaRequiredFor(env, dora)).toBe(false);
+    const one = await (await get("/admin/security/policies", cookie)).text();
+    expect(one).toContain("<strong>An administrator does not need a second factor.</strong>");
+    expect(one).not.toContain("admin@horizon.test");
   });
 
   it("sends an administrator who has an authenticator but signed in without it back to sign in", async () => {
@@ -182,7 +230,7 @@ describe("administrators always need a strong second factor", () => {
     expect(html).toContain('name="mfa_id"');
   });
 
-  it("does not let security questions stand in for an administrator's second factor", async () => {
+  it("does not let security questions stand in for an administrator's second factor when a policy requires one", async () => {
     const { apiKey, dora, eng } = await adminSetup();
     expect((await apiCall("/api/v1/security/factors/security_questions", { token: apiKey, method: "PUT", body: { enabled: true } })).status).toBe(200);
     const { saveAnswers } = await import("../src/lib/security-questions.js");
@@ -198,10 +246,17 @@ describe("administrators always need a strong second factor", () => {
     const doraLogin = await login("dora@horizon.test", PASSWORD);
     expect(doraLogin.status).toBe(302);
     expect(doraLogin.headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
-    // ...while an ordinary user with the same questions is asked them.
+    // ...while an ordinary user with the same questions is asked them, and they count.
     const engLogin = await login("eng@horizon.test", PASSWORD);
     expect(engLogin.status).toBe(200);
     expect(await engLogin.text()).toContain('action="/login/mfa/questions"');
+    expect((await get("/account", await sessionOf(eng, ["pwd", "kba", "mfa"]))).status).toBe(200);
+
+    // Under a password-only policy she needs no second factor at all: the password lets her in
+    // (still never asked her questions).
+    await env.DB.batch([env.DB.prepare("DELETE FROM auth_policy_groups"), env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN requirement = 'password' THEN 1 ELSE 0 END")]);
+    expect((await get("/admin/users", await sessionOf(dora, ["pwd"]))).status).toBe(200);
+    expect((await login("dora@horizon.test", PASSWORD)).headers.get("Location")).toBe("/account");
   });
 
   it("does not let an administrator finish a forced enrolment by posting security questions", async () => {
@@ -231,40 +286,105 @@ describe("administrators always need a strong second factor", () => {
     expect(await env.DB.prepare("SELECT 1 FROM user_security_answers").first()).toBeNull();
   });
 
-  it("refuses to turn off the last of the administrators' factors, even with no policy requiring one", async () => {
+  it("refuses to turn off the last strong factor while a policy requires one of an administrator, and only then", async () => {
     const { apiKey, admin } = await adminSetup();
-    await env.DB.prepare("UPDATE auth_policies SET requirement = 'password'").run();
-    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM auth_policies WHERE requirement = 'mfa'").first<{ n: number }>())!.n).toBe(0);
-    // Security questions on: they would satisfy the policy guard, but not the administrators' rule.
+    // Security questions on: they satisfy the "a policy requires one" guard, but never an administrator.
     expect((await apiCall("/api/v1/security/factors/security_questions", { token: apiKey, method: "PUT", body: { enabled: true } })).status).toBe(200);
     const cookie = await sessionOf(admin, ["pwd", "mfa"]);
     const toggle = (k: string, on: boolean) => SELF.fetch(`${BASE}/admin/security/factors/${k}`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `enabled=${on ? 1 : 0}`, redirect: "manual" });
+    const { isFactorEnabled } = await import("../src/lib/auth-policy.js");
 
     expect((await toggle("passkey", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await toggle("email_otp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     const refused = await toggle("totp", false);
-    expect(refused.headers.get("Location")).toContain("error=Administrators%20always%20need%20a%20second%20factor");
+    expect(refused.headers.get("Location")).toContain("error=A%20policy%20requires%20administrators%20to%20use%20a%20second%20factor");
     expect((await apiCall("/api/v1/security/factors/totp", { token: apiKey, method: "PUT", body: { enabled: false } })).status).toBe(400);
-    const { isFactorEnabled } = await import("../src/lib/auth-policy.js");
     expect(await isFactorEnabled(env, "totp")).toBe(true);
-    // With passkeys back on, the authenticator app can go.
-    expect((await toggle("passkey", true)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+
+    // Administrators out of every MFA policy (Super Admins removed, "Password only" the default):
+    // only the ordinary guard is left, which security questions satisfy.
+    await relax(cookie);
+    // A Directory Admins group in the MFA policy brings the rule back.
+    expect(
+      (await apiCall(`/api/v1/security/policies/${await policyId("Password and a second factor")}`, { token: apiKey, method: "PATCH", body: { groups: ["Directory Admins"] } })).status
+    ).toBe(200);
+    expect((await toggle("totp", false)).headers.get("Location")).toContain("error=A%20policy%20requires%20administrators");
+    expect((await apiCall(`/api/v1/security/policies/${await policyId("Password and a second factor")}`, { token: apiKey, method: "PATCH", body: { groups: [] } })).status).toBe(200);
     expect((await toggle("totp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect(await isFactorEnabled(env, "totp")).toBe(false);
+    // The administrator, on a password-only policy, still signs in.
+    expect((await login("admin@horizon.test", ADMIN_PASSWORD)).headers.get("Location")).toBe("/account");
+    // The ordinary guard still holds: an MFA policy exists, so the questions stay on.
+    expect((await toggle("security_questions", false)).headers.get("Location")).toContain("error=");
   });
 
-  it("shows each administrator's second factor on the Roles page", async () => {
+  it("shows each administrator's second factor on the Roles page, and whether their policy requires one", async () => {
     const { admin, dora } = await adminSetup();
     await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE id = ?").bind(TOTP_SECRET, dora).run();
-    const html = await (await get("/admin/security/roles", await sessionOf(admin, ["pwd", "mfa"]))).text();
-    expect(html).toContain("<th>Second factor</th>");
-    const rowOf = (uid: number) => {
+    const cookie = await sessionOf(admin, ["pwd", "mfa"]);
+    const rowOf = (html: string, uid: number) => {
       const start = html.indexOf(`<tr><td><a href="/admin/users/${uid}">`);
       expect(start).toBeGreaterThan(-1);
       return html.slice(start, html.indexOf("</tr>", start));
     };
-    expect(rowOf(admin)).toContain('<span class="badge badge-disabled">None</span>');
-    expect(rowOf(admin)).toContain("Must set one up at their next sign-in");
-    expect(rowOf(dora)).toContain("Authenticator app");
-    expect(rowOf(dora)).not.toContain(">None<");
+    const html = await (await get("/admin/security/roles", cookie)).text();
+    expect(html).toContain("<th>Second factor</th>");
+    expect(html).not.toContain('class="notice-warn"');
+    expect(rowOf(html, admin)).toContain('<span class="badge badge-disabled">None</span>');
+    expect(rowOf(html, admin)).toContain("Must set one up at their next sign-in");
+    expect(rowOf(html, dora)).toContain("Authenticator app");
+    expect(rowOf(html, dora)).not.toContain(">None<");
+
+    await relax(cookie);
+    const relaxed = await (await get("/admin/security/roles", cookie)).text();
+    expect(relaxed).toContain("2 administrators' policies let them sign in with a password alone");
+    expect(rowOf(relaxed, admin)).toContain("Not required by their policy");
+  });
+});
+
+describe("choosing it at setup: admin_mfa", () => {
+  const ADMIN_PASSWORD = "test-admin-password-1";
+  const setupCall = (body: Record<string, unknown>) => apiCall("/api/v1/setup", { token: BOOTSTRAP, body: { domain: "horizon.test", admin: { username: "admin", password: ADMIN_PASSWORD }, complete: true, ...body } });
+  const superAdminPolicies = async () =>
+    (await env.DB.prepare("SELECT p.name FROM auth_policy_groups apg JOIN auth_policies p ON p.id = apg.policy_id JOIN groups g ON g.id = apg.group_id WHERE g.name = 'Super Admins'").all<{ name: string }>()).results.map((r) => r.name);
+  async function adminLogin() {
+    const page = await (await SELF.fetch(`${BASE}/login`)).text();
+    const flowId = /name="flow_id" value="([^"]+)"/.exec(page)![1]!;
+    return SELF.fetch(`${BASE}/login`, { method: "POST", headers: FORM, redirect: "manual", body: new URLSearchParams({ flow_id: flowId, upn: "admin@horizon.test", password: ADMIN_PASSWORD }).toString() });
+  }
+
+  it("omitted (or true) keeps the fresh install's rule: the first administrator enrols a second factor", async () => {
+    const res = await setupCall({});
+    expect(res.status).toBe(200);
+    expect(await superAdminPolicies()).toEqual(["Password and a second factor"]);
+    expect((await adminLogin()).headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+  });
+
+  it("false lets the first administrator sign in with the password alone", async () => {
+    const res = await setupCall({ admin_mfa: false });
+    expect(res.status).toBe(200);
+    expect(res.body.applied).toContain("admin_mfa=false");
+    expect(await superAdminPolicies()).toEqual([]);
+    expect((await env.DB.prepare("SELECT name FROM auth_policies WHERE is_default = 1").first<{ name: string }>())!.name).toBe("Password only");
+    const audit = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'idp.setup_completed'").first<{ details: string }>();
+    expect(JSON.parse(audit!.details)).toMatchObject({ via: "api", admin_mfa_relaxed: true });
+    expect((await adminLogin()).headers.get("Location")).toBe("/account");
+  });
+
+  it("true puts Super Admins back in the MFA policy; false with require_mfa: true is refused before anything is applied", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    expect(await superAdminPolicies()).toEqual([]);
+    const refused = await apiCall("/api/v1/setup", { token: apiKey, body: { app_name: "Changed", admin_mfa: false, require_mfa: true } });
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toContain("admin_mfa: false cannot be combined with require_mfa: true");
+    expect(await env.DB.prepare("SELECT 1 FROM idp_settings WHERE key = 'app_name' AND value = 'Changed'").first()).toBeNull();
+    expect((await apiCall("/api/v1/setup", { token: apiKey, body: { admin_mfa: true } })).status).toBe(200);
+    expect(await superAdminPolicies()).toEqual(["Password and a second factor"]);
+    // Relaxing it takes the authority creating an administrator does.
+    const settingsKey = await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "settings-only", scopes: ["settings:write"] } });
+    expect(settingsKey.status).toBe(200);
+    const weak = await apiCall("/api/v1/setup", { token: settingsKey.body.token, body: { admin_mfa: false } });
+    expect(weak.status).toBe(403);
+    expect(await superAdminPolicies()).toEqual(["Password and a second factor"]);
   });
 });

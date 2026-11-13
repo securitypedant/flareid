@@ -767,7 +767,7 @@ defineRoute(
     permission: "security:write",
     summary: "Turn a second factor on or off",
     description:
-      "At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
+      "At least one factor must stay on while a policy requires a second factor, and one of totp, passkey and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
     params: z.object({ key: z.enum(["totp", "passkey", "email_otp", "security_questions"]) }),
     body: z.object({ enabled: z.boolean() }),
     response: z.object({ factors: z.array(FactorSchema) }),

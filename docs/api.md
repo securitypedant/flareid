@@ -113,7 +113,10 @@ Second factors: `GET /security/factors` lists `totp`, `passkey`,
 codes also need email to be configured). `PUT /security/factors/email_otp`
 with `{"enabled": true}` is a `400` until email is configured, and
 `PUT /security/factors/security_questions` a `400` while fewer questions are
-enabled than each person must set. Users carry `email_otp_enabled` and
+enabled than each person must set. Switching a factor off is a `400` when it
+is the last one on while a policy requires a second factor, or the last of
+`totp`, `passkey` and `email_otp` while a policy requires one of an
+administrator (security questions never count for administrators). Users carry `email_otp_enabled` and
 `security_questions_enabled` next to `mfa_enabled` (the authenticator app),
 and `POST /users/{username}/reset-mfa` clears all three. `second_factors`
 lists every factor a user has enrolled (`totp`, `passkey` - at least one -
@@ -163,8 +166,8 @@ Scope: `directory:read`.
 Scope: `settings:write` for the settings fields; the `admin` block additionally
 requires the `admin` scope (it creates or resets a Super Admin), and is checked
 before anything is applied. Every field is optional; only what is present is
-applied, in a fixed order - settings, then the administrator, then the
-completion flag. That order matters: the account is created using whatever
+applied, in a fixed order - settings, then the administrator, then
+`admin_mfa`, then the completion flag. That order matters: the account is created using whatever
 `new_user_password_mode` and `default_password` say, so applying those
 afterwards would mint an administrator with the wrong credential.
 
@@ -183,7 +186,8 @@ afterwards would mint an administrator with the wrong credential.
   "app_name": "FlareID",
   "login_subtitle": "Sign in to continue.",
   "login_gradient": { "from": "#f7b733", "to": "#f6821f" },
-  "require_mfa": false,
+  "require_mfa": true,
+  "admin_mfa": true,
   "password_policy": {
     "minLength": 8,
     "requireUppercase": false,
@@ -197,6 +201,23 @@ afterwards would mint an administrator with the wrong credential.
   "complete": false
 }
 ```
+
+`require_mfa` picks the default policy (everyone no other policy matches):
+"Password and a second factor" when true, "Password only" when false.
+`admin_mfa` decides whether administrators need a second factor - the
+`/setup` page's "Require a second factor for administrators (recommended)"
+box. A fresh install requires it (Super Admins are in "Password and a second
+factor"), and leaving the field out leaves the policies as they are. `true`
+puts Super Admins (back) in that policy. `false` takes them out of every policy
+that requires a second factor and makes "Password only" the default, so the
+first administrator signs in with the password alone; it is audited
+(`admin_mfa_relaxed` on `idp.setup_completed`), and the console's Security >
+Policies page warns while any administrator can sign in without a second
+factor. `admin_mfa: false` needs the `admin` scope, like the `admin` block,
+and with `require_mfa: true` is a `400` (the default
+would still require one of them), checked before anything is applied. Either
+can be changed later under Security > Policies or
+`PATCH /security/policies/{id}`.
 
 `cursor_trail.characters` empty means the default symbols; otherwise its
 characters (spaces dropped, at most 64) are cycled in order on the sign-in page.

@@ -265,9 +265,9 @@ describe("security questions", () => {
     expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("login");
     expect(await secondFactorGate(env, await userRow(rita), ["pwd", "kba", "mfa"])).toBe("ok");
 
-    // Questions are never left as the only factor: administrators need one of the others.
+    // Questions are never left as the only factor while the (default) policy requires one of an administrator.
     expect((await post("/admin/security/factors/totp", { enabled: "0" }, adminCookie)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
-    expect((await post("/admin/security/factors/passkey", { enabled: "0" }, adminCookie)).headers.get("Location")).toContain("error=Administrators%20always%20need%20a%20second%20factor");
+    expect((await post("/admin/security/factors/passkey", { enabled: "0" }, adminCookie)).headers.get("Location")).toContain("error=A%20policy%20requires%20administrators%20to%20use%20a%20second%20factor");
     // Questions can go while passkeys stay; once switched off, they no longer count.
     expect((await factor(adminCookie, false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("enrol");
@@ -356,8 +356,9 @@ describe("security questions", () => {
     expect((await post("/login/mfa/questions", answerForm(step.mfaId!, asked, qids))).headers.get("Location")).toBe("/account");
   });
 
-  it("never counts for an administrator: not offered at sign-in or enrolment, and a session that used them is bounced", async () => {
-    const { adminId, qids } = await setup();
+  it("never counts for an administrator whose policy requires a second factor: not offered at sign-in or enrolment, and a session that used them is bounced", async () => {
+    // The default policy requires a second factor, of the administrator too.
+    const { adminId, qids } = await setup({ requireMfa: true });
     await enrolDirectly(adminId, qids);
     expect((await userRow(adminId)).security_questions_enabled).toBe(1);
     expect(await secondFactorGate(env, await userRow(adminId), ["pwd"])).toBe("enrol");

@@ -81,6 +81,8 @@ interface FormValues {
   domain: string;
   username: string;
   display_name: string;
+  /** "Require a second factor for administrators": ticked unless the person unticks it. */
+  admin_mfa: boolean;
 }
 
 async function form(c: Context<{ Bindings: Env }>, values: FormValues, errors: Text[] = [], status: Status = 200) {
@@ -112,10 +114,13 @@ async function form(c: Context<{ Bindings: Env }>, values: FormValues, errors: T
       <label for="confirm">${tx("setup.form.confirm")}</label>
       <input type="password" id="confirm" name="confirm" required autocomplete="new-password"${errs.attrs("confirm")} />
       <p class="muted" id="password-policy" style="margin-top:-6px; font-size:0.8125rem;">${escapeHtml(passwordPolicySummary(policy, locale))}</p>
+      <label for="admin_mfa" style="display:flex; align-items:flex-start; gap:8px; font-weight:400;">
+        <input type="checkbox" id="admin_mfa" name="admin_mfa" value="1" style="width:auto; margin-top:3px;"${values.admin_mfa ? " checked" : ""} aria-describedby="admin-mfa-hint" /> <span>${tx("setup.form.adminMfa")}</span>
+      </label>
+      <p class="muted" id="admin-mfa-hint" style="margin-top:-6px; font-size:0.8125rem;">${tx("setup.form.adminMfaHint")}</p>
       <p class="muted" style="font-size:0.8125rem;">${tHtml(locale, "setup.form.issuer", { issuer: strong(issuer) })}${onWorkersDev ? ` ${tx("setup.form.customDomain")}` : ""}</p>
       <div class="row"><button class="primary" type="submit">${tx("setup.form.submit")}</button></div>
-    </form>
-    <p class="muted" style="text-align:center; margin:14px 0 0; font-size:0.8125rem;">${tx("setup.form.secondFactor")}</p>`;
+    </form>`;
     },
     status
   );
@@ -125,7 +130,7 @@ setup.get("/setup", async (c) => {
   if (await isSetupCompleted(c.env)) return completePage(c);
   const missing = missingSecrets(c.env);
   if (missing) return render(c, "setup.secrets.title", missing, 503);
-  return form(c, { domain: "", username: "admin", display_name: "" });
+  return form(c, { domain: "", username: "admin", display_name: "", admin_mfa: true });
 });
 
 setup.post("/setup", async (c) => {
@@ -136,7 +141,8 @@ setup.post("/setup", async (c) => {
 
   const body = await c.req.parseBody();
   const field = (name: string, max = 254) => String(body[name] ?? "").trim().slice(0, max);
-  const values: FormValues = { domain: field("domain").toLowerCase(), username: field("username", 64).toLowerCase(), display_name: field("display_name", 128) };
+  // An unticked box sends nothing: absent means "no".
+  const values: FormValues = { domain: field("domain").toLowerCase(), username: field("username", 64).toLowerCase(), display_name: field("display_name", 128), admin_mfa: body.admin_mfa === "1" };
   const token = String(body.bootstrap_token ?? "").trim();
   const password = String(body.password ?? "");
   const ip = getClientIp(c.req.raw);
@@ -169,6 +175,7 @@ setup.post("/setup", async (c) => {
       {
         domain: values.domain,
         admin: { username: values.username, password, display_name: displayName, given_name: given || "Administrator", family_name: family.join(" ") },
+        admin_mfa: values.admin_mfa,
         complete: true,
       },
       "setup_page"

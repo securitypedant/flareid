@@ -1,3 +1,4 @@
+import { adminMfaRelaxedDetail, adminsWithoutMfaPolicy, anyAdminUnderMfaPolicy } from "../lib/admin-mfa.js";
 import { ADMIN_FACTORS, FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabled } from "../lib/auth-policy.js";
 import { isEmailAddress, isEmailConfigured, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
 import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
@@ -133,11 +134,16 @@ export async function applyDefaultPasswordToAll(ctx: ServiceCtx, password: strin
 }
 
 export async function saveRequireMfa(ctx: ServiceCtx, required: boolean): Promise<void> {
+  const before = await adminsWithoutMfaPolicy(ctx.env);
   await setMfaRequired(ctx.env, required);
-  await audit(ctx, "settings.require_mfa_changed", undefined, { required });
+  await audit(ctx, "settings.require_mfa_changed", undefined, { required, ...(await adminMfaRelaxedDetail(ctx.env, before)) });
 }
 
-/** Turning a factor off is refused while a policy requires a second factor and it is the last one on. */
+/**
+ * Turning a factor off is refused while a policy requires a second factor and
+ * it is the last one on - or, while a policy requires one of an administrator,
+ * the last of the authenticator app, passkeys and email codes.
+ */
 export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean): Promise<void> {
   if (!isFactorKey(key)) throw new ServiceError(400, "Unknown factor.");
   // Email codes can only be sent with email set up; switching them on before
@@ -156,10 +162,14 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
     if (!othersUsable.some(Boolean) && (mfaPolicies?.n ?? 0) > 0) {
       throw new ServiceError(400, "At least one second factor must stay on while a policy requires one.");
     }
-    // Administrators always need a second factor stronger than security questions.
-    const adminUsable = await Promise.all(ADMIN_FACTORS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
-    if ((ADMIN_FACTORS as readonly string[]).includes(key) && !adminUsable.some(Boolean)) {
-      throw new ServiceError(400, "Administrators always need a second factor: keep the authenticator app, passkeys or email codes on.");
+    // Security questions never count for an administrator: while a policy
+    // makes any of them use a second factor, one of the stronger ones stays on,
+    // or they could not sign in.
+    if ((ADMIN_FACTORS as readonly string[]).includes(key)) {
+      const adminUsable = await Promise.all(ADMIN_FACTORS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
+      if (!adminUsable.some(Boolean) && (await anyAdminUnderMfaPolicy(ctx.env))) {
+        throw new ServiceError(400, "A policy requires administrators to use a second factor: keep the authenticator app, passkeys or email codes on.");
+      }
     }
   }
   await setFactorEnabled(ctx.env, key, enabled);

@@ -52,10 +52,17 @@ then on. If you want FlareID on your own hostname (for example
 2. Enter the bootstrap token from step 0.1, your organisation's primary
    domain (the part after `@` in usernames, such as `example.com`), and the
    first administrator's username, name and password.
-3. Select **Create administrator and finish setup**. You're taken to the sign-in page. Sign in as the
-   new administrator; you'll be asked to set up a second factor (an
-   authenticator app, a passkey or email codes), which administrators always
-   need.
+3. Leave **Require a second factor for administrators (recommended)** ticked.
+   Untick it only if this instance should let administrators sign in with a
+   password alone: setup then takes the Super Admins group out of the
+   "Password and a second factor" policy and makes "Password only" the
+   default, for everyone. You can change this later under **Admin → Security
+   → Policies**, which warns while any administrator can sign in without a
+   second factor.
+4. Select **Create administrator and finish setup**. You're taken to the sign-in page. Sign in as the
+   new administrator. With the box ticked you'll be asked to set up a second
+   factor (an authenticator app, a passkey or email codes; security questions
+   never count for administrators).
 
 After setup the page only says "Setup is complete"; the bootstrap token no
 longer opens anything except the documented recovery endpoint. Useful next

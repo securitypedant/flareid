@@ -84,8 +84,10 @@ export async function bootstrapInstance(
   });
   if (setup.status !== 200) throw new Error(`setup failed: ${JSON.stringify(setup.body)}`);
 
-  // A fresh install requires a second factor (migration 0022), which most tests
-  // are not about: they opt back to "Password only" unless they ask for it.
+  // A fresh install requires a second factor (migration 0022), of everyone and
+  // of Super Admins through their group, which most tests are not about: they
+  // opt back to "Password only" for everyone, administrators included (like
+  // setup's admin_mfa: false), unless they ask for secure defaults.
   if (!opts.secureDefaults) {
     await env.DB.batch([
       env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN requirement = 'password' THEN 1 ELSE 0 END"),

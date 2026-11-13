@@ -117,7 +117,11 @@ const SetupBody = z.object({
   app_name: z.string().optional(),
   login_subtitle: z.string().optional(),
   login_gradient: z.object({ from: z.string().optional(), to: z.string().optional() }).optional(),
-  require_mfa: z.boolean().optional(),
+  require_mfa: z.boolean().optional().openapi({ description: "Make the default policy (everyone no other policy matches) require a second factor, or not." }),
+  admin_mfa: z.boolean().optional().openapi({
+    description:
+      "Require a second factor for administrators (default: a fresh install does). true keeps Super Admins in the \"Password and a second factor\" policy; false takes them out of every policy that requires one and makes \"Password only\" the default, so the first administrator signs in with the password alone. Omitted leaves the policies as they are. false needs the `admin` scope; false with require_mfa: true is a 400.",
+  }),
   new_user_password_mode: z.enum(["default", "random"]).optional(),
   password_policy: PasswordPolicySchema.optional(),
   rate_limit: z.object({ max_attempts: z.number().optional(), window_minutes: z.number().optional() }).optional(),

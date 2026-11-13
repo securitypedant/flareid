@@ -135,12 +135,12 @@ export async function policyForUser(env: Env, userId: number): Promise<AuthPolic
 }
 
 /**
- * Whether this user must use a second factor. Anyone holding an admin role
- * always must, whatever the policies say: no policy, default or group
- * assignment can leave an administrator on a password alone.
+ * Whether this user must use a second factor: their policy decides, for
+ * administrators as for everyone else. Secure by default - a fresh install
+ * puts Super Admins in "Password and a second factor" (migration 0022) - but
+ * an instance may relax it (see lib/admin-mfa.ts).
  */
 export async function mfaRequiredFor(env: Env, userId: number): Promise<boolean> {
-  if (await isAdministrator(env, userId)) return true;
   return (await policyForUser(env, userId))?.requirement === "mfa";
 }
 
@@ -150,7 +150,7 @@ export async function isAdministrator(env: Env, userId: number): Promise<boolean
   return (await accessFor(env, userId)).isAdmin;
 }
 
-/** The second factors strong enough for administrators: everything but security questions. */
+/** The second factors strong enough for administrators when their policy needs one: everything but security questions. */
 export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "email_otp"];
 
 /** Whether the user has a second factor enrolled that the instance currently accepts. */
@@ -192,12 +192,17 @@ export async function defaultRequirement(env: Env): Promise<Requirement> {
  *  - "ok": nothing (policy needs only a password, or the session used a second factor or passkey);
  *  - "enrol": the policy needs a second factor and the user has none - send them to set one up;
  *  - "login": they have one but this session did not use it - they must sign in again.
+ *
+ * Administrators follow their policy too; when it needs a second factor,
+ * security questions do not count for them (a session that used them is not
+ * enough, and having them enrolled is not "having a second factor").
  */
 export async function secondFactorGate(env: Env, user: SecondFactorUser, amr: string[]): Promise<"ok" | "enrol" | "login"> {
+  if (amr.includes("hwk") || amr.includes("mfa_remembered_device")) return "ok";
+  if (amr.includes("mfa") && !amr.includes("kba")) return "ok";
+  if (!(await mfaRequiredFor(env, user.id))) return "ok";
   const admin = await isAdministrator(env, user.id);
-  // A session that answered security questions is not enough for an administrator.
-  const satisfied = amr.includes("hwk") || amr.includes("mfa_remembered_device") || (amr.includes("mfa") && !(admin && amr.includes("kba")));
-  if (satisfied) return "ok";
-  if (!admin && !(await mfaRequiredFor(env, user.id))) return "ok";
+  // A session that answered security questions is enough for everyone but an administrator.
+  if (amr.includes("mfa") && !admin) return "ok";
   return (await hasSecondFactor(env, user, { admin })) ? "login" : "enrol";
 }

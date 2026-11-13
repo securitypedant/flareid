@@ -6,6 +6,45 @@ may break things.
 
 ## [Unreleased]
 
+### Changed
+
+- **Administrators' second factor: secure by default, but changeable.**
+  Whether an administrator needs a second factor is now decided by the
+  authentication policy that applies to them, like everyone else, instead of
+  being hard-coded. A fresh install still requires it: Super Admins are in
+  "Password and a second factor", which is also the default policy. An
+  instance can choose otherwise:
+  - at setup, with the new **Require a second factor for administrators
+    (recommended)** box on `/setup`, ticked by default, or `admin_mfa` on
+    `POST /api/v1/setup` (omitted: the policies are left as they are, which on
+    a fresh install means required). Unticked / `false` takes Super Admins out
+    of every policy that requires a second factor and makes "Password only"
+    the default, so the first administrator signs in with the password alone
+    (`admin_mfa: false` needs the `admin` scope, and with `require_mfa: true`
+    is a `400`). `true` puts
+    Super Admins back in "Password and a second factor";
+  - afterwards, under Security > Policies (a step-up-protected action):
+    take the Super Admins group out of "Password and a second factor" (and
+    make a password-only policy the default, if the default requires one).
+    The edit form asks before saving the policy that makes administrators use
+    a second factor (or before making a password-only policy the default
+    while the default is what covers them), the Policies page warns, naming
+    them, while any administrator can sign in with a password alone, and the
+    Roles page says so per administrator. Changes that leave administrators
+    newly without the requirement are audited with `admin_mfa_relaxed: true`
+    and `admins_without_mfa` (`auth_policy.created`/`updated`/`deleted`,
+    `role.created`/`updated`, `settings.require_mfa_changed`, and
+    `idp.setup_completed`).
+
+  When a policy does require a second factor of an administrator, the rules
+  for its strength stay: security questions never count (not offered at
+  sign-in or forced enrolment, a session that used them is bounced, and
+  `/account/mfa/questions` refuses administrators), and Super Admin step-up
+  never accepts them. The last of the authenticator app, passkeys and email
+  codes can be switched off only while no policy requiring a second factor
+  applies to an administrator; otherwise only the existing "a policy requires
+  one" guard applies.
+
 ## [3.8.0] - 2026-11-12
 
 Migrations `0026` (SCIM group state) and `0027` (brands). Branding (logo

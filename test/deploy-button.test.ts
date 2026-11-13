@@ -50,8 +50,21 @@ const goodForm = (overrides: Record<string, string> = {}) => ({
   display_name: "Ada Admin",
   password: ADMIN_PASSWORD,
   confirm: ADMIN_PASSWORD,
+  // Ticked on the page by default; a browser sends it unless it is unticked.
+  admin_mfa: "1",
   ...overrides,
 });
+
+/** Signs in on the page with the administrator's password; the response to the password step. */
+async function adminPasswordSignIn(origin = WORKERS_DEV) {
+  const login = await (await call(`${origin}/login`)).text();
+  const flowId = /name="flow_id" value="([^"]+)"/.exec(login)![1]!;
+  return call(`${origin}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: origin },
+    body: new URLSearchParams({ flow_id: flowId, upn: "admin", password: ADMIN_PASSWORD }).toString(),
+  });
+}
 
 async function issuerAt(origin: string, e?: typeof env): Promise<string> {
   const res = await call(`${origin}/.well-known/openid-configuration`, {}, e);
@@ -112,6 +125,48 @@ describe("first-run setup in the browser", () => {
     expect(html).toContain('name="bootstrap_token"');
     expect(html).toContain(WORKERS_DEV); // says which issuer it will fix
     expect(page.headers.get("Content-Security-Policy")).toContain("script-src 'sha256-");
+    // Secure by default: the administrators' second factor box is ticked.
+    expect(html).toMatch(/<input type="checkbox" id="admin_mfa" name="admin_mfa" value="1"[^>]* checked/);
+    expect(html).toContain("Require a second factor for administrators (recommended)");
+    expect(html).toContain("administrators sign in with a password alone");
+  });
+
+  it("ticked (the default), makes the first administrator enrol a second factor at their first sign-in", async () => {
+    expect((await postSetup(WORKERS_DEV, goodForm())).status).toBe(303);
+    const def = await env.DB.prepare("SELECT name FROM auth_policies WHERE is_default = 1").first<{ name: string }>();
+    expect(def!.name).toBe("Password and a second factor");
+    const superAdmins = await env.DB.prepare(
+      "SELECT p.name FROM auth_policy_groups apg JOIN auth_policies p ON p.id = apg.policy_id JOIN groups g ON g.id = apg.group_id WHERE g.name = 'Super Admins'"
+    ).all<{ name: string }>();
+    expect(superAdmins.results.map((r) => r.name)).toEqual(["Password and a second factor"]);
+    const signIn = await adminPasswordSignIn();
+    expect(signIn.status).toBe(302);
+    expect(signIn.headers.get("Location")).toMatch(/^\/account\/mfa\/setup\?resume=/);
+  });
+
+  it("unticked, lets the first administrator sign in with the password alone, and audits it", async () => {
+    const { admin_mfa: _ticked, ...unticked } = goodForm();
+    expect((await postSetup(WORKERS_DEV, unticked)).status).toBe(303);
+    // Super Admins are out of the MFA policy, and "Password only" is the default.
+    expect(await env.DB.prepare("SELECT 1 FROM auth_policy_groups apg JOIN groups g ON g.id = apg.group_id WHERE g.name = 'Super Admins'").first()).toBeNull();
+    expect((await env.DB.prepare("SELECT name FROM auth_policies WHERE is_default = 1").first<{ name: string }>())!.name).toBe("Password only");
+    const audit = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'idp.setup_completed'").first<{ details: string }>();
+    expect(JSON.parse(audit!.details)).toMatchObject({ via: "setup_page", admin_mfa_relaxed: true });
+    expect(JSON.parse(audit!.details).applied).toContain("admin_mfa=false");
+
+    const signIn = await adminPasswordSignIn();
+    expect(signIn.status).toBe(302);
+    expect(signIn.headers.get("Location")).toBe("/account");
+    const cookie = signIn.headers.get("Set-Cookie")!.split(";")[0]!;
+    expect((await call(`${WORKERS_DEV}/admin`, { headers: { Cookie: cookie } })).status).toBe(200);
+  });
+
+  it("keeps the box as it was when the form comes back with an error", async () => {
+    const { admin_mfa: _ticked, ...unticked } = goodForm({ confirm: "something else entirely" });
+    const html = await (await postSetup(WORKERS_DEV, unticked)).text();
+    expect(html).toMatch(/<input type="checkbox" id="admin_mfa" name="admin_mfa" value="1"(?![^>]* checked)[^>]*\/>/);
+    const ticked = await (await postSetup(WORKERS_DEV, goodForm({ confirm: "something else entirely" }))).text();
+    expect(ticked).toMatch(/<input type="checkbox" id="admin_mfa" name="admin_mfa" value="1"[^>]* checked/);
   });
 
   it("refuses a wrong bootstrap token and creates nothing", async () => {
@@ -225,12 +280,8 @@ describe("a Worker with only the two secrets", () => {
     const flowId = /name="flow_id" value="([^"]+)"/.exec(login)![1]!;
     expect(flowId.startsWith("s.")).toBe(true); // sealed, not a KV write per page view
 
-    const signIn = await call(`${WORKERS_DEV}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: WORKERS_DEV },
-      body: new URLSearchParams({ flow_id: flowId, upn: "admin", password: ADMIN_PASSWORD }).toString(),
-    });
-    // An administrator is made to enrol a second factor first.
+    const signIn = await adminPasswordSignIn();
+    // An administrator is made to enrol a second factor first (setup's box was ticked).
     expect(signIn.status).toBe(302);
     expect(signIn.headers.get("Location")).toMatch(/^\/account\/mfa\/setup/);
 

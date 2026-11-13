@@ -73,7 +73,8 @@ Request body:
 | `app_name` | string | no |  |
 | `login_subtitle` | string | no |  |
 | `login_gradient` | object { from, to } | no |  |
-| `require_mfa` | boolean | no |  |
+| `require_mfa` | boolean | no | Make the default policy (everyone no other policy matches) require a second factor, or not. |
+| `admin_mfa` | boolean | no | Require a second factor for administrators (default: a fresh install does). true keeps Super Admins in the "Password and a second factor" policy; false takes them out of every policy that requires one and makes "Password only" the default, so the first administrator signs in with the password alone. Omitted leaves the policies as they are. false needs the `admin` scope; false with require_mfa: true is a 400. |
 | `new_user_password_mode` | "default" \| "random" | no |  |
 | `password_policy` | PasswordPolicy | no |  |
 | `rate_limit` | object { max_attempts, window_minutes } | no |  |
@@ -2536,7 +2537,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Turn a second factor on or off.
 
-At least one factor must stay on while a policy requires a second factor. Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
+At least one factor must stay on while a policy requires a second factor, and one of totp, passkey and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
 
 Permission: `security:write`
 

@@ -8,6 +8,7 @@ import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINU
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
+import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
@@ -4264,8 +4265,24 @@ admin.post("/admin/security/turnstile", async (c) => {
 
 const SECURITY_CRUMB: Breadcrumb = { label: "Security", href: "/admin/security" };
 
+/**
+ * The Policies page's warning while any administrator can sign in with a
+ * password alone: allowed (the instance's choice), but never silently.
+ */
+async function adminMfaWarning(env: Env): Promise<string> {
+  const relaxed = await adminsWithoutMfaPolicy(env);
+  if (!relaxed.length) return "";
+  const { results } = await env.DB.prepare("SELECT display_name, upn FROM users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY display_name LIMIT 6")
+    .bind(JSON.stringify(relaxed))
+    .all<{ display_name: string; upn: string }>();
+  const names = results.slice(0, 5).map((u) => `<strong>${escapeHtml(u.display_name)}</strong> (${escapeHtml(u.upn)})`).join(", ") + (relaxed.length > 5 ? ` and ${relaxed.length - 5} more` : "");
+  return `<div class="notice-warn" role="status"><strong>${relaxed.length === 1 ? "An administrator does" : `${relaxed.length} administrators do`} not need a second factor.</strong>
+    The policy that applies to ${relaxed.length === 1 ? "them" : "each of them"} does not require one, so ${names} can sign in to the admin console with a password alone.
+    To require one again, add their admin group (such as Super Admins) to a policy that requires a second factor, such as "Password and a second factor".</div>`;
+}
+
 admin.get("/admin/security/policies", async (c) => {
-  const [policies, groups] = await Promise.all([listPolicies(c.env), c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>()]);
+  const [policies, groups, warning] = await Promise.all([listPolicies(c.env), c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>(), adminMfaWarning(c.env)]);
   const reqLabel = (r: string) => (r === "mfa" ? "Password + second factor (or a passkey)" : "Password (or a passkey)");
   const row = (p: (typeof policies)[number]) => `
     <tr>
@@ -4281,8 +4298,11 @@ admin.get("/admin/security/policies", async (c) => {
       "Authentication policies",
       `${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
+        ${warning}
         <p class="muted" style="margin-top:0;">A policy says what someone must present to sign in. Each person gets the policy of their highest-priority group (lowest number);
-          anyone not in a policy's groups gets the default. A passkey satisfies every policy: it is multi-factor on its own.</p>
+          anyone not in a policy's groups gets the default. A passkey satisfies every policy: it is multi-factor on its own.
+          Administrators follow their policy too: a fresh install puts Super Admins in "Password and a second factor", and taking them out of it lets them sign in with a password alone.
+          When a policy does require a second factor of an administrator, security questions never count.</p>
         <table><thead><tr><th>Policy</th><th>Requires</th><th>Applies to</th><th>Priority</th><th></th></tr></thead><tbody>${policies.map(row).join("")}</tbody></table>
       `)}
       ${cardSection(`
@@ -4324,12 +4344,34 @@ admin.get("/admin/security/policies/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const p = (await listPolicies(c.env)).find((x) => x.id === id);
   if (!p) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
-  const groups = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
+  const [groups, admins, warning] = await Promise.all([c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>(), adminPolicies(c.env), adminMfaWarning(c.env)]);
+  // Administrators this policy makes use a second factor: saving or deleting
+  // it may take that away, so both ask first. A password policy made the
+  // default would relax the administrators the MFA default covers.
+  const covered = p.requirement === "mfa" ? admins.filter((a) => a.policyId === p.id).length : 0;
+  const defaultId = (await c.env.DB.prepare("SELECT id FROM auth_policies WHERE is_default = 1").first<{ id: number }>())?.id;
+  const viaDefault = p.requirement === "password" && !p.is_default ? admins.filter((a) => a.requiresMfa && a.policyId === defaultId).length : 0;
+  const people = (n: number) => (n === 1 ? "1 administrator" : `${n} administrators`);
+  const saveConfirm = covered
+    ? confirmAttrs(
+        `This policy makes ${people(covered)} use a second factor. If your change takes their group out of it or stops it requiring a second factor, they will sign in to the admin console with a password alone.`,
+        { title: "Change the administrators' second-factor policy?", action: "Save", danger: true }
+      )
+    : viaDefault
+      ? confirmAttrs(`Making this password-only policy the default lets ${people(viaDefault)} sign in to the admin console with a password alone: the default is what makes them use a second factor now.`, {
+          title: "Let administrators sign in with a password alone?",
+          action: "Save",
+          danger: true,
+          when: 'input[name="make_default"]',
+        })
+      : "";
+  const deleteNote = covered ? ` It makes ${people(covered)} use a second factor: without it, their policy may let them sign in with a password alone.` : "";
   return c.html(
     layout(
       c,
       p.name,
       cardSection(`
+        ${warning}
         <form method="POST" action="/admin/security/policies/${p.id}">
           <div class="field-row">
             <div><label for="p_name">Name</label><input type="text" id="p_name" name="name" required maxlength="80" value="${escapeHtml(p.name)}" /></div>
@@ -4343,9 +4385,9 @@ admin.get("/admin/security/policies/:id", async (c) => {
           ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
           ${p.is_default ? "" : `<label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`}
           <div class="form-actions end">
-            ${p.is_default ? "" : `<button class="danger" type="submit" formaction="/admin/security/policies/${p.id}/delete" formnovalidate ${confirmAttrs("Its groups fall back to another matching policy or the default.", { title: `Delete the policy "${p.name}"?`, action: "Delete policy", danger: true })}>Delete policy</button>`}
+            ${p.is_default ? "" : `<button class="danger" type="submit" formaction="/admin/security/policies/${p.id}/delete" formnovalidate ${confirmAttrs(`Its groups fall back to another matching policy or the default.${deleteNote}`, { title: `Delete the policy "${p.name}"?`, action: "Delete policy", danger: true })}>Delete policy</button>`}
             ${cancelLink("/admin/security/policies")}
-            <button class="primary" type="submit">Save</button>
+            <button class="primary" type="submit" ${saveConfirm}>Save</button>
           </div>
         </form>
       `),
@@ -4407,6 +4449,8 @@ admin.get("/admin/security/roles", async (c) => {
       ).results
     : [];
   const rolesOf = (uid: number) => roles.filter((r) => !r.is_default && (members.get(r.id) ?? []).includes(uid));
+  // Whose policy makes them use a second factor (secure by default; Security > Policies can relax it).
+  const relaxed = new Set(await adminsWithoutMfaPolicy(c.env));
   return c.html(
     layout(
       c,
@@ -4426,14 +4470,16 @@ admin.get("/admin/security/roles", async (c) => {
       `)}
       ${cardSection(`
         <h2>Administrators</h2>
-        <p class="muted">Everyone with more than the default role, and what they can do. Administrators always need a second factor - the authenticator app, a passkey or email codes, never security questions alone - whatever the authentication policies say: without one they are sent to set one up before the console opens.</p>
+        <p class="muted">Everyone with more than the default role, and what they can do. Administrators follow their <a href="/admin/security/policies">authentication policy</a> like everyone else; a fresh install puts Super Admins in "Password and a second factor". When their policy requires a second factor it must be the authenticator app, a passkey or email codes - never security questions - and without one they are sent to set one up before the console opens.</p>
+        ${relaxed.size ? `<div class="notice-warn" role="status">${relaxed.size === 1 ? "1 administrator's policy lets them" : `${relaxed.size} administrators' policies let them`} sign in with a password alone. <a href="/admin/security/policies">Review the policies</a>.</div>` : ""}
         ${
           admins.length
             ? `<table><thead><tr><th>Person</th><th>Roles</th><th>Second factor</th><th>Can</th></tr></thead><tbody>${admins
                 .map((u) => {
                   const rs = rolesOf(u.id);
                   const factors = [u.mfa_enabled ? "Authenticator app" : "", u.passkeys ? `Passkey${u.passkeys > 1 ? "s" : ""}` : "", u.email_otp_enabled ? "Email codes" : ""].filter(Boolean);
-                  const second = factors.length ? escapeHtml(factors.join(", ")) : '<span class="badge badge-disabled">None</span><br /><span class="muted">Must set one up at their next sign-in</span>';
+                  const none = relaxed.has(u.id) ? "Not required by their policy" : "Must set one up at their next sign-in";
+                  const second = factors.length ? escapeHtml(factors.join(", ")) : `<span class="badge badge-disabled">None</span><br /><span class="muted">${none}</span>`;
                   return `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a><br /><span class="muted">${escapeHtml(u.upn)}</span>${u.status !== "active" ? ' <span class="badge badge-disabled">Inactive</span>' : ""}</td><td>${rs.map((r) => escapeHtml(r.name)).join(", ")}</td><td>${second}</td><td style="max-width:460px;">${permissionSummary(rs.flatMap(rolePermissions))}</td></tr>`;
                 })
                 .join("")}</tbody></table>`
@@ -4540,7 +4586,8 @@ admin.get("/admin/security/factors", async (c) => {
       "Factors",
       `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        <p class="muted" style="margin-top:0;">The second-factor methods people can enrol and sign in with. A password is always available; turning a factor off stops it counting toward a policy and hides its enrolment.</p>
+        <p class="muted" style="margin-top:0;">The second-factor methods people can enrol and sign in with. A password is always available; turning a factor off stops it counting toward a policy and hides its enrolment.
+          Security questions never count for an administrator, so while a <a href="/admin/security/policies">policy</a> requires an administrator to use a second factor, one of the authenticator app, passkeys and email codes stays on.</p>
         <table><thead><tr><th>Factor</th><th>Enrolled users</th><th>Status</th><th></th></tr></thead><tbody>
           <tr><td><strong>Password</strong><br /><span class="muted">Always on; rules are under Security &rarr; Settings.</span></td><td>&mdash;</td><td><span class="badge badge-active">On</span></td><td></td></tr>
           ${FACTORS.map((f) =>
