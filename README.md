@@ -55,6 +55,12 @@ happens to run on Cloudflare's platform.
 - **Admin UX** at `/admin`: users (with CSV import), groups, OIDC clients, SAML
   service providers, API keys, SCIM, email, domains, security settings,
   branding, and a filterable audit log.
+- **Branding, per domain**: an uploaded logo (PNG/JPEG, stored in D1), app
+  name, sign-in message and gradient, email accent and a custom stylesheet for
+  the sign-in pages - for everyone, or per UPN domain through brands chosen by
+  the OIDC `login_hint`, a `?domain=` link, the hostname, and the person once
+  identified (their second step, My account and every email). See
+  [docs/branding.md](docs/branding.md).
 - **Self-service** at `/account`: MFA enrolment, password change, profile
   editing for the attributes the user's schema allows, active sessions and
   connected applications.

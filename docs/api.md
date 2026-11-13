@@ -100,10 +100,10 @@ does - in summary:
 | Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members paged, `?search=`), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}` |
 | OIDC clients | `GET`/`PATCH`/`DELETE /clients/{client_id}`, `POST .../rotate-secret` |
 | SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config` |
-| Domains | `DELETE /domains/{domain}` |
+| Domains | `DELETE /domains/{domain}`, `PUT /domains/{domain}/brand` |
 | API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
-| Branding | `GET`/`PATCH /branding`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` |
+| Branding | `GET`/`PATCH /branding` (default brand, `custom_css` included), `PUT`/`DELETE /branding/logo`, `GET`/`POST /branding/brands`, `GET`/`PATCH`/`DELETE /branding/brands/{id}`, `PUT`/`DELETE /branding/brands/{id}/logo`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` - see [branding.md](branding.md) |
 | Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `.../breached-passwords`, `.../turnstile`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`, security questions at `/security/security-questions`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
 | Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
 

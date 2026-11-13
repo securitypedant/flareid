@@ -6,8 +6,57 @@ may break things.
 
 ## [Unreleased]
 
+### Added
+
+- **Logo upload.** Admin → Branding takes a logo (PNG or JPEG, at most
+  256 KB, validated by its magic bytes - not its name or declared type) shown
+  on the sign-in pages, in the top bar and at the top of emails (by absolute
+  `${ISSUER_URL}/brand/logo/...` URL). Logos are stored in D1 (new migration
+  `0027_brands.sql`: `brand_assets`, base64) and served from
+  `GET /brand/logo/<id>-<hash>.png|jpg` with a year-long immutable cache
+  lifetime; a replaced or removed logo is deleted, and "Remove logo" brings
+  back FlareID's mark. **SVG is refused**: it can carry script, and most email
+  clients do not display it anyway.
+- **Per-domain branding.** Branding → Brands: brands with their own app name,
+  sign-in message, gradient, email accent, logo and custom CSS, each falling
+  back to the default brand's where left empty, attached to UPN domains from
+  the brand's page or the Domains page (`brands` table, `domains.brand_id`).
+  Before someone is identified the sign-in and recovery pages use the domain
+  of the OIDC `login_hint` (or `/login?domain=` / `?login_hint=`), carried in
+  the sealed flow, else the hostname when it is a branded domain or a
+  subdomain of one - never the issuer's own hostname - else the default
+  brand. Once they are identified - the second step, consent, sign-out
+  confirmation, My account, reset and invitation link pages - and in every
+  email to them (invitation, reset, sign-in code), their UPN's domain decides.
+  The admin console, the issuer and the OIDC/SAML metadata keep the default
+  brand. See [docs/branding.md](docs/branding.md).
+- **Custom CSS.** Per brand, up to 20 KB, linked as a stylesheet from
+  `GET /brand/css/<default|id>-<hash>.css` (`text/css`, `nosniff`, never
+  inlined) on the sign-in, second-step, consent, recovery, invitation and setup
+  pages only - never the admin console or My account, so a broken stylesheet
+  cannot lock administrators out. Saving refuses `</style`, `@import`,
+  `url()` other than same-origin paths and `data:` URLs, remote URLs in
+  strings, `expression(`, `javascript:`, `-moz-binding` and `behavior` (checked
+  after decoding CSS escapes); the Content-Security-Policy is unchanged and
+  blocks remote fonts and images regardless. `?nocustom=1` on any of those
+  pages switches custom CSS off for that browser until `?nocustom=0`.
+- **Preview.** `/login?brand_preview=<id|default>` renders the sign-in page in
+  a brand for a signed-in administrator with `branding:read`; linked from each
+  brand's page. Ignored for anyone else.
+- **API.** `GET`/`PATCH /api/v1/branding` gain `logo_url`, `custom_css`,
+  `css_url` and `preview_url`; new `PUT`/`DELETE /api/v1/branding/logo`,
+  `GET`/`POST /api/v1/branding/brands`,
+  `GET`/`PATCH`/`DELETE /api/v1/branding/brands/{id}`,
+  `PUT`/`DELETE /api/v1/branding/brands/{id}/logo` (logos as base64 JSON) and
+  `PUT /api/v1/domains/{domain}/brand`; `GET /api/v1/domains` gains
+  `brand_id`. Each console action is mapped in the API parity test.
+
 ### Changed
 
+- `sendEmailOtp` and `buildEmail` take the recipient's brand instead of an app
+  name; `getLoginAppearance` takes a brand, and the auth-page views
+  (`authPage`, `loginForm`, `mfaForm`, `authMessagePage`) read the app name
+  from the appearance.
 - **Group lists read the directory once.** `GET /api/v1/groups` and the SCIM
   server's `GET /scim/v2/Groups` resolve every listed group's members in one
   pass (`resolveManyGroupMemberUserIds`): one read of the users table for all
