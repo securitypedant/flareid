@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import type { Brand } from "./brands.js";
 import { getSetting, setSetting } from "./settings.js";
 
 /**
@@ -83,14 +84,20 @@ export async function setAccent(env: Env, v: string): Promise<void> {
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const fill = (s: string, vars: Record<string, string>) => s.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (m, k: string) => (k in vars ? vars[k]! : m));
 
-/** Renders a template: placeholders filled, then laid out as text and escaped HTML. */
-export function renderEmail(t: EmailTemplate, accent: string, vars: Record<string, string>, link?: string): { subject: string; text: string; html: string } {
+/**
+ * Renders a template: placeholders filled, then laid out as text and escaped
+ * HTML. `logoUrl` is an absolute https URL of the brand's uploaded logo, shown
+ * above the name (email clients need an absolute URL; FlareID's own mark is
+ * not sent, so an unbranded email loads no image).
+ */
+export function renderEmail(t: EmailTemplate, accent: string, vars: Record<string, string>, link?: string, logoUrl?: string | null): { subject: string; text: string; html: string } {
   const f = Object.fromEntries(Object.entries(t).map(([k, v]) => [k, fill(v, vars)])) as unknown as EmailTemplate;
   const code = vars.code;
   const paragraphs = f.body.split(/\n{2,}/).map((p) => `<p style="margin:0 0 16px;line-height:1.5;color:#334155;">${esc(p).replace(/\n/g, "<br />")}</p>`).join("");
   const text = [f.heading, "", f.body, "", ...(code ? [code, ""] : []), ...(link ? [`${f.action}: ${link}`, ""] : []), f.footer, ""].join("\n");
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
   <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;border-top:4px solid ${accent};">
+    ${logoUrl ? `<img src="${esc(logoUrl)}" alt="" height="40" style="display:block;height:40px;width:auto;max-width:200px;margin:0 0 12px;border:0;" />` : ""}
     <p style="margin:0 0 16px;font-weight:700;font-size:18px;color:#0f172a;">${esc(vars.app_name ?? "")}</p>
     <h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:700;color:#0f172a;">${esc(f.heading)}</h1>
     ${paragraphs}
@@ -107,6 +114,12 @@ export function renderEmail(t: EmailTemplate, accent: string, vars: Record<strin
   return { subject: f.subject.replace(/\n/g, " "), text, html };
 }
 
-export async function buildEmail(env: Env, key: TemplateKey, vars: Record<string, string>, link?: string) {
-  return renderEmail(await getTemplate(env, key), await getAccent(env), vars, link);
+/** The email for a person, in their brand (brandFor in brands.ts): its name as {{app_name}}, its accent and logo. */
+export async function buildEmail(env: Env, key: TemplateKey, brand: Brand, vars: Record<string, string>, link?: string) {
+  return renderEmail(await getTemplate(env, key), brand.accent, { ...vars, app_name: brand.appName }, link, emailLogoUrl(env, brand));
+}
+
+/** The absolute logo URL email needs: the brand's upload under an https issuer, else none. */
+export function emailLogoUrl(env: Env, brand: Pick<Brand, "logoUrl">): string | null {
+  return brand.logoUrl && env.ISSUER_URL.startsWith("https://") ? `${env.ISSUER_URL.replace(/\/$/, "")}${brand.logoUrl}` : null;
 }

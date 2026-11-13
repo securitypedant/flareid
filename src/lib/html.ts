@@ -151,6 +151,7 @@ const STYLES = `
   .topbar .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
   .topbar .brand:hover { text-decoration: none; }
   .brand-logo { width: 26px; height: 26px; border-radius: 6px; object-fit: contain; flex-shrink: 0; }
+  .brand-logo-custom { width: auto; max-width: 120px; border-radius: 0; }
   .topbar .brand-name { font-weight: 700; font-size: 1.0625rem; color: var(--fi-ink); letter-spacing: -0.015em; }
   .topbar .brand-tagline {
     font-size: 0.6875rem; color: var(--fi-muted); font-weight: 500;
@@ -1103,11 +1104,12 @@ const THEME_TOGGLE_SCRIPT = `(function(){
   label();
 })();`;
 
-export function nav(appName: string, isAdmin: boolean): string {
+/** The top bar. `logoUrl` is the brand's uploaded logo (brands.ts); FlareID's icon without one. */
+export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null): string {
   return `<header class="topbar">
     <div class="brand-row">
     <a href="/" class="brand">
-      <img src="/FlareID_Icon.png" alt="" class="brand-logo" data-hide-on-error />
+      <img src="${escapeHtml(logoUrl || "/FlareID_Icon.png")}" alt="" class="brand-logo${logoUrl ? " brand-logo-custom" : ""}" data-hide-on-error />
       <span class="brand-name">${escapeHtml(appName)}</span>
       <span class="brand-tagline">Open source, Cloudflare hosted IDP <span class="brand-version">(v${VERSION})</span></span>
     </a>
@@ -1156,8 +1158,8 @@ export function errorCard(status: number, message: string, backHref: string): st
 }
 
 /** The error card as a whole page with the top bar, for routes outside the admin console layout. */
-export function errorPage(appName: string, status: number, message: string, backHref: string, isAdmin: boolean): string {
-  return page(ERROR_TITLES[status] ?? "Something went wrong", `<div style="max-width:640px; margin:32px auto;">${errorCard(status, message, backHref)}</div>`, appName, false, nav(appName, isAdmin));
+export function errorPage(appName: string, status: number, message: string, backHref: string, isAdmin: boolean, logoUrl?: string | null): string {
+  return page(ERROR_TITLES[status] ?? "Something went wrong", `<div style="max-width:640px; margin:32px auto;">${errorCard(status, message, backHref)}</div>`, appName, false, nav(appName, isAdmin, logoUrl));
 }
 
 /**
@@ -1194,7 +1196,9 @@ export function page(
   wide = false,
   navHtml = "",
   extraStyles = "",
-  extraBodyHtml = ""
+  extraBodyHtml = "",
+  /** Extra <head> markup after the styles: the auth pages' custom stylesheet <link>. */
+  headHtml = ""
 ): string {
   // Pages without the top bar are the branded sign-in pages: always light.
   const themed = Boolean(navHtml);
@@ -1209,6 +1213,7 @@ export function page(
   ${themed ? scriptTag(THEME_INIT_SCRIPT) : ""}
   <style>${STYLES}</style>
   ${extraStyles ? `<style>${extraStyles}</style>` : ""}
+  ${headHtml}
 </head>
 <body>
   ${navHtml}

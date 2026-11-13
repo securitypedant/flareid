@@ -11,8 +11,6 @@ import {
   getAuditRetentionDays,
   getCursorTrail,
   getDefaultPassword,
-  getLoginGradient,
-  getLoginSubtitle,
   getNewUserPasswordMode,
   getPasswordPolicy,
   getSessionPolicy,
@@ -54,6 +52,8 @@ import {
   sendTestEmail,
   switchEmail,
 } from "../services/settings.js";
+import { base64ToBytes, defaultBrand, defaultCustomCss, getBrandRow, listBrandRows, LOGO_MAX_BYTES, logoPath, mergeBrand, type BrandRow } from "../lib/brands.js";
+import { cleanCustomCss, createBrand, deleteBrand, removeLogo, saveDefaultCustomCss, updateBrand, uploadLogo, type BrandInput } from "../services/branding.js";
 import { badRequest, defineRoute, notFound, param, readJson, readOptionalJson, type ApiContext } from "./openapi.js";
 import { IdParam, PasswordPolicySchema } from "./schemas.js";
 
@@ -147,22 +147,38 @@ defineRoute(
 // Branding
 // ---------------------------------------------------------------------------
 
+const GradientSchema = z.object({ from: z.string().openapi({ example: "#f7b733" }), to: z.string().openapi({ example: "#f6821f" }) });
+
 const BrandingSchema = z
   .object({
     app_name: z.string(),
     login_subtitle: z.string(),
-    login_gradient: z.object({ from: z.string(), to: z.string() }),
+    login_gradient: GradientSchema,
     cursor_trail: z.object({ enabled: z.boolean(), characters: z.string() }),
     email_accent: z.string(),
+    logo_url: z.string().nullable().openapi({ description: "Path of the uploaded logo (`/brand/logo/<id>-<hash>.png|jpg`, cached as immutable), or null for FlareID's own mark." }),
+    custom_css: z.string().openapi({ description: "The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none." }),
+    css_url: z.string().nullable().openapi({ description: "Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null." }),
+    preview_url: z.string().openapi({ description: "The sign-in page in this brand, for a signed-in administrator with branding:read." }),
   })
   .openapi("Branding");
 
 async function brandingJson(env: Env) {
-  const [appName, subtitle, gradient, trail, accent] = await Promise.all([getAppName(env), getLoginSubtitle(env), getLoginGradient(env), getCursorTrail(env), getAccent(env)]);
-  return { app_name: appName, login_subtitle: subtitle, login_gradient: gradient, cursor_trail: trail, email_accent: accent };
+  const [brand, trail, css] = await Promise.all([defaultBrand(env), getCursorTrail(env), defaultCustomCss(env)]);
+  return {
+    app_name: brand.appName,
+    login_subtitle: brand.subtitle,
+    login_gradient: brand.gradient,
+    cursor_trail: trail,
+    email_accent: brand.accent,
+    logo_url: brand.logoUrl,
+    custom_css: css,
+    css_url: brand.cssUrl,
+    preview_url: "/login?brand_preview=default",
+  };
 }
 
-defineRoute({ method: "get", path: "/api/v1/branding", tag: "Branding", permission: "branding:read", summary: "Read the branding", response: BrandingSchema }, async (c) => c.json(await brandingJson(c.env)));
+defineRoute({ method: "get", path: "/api/v1/branding", tag: "Branding", permission: "branding:read", summary: "Read the default brand", response: BrandingSchema }, async (c) => c.json(await brandingJson(c.env)));
 
 defineRoute(
   {
@@ -170,23 +186,26 @@ defineRoute(
     path: "/api/v1/branding",
     tag: "Branding",
     permission: "branding:write",
-    summary: "Change the branding",
-    description: "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols.",
+    summary: "Change the default brand",
+    description:
+      "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
     body: z.object({
       app_name: z.string().optional(),
       login_subtitle: z.string().optional(),
-      login_gradient: z.object({ from: z.string(), to: z.string() }).optional(),
+      login_gradient: GradientSchema.optional(),
       cursor_trail: z.object({ enabled: z.boolean().optional(), characters: z.string().optional() }).optional(),
       email_accent: z.string().optional(),
+      custom_css: z.string().optional(),
     }),
     response: BrandingSchema,
   },
   async (c) => {
-    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; email_accent?: string }>(c);
+    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; email_accent?: string; custom_css?: string }>(c);
     // Everything validated before anything is saved.
     if (body.app_name !== undefined && !body.app_name.trim()) return c.json(badRequest("app_name cannot be empty."), 400);
     if (body.login_gradient && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
     if (body.email_accent !== undefined && !isHexColor(body.email_accent)) return c.json(badRequest("email_accent must be a #rrggbb hex colour."), 400);
+    if (body.custom_css !== undefined) cleanCustomCss(body.custom_css);
     const ctx = apiCtx(c);
     if (body.app_name !== undefined) await saveAppName(ctx, body.app_name.trim());
     if (body.login_subtitle !== undefined) await saveLoginSubtitle(ctx, body.login_subtitle);
@@ -196,7 +215,170 @@ defineRoute(
       await saveCursorTrail(ctx, { enabled: body.cursor_trail.enabled ?? current.enabled, characters: body.cursor_trail.characters ?? current.characters });
     }
     if (body.email_accent !== undefined) await saveEmailAccent(ctx, body.email_accent);
+    if (body.custom_css !== undefined) await saveDefaultCustomCss(ctx, body.custom_css);
     return c.json(await brandingJson(c.env));
+  }
+);
+
+const LogoBody = z.object({
+  data: z.string().openapi({ description: "The image, base64-encoded (a `data:image/...;base64,` prefix is accepted). PNG or JPEG, at most 256 KB, recognised by its bytes; SVG is refused." }),
+});
+
+/** The image bytes from a LogoBody; a refusal for anything that is not base64. */
+async function logoBytes(c: ApiContext): Promise<Uint8Array> {
+  const body = await readJson<{ data?: unknown }>(c);
+  const raw = typeof body.data === "string" ? body.data.replace(/^data:[^,]*;base64,/, "").replace(/\s+/g, "") : "";
+  if (!raw) throw new ServiceError(400, "data must be the base64-encoded image.");
+  // Bounded before decoding: base64 is 4/3 of the bytes.
+  if (raw.length > Math.ceil((LOGO_MAX_BYTES * 4) / 3) + 4) throw new ServiceError(400, `A logo can be at most ${LOGO_MAX_BYTES / 1024} KB.`);
+  try {
+    return base64ToBytes(raw);
+  } catch {
+    throw new ServiceError(400, "data is not valid base64.");
+  }
+}
+
+defineRoute(
+  { method: "put", path: "/api/v1/branding/logo", tag: "Branding", permission: "branding:write", summary: "Upload the default brand's logo", description: "Shown on the sign-in pages, the top bar and emails. Replaces (and deletes) the previous upload.", body: LogoBody, response: BrandingSchema },
+  async (c) => {
+    await uploadLogo(apiCtx(c), null, await logoBytes(c));
+    return c.json(await brandingJson(c.env));
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/branding/logo", tag: "Branding", permission: "branding:write", summary: "Remove the default brand's logo", description: "FlareID's own mark is shown again.", response: BrandingSchema },
+  async (c) => {
+    await removeLogo(apiCtx(c), null);
+    return c.json(await brandingJson(c.env));
+  }
+);
+
+// Brands attached to domains.
+
+const BrandSchema = z
+  .object({
+    id: z.number(),
+    name: z.string(),
+    app_name: z.string().nullable().openapi({ description: "null: the default brand's." }),
+    login_subtitle: z.string().nullable().openapi({ description: "null: the default brand's; empty: no message." }),
+    login_gradient: GradientSchema.nullable().openapi({ description: "null: the default brand's." }),
+    email_accent: z.string().nullable().openapi({ description: "null: the default brand's." }),
+    logo_url: z.string().nullable().openapi({ description: "This brand's own upload; null uses the default brand's logo." }),
+    custom_css: z.string().openapi({ description: "Empty uses the default brand's stylesheet." }),
+    domains: z.array(z.string()).openapi({ description: "The domains whose people see this brand." }),
+    effective: z
+      .object({ app_name: z.string(), login_subtitle: z.string(), login_gradient: GradientSchema, email_accent: z.string(), logo_url: z.string().nullable(), css_url: z.string().nullable() })
+      .openapi({ description: "What the pages and emails actually use, with the default brand filling the gaps." }),
+    preview_url: z.string(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .openapi("Brand");
+
+async function brandJson(env: Env, row: BrandRow) {
+  const [def, css, domains] = await Promise.all([
+    defaultBrand(env),
+    env.DB.prepare("SELECT custom_css FROM brands WHERE id = ?").bind(row.id).first<{ custom_css: string }>(),
+    env.DB.prepare("SELECT domain FROM domains WHERE brand_id = ? ORDER BY domain").bind(row.id).all<{ domain: string }>(),
+  ]);
+  const eff = mergeBrand(def, row);
+  return {
+    id: row.id,
+    name: row.name,
+    app_name: row.app_name || null,
+    login_subtitle: row.login_subtitle,
+    login_gradient: row.gradient_from && row.gradient_to ? { from: row.gradient_from, to: row.gradient_to } : null,
+    email_accent: row.email_accent,
+    logo_url: row.logo_asset_id && row.logo_sha && row.logo_type ? logoPath(row.logo_asset_id, row.logo_sha, row.logo_type) : null,
+    custom_css: css?.custom_css ?? "",
+    domains: domains.results.map((d) => d.domain),
+    effective: { app_name: eff.appName, login_subtitle: eff.subtitle, login_gradient: eff.gradient, email_accent: eff.accent, logo_url: eff.logoUrl, css_url: eff.cssUrl },
+    preview_url: `/login?brand_preview=${row.id}`,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+const BrandBody = z.object({
+  name: z.string().optional(),
+  app_name: z.string().nullable().optional(),
+  login_subtitle: z.string().nullable().optional(),
+  login_gradient: GradientSchema.nullable().optional(),
+  email_accent: z.string().nullable().optional(),
+  custom_css: z.string().nullable().optional(),
+  domains: z.array(z.string()).optional().openapi({ description: "Replaces the set of domains using this brand; a domain moves from any brand it was on." }),
+});
+
+function brandId(c: ApiContext): number {
+  const id = Number(param(c, "id"));
+  if (!Number.isInteger(id)) throw new ServiceError(404, "No such brand.");
+  return id;
+}
+
+async function brandOr404(c: ApiContext): Promise<BrandRow> {
+  const row = await getBrandRow(c.env, brandId(c));
+  if (!row) throw new ServiceError(404, "No such brand.");
+  return row;
+}
+
+defineRoute(
+  { method: "get", path: "/api/v1/branding/brands", tag: "Branding", permission: "branding:read", summary: "List the brands attached to domains", description: "The default brand is `GET /api/v1/branding`.", response: z.object({ brands: z.array(BrandSchema) }) },
+  async (c) => c.json({ brands: await Promise.all((await listBrandRows(c.env)).map((r) => brandJson(c.env, r))) })
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/branding/brands",
+    tag: "Branding",
+    permission: "branding:write",
+    summary: "Create a brand",
+    description: "`name` is required and unique. Fields left out or null use the default brand's value. `custom_css` follows the rules of `PATCH /api/v1/branding`.",
+    body: BrandBody.extend({ name: z.string() }),
+    status: 201,
+    errors: [409],
+    response: BrandSchema,
+  },
+  async (c) => {
+    const row = await createBrand(apiCtx(c), await readJson<BrandInput>(c));
+    return c.json(await brandJson(c.env, row), 201);
+  }
+);
+
+defineRoute(
+  { method: "get", path: "/api/v1/branding/brands/{id}", tag: "Branding", permission: "branding:read", summary: "Read a brand", params: IdParam, errors: [404], response: BrandSchema },
+  async (c) => c.json(await brandJson(c.env, await brandOr404(c)))
+);
+
+defineRoute(
+  { method: "patch", path: "/api/v1/branding/brands/{id}", tag: "Branding", permission: "branding:write", summary: "Change a brand", description: "Fields not supplied keep their values; null resets one to the default brand's.", params: IdParam, body: BrandBody, errors: [404, 409], response: BrandSchema },
+  async (c) => c.json(await brandJson(c.env, await updateBrand(apiCtx(c), brandId(c), await readJson<BrandInput>(c))))
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/branding/brands/{id}", tag: "Branding", permission: "branding:write", summary: "Delete a brand", description: "Its domains go back to the default brand; its logo is deleted.", params: IdParam, errors: [404] },
+  async (c) => {
+    await deleteBrand(apiCtx(c), brandId(c));
+    return c.json({ ok: true as const });
+  }
+);
+
+defineRoute(
+  { method: "put", path: "/api/v1/branding/brands/{id}/logo", tag: "Branding", permission: "branding:write", summary: "Upload a brand's logo", params: IdParam, body: LogoBody, errors: [404], response: BrandSchema },
+  async (c) => {
+    const id = brandId(c);
+    await uploadLogo(apiCtx(c), id, await logoBytes(c));
+    return c.json(await brandJson(c.env, (await getBrandRow(c.env, id))!));
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/branding/brands/{id}/logo", tag: "Branding", permission: "branding:write", summary: "Remove a brand's logo", description: "The brand uses the default brand's logo again.", params: IdParam, errors: [404], response: BrandSchema },
+  async (c) => {
+    const id = brandId(c);
+    await removeLogo(apiCtx(c), id);
+    return c.json(await brandJson(c.env, (await getBrandRow(c.env, id))!));
   }
 );
 

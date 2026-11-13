@@ -18,6 +18,8 @@ declare module "hono" {
     sessionId: string;
     /** Resolved once per request by the `resolveAppName` middleware - the admin-configurable display name, falling back to the APP_NAME env var. */
     appName: string;
+    /** The brand's uploaded logo for the top bar (brands.ts): the default brand's, or on My account the person's; null for FlareID's icon. */
+    logoUrl: string | null;
   }
 }
 
@@ -61,7 +63,7 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
 /** Any admin role reaches the console; each request must be within the roles' areas (canAccess). */
 export async function requireAdmin(c: Context<{ Bindings: Env }>, next: Next) {
   const access = c.get("access");
-  const refuse = (message: string, back: string) => c.html(errorPage(c.get("appName"), 403, message, safeBackHref(c.req.raw, back), Boolean(access?.isAdmin)), 403);
+  const refuse = (message: string, back: string) => c.html(errorPage(c.get("appName"), 403, message, safeBackHref(c.req.raw, back), Boolean(access?.isAdmin), c.get("logoUrl")), 403);
   if (!access?.isAdmin) return refuse("The admin console is for administrators. Ask a Super Admin if you need access.", "/account");
   if (!canAccess(access, c.req.method, c.req.path)) {
     return refuse(c.req.method === "GET" ? "Your role doesn't include this part of the console." : "Your role can view this but not change it.", "/admin");

@@ -62,7 +62,7 @@
     },
     {
       "name": "Branding",
-      "description": "App name and sign-in page appearance."
+      "description": "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates."
     },
     {
       "name": "Security",
@@ -703,10 +703,12 @@
             "type": "object",
             "properties": {
               "from": {
-                "type": "string"
+                "type": "string",
+                "example": "#f7b733"
               },
               "to": {
-                "type": "string"
+                "type": "string",
+                "example": "#f6821f"
               }
             },
             "required": [
@@ -731,6 +733,28 @@
           },
           "email_accent": {
             "type": "string"
+          },
+          "logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path of the uploaded logo (`/brand/logo/<id>-<hash>.png|jpg`, cached as immutable), or null for FlareID's own mark."
+          },
+          "custom_css": {
+            "type": "string",
+            "description": "The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none."
+          },
+          "css_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null."
+          },
+          "preview_url": {
+            "type": "string",
+            "description": "The sign-in page in this brand, for a signed-in administrator with branding:read."
           }
         },
         "required": [
@@ -738,7 +762,158 @@
           "login_subtitle",
           "login_gradient",
           "cursor_trail",
-          "email_accent"
+          "email_accent",
+          "logo_url",
+          "custom_css",
+          "css_url",
+          "preview_url"
+        ]
+      },
+      "Brand": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "app_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null: the default brand's."
+          },
+          "login_subtitle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null: the default brand's; empty: no message."
+          },
+          "login_gradient": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "example": "#f7b733"
+              },
+              "to": {
+                "type": "string",
+                "example": "#f6821f"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "description": "null: the default brand's."
+          },
+          "email_accent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null: the default brand's."
+          },
+          "logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This brand's own upload; null uses the default brand's logo."
+          },
+          "custom_css": {
+            "type": "string",
+            "description": "Empty uses the default brand's stylesheet."
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The domains whose people see this brand."
+          },
+          "effective": {
+            "type": "object",
+            "properties": {
+              "app_name": {
+                "type": "string"
+              },
+              "login_subtitle": {
+                "type": "string"
+              },
+              "login_gradient": {
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "example": "#f7b733"
+                  },
+                  "to": {
+                    "type": "string",
+                    "example": "#f6821f"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to"
+                ]
+              },
+              "email_accent": {
+                "type": "string"
+              },
+              "logo_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "css_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "app_name",
+              "login_subtitle",
+              "login_gradient",
+              "email_accent",
+              "logo_url",
+              "css_url"
+            ],
+            "description": "What the pages and emails actually use, with the default brand filling the gaps."
+          },
+          "preview_url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "app_name",
+          "login_subtitle",
+          "login_gradient",
+          "email_accent",
+          "logo_url",
+          "custom_css",
+          "domains",
+          "effective",
+          "preview_url",
+          "created_at",
+          "updated_at"
         ]
       },
       "EmailTemplate": {
@@ -5085,7 +5260,7 @@
         "tags": [
           "Branding"
         ],
-        "summary": "Read the branding",
+        "summary": "Read the default brand",
         "security": [
           {
             "bearer": []
@@ -5139,8 +5314,8 @@
         "tags": [
           "Branding"
         ],
-        "summary": "Change the branding",
-        "description": "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols.",
+        "summary": "Change the default brand",
+        "description": "Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.",
         "security": [
           {
             "bearer": []
@@ -5164,10 +5339,12 @@
                     "type": "object",
                     "properties": {
                       "from": {
-                        "type": "string"
+                        "type": "string",
+                        "example": "#f7b733"
                       },
                       "to": {
-                        "type": "string"
+                        "type": "string",
+                        "example": "#f6821f"
                       }
                     },
                     "required": [
@@ -5187,6 +5364,9 @@
                     }
                   },
                   "email_accent": {
+                    "type": "string"
+                  },
+                  "custom_css": {
                     "type": "string"
                   }
                 }
@@ -5227,6 +5407,826 @@
           },
           "403": {
             "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/logo": {
+      "put": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Upload the default brand's logo",
+        "description": "Shown on the sign-in pages, the top bar and emails. Replaces (and deletes) the previous upload.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "description": "The image, base64-encoded (a `data:image/...;base64,` prefix is accepted). PNG or JPEG, at most 256 KB, recognised by its bytes; SVG is refused."
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Branding"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Remove the default brand's logo",
+        "description": "FlareID's own mark is shown again.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Branding"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/brands": {
+      "get": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "List the brands attached to domains",
+        "description": "The default brand is `GET /api/v1/branding`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "brands": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Brand"
+                      }
+                    }
+                  },
+                  "required": [
+                    "brands"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Create a brand",
+        "description": "`name` is required and unique. Fields left out or null use the default brand's value. `custom_css` follows the rules of `PATCH /api/v1/branding`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "app_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login_subtitle": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login_gradient": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "example": "#f7b733"
+                      },
+                      "to": {
+                        "type": "string",
+                        "example": "#f6821f"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to"
+                    ]
+                  },
+                  "email_accent": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "custom_css": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Replaces the set of domains using this brand; a domain moves from any brand it was on."
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brand"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/brands/{id}": {
+      "get": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Read a brand",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brand"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Change a brand",
+        "description": "Fields not supplied keep their values; null resets one to the default brand's.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "app_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login_subtitle": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login_gradient": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "example": "#f7b733"
+                      },
+                      "to": {
+                        "type": "string",
+                        "example": "#f6821f"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to"
+                    ]
+                  },
+                  "email_accent": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "custom_css": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Replaces the set of domains using this brand; a domain moves from any brand it was on."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brand"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Delete a brand",
+        "description": "Its domains go back to the default brand; its logo is deleted.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/brands/{id}/logo": {
+      "put": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Upload a brand's logo",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "description": "The image, base64-encoded (a `data:image/...;base64,` prefix is accepted). PNG or JPEG, at most 256 KB, recognised by its bytes; SVG is refused."
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brand"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Branding"
+        ],
+        "summary": "Remove a brand's logo",
+        "description": "The brand uses the default brand's logo again.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "branding:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brand"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8526,6 +9526,13 @@
                           "is_default": {
                             "type": "boolean"
                           },
+                          "brand_id": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "The brand its people see (`/api/v1/branding/brands/{id}`); null for the default brand."
+                          },
                           "created_at": {
                             "type": "string"
                           }
@@ -8533,6 +9540,7 @@
                         "required": [
                           "domain",
                           "is_default",
+                          "brand_id",
                           "created_at"
                         ]
                       }
@@ -8661,6 +9669,128 @@
           },
           "403": {
             "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/brand": {
+      "put": {
+        "tags": [
+          "Domains"
+        ],
+        "summary": "Choose the brand a domain's people see",
+        "description": "`brand_id` null is the default brand. The sign-in pages, My account and emails follow the person's UPN domain (see Branding).",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "domains:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The domain name."
+            },
+            "required": true,
+            "description": "The domain name.",
+            "name": "domain",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "brand_id": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "brand_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "brand_id": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "domain",
+                    "brand_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
             "content": {
               "application/json": {
                 "schema": {

@@ -18,7 +18,8 @@ import {
 } from "../lib/security-questions.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
@@ -45,13 +46,26 @@ export const account = new Hono<{ Bindings: Env }>();
 
 account.use("/account/*", requireSession);
 account.use("/account", requireSession);
+// My account wears the person's brand (their UPN's domain - brands.ts): its
+// name and logo in the top bar. Never its custom CSS, which is only for the
+// sign-in pages.
+const personalBrand: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const brand = await brandFor(c.env, { upn: c.get("user").upn });
+  if (brand.id !== null) {
+    c.set("appName", brand.appName);
+    c.set("logoUrl", brand.logoUrl);
+  }
+  await next();
+};
+account.use("/account/*", personalBrand);
+account.use("/account", personalBrand);
 // Self-service is a permission like any other (the default "User" role grants both).
 account.use("/account/*", async (c, next) => {
   const need = c.req.method === "GET" || c.req.method === "HEAD" ? "account:read" : "account:write";
-  if (!grants(c.get("access").perms, need)) return c.html(errorPage(c.get("appName"), 403, "Your role doesn't allow changes to your account here.", safeBackHref(c.req.raw, "/account"), Boolean(c.get("access")?.isAdmin)), 403);
+  if (!grants(c.get("access").perms, need)) return c.html(errorPage(c.get("appName"), 403, "Your role doesn't allow changes to your account here.", safeBackHref(c.req.raw, "/account"), Boolean(c.get("access")?.isAdmin), c.get("logoUrl")), 403);
   return next();
 });
-account.use("/account", async (c, next) => (grants(c.get("access").perms, "account:read") ? next() : c.html(errorPage(c.get("appName"), 403, "Your role doesn't include My account. Ask an administrator.", "/", Boolean(c.get("access")?.isAdmin)), 403)));
+account.use("/account", async (c, next) => (grants(c.get("access").perms, "account:read") ? next() : c.html(errorPage(c.get("appName"), 403, "Your role doesn't include My account. Ask an administrator.", "/", Boolean(c.get("access")?.isAdmin), c.get("logoUrl")), 403)));
 
 function layout(c: Context<{ Bindings: Env }>, title: string, body: string, headerMeta?: string) {
   const appName = c.get("appName");
@@ -60,7 +74,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, Boolean(c.get("access")?.isAdmin))
+    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"))
   );
 }
 
@@ -770,7 +784,7 @@ account.post("/account/mfa/setup", async (c) => {
   const resume = String(body.resume ?? "");
 
   const secret = await getPendingEnrollment(c.env, c.get("sessionId"));
-  if (!secret) return c.html(errorPage(c.get("appName"), 400, "The set-up session expired. Start setting up the authenticator app again.", "/account/mfa/setup", Boolean(c.get("access")?.isAdmin)), 400);
+  if (!secret) return c.html(errorPage(c.get("appName"), 400, "The set-up session expired. Start setting up the authenticator app again.", "/account/mfa/setup", Boolean(c.get("access")?.isAdmin), c.get("logoUrl")), 400);
 
   const counter = await matchTotpCounter(secret, code);
   if (counter === null) {
@@ -844,7 +858,7 @@ account.post("/account/mfa/email/send", async (c) => {
   const purpose = body.purpose === "disable" ? "disable" : "enrol";
   if (!(await emailOtpAvailable(c.env))) return c.redirect(emailCodeReturn(body, "error=email-unavailable"), 302);
   if ((purpose === "enrol") === Boolean(user.email_otp_enabled)) return c.redirect("/account", 302);
-  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), purpose, c.get("appName"));
+  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), purpose);
   if (!sent.ok) {
     if (sent.reason === "rate_limited") {
       await logAudit(c.env, user, "user.email_otp_rate_limited", user.upn, { purpose }, c.req.raw);
@@ -930,7 +944,7 @@ account.post("/account/mfa/questions", async (c) => {
   // POST is refused.
   if (c.get("access").isAdmin) {
     await logAudit(c.env, user, "user.security_questions_refused", user.upn, { reason: "administrator" }, c.req.raw);
-    return c.html(errorPage(c.get("appName"), 403, ADMIN_KBA_REFUSAL, safeBackHref(c.req.raw, "/account"), true), 403);
+    return c.html(errorPage(c.get("appName"), 403, ADMIN_KBA_REFUSAL, safeBackHref(c.req.raw, "/account"), true, c.get("logoUrl")), 403);
   }
   const changing = Boolean(user.security_questions_enabled);
   if (changing) {

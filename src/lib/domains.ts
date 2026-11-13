@@ -4,6 +4,8 @@ export interface DomainRow {
   id: number;
   domain: string;
   is_default: number;
+  /** The brand its people see (brands.ts); null for the default brand. */
+  brand_id: number | null;
   created_at: string;
 }
 

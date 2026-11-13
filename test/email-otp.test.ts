@@ -176,7 +176,7 @@ describe("email one-time codes", () => {
     // Used once, never again (checked at the code store directly).
     const withEmail = { ...env, EMAIL: email.binding } as unknown as typeof env;
     const scope = accountScope("test-session");
-    expect((await sendEmailOtp(withEmail, await userRow(rita), scope, "enrol", "FlareID")).ok).toBe(true);
+    expect((await sendEmailOtp(withEmail, await userRow(rita), scope, "enrol")).ok).toBe(true);
     const once = email.lastCode();
     expect(await verifyEmailOtp(withEmail, scope, rita, "disable", once)).toBe("expired"); // wrong purpose
     expect(await verifyEmailOtp(withEmail, scope, rita, "enrol", once)).toBe("ok");

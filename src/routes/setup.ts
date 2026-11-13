@@ -3,9 +3,9 @@ import type { Env } from "../env.js";
 import { bootstrapTokenValid, isPlaceholderSecret } from "../lib/api-auth.js";
 import { logAudit } from "../lib/audit.js";
 import { escapeHtml } from "../lib/html.js";
-import { authPage } from "../lib/login-views.js";
+import { authPage, loginAppearance } from "../lib/login-views.js";
 import { getClientIp, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
-import { getLoginAppearance, getPasswordPolicy, isSetupCompleted, passwordPolicySummary } from "../lib/settings.js";
+import { getPasswordPolicy, isSetupCompleted, passwordPolicySummary } from "../lib/settings.js";
 import { ServiceError, type ServiceCtx } from "../services/context.js";
 import { runSetup, SetupAdminError } from "../services/setup.js";
 
@@ -31,7 +31,7 @@ const SETUP_WINDOW_MINUTES = 15;
 type Status = 200 | 400 | 403 | 409 | 429 | 503;
 
 async function render(c: Context<{ Bindings: Env }>, title: string, body: string, status: Status = 200) {
-  return c.html(authPage(title, c.get("appName"), await getLoginAppearance(c.env), body), status);
+  return c.html(authPage(title, await loginAppearance(c), body), status);
 }
 
 function completePage(c: Context<{ Bindings: Env }>, status: Status = 200) {

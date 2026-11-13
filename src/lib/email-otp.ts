@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import { isFactorUsable } from "./auth-policy.js";
 import { recipientFor, sendEmail } from "./email.js";
+import { brandFor } from "./brands.js";
 import { buildEmail } from "./email-templates.js";
 import { recordRateAttempt } from "./rate-limit.js";
 import type { UserRow } from "./types.js";
@@ -77,7 +78,7 @@ export type SendOutcome = { ok: true; to: string } | { ok: false; reason: "rate_
  * Issues a fresh code for the scope (replacing any earlier one) and emails it.
  * Counts against the user's send budget before anything is sent.
  */
-export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpose: EmailOtpPurpose, appName: string): Promise<SendOutcome> {
+export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpose: EmailOtpPurpose): Promise<SendOutcome> {
   if (await recordRateAttempt(env, emailOtpSendKey(user.id), SENDS_PER_WINDOW, SEND_WINDOW_MINUTES)) return { ok: false, reason: "rate_limited" };
   const code = randomCode();
   const record: StoredCode = { hash: await hashCode(scope, code), userId: user.id, purpose, attempts: 0, expiresAt: Date.now() + EMAIL_OTP_MINUTES * 60_000 };
@@ -85,7 +86,8 @@ export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpo
   const to = recipientFor(user);
   const result = await sendEmail(env, {
     to,
-    ...(await buildEmail(env, "email_otp", { app_name: appName, name: user.display_name || user.username, code, minutes: String(EMAIL_OTP_MINUTES) })),
+    // In the person's brand (their UPN's domain), like every email to them.
+    ...(await buildEmail(env, "email_otp", await brandFor(env, { upn: user.upn }), { name: user.display_name || user.username, code, minutes: String(EMAIL_OTP_MINUTES) })),
   });
   if (!result.ok) {
     await env.SESSIONS_KV.delete(kvKey(scope));

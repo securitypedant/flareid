@@ -40,8 +40,6 @@ import {
   passwordPolicySummary,
   CURSOR_TRAIL_MAX_CHARACTERS,
   getCursorTrail,
-  getLoginGradient,
-  getLoginSubtitle,
   getSessionPolicy,
   isHexColor,
   SESSION_IDLE_MINUTES_RANGE,
@@ -121,7 +119,9 @@ import {
 } from "../services/settings.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
 import { removeDomain, revokeKey, rotateKey } from "../services/platform.js";
-import { getAccent, getTemplate, renderEmail, TEMPLATE_INFO, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
+import { emailLogoUrl, getAccent, getTemplate, renderEmail, TEMPLATE_INFO, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
+import { APP_NAME_MAX, BRAND_NAME_MAX, CUSTOM_CSS_MAX_BYTES, LOGO_MAX_BYTES, SUBTITLE_MAX, defaultBrand, defaultCustomCss, getBrandRow, listBrandRows, mergeBrand, type BrandRow } from "../lib/brands.js";
+import { assignDomainBrand, createBrand, deleteBrand, removeLogo, saveDefaultCustomCss, updateBrand, uploadLogo, type BrandInput } from "../services/branding.js";
 import { getSetting } from "../lib/settings.js";
 import { listSigningKeys, RETIRED_PUBLISH_HOURS, SIGNING_ALGS } from "../lib/signing-keys.js";
 import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
@@ -263,7 +263,7 @@ admin.post("/admin/reauth/email/send", async (c) => {
   const next = safeNext(String((await c.req.parseBody()).next ?? ""));
   const back = (q: string) => c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&${q}`, 302);
   if (!(await reauthNeedsEmailCode(c.env, user))) return back("error=" + encodeURIComponent("Email codes are not set up for your account."));
-  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), "stepup", c.get("appName"));
+  const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), "stepup");
   if (!sent.ok) return back("error=" + encodeURIComponent(sent.reason === "rate_limited" ? "Too many codes requested. Please wait a few minutes." : "The code could not be sent."));
   await logAudit(c.env, user, "admin.step_up_code_sent", user.upn, undefined, c.req.raw);
   return back(`sent=${encodeURIComponent(maskEmail(sent.to))}`);
@@ -307,7 +307,7 @@ const CRUMB_SECTIONS: Record<string, string> = {
 };
 
 function layout(
-  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) },
+  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) & ((k: "logoUrl") => string | null) },
   title: string,
   body: string,
   crumbs?: Breadcrumb[],
@@ -325,7 +325,7 @@ function layout(
       : section === "security"
       ? ({ Policies: "policies", Factors: "factors", Roles: "roles", "Signing keys": "signing-keys" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section === "branding"
-      ? (crumbs?.[2]?.label === "Email templates" ? "email-templates" : "settings")
+      ? ({ "Email templates": "email-templates", Brands: "brands" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -342,7 +342,7 @@ function layout(
     </div>`,
     appName,
     true,
-    nav(appName, true)
+    nav(appName, true, c.get("logoUrl"))
   );
 }
 
@@ -411,7 +411,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
           .join("");
       }
       if (key === "branding" && active === "branding") {
-        return link + [["settings", "/admin/branding", "Settings"], ["email-templates", "/admin/branding/email-templates", "Email templates"]]
+        return link + [["settings", "/admin/branding", "Settings"], ["brands", "/admin/branding/brands", "Brands"], ["email-templates", "/admin/branding/email-templates", "Email templates"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "settings") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
@@ -3354,7 +3354,17 @@ admin.post("/admin/schemas/:id/delete", async (c) => {
 // ---------- Domains ----------
 
 admin.get("/admin/domains", async (c) => {
-  const domains = await listDomains(c.env);
+  const [domains, brands] = await Promise.all([listDomains(c.env), listBrandRows(c.env)]);
+  // Changing a domain's brand needs domains:write; seeing the choice is enough to read.
+  const brandCell = (d: { id: number; brand_id: number | null }) =>
+    brands.length
+      ? `<form method="POST" action="/admin/domains/${d.id}/brand" style="margin:0;">
+          <select name="brand_id" data-autosubmit aria-label="Brand" style="width:auto; margin:0;">
+            <option value="">Default</option>
+            ${brands.map((b) => `<option value="${b.id}" ${d.brand_id === b.id ? "selected" : ""}>${escapeHtml(b.name)}</option>`).join("")}
+          </select>
+        </form>`
+      : `<span class="muted">Default</span>`;
   return c.html(
     layout(
       c,
@@ -3371,13 +3381,14 @@ admin.get("/admin/domains", async (c) => {
       `)}
       ${cardSection(`
         <table>
-          <thead><tr><th>Domain</th><th>Default</th><th></th></tr></thead>
+          <thead><tr><th>Domain</th><th>Default</th><th>Brand</th><th></th></tr></thead>
           <tbody>
             ${domains
               .map(
                 (d) => `<tr>
                   <td>${escapeHtml(d.domain)}</td>
                   <td>${d.is_default ? '<span class="badge badge-active">Default</span>' : ""}</td>
+                  <td>${brandCell(d)}</td>
                   <td>
                     ${!d.is_default ? `<form method="POST" action="/admin/domains/${d.id}/set-default" style="display:inline;"><button class="link-button" type="submit">Make default</button></form> · ` : ""}
                     <form method="POST" action="/admin/domains/${d.id}/apply-to-all" style="display:inline;" ${confirmAttrs(`Every user's UPN domain becomes ${d.domain}. Usernames are kept.`, { title: "Change the domain on every account?", action: "Apply to all" })}>
@@ -3392,6 +3403,7 @@ admin.get("/admin/domains", async (c) => {
               .join("")}
           </tbody>
         </table>
+        <p class="muted" style="margin-bottom:0;">The brand is what a domain's people see on the sign-in pages, My account and in emails. <a href="/admin/branding/brands">Manage brands</a>.</p>
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Domains" }]
@@ -3414,6 +3426,14 @@ admin.post("/admin/domains/:id/set-default", async (c) => {
   await setDefaultDomain(c.env, id);
   await logAudit(c.env, c.get("user"), "domain.set_default", String(id), undefined, c.req.raw);
   return c.redirect("/admin/domains", 302);
+});
+
+admin.post("/admin/domains/:id/brand", async (c) => {
+  const row = (await listDomains(c.env)).find((d) => d.id === Number(c.req.param("id")));
+  if (!row) return consoleError(c, "Unknown domain", 404);
+  const raw = String((await c.req.parseBody()).brand_id ?? "");
+  await assignDomainBrand(consoleCtx(c), row.domain, raw ? Number(raw) : null);
+  return c.redirect("/admin/domains?saved=1", 302);
 });
 
 admin.post("/admin/domains/:id/delete", async (c) => {
@@ -3609,31 +3629,92 @@ admin.post("/admin/security/default-password", async (c) => {
 
 // ---------- Branding (app name, sign-in message, login page appearance) ----------
 
+/** Where the sign-in page can be seen in a brand (login.ts's brand_preview, for branding:read). */
+const previewHref = (id: number | "default") => `/login?brand_preview=${id}`;
+
+function previewLink(id: number | "default", label = "Preview the sign-in page"): string {
+  return `<a href="${previewHref(id)}" target="_blank" rel="noopener"><button class="secondary" type="button">${escapeHtml(label)}</button></a>`;
+}
+
+/** A refusal from a branding form, back on the page it came from. */
+function brandingBack(path: string, e: unknown) {
+  if (!(e instanceof ServiceError)) throw e;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}error=${encodeURIComponent(e.message)}`;
+}
+
+function brandingBanner(q: Record<string, string>): string {
+  if (q.error) return `<p class="error">${escapeHtml(q.error)}</p>`;
+  return q.saved ? successBanner(q.saved === "logo" ? "Logo saved." : q.saved === "logo-removed" ? "Logo removed." : "Saved.") : "";
+}
+
+/** The logo upload card, for the default brand and for each brand. */
+function logoCard(action: string, current: string | null, own: boolean, fallback: string): string {
+  return cardSection(`
+    <h2>Logo</h2>
+    <p class="muted">Shown on the sign-in pages, in the top bar and at the top of emails. PNG or JPEG, up to ${LOGO_MAX_BYTES / 1024} KB; a transparent PNG about 100&ndash;200 px tall works best. SVG isn't accepted: an SVG is a document that can carry script, and most email clients don't display it.</p>
+    <div style="display:flex; align-items:center; gap:14px; padding:12px; border:1px solid var(--fi-line); border-radius:10px; margin-bottom:14px; background:var(--fi-surface-2);">
+      <img src="${escapeHtml(current ?? "/FlareID_Mark.png")}" alt="" style="max-height:56px; max-width:220px; object-fit:contain;" data-hide-on-error />
+      <span class="muted">${own ? "Uploaded logo." : escapeHtml(fallback)}</span>
+    </div>
+    <form method="POST" action="${escapeHtml(action)}" enctype="multipart/form-data">
+      <label for="logo">Upload a new logo</label>
+      <input type="file" id="logo" name="logo" accept="image/png,image/jpeg" required />
+      <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Upload</button></div>
+    </form>
+    ${
+      own
+        ? `<form method="POST" action="${escapeHtml(action)}/delete" style="margin-top:10px;" ${confirmAttrs(`The uploaded logo is deleted. ${fallback.replace(" is shown.", " is shown instead.")}`, { title: "Remove this logo?", action: "Remove" })}>
+      <button class="secondary" type="submit">Remove logo</button>
+    </form>`
+        : ""
+    }
+  `);
+}
+
+/** What the custom CSS does and does not do, beside every editor for it. */
+const CUSTOM_CSS_HELP = `<p class="muted">Applied, as a linked stylesheet, to the sign-in, two-step, consent, password-recovery, invitation and setup pages &mdash; never to the admin console or My account, so a stylesheet that breaks a page can't lock administrators out of fixing it. If it breaks sign-in, open <code>/login?nocustom=1</code>: that browser then signs in without custom CSS until <code>?nocustom=0</code>.</p>
+  <p class="muted">The page's Content-Security-Policy blocks fonts and images from other sites, so <code>url()</code> can only be a path on this site or a <code>data:</code> URL; <code>@import</code>, <code>expression()</code>, <code>javascript:</code> and <code>&lt;/style&gt;</code> are refused. Useful selectors: <code>.auth-brand</code>, <code>.auth-brand img</code>, <code>.auth-brand span</code>, <code>.center-wrap .card</code>, <code>button.primary</code>, <code>.auth-foot</code>. At most ${CUSTOM_CSS_MAX_BYTES / 1024} KB.</p>`;
+
+function cssTextarea(css: string, placeholder = "/* e.g. */ .auth-brand span { display: none; }"): string {
+  return `<label for="custom_css">Custom CSS</label>
+    <textarea id="custom_css" name="custom_css" rows="12" maxlength="${CUSTOM_CSS_MAX_BYTES}" spellcheck="false" style="font-family:ui-monospace,Menlo,monospace; font-size:0.8125rem;" placeholder="${escapeHtml(placeholder)}">${escapeHtml(css)}</textarea>`;
+}
+
+/** The uploaded file of a multipart form, as bytes (empty when none was chosen). */
+async function uploadedBytes(c: Context<{ Bindings: Env }>): Promise<Uint8Array> {
+  const file = (await c.req.parseBody()).logo;
+  if (!(file instanceof File)) return new Uint8Array();
+  // Refused before reading it into an array: the size is known already.
+  if (file.size > LOGO_MAX_BYTES) throw new ServiceError(400, `That image is ${Math.ceil(file.size / 1024)} KB: a logo can be at most ${LOGO_MAX_BYTES / 1024} KB.`);
+  return new Uint8Array(await file.arrayBuffer());
+}
+
 admin.get("/admin/branding", async (c) => {
-  const loginGradient = await getLoginGradient(c.env);
-  const loginSubtitle = await getLoginSubtitle(c.env);
-  const cursorTrail = await getCursorTrail(c.env);
-  const appName = c.get("appName");
+  const [brand, cursorTrail, css] = await Promise.all([defaultBrand(c.env), getCursorTrail(c.env), defaultCustomCss(c.env)]);
+  const q = c.req.query();
 
   return c.html(
     layout(
       c,
       "Branding",
       `
-            ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${brandingBanner(q)}
+      <p class="muted" style="margin-top:0;">The default brand: what everyone sees unless their domain has a brand of its own (<a href="/admin/branding/brands">Brands</a>). The admin console, the issuer and the OIDC and SAML metadata always use it. ${previewLink("default")}</p>
       <div class="two-col security-grid">
       ${cardSection(`
         <h2>Branding</h2>
         <p class="muted">The display name shown in the nav, page titles, and on the sign-in page.</p>
         <form method="POST" action="/admin/branding/app-name">
           <label for="app_name">App name</label>
-          <input type="text" id="app_name" name="app_name" value="${escapeHtml(appName)}" required maxlength="60" />
+          <input type="text" id="app_name" name="app_name" value="${escapeHtml(brand.appName)}" required maxlength="${APP_NAME_MAX}" />
           <label for="login_subtitle">Sign-in page message</label>
-          <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(loginSubtitle)}" maxlength="140" placeholder="Use your company account to continue." />
+          <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(brand.subtitle)}" maxlength="${SUBTITLE_MAX}" placeholder="Use your company account to continue." />
           <p class="muted" style="margin-top:-8px;">Shown under the logo on the sign-in page. Leave empty for no message.</p>
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
+      ${logoCard("/admin/branding/logo", brand.logoUrl, Boolean(brand.logoUrl), "FlareID's own mark is shown.")}
       ${cardSection(`
         <h2>Login page appearance</h2>
         <p class="muted">The background gradient shown behind the sign-in and MFA cards.</p>
@@ -3641,21 +3722,21 @@ admin.get("/admin/branding", async (c) => {
           <div class="field-row" style="max-width:320px;">
             <div>
               <label for="gradient_from">Gradient start</label>
-              <input type="color" id="gradient_from" name="from" value="${escapeHtml(loginGradient.from)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
+              <input type="color" id="gradient_from" name="from" value="${escapeHtml(brand.gradient.from)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
             </div>
             <div>
               <label for="gradient_to">Gradient end</label>
-              <input type="color" id="gradient_to" name="to" value="${escapeHtml(loginGradient.to)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
+              <input type="color" id="gradient_to" name="to" value="${escapeHtml(brand.gradient.to)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />
             </div>
           </div>
           <label style="margin-top:24px;">Preview</label>
-          <div style="height:60px; border-radius:10px; margin-bottom:20px; background: linear-gradient(45deg, ${escapeHtml(loginGradient.from)}, ${escapeHtml(loginGradient.to)});"></div>
+          <div style="height:60px; border-radius:10px; margin-bottom:20px; background: linear-gradient(45deg, ${escapeHtml(brand.gradient.from)}, ${escapeHtml(brand.gradient.to)});"></div>
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
         <h2>Cursor trail</h2>
-        <p class="muted">Faint characters that drift away from the pointer on the sign-in and two-step pages. Purely decorative, and never shown on touch screens.</p>
+        <p class="muted">Faint characters that drift away from the pointer on the sign-in and two-step pages. Purely decorative, and never shown on touch screens. The same for every brand.</p>
         <form method="POST" action="/admin/branding/cursor-trail">
           <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${cursorTrail.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Show the cursor trail</label>
           <label for="cursor_characters" style="margin-top:12px;">Characters</label>
@@ -3670,6 +3751,14 @@ admin.get("/admin/branding", async (c) => {
         <a href="/admin/branding/email-templates"><button class="secondary" type="button">Edit email templates</button></a>
       `)}
       </div>
+      ${cardSection(`
+        <h2>Custom CSS</h2>
+        ${CUSTOM_CSS_HELP}
+        <form method="POST" action="/admin/branding/custom-css">
+          ${cssTextarea(css)}
+          <div class="row" style="justify-content:flex-start; gap:8px;"><button class="primary" type="submit">Save</button>${previewLink("default", "Preview")}</div>
+        </form>
+      `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Branding" }]
     )
@@ -3702,6 +3791,231 @@ admin.post("/admin/branding/cursor-trail", async (c) => {
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
+admin.post("/admin/branding/logo", async (c) => {
+  try {
+    await uploadLogo(consoleCtx(c), null, await uploadedBytes(c));
+  } catch (e) {
+    return c.redirect(brandingBack("/admin/branding", e), 302);
+  }
+  return c.redirect("/admin/branding?saved=logo", 302);
+});
+
+admin.post("/admin/branding/logo/delete", async (c) => {
+  await removeLogo(consoleCtx(c), null);
+  return c.redirect("/admin/branding?saved=logo-removed", 302);
+});
+
+admin.post("/admin/branding/custom-css", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await saveDefaultCustomCss(consoleCtx(c), String(body.custom_css ?? ""));
+  } catch (e) {
+    return c.redirect(brandingBack("/admin/branding", e), 302);
+  }
+  return c.redirect("/admin/branding?saved=1", 302);
+});
+
+// ---------- Branding > Brands (per-domain branding) ----------
+
+const BRANDS_CRUMBS = (extra: Breadcrumb[] = []): Breadcrumb[] => [{ label: "Admin", href: "/admin" }, { label: "Branding", href: "/admin/branding" }, { label: "Brands", href: "/admin/branding/brands" }, ...extra];
+
+admin.get("/admin/branding/brands", async (c) => {
+  const [brands, def, domains] = await Promise.all([listBrandRows(c.env), defaultBrand(c.env), listDomains(c.env)]);
+  const q = c.req.query();
+  const unbranded = domains.filter((d) => d.brand_id === null).map((d) => d.domain);
+  const rows = brands
+    .map((b) => {
+      const eff = mergeBrand(def, b);
+      return `<tr>
+        <td><a href="/admin/branding/brands/${b.id}"><strong>${escapeHtml(b.name)}</strong></a></td>
+        <td>${escapeHtml(eff.appName)}${b.app_name ? "" : ' <span class="muted">(default)</span>'}</td>
+        <td>${b.domains.length ? b.domains.map(escapeHtml).join(", ") : '<span class="muted">No domains yet</span>'}</td>
+        <td>${b.logo_asset_id ? `<img src="${escapeHtml(eff.logoUrl ?? "")}" alt="" style="max-height:24px; max-width:90px; object-fit:contain;" />` : '<span class="muted">Default</span>'}</td>
+        <td style="white-space:nowrap;"><a href="/admin/branding/brands/${b.id}">Edit</a> · <a href="${previewHref(b.id)}" target="_blank" rel="noopener">Preview</a></td>
+      </tr>`;
+    })
+    .join("");
+  return c.html(
+    layout(
+      c,
+      "Brands",
+      `
+      ${brandingBanner(q)}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">A brand gives the people on a domain their own sign-in page, logo, colours, custom CSS and emails. Anything a brand leaves empty comes from the <a href="/admin/branding">default brand</a>.</p>
+        <p class="muted">Which brand a page shows: once someone is identified (the second step, consent, My account, a reset or invitation link, and every email to them) the brand of their UPN's domain. Before that, on the sign-in page, the domain in an app's OIDC <code>login_hint</code> or a <code>/login?domain=example.com</code> link, else the hostname the page was opened on if it is a branded domain or a subdomain of one (never the issuer's own hostname, ${escapeHtml(new URL(c.env.ISSUER_URL).hostname)}), else the default brand.</p>
+        <table>
+          <thead><tr><th>Brand</th><th>App name</th><th>Domains</th><th>Logo</th><th></th></tr></thead>
+          <tbody>
+            <tr>
+              <td><a href="/admin/branding"><strong>Default</strong></a></td>
+              <td>${escapeHtml(def.appName)}</td>
+              <td>${unbranded.length ? `${unbranded.map(escapeHtml).join(", ")}` : '<span class="muted">-</span>'} <span class="muted">and every sign-in with no hint</span></td>
+              <td>${def.logoUrl ? `<img src="${escapeHtml(def.logoUrl)}" alt="" style="max-height:24px; max-width:90px; object-fit:contain;" />` : '<span class="muted">FlareID</span>'}</td>
+              <td style="white-space:nowrap;"><a href="/admin/branding">Edit</a> · <a href="${previewHref("default")}" target="_blank" rel="noopener">Preview</a></td>
+            </tr>
+            ${rows}
+          </tbody>
+        </table>
+      `)}
+      ${cardSection(`
+        <h2>New brand</h2>
+        <form method="POST" action="/admin/branding/brands">
+          <label for="brand_name">Name</label>
+          <input type="text" id="brand_name" name="name" required maxlength="${BRAND_NAME_MAX}" placeholder="Acme" style="max-width:320px;" />
+          <p class="muted" style="margin-top:-8px;">For you; people see the brand's app name. You choose its domains, logo and colours next.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Create brand</button></div>
+        </form>
+      `)}
+      `,
+      BRANDS_CRUMBS().slice(0, 2).concat({ label: "Brands" })
+    )
+  );
+});
+
+admin.post("/admin/branding/brands", async (c) => {
+  const body = await c.req.parseBody();
+  let id: number;
+  try {
+    id = (await createBrand(consoleCtx(c), { name: body.name })).id;
+  } catch (e) {
+    return c.redirect(brandingBack("/admin/branding/brands", e), 302);
+  }
+  return c.redirect(`/admin/branding/brands/${id}?saved=1`, 302);
+});
+
+async function brandRowOr404(c: Context<{ Bindings: Env }>): Promise<BrandRow | null> {
+  return getBrandRow(c.env, Number(c.req.param("id")));
+}
+
+admin.get("/admin/branding/brands/:id", async (c) => {
+  const row = await brandRowOr404(c);
+  if (!row) return consoleError(c, "No such brand.", 404);
+  const [def, domains, brands, cssRow] = await Promise.all([
+    defaultBrand(c.env),
+    listDomains(c.env),
+    listBrandRows(c.env),
+    c.env.DB.prepare("SELECT custom_css FROM brands WHERE id = ?").bind(row.id).first<{ custom_css: string }>(),
+  ]);
+  const eff = mergeBrand(def, row);
+  const q = c.req.query();
+  const brandName = new Map(brands.map((b) => [b.id, b.name]));
+  const gradientInherited = !row.gradient_from || !row.gradient_to;
+  const accentInherited = !row.email_accent;
+  const domainBoxes = domains.length
+    ? domains
+        .map((d) => {
+          const other = d.brand_id !== null && d.brand_id !== row.id ? brandName.get(d.brand_id) : null;
+          return `<label style="font-weight:400; display:block;"><input type="checkbox" name="domains" value="${escapeHtml(d.domain)}" ${d.brand_id === row.id ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" />${escapeHtml(d.domain)}${other ? ` <span class="muted">(now ${escapeHtml(other)}: moves here)</span>` : ""}</label>`;
+        })
+        .join("")
+    : '<p class="muted">No domains yet: add one under <a href="/admin/domains">Domains</a>.</p>';
+  const colour = (id: string, name: string, value: string) => `<input type="color" id="${id}" name="${name}" value="${escapeHtml(value)}" style="height:42px; padding:4px; cursor:pointer; margin-bottom:0;" />`;
+
+  return c.html(
+    layout(
+      c,
+      row.name,
+      `
+      ${brandingBanner(q)}
+      <div class="two-col">
+      ${cardSection(`
+        <h2>Brand</h2>
+        <form method="POST" action="/admin/branding/brands/${row.id}">
+          <input type="hidden" name="domains_present" value="1" />
+          <label for="brand_name">Name</label>
+          <input type="text" id="brand_name" name="name" value="${escapeHtml(row.name)}" required maxlength="${BRAND_NAME_MAX}" />
+          <label for="app_name">App name</label>
+          <input type="text" id="app_name" name="app_name" value="${escapeHtml(row.app_name)}" maxlength="${APP_NAME_MAX}" placeholder="${escapeHtml(def.appName)}" />
+          <p class="muted" style="margin-top:-8px;">Shown on the sign-in pages, My account and in emails. Empty uses the default brand's (${escapeHtml(def.appName)}).</p>
+          <label for="login_subtitle">Sign-in page message</label>
+          <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(row.login_subtitle ?? "")}" maxlength="${SUBTITLE_MAX}" placeholder="${escapeHtml(def.subtitle)}" />
+          <p class="muted" style="margin-top:-8px;">Empty uses the default brand's message.</p>
+          <label>Sign-in gradient</label>
+          <label style="font-weight:400;"><input type="checkbox" name="gradient_default" value="1" ${gradientInherited ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Use the default brand's gradient</label>
+          <div class="field-row" style="max-width:320px; margin-top:6px;">
+            <div><label for="gradient_from">Start</label>${colour("gradient_from", "gradient_from", eff.gradient.from)}</div>
+            <div><label for="gradient_to">End</label>${colour("gradient_to", "gradient_to", eff.gradient.to)}</div>
+          </div>
+          <label style="margin-top:18px;">Email accent colour</label>
+          <label style="font-weight:400;"><input type="checkbox" name="accent_default" value="1" ${accentInherited ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Use the default brand's accent</label>
+          <div style="max-width:120px; margin-top:6px;">${colour("email_accent", "email_accent", eff.accent)}</div>
+          <label style="margin-top:18px;">Domains</label>
+          <p class="muted" style="margin-top:0;">People whose UPN is on these domains see this brand.</p>
+          ${domainBoxes}
+          <div style="margin-top:18px;">
+          ${cssTextarea(cssRow?.custom_css ?? "", "Empty uses the default brand's custom CSS")}
+          </div>
+          <div class="row" style="justify-content:flex-start; gap:8px;"><button class="primary" type="submit">Save</button>${previewLink(row.id, "Preview")}</div>
+        </form>
+      `)}
+      <div>
+      ${logoCard(`/admin/branding/brands/${row.id}/logo`, eff.logoUrl, Boolean(row.logo_asset_id), def.logoUrl ? "The default brand's logo is shown." : "FlareID's own mark is shown.")}
+      ${cardSection(`
+        <h2>Custom CSS</h2>
+        ${CUSTOM_CSS_HELP}
+      `)}
+      ${cardSection(`
+        <h2>Delete brand</h2>
+        <p class="muted">Its domains go back to the default brand, and its logo is deleted.</p>
+        <form method="POST" action="/admin/branding/brands/${row.id}/delete" ${confirmAttrs(`People on ${row.name}'s domains see the default brand from now on.`, { title: "Delete this brand?", action: "Delete", danger: true })}>
+          <button class="danger" type="submit">Delete brand</button>
+        </form>
+      `)}
+      </div>
+      </div>
+      `,
+      BRANDS_CRUMBS([{ label: row.name }])
+    )
+  );
+});
+
+admin.post("/admin/branding/brands/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const back = `/admin/branding/brands/${id}`;
+  const body = await c.req.parseBody({ all: true });
+  const one = (k: string) => (Array.isArray(body[k]) ? String((body[k] as unknown[])[0] ?? "") : body[k] === undefined ? undefined : String(body[k]));
+  const input: BrandInput = {};
+  if (one("name") !== undefined) input.name = one("name");
+  if (one("app_name") !== undefined) input.app_name = one("app_name");
+  // An empty message on this form means "the default brand's" (the API can say "none").
+  if (one("login_subtitle") !== undefined) input.login_subtitle = one("login_subtitle")!.trim() || null;
+  if (one("gradient_from") !== undefined) input.login_gradient = one("gradient_default") ? null : { from: one("gradient_from"), to: one("gradient_to") };
+  if (one("email_accent") !== undefined) input.email_accent = one("accent_default") ? null : one("email_accent");
+  if (one("custom_css") !== undefined) input.custom_css = one("custom_css");
+  if (one("domains_present") !== undefined) input.domains = ([] as unknown[]).concat(body.domains ?? []).map(String);
+  try {
+    if (!(await getBrandRow(c.env, id))) return consoleError(c, "No such brand.", 404);
+    await updateBrand(consoleCtx(c), id, input);
+  } catch (e) {
+    return c.redirect(brandingBack(back, e), 302);
+  }
+  return c.redirect(`${back}?saved=1`, 302);
+});
+
+admin.post("/admin/branding/brands/:id/delete", async (c) => {
+  await deleteBrand(consoleCtx(c), Number(c.req.param("id")));
+  return c.redirect("/admin/branding/brands?saved=1", 302);
+});
+
+admin.post("/admin/branding/brands/:id/logo", async (c) => {
+  const id = Number(c.req.param("id"));
+  const back = `/admin/branding/brands/${id}`;
+  try {
+    if (!(await getBrandRow(c.env, id))) return consoleError(c, "No such brand.", 404);
+    await uploadLogo(consoleCtx(c), id, await uploadedBytes(c));
+  } catch (e) {
+    return c.redirect(brandingBack(back, e), 302);
+  }
+  return c.redirect(`${back}?saved=logo`, 302);
+});
+
+admin.post("/admin/branding/brands/:id/logo/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  await removeLogo(consoleCtx(c), id);
+  return c.redirect(`/admin/branding/brands/${id}?saved=logo-removed`, 302);
+});
+
 // ---------- Branding > Email templates ----------
 
 const TEMPLATE_KEYS = Object.keys(TEMPLATE_INFO) as TemplateKey[];
@@ -3727,10 +4041,10 @@ function templateFromInput(input: Record<string, unknown>, base: EmailTemplate):
  * text), embedded in the page rather than framed - the CSP frames nothing,
  * so its <body> becomes a bordered container.
  */
-function emailPreview(appName: string, key: TemplateKey, t: EmailTemplate, accent: string): string {
+function emailPreview(appName: string, key: TemplateKey, t: EmailTemplate, accent: string, logoUrl: string | null): string {
   const vars: Record<string, string> = { app_name: appName, name: "Ada Lovelace", ...(key === "email_otp" ? { code: "428 913", minutes: "10" } : {}) };
   const link = TEMPLATE_INFO[key].hasLink ? `https://example.com/${key === "invitation" ? "invite" : "reset-password"}/sample-link` : undefined;
-  const r = renderEmail(t, accent, vars, link);
+  const r = renderEmail(t, accent, vars, link, logoUrl);
   const m = /<body style="([^"]*)">([\s\S]*)<\/body>/.exec(r.html);
   return `
     <label>Subject</label>
@@ -3818,12 +4132,12 @@ admin.get("/admin/branding/email-templates", async (c) => {
       ${cardSection(`
         <h2>Preview</h2>
         <p class="muted">With sample values: the person is Ada Lovelace${key === "email_otp" ? ", the code 428 913" : ""}.</p>
-        <div id="email-preview">${emailPreview(c.get("appName"), key, t, accent)}</div>
+        <div id="email-preview">${emailPreview(c.get("appName"), key, t, accent, emailLogoUrl(c.env, { logoUrl: c.get("logoUrl") }))}</div>
       `)}
       </div>
       ${cardSection(`
         <h2>Accent colour</h2>
-        <p class="muted">The top border, button and link colour of every email.</p>
+        <p class="muted">The top border, button and link colour of every email in the default brand (a <a href="/admin/branding/brands">brand</a> can have its own). The wording here is shared by every brand: <code>{{app_name}}</code> is the person's brand's app name.</p>
         <form method="POST" action="/admin/branding/email-accent">
           <input type="hidden" name="t" value="${key}" />
           <label for="email_accent">Accent colour</label>
@@ -3843,7 +4157,7 @@ admin.get("/admin/branding/email-templates/preview", async (c) => {
   const q = c.req.query();
   if (!isTemplateKey(q.t)) return consoleError(c, "No such template.", 404);
   const accent = q.accent && isHexColor(q.accent) ? q.accent.toLowerCase() : await getAccent(c.env);
-  return c.html(emailPreview(c.get("appName"), q.t, templateFromInput(q, await getTemplate(c.env, q.t)), accent));
+  return c.html(emailPreview(c.get("appName"), q.t, templateFromInput(q, await getTemplate(c.env, q.t)), accent, emailLogoUrl(c.env, { logoUrl: c.get("logoUrl") })));
 });
 
 admin.post("/admin/branding/email-templates/:key", async (c) => {

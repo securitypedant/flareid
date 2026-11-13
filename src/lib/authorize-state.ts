@@ -48,6 +48,12 @@ export type LoginFlow = (
    * carrying ForceAuthn, prompt=login or max_age - still needs a fresh login.
    */
   resumeFor?: number;
+  /**
+   * The domain whose brand the sign-in pages wear until the person is
+   * identified (brands.ts): from the OIDC login_hint, or ?domain= /
+   * ?login_hint= on /login. Only a look: it decides nothing else.
+   */
+  brandDomain?: string;
 };
 
 const FLOW_TTL_SECONDS = 600;

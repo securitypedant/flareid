@@ -3,12 +3,13 @@ import { claimGroupsFromParameter } from "../lib/oidc.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
+import { domainFromHint } from "../lib/brands.js";
 import { getClientByClientId, getUserById } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
-import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { authorizeErrorRedirect, hasConsent, redirectUriAllowed } from "../lib/oidc.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
@@ -190,6 +191,8 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
     return renderAuthMessage(c, 503, AUTH_MESSAGES.notReady);
   }
 
-  const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest });
-  return sendLoginForm(c, flowId, await getLoginAppearance(c.env));
+  // OIDC login_hint (Core 3.1.2.1): its domain brands the sign-in page.
+  const brandDomain = domainFromHint(url.searchParams.get("login_hint"));
+  const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest, ...(brandDomain ? { brandDomain } : {}) });
+  return sendLoginForm(c, flowId, await loginAppearance(c, { domain: brandDomain }));
 }

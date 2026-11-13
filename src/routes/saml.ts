@@ -2,11 +2,11 @@ import { canSignIn } from "../lib/admin-roles.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById } from "../lib/db.js";
-import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
@@ -178,7 +178,8 @@ saml.get("/saml/sso", async (c) => {
   }
 
   const flowId = await sealLoginFlow(c.env, { kind: "saml", request: pending });
-  return sendLoginForm(c, flowId, await getLoginAppearance(c.env));
+  // An AuthnRequest carries no hint FlareID reads: the hostname or the default brand.
+  return sendLoginForm(c, flowId, await loginAppearance(c));
 });
 
 /**

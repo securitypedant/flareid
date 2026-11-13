@@ -1,11 +1,10 @@
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { authPage, renderAuthMessage } from "../lib/login-views.js";
+import { authPage, loginAppearance, renderAuthMessage } from "../lib/login-views.js";
 import { escapeHtml } from "../lib/html.js";
 import { getClientByClientId } from "../lib/db.js";
 import { clearSessionCookie, getSession, oidcSid, revokeSession } from "../lib/sessions.js";
-import { getLoginAppearance } from "../lib/settings.js";
 import { authorizeErrorRedirect, CLAIM_GROUP_LABELS, effectiveClaimGroups, recordConsent } from "../lib/oidc.js";
 import { verifyOwnIdToken } from "../lib/jwt.js";
 import { logAudit } from "../lib/audit.js";
@@ -37,12 +36,13 @@ oidcSession.get("/consent/:id", async (c) => {
 
   const groups = [...effectiveClaimGroups(client, found.pending.request.scope, [...(found.pending.request.claimGroups?.id_token ?? []), ...(found.pending.request.claimGroups?.userinfo ?? [])])];
   const offline = found.pending.request.scope.split(/\s+/).includes("offline_access");
-  const appName = c.get("appName");
+  // The person is known: their brand.
+  const appearance = await loginAppearance(c, { userId: found.pending.userId });
+  const { appName } = appearance;
   return c.html(
     authPage(
       "Allow access?",
-      appName,
-      await getLoginAppearance(c.env),
+      appearance,
       `
       <h1>${escapeHtml(client.name)} wants to sign you in</h1>
       <p class="sub">It is asking ${escapeHtml(appName)} for:</p>
@@ -159,14 +159,14 @@ async function logoutEntry(c: Context<{ Bindings: Env }>) {
   if (sameSession) return signOut(c, resolved.redirect, resolved.client?.name);
 
   const hidden = (k: string, v?: string) => (v ? `<input type="hidden" name="${k}" value="${escapeHtml(v)}" />` : "");
+  const appearance = await loginAppearance(c, { userId: session.userId });
   return c.html(
     authPage(
       "Sign out?",
-      c.get("appName"),
-      await getLoginAppearance(c.env),
+      appearance,
       `
       <h1>Sign out?</h1>
-      <p class="sub">${resolved.client ? `${escapeHtml(resolved.client.name)} asked to sign you out of ${escapeHtml(c.get("appName"))}.` : `Do you want to sign out of ${escapeHtml(c.get("appName"))}?`}</p>
+      <p class="sub">${resolved.client ? `${escapeHtml(resolved.client.name)} asked to sign you out of ${escapeHtml(appearance.appName)}.` : `Do you want to sign out of ${escapeHtml(appearance.appName)}?`}</p>
       <form method="POST" action="/oidc/logout/confirm">
         ${hidden("id_token_hint", req.idTokenHint)}${hidden("client_id", req.clientId)}${hidden("post_logout_redirect_uri", req.postLogoutRedirectUri)}${hidden("state", req.state)}
         <div class="row"><button class="primary" type="submit">Sign out</button></div>

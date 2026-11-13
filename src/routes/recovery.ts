@@ -1,13 +1,13 @@
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { authPage, AUTH_MESSAGES, renderAuthMessage } from "../lib/login-views.js";
+import { authPage, AUTH_MESSAGES, loginAppearance, renderAuthMessage, type AppearanceHint } from "../lib/login-views.js";
 import { escapeHtml } from "../lib/html.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { hashPassword } from "../lib/password.js";
 import { consumeAccountToken, peekAccountToken, revokeAccountTokens, type AccountTokenPurpose } from "../lib/account-tokens.js";
 import { sendPasswordReset } from "../lib/account-email.js";
 import { isEmailConfigured } from "../lib/email.js";
-import { getLoginAppearance, getPasswordPolicy, passwordPolicySummary } from "../lib/settings.js";
+import { getPasswordPolicy, passwordPolicySummary } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { allowTurnstileCsp, TURNSTILE_FAILED_MESSAGE, turnstileRefused, turnstileWidget } from "../lib/turnstile.js";
 import { revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
@@ -31,8 +31,9 @@ export const recovery = new Hono<{ Bindings: Env }>();
 const RESETS_PER_ACCOUNT_PER_HOUR = 3;
 const RESETS_PER_IP_PER_HOUR = 10;
 
-async function page(c: Context<{ Bindings: Env }>, title: string, body: string, status: 200 | 400 = 200) {
-  return c.html(authPage(title, c.get("appName"), await getLoginAppearance(c.env), body), status);
+/** A recovery page: in the person's brand once a link names them, else the request's (hostname, ?domain=). */
+async function page(c: Context<{ Bindings: Env }>, title: string, body: string, status: 200 | 400 = 200, hint: AppearanceHint = {}) {
+  return c.html(authPage(title, await loginAppearance(c, hint), body), status);
 }
 
 function passwordForm(action: string, policyText: string, error?: string, intro?: string): string {
@@ -59,7 +60,7 @@ const LINK_EXPIRED = {
 
 /** The recovery request form, with the Turnstile widget when bot protection is on. */
 async function forgotPasswordForm(c: Context<{ Bindings: Env }>, error?: string) {
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c);
   allowTurnstileCsp(c, appearance.turnstileSiteKey);
   const body = `
     <h1>Reset your password</h1>
@@ -72,7 +73,7 @@ async function forgotPasswordForm(c: Context<{ Bindings: Env }>, error?: string)
       <div class="row"><button class="primary" type="submit">Send reset link</button></div>
     </form>
     <p class="auth-alt"><a href="/login">Back to sign in</a></p>`;
-  return c.html(authPage("Reset your password", c.get("appName"), appearance, body), error ? 400 : 200);
+  return c.html(authPage("Reset your password", appearance, body), error ? 400 : 200);
 }
 
 recovery.get("/forgot-password", async (c) => {
@@ -129,7 +130,7 @@ recovery.get("/reset-password/:token", async (c) => {
   const { token, user } = await linkTarget(c, "reset");
   if (!user) return renderAuthMessage(c, 400, LINK_EXPIRED);
   const policy = await getPasswordPolicy(c.env);
-  return page(c, "Choose a new password", `<h1>Choose a new password</h1>${passwordForm(`/reset-password/${token}`, passwordPolicySummary(policy), undefined, `For <strong>${escapeHtml(user.upn)}</strong>.`)}`);
+  return page(c, "Choose a new password", `<h1>Choose a new password</h1>${passwordForm(`/reset-password/${token}`, passwordPolicySummary(policy), undefined, `For <strong>${escapeHtml(user.upn)}</strong>.`)}`, 200, { userId: user.id });
 });
 
 recovery.get("/invite/:token", async (c) => {
@@ -139,7 +140,9 @@ recovery.get("/invite/:token", async (c) => {
   return page(
     c,
     "Activate your account",
-    `<h1>Welcome, ${escapeHtml(user.display_name || user.username)}</h1>${passwordForm(`/invite/${token}`, passwordPolicySummary(policy), undefined, `Choose a password for <strong>${escapeHtml(user.upn)}</strong> to activate your account.`)}`
+    `<h1>Welcome, ${escapeHtml(user.display_name || user.username)}</h1>${passwordForm(`/invite/${token}`, passwordPolicySummary(policy), undefined, `Choose a password for <strong>${escapeHtml(user.upn)}</strong> to activate your account.`)}`,
+    200,
+    { userId: user.id }
   );
 });
 
@@ -156,7 +159,7 @@ async function acceptPassword(c: Context<{ Bindings: Env }>, purpose: AccountTok
   if (error) {
     const { user } = await linkTarget(c, purpose);
     if (!user) return { response: await renderAuthMessage(c, 400, LINK_EXPIRED) };
-    return { response: await page(c, "Choose a password", `<h1>Choose a password</h1>${passwordForm(action, passwordPolicySummary(policy), error)}`, 400) };
+    return { response: await page(c, "Choose a password", `<h1>Choose a password</h1>${passwordForm(action, passwordPolicySummary(policy), error)}`, 400, { userId: user.id }) };
   }
 
   const userId = await consumeAccountToken(c.env, token, purpose);
@@ -181,7 +184,7 @@ recovery.post("/reset-password/:token", async (c) => {
   const result = await acceptPassword(c, "reset");
   if ("response" in result) return result.response;
   await logAudit(c.env, result.user, "user.password_reset_completed", result.user.upn, undefined, c.req.raw);
-  return renderAuthMessage(c, 200, { title: "Password changed", message: "Your new password is set, and every other session has been signed out.", action: { href: "/login", label: "Sign in" } });
+  return renderAuthMessage(c, 200, { title: "Password changed", message: "Your new password is set, and every other session has been signed out.", action: { href: "/login", label: "Sign in" } }, { userId: result.user.id });
 });
 
 recovery.post("/invite/:token", async (c) => {
@@ -192,5 +195,5 @@ recovery.post("/invite/:token", async (c) => {
     const user = await getUserById(c.env, result.user.id);
     if (user) c.executionCtx.waitUntil(pushUser(c.env, user).then(() => undefined));
   }
-  return renderAuthMessage(c, 200, { title: "Your account is ready", message: "Your password is set and your account is active.", action: { href: "/login", label: "Sign in" } });
+  return renderAuthMessage(c, 200, { title: "Your account is ready", message: "Your password is set and your account is active.", action: { href: "/login", label: "Sign in" } }, { userId: result.user.id });
 });

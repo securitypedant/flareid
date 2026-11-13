@@ -84,7 +84,7 @@ export const TAGS = [
   { name: "SCIM", description: "Outbound SCIM provisioning (FlareID as a SCIM client)." },
   { name: "Email", description: "Outbound email settings and templates." },
   { name: "API keys", description: "Bearer tokens for this API." },
-  { name: "Branding", description: "App name and sign-in page appearance." },
+  { name: "Branding", description: "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates." },
   { name: "Security", description: "Password, session, rate-limit and audit settings; authentication policies and factors." },
   { name: "Roles", description: "Admin roles: permission sets granted to groups." },
   { name: "Signing keys", description: "Token signing keys (public parts only)." },

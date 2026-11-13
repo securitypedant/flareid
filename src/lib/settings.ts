@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import type { Brand } from "./brands.js";
 import { generateTempPassword, hashPassword } from "./password.js";
 
 export interface PasswordPolicy {
@@ -257,7 +258,7 @@ export async function setAppName(env: Env, name: string): Promise<void> {
   await setSetting(env, "app_name", name);
 }
 
-const DEFAULT_LOGIN_SUBTITLE = "Sign in to continue.";
+export const DEFAULT_LOGIN_SUBTITLE = "Sign in to continue.";
 
 /** The line under the product name on the sign-in page, editable in Branding. */
 export async function getLoginSubtitle(env: Env): Promise<string> {
@@ -273,7 +274,7 @@ export interface LoginGradient {
   to: string;
 }
 
-const DEFAULT_LOGIN_GRADIENT: LoginGradient = { from: "#f7b733", to: "#f6821f" };
+export const DEFAULT_LOGIN_GRADIENT: LoginGradient = { from: "#f7b733", to: "#f6821f" };
 
 /** The only colour syntax accepted: these values are interpolated into the sign-in page's <style>. */
 export function isHexColor(value: unknown): value is string {
@@ -322,10 +323,15 @@ export async function setCursorTrail(env: Env, trail: CursorTrail): Promise<Curs
   return clean;
 }
 
-/** Everything the sign-in, MFA and sign-in error pages need to look like the configured brand. */
+/** Everything the sign-in, MFA and sign-in error pages need to look like the brand in force (brands.ts). */
 export interface LoginAppearance {
+  appName: string;
   gradient: LoginGradient;
   subtitle: string;
+  /** The uploaded logo's path, or null for FlareID's own mark. */
+  logoUrl: string | null;
+  /** The brand's custom stylesheet, or null (none, or switched off with ?nocustom=1). */
+  cssUrl: string | null;
   cursorTrail: CursorTrail;
   /** Whether "Forgot your password?" is offered: email is configured (see email.ts). */
   recoveryEnabled: boolean;
@@ -333,10 +339,9 @@ export interface LoginAppearance {
   turnstileSiteKey: string | null;
 }
 
-export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
-  const [gradient, subtitle, cursorTrail, fromAddress, emailSwitch, turnstile] = await Promise.all([
-    getLoginGradient(env),
-    getLoginSubtitle(env),
+/** The appearance for a brand; resolve the brand with brandFor (brands.ts) or loginAppearance (login-views.ts). */
+export async function getLoginAppearance(env: Env, brand: Brand, opts: { customCss?: boolean } = {}): Promise<LoginAppearance> {
+  const [cursorTrail, fromAddress, emailSwitch, turnstile] = await Promise.all([
     getCursorTrail(env),
     getSetting(env, "email_from_address"),
     getSetting(env, "email_enabled"),
@@ -344,8 +349,11 @@ export async function getLoginAppearance(env: Env): Promise<LoginAppearance> {
   ]);
   // Same rule as isEmailConfigured() in email.ts, inlined: email.ts imports this module.
   return {
-    gradient,
-    subtitle,
+    appName: brand.appName,
+    gradient: brand.gradient,
+    subtitle: brand.subtitle,
+    logoUrl: brand.logoUrl,
+    cssUrl: opts.customCss === false ? null : brand.cssUrl,
     cursorTrail,
     recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false",
     turnstileSiteKey: activeTurnstileSiteKey(turnstile),

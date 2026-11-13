@@ -17,7 +17,8 @@ import { account } from "./routes/account.js";
 import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
 import { scimServer } from "./routes/scim-server.js";
-import { getAppName } from "./lib/settings.js";
+import { defaultBrand } from "./lib/brands.js";
+import { brandAssets } from "./routes/brand-assets.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { purgeRetiredKeys } from "./lib/signing-keys.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
@@ -44,11 +45,17 @@ app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
 app.route("/", api);
 // Inbound SCIM 2.0 (machine callers, bearer API keys), mounted with the API.
 app.route("/", scimServer);
+// Uploaded logos and custom stylesheets: static content, no page around them.
+app.route("/", brandAssets);
 
-// Resolves the admin-configurable display name once per request so every
-// downstream handler/view can read it synchronously via c.get("appName").
+// Resolves the default brand's display name and logo once per request so
+// every downstream handler/view can read them synchronously via
+// c.get("appName") and c.get("logoUrl"). Pages for a known person (My
+// account) and the auth-flow pages resolve that person's brand instead.
 app.use("*", async (c, next) => {
-  c.set("appName", await getAppName(c.env));
+  const brand = await defaultBrand(c.env);
+  c.set("appName", brand.appName);
+  c.set("logoUrl", brand.logoUrl);
   await next();
 });
 

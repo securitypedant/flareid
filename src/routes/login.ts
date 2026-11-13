@@ -6,9 +6,12 @@ import type { UserRow } from "../lib/types.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
 import { randomToken } from "../lib/tokens.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { AUTH_MESSAGES, mfaForm, renderAuthMessage, sendLoginForm, type MfaFactors } from "../lib/login-views.js";
+import { AUTH_MESSAGES, loginAppearance, mfaForm, renderAuthMessage, sendLoginForm, type MfaFactors } from "../lib/login-views.js";
+import { brandFor, domainFromHint, type Brand } from "../lib/brands.js";
+import { accessFor } from "../lib/admin-roles.js";
+import { grants } from "../lib/permissions.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { TURNSTILE_FAILED_MESSAGE, turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
@@ -29,7 +32,7 @@ import { finishOidcAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
 import { getSpById } from "../lib/saml/service-providers.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
-import { getLoginAppearance, isMfaRequired, isSetupCompleted } from "../lib/settings.js";
+import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
 import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt } from "../lib/rate-limit.js";
@@ -86,9 +89,35 @@ async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
   };
 }
 
+/**
+ * The brand an administrator asked to preview with /login?brand_preview=<id>
+ * (or "default"): only for a signed-in, active account holding branding:read.
+ * Anyone else gets the ordinary sign-in page, so the parameter tells an
+ * outsider nothing - not even which brand ids exist.
+ */
+async function brandPreview(c: Context<{ Bindings: Env }>): Promise<Brand | null> {
+  const raw = c.req.query("brand_preview");
+  if (!raw) return null;
+  const id = raw === "default" ? "default" : /^\d{1,12}$/.test(raw) ? Number(raw) : null;
+  if (id === null) return null;
+  const userId = await getSessionUserId(c.req.raw, c.env);
+  const user = userId ? await getUserById(c.env, userId) : null;
+  if (!user || user.status !== "active" || !grants((await accessFor(c.env, user.id)).perms, "branding:read")) return null;
+  const brand = await brandFor(c.env, { brandId: id });
+  return id !== "default" && brand.id === null ? null : brand;
+}
+
 /** Direct login entry point for /account and /admin - not tied to an OIDC request. */
 login.get("/login", async (c) => {
   const next = safeNextPath(c.req.query("next"));
+
+  // A preview renders the form for a signed-in administrator, who is otherwise sent on.
+  const preview = await brandPreview(c);
+  if (preview) {
+    const flowId = await sealLoginFlow(c.env, { kind: "direct", next: "/admin/branding" });
+    const notice = `Preview of the ${preview.id === null ? "default" : `"${preview.name}"`} brand. You're already signed in.`;
+    return sendLoginForm(c, flowId, await loginAppearance(c, { brand: preview }), undefined, notice);
+  }
 
   const existingUserId = await getSessionUserId(c.req.raw, c.env);
   if (existingUserId) return c.redirect(next, 302);
@@ -100,9 +129,12 @@ login.get("/login", async (c) => {
 
   // Sealed rather than stored: this page is anonymous, and a KV write per page
   // load let anyone spend the deployment's write quota (see sealLoginFlow).
-  const flowId = await sealLoginFlow(c.env, { kind: "direct", next });
+  // A ?domain= or ?login_hint= brands the page, and rides in the flow so the
+  // posts that follow keep the brand.
+  const brandDomain = domainFromHint(c.req.query("domain")) ?? domainFromHint(c.req.query("login_hint"));
+  const flowId = await sealLoginFlow(c.env, { kind: "direct", next, ...(brandDomain ? { brandDomain } : {}) });
   const denied = c.req.query("denied") ? "This account is not allowed to sign in. Ask an administrator." : undefined;
-  return sendLoginForm(c, flowId, await getLoginAppearance(c.env), denied);
+  return sendLoginForm(c, flowId, await loginAppearance(c, { domain: brandDomain }), denied);
 });
 
 login.post("/logout", async (c) => {
@@ -191,7 +223,7 @@ login.post("/login", async (c) => {
 
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { domain: flow.brandDomain });
 
   // Bot protection, before anything that costs: no account lookup, no
   // password hash, and no count against the account's failure budget - a bot
@@ -242,13 +274,15 @@ login.post("/login", async (c) => {
   const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : emailOtp || securityQuestions || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId);
+    // Identified now: the second step wears the person's brand.
+    const appearance = await loginAppearance(c, { userId: user.id });
     // Security questions as the only method: ask them straight away.
     if (securityQuestions && !totp && !emailOtp && !passkey) {
       const pending = (await getPendingMfa(c.env, mfaId))!;
       const questions = await challengeQuestions(c.env, mfaId, pending);
-      if (questions) return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+      if (questions) return c.html(mfaForm(mfaId, appearance, undefined, factors, undefined, { questions }));
     }
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors));
+    return c.html(mfaForm(mfaId, appearance, undefined, factors));
   }
 
   const amr = totp ? ["pwd", "mfa_remembered_device"] : ["pwd"];
@@ -276,7 +310,7 @@ login.post("/login/passkey", async (c) => {
   const flowId = String(body.flow_id ?? "");
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { domain: flow.brandDomain });
   let response: unknown;
   try {
     response = JSON.parse(String(body.response ?? "").slice(0, 16_384));
@@ -316,7 +350,7 @@ login.post("/login/mfa/passkey", async (c) => {
   if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   const flow = await getLoginFlow(c.env, pending.flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
   let response: unknown;
   try {
     response = JSON.parse(String(body.response ?? "").slice(0, 16_384));
@@ -328,7 +362,7 @@ login.post("/login/mfa/passkey", async (c) => {
   if (!user || user.status !== "active" || provedUser !== pending.userId) {
     await logAudit(c.env, null, "login.mfa_failed", user?.upn, { method: "passkey" }, c.req.raw);
     const factors = user ? await secondStepFactors(c.env, user) : { totp: false, passkey: true };
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "That passkey could not confirm it's you.", { ...factors, passkey: true }));
+    return c.html(mfaForm(mfaId, appearance, "That passkey could not confirm it's you.", { ...factors, passkey: true }));
   }
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);
@@ -363,13 +397,13 @@ login.post("/login/mfa", async (c) => {
       message: "This account no longer has an authenticator enrolled. Start the sign-in again; if it keeps happening, ask your administrator.",
     });
   }
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
 
   // The bucket is keyed on the user id, not any submitted string - nothing in
   // the password step can reach this namespace.
   if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
+    return c.html(mfaForm(mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
   }
 
   let amr = ["pwd", "mfa"];
@@ -380,7 +414,7 @@ login.post("/login/mfa", async (c) => {
     const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
     if (!validBackupCode) {
       await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
-      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Incorrect code, please try again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
+      return c.html(mfaForm(mfaId, appearance, "Incorrect code, please try again.", { ...(await secondStepFactors(c.env, user)), totp: true }));
     }
     amr = ["pwd", "mfa", "backup_code"];
     await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
@@ -423,24 +457,24 @@ login.post("/login/mfa/email/send", async (c) => {
     await deletePendingMfa(c.env, mfaId);
     return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
   const factors = await secondStepFactors(c.env, user);
   if (!factors.emailOtp) {
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
+    return c.html(mfaForm(mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
   }
-  const sent = await sendEmailOtp(c.env, user, loginScope(mfaId), "login", c.get("appName"));
+  const sent = await sendEmailOtp(c.env, user, loginScope(mfaId), "login");
   if (!sent.ok) {
     if (sent.reason === "rate_limited") {
       await logAudit(c.env, null, "login.email_otp_rate_limited", user.upn, { ip: getClientIp(c.req.raw) }, c.req.raw);
-      return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many codes requested. Please wait a few minutes before asking for another.", factors));
+      return c.html(mfaForm(mfaId, appearance, "Too many codes requested. Please wait a few minutes before asking for another.", factors));
     }
     await logAudit(c.env, null, "login.email_otp_send_failed", user.upn, { error: sent.error }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "We couldn't send the email. Try again in a moment, or use another method.", factors));
+    return c.html(mfaForm(mfaId, appearance, "We couldn't send the email. Try again in a moment, or use another method.", factors));
   }
   // The code is good for ten minutes; the pending step gets as long.
   await extendPendingMfa(c.env, mfaId, pending, EMAIL_OTP_MINUTES * 60);
   await logAudit(c.env, null, "login.email_otp_sent", user.upn, undefined, c.req.raw);
-  return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, { sent: true, to: maskEmail(sent.to), minutes: EMAIL_OTP_MINUTES }));
+  return c.html(mfaForm(mfaId, appearance, undefined, factors, { sent: true, to: maskEmail(sent.to), minutes: EMAIL_OTP_MINUTES }));
 });
 
 login.post("/login/mfa/email", async (c) => {
@@ -456,17 +490,17 @@ login.post("/login/mfa/email", async (c) => {
     await deletePendingMfa(c.env, mfaId);
     return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
   const factors = await secondStepFactors(c.env, user);
   if (!factors.emailOtp) {
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
+    return c.html(mfaForm(mfaId, appearance, "Email codes aren't available for this account right now.", factors), 400);
   }
 
   // The same per-user bucket as the authenticator code: a second method is
   // not a second budget.
   if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip, method: "email_otp" }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors));
+    return c.html(mfaForm(mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors));
   }
 
   const result = await verifyEmailOtp(c.env, loginScope(mfaId), user.id, "login", code);
@@ -478,7 +512,7 @@ login.post("/login/mfa/email", async (c) => {
         : result === "locked"
           ? "Too many incorrect codes. Request a new code."
           : "That code has expired or was already used. Request a new one.";
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, message, factors, { sent: result === "wrong", minutes: EMAIL_OTP_MINUTES }));
+    return c.html(mfaForm(mfaId, appearance, message, factors, { sent: result === "wrong", minutes: EMAIL_OTP_MINUTES }));
   }
 
   await clearMfaAttempts(c.env, user.id, ip);
@@ -508,13 +542,13 @@ login.post("/login/mfa/questions/start", async (c) => {
     await deletePendingMfa(c.env, mfaId);
     return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
   const factors = await secondStepFactors(c.env, user);
   const questions = factors.securityQuestions ? await challengeQuestions(c.env, mfaId, pending) : null;
   if (!questions) {
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
+    return c.html(mfaForm(mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
   }
-  return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+  return c.html(mfaForm(mfaId, appearance, undefined, factors, undefined, { questions }));
 });
 
 login.post("/login/mfa/questions", async (c) => {
@@ -529,25 +563,25 @@ login.post("/login/mfa/questions", async (c) => {
     await deletePendingMfa(c.env, mfaId);
     return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  const appearance = await getLoginAppearance(c.env);
+  const appearance = await loginAppearance(c, { userId: pending.userId });
   const factors = await secondStepFactors(c.env, user);
   const bound = pending.kba ? [...pending.kba] : null;
   const questions = factors.securityQuestions ? await challengeQuestions(c.env, mfaId, pending) : null;
   if (!questions) {
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
+    return c.html(mfaForm(mfaId, appearance, "Security questions aren't available for this account right now.", { ...factors, securityQuestions: false }), 400);
   }
   const ids = questions.map((q) => q.id);
   // Answers to questions that were not asked (never picked, or re-picked
   // because the bound ones went stale) are not checked: show the questions.
   if (!bound || ids.length !== bound.length || ids.some((id, i) => bound[i] !== id) || ids.some((id) => body[`answer_${id}`] === undefined)) {
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, undefined, factors, undefined, { questions }));
+    return c.html(mfaForm(mfaId, appearance, undefined, factors, undefined, { questions }));
   }
 
   // The same per-user bucket as the authenticator code: a second method is
   // not a second budget, and a wrong set of answers costs an attempt.
   if (await recordMfaAttempt(c.env, user.id, ip)) {
     await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip, method: "security_questions" }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors, undefined, { questions }));
+    return c.html(mfaForm(mfaId, appearance, "Too many attempts. Please wait a few minutes before trying again.", factors, undefined, { questions }));
   }
 
   const answers = Object.fromEntries(ids.map((id) => [id, String(body[`answer_${id}`] ?? "").slice(0, KBA_MAX_ANSWER * 4)]));
@@ -555,7 +589,7 @@ login.post("/login/mfa/questions", async (c) => {
   if (result !== "ok") {
     // Which question was wrong is not said, and the answers are never logged.
     await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip, method: "security_questions", reason: result }, c.req.raw);
-    return c.html(mfaForm(c.get("appName"), mfaId, appearance, "One or more answers were not right. Please try again.", factors, undefined, { questions }));
+    return c.html(mfaForm(mfaId, appearance, "One or more answers were not right. Please try again.", factors, undefined, { questions }));
   }
 
   await clearMfaAttempts(c.env, user.id, ip);

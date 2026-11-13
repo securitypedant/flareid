@@ -17,6 +17,7 @@ import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { apiCtx } from "../services/context.js";
 import { applyScimScope } from "../services/scim-sync.js";
 import { sendUserLink } from "../services/users.js";
+import { assignDomainBrand } from "../services/branding.js";
 import { runSetup, SetupAdminError, type SetupInput } from "../services/setup.js";
 import { resolveManyGroupMemberUserIds } from "../lib/groups.js";
 import {
@@ -147,12 +148,26 @@ defineRoute({
 
 defineRoute({
   method: "get", path: "/api/v1/domains", tag: "Domains", permission: "domains:read", summary: "List domains",
-  response: z.object({ domains: z.array(z.object({ domain: z.string(), is_default: z.boolean(), created_at: z.string() })) }),
+  response: z.object({ domains: z.array(z.object({ domain: z.string(), is_default: z.boolean(), brand_id: z.number().nullable().openapi({ description: "The brand its people see (`/api/v1/branding/brands/{id}`); null for the default brand." }), created_at: z.string() })) }),
 }, async (c) => {
   const domains = await listDomains(c.env);
   return c.json({
-    domains: domains.map((d) => ({ domain: d.domain, is_default: d.is_default === 1, created_at: d.created_at })),
+    domains: domains.map((d) => ({ domain: d.domain, is_default: d.is_default === 1, brand_id: d.brand_id ?? null, created_at: d.created_at })),
   });
+});
+
+defineRoute({
+  method: "put", path: "/api/v1/domains/{domain}/brand", tag: "Domains", permission: "domains:write",
+  summary: "Choose the brand a domain's people see",
+  description: "`brand_id` null is the default brand. The sign-in pages, My account and emails follow the person's UPN domain (see Branding).",
+  body: z.object({ brand_id: z.number().int().nullable() }),
+  errors: [404], response: z.object({ ok: z.literal(true), domain: z.string(), brand_id: z.number().nullable() }),
+}, async (c) => {
+  const domain = (c.req.param("domain") ?? "").toLowerCase();
+  const body = await readJson<{ brand_id?: number | null }>(c);
+  const brandId = body.brand_id === null || body.brand_id === undefined ? null : Number(body.brand_id);
+  await assignDomainBrand(apiCtx(c), domain, brandId);
+  return c.json({ ok: true as const, domain, brand_id: brandId });
 });
 
 defineRoute({

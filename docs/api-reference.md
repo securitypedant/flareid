@@ -19,7 +19,7 @@ API version 3.7.0.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
 - [Email](#email) - Outbound email settings and templates.
 - [API keys](#api-keys) - Bearer tokens for this API.
-- [Branding](#branding) - App name and sign-in page appearance.
+- [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
 - [Security](#security) - Password, session, rate-limit and audit settings; authentication policies and factors.
 - [Roles](#roles) - Admin roles: permission sets granted to groups.
 - [Signing keys](#signing-keys) - Token signing keys (public parts only).
@@ -773,6 +773,7 @@ UPN domains.
 | `DELETE` | `/api/v1/domains/{domain}` | `domains:write` | Remove a domain |
 | `GET` | `/api/v1/domains` | `domains:read` | List domains |
 | `POST` | `/api/v1/domains` | `domains:write` | Add a domain (idempotent) |
+| `PUT` | `/api/v1/domains/{domain}/brand` | `domains:write` | Choose the brand a domain's people see |
 | `POST` | `/api/v1/domains/{domain}/default` | `domains:write` | Make a domain the default |
 | `POST` | `/api/v1/domains/{domain}/apply-to-all` | `domains:write` | Move every user onto this domain |
 
@@ -834,6 +835,34 @@ Response `200`:
 | `is_default` | boolean | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/domains/{domain}/brand`
+
+Choose the brand a domain's people see.
+
+`brand_id` null is the default brand. The sign-in pages, My account and emails follow the person's UPN domain (see Branding).
+
+Permission: `domains:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `domain` | path | yes | The domain name. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `brand_id` | integer \| null | yes |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `domain` | string | yes |  |
+| `brand_id` | number \| null | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ### `POST /api/v1/domains/{domain}/default`
 
@@ -1613,19 +1642,28 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ## Branding
 
-App name and sign-in page appearance.
+The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
 
 | Method | Path | Permission | Summary |
 |---|---|---|---|
-| `GET` | `/api/v1/branding` | `branding:read` | Read the branding |
-| `PATCH` | `/api/v1/branding` | `branding:write` | Change the branding |
+| `GET` | `/api/v1/branding` | `branding:read` | Read the default brand |
+| `PATCH` | `/api/v1/branding` | `branding:write` | Change the default brand |
+| `PUT` | `/api/v1/branding/logo` | `branding:write` | Upload the default brand's logo |
+| `DELETE` | `/api/v1/branding/logo` | `branding:write` | Remove the default brand's logo |
+| `GET` | `/api/v1/branding/brands` | `branding:read` | List the brands attached to domains |
+| `POST` | `/api/v1/branding/brands` | `branding:write` | Create a brand |
+| `GET` | `/api/v1/branding/brands/{id}` | `branding:read` | Read a brand |
+| `PATCH` | `/api/v1/branding/brands/{id}` | `branding:write` | Change a brand |
+| `DELETE` | `/api/v1/branding/brands/{id}` | `branding:write` | Delete a brand |
+| `PUT` | `/api/v1/branding/brands/{id}/logo` | `branding:write` | Upload a brand's logo |
+| `DELETE` | `/api/v1/branding/brands/{id}/logo` | `branding:write` | Remove a brand's logo |
 | `GET` | `/api/v1/branding/email-templates` | `branding:read` | List the email templates |
 | `PUT` | `/api/v1/branding/email-templates/{key}` | `branding:write` | Replace an email template |
 | `DELETE` | `/api/v1/branding/email-templates/{key}` | `branding:write` | Reset an email template to the default |
 
 ### `GET /api/v1/branding`
 
-Read the branding.
+Read the default brand.
 
 Permission: `branding:read`
 
@@ -1640,14 +1678,18 @@ Response `200`:
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
 | `email_accent` | string | yes |  |
+| `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
+| `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
+| `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 ### `PATCH /api/v1/branding`
 
-Change the branding.
+Change the default brand.
 
-Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols.
+Fields not supplied keep their values. Colours are #rrggbb. An empty `login_subtitle` shows no message; empty cursor-trail `characters` uses the default symbols. `custom_css` (at most 20 KB; empty removes it) is refused if it contains `</style`, `@import`, `expression(`, `javascript:` or a `url(` that is not a same-origin path or a data: URL - the page's Content-Security-Policy blocks remote fonts and images anyway.
 
 Permission: `branding:write`
 
@@ -1660,6 +1702,7 @@ Request body:
 | `login_gradient` | object { from, to } | no |  |
 | `cursor_trail` | object { enabled, characters } | no |  |
 | `email_accent` | string | no |  |
+| `custom_css` | string | no |  |
 
 Response `200`:
 
@@ -1672,8 +1715,300 @@ Response `200`:
 | `login_gradient` | object { from, to } | yes |  |
 | `cursor_trail` | object { enabled, characters } | yes |  |
 | `email_accent` | string | yes |  |
+| `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
+| `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
+| `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/branding/logo`
+
+Upload the default brand's logo.
+
+Shown on the sign-in pages, the top bar and emails. Replaces (and deletes) the previous upload.
+
+Permission: `branding:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `data` | string | yes | The image, base64-encoded (a `data:image/...;base64,` prefix is accepted). PNG or JPEG, at most 256 KB, recognised by its bytes; SVG is refused. |
+
+Response `200`:
+
+`Branding`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `app_name` | string | yes |  |
+| `login_subtitle` | string | yes |  |
+| `login_gradient` | object { from, to } | yes |  |
+| `cursor_trail` | object { enabled, characters } | yes |  |
+| `email_accent` | string | yes |  |
+| `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
+| `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
+| `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/branding/logo`
+
+Remove the default brand's logo.
+
+FlareID's own mark is shown again.
+
+Permission: `branding:write`
+
+Response `200`:
+
+`Branding`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `app_name` | string | yes |  |
+| `login_subtitle` | string | yes |  |
+| `login_gradient` | object { from, to } | yes |  |
+| `cursor_trail` | object { enabled, characters } | yes |  |
+| `email_accent` | string | yes |  |
+| `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
+| `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
+| `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/branding/brands`
+
+List the brands attached to domains.
+
+The default brand is `GET /api/v1/branding`.
+
+Permission: `branding:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `brands` | Brand[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/branding/brands`
+
+Create a brand.
+
+`name` is required and unique. Fields left out or null use the default brand's value. `custom_css` follows the rules of `PATCH /api/v1/branding`.
+
+Permission: `branding:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `app_name` | string \| null | no |  |
+| `login_subtitle` | string \| null | no |  |
+| `login_gradient` | object \| null { from, to } | no |  |
+| `email_accent` | string \| null | no |  |
+| `custom_css` | string \| null | no |  |
+| `domains` | string[] | no | Replaces the set of domains using this brand; a domain moves from any brand it was on. |
+
+Response `201`:
+
+`Brand`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `app_name` | string \| null | yes | null: the default brand's. |
+| `login_subtitle` | string \| null | yes | null: the default brand's; empty: no message. |
+| `login_gradient` | object \| null { from, to } | yes | null: the default brand's. |
+| `email_accent` | string \| null | yes | null: the default brand's. |
+| `logo_url` | string \| null | yes | This brand's own upload; null uses the default brand's logo. |
+| `custom_css` | string | yes | Empty uses the default brand's stylesheet. |
+| `domains` | string[] | yes | The domains whose people see this brand. |
+| `effective` | object { app_name, login_subtitle, login_gradient, email_accent, logo_url, css_url } | yes | What the pages and emails actually use, with the default brand filling the gaps. |
+| `preview_url` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `409` (`{ "error", "message" }`).
+
+### `GET /api/v1/branding/brands/{id}`
+
+Read a brand.
+
+Permission: `branding:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Brand`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `app_name` | string \| null | yes | null: the default brand's. |
+| `login_subtitle` | string \| null | yes | null: the default brand's; empty: no message. |
+| `login_gradient` | object \| null { from, to } | yes | null: the default brand's. |
+| `email_accent` | string \| null | yes | null: the default brand's. |
+| `logo_url` | string \| null | yes | This brand's own upload; null uses the default brand's logo. |
+| `custom_css` | string | yes | Empty uses the default brand's stylesheet. |
+| `domains` | string[] | yes | The domains whose people see this brand. |
+| `effective` | object { app_name, login_subtitle, login_gradient, email_accent, logo_url, css_url } | yes | What the pages and emails actually use, with the default brand filling the gaps. |
+| `preview_url` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/branding/brands/{id}`
+
+Change a brand.
+
+Fields not supplied keep their values; null resets one to the default brand's.
+
+Permission: `branding:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no |  |
+| `app_name` | string \| null | no |  |
+| `login_subtitle` | string \| null | no |  |
+| `login_gradient` | object \| null { from, to } | no |  |
+| `email_accent` | string \| null | no |  |
+| `custom_css` | string \| null | no |  |
+| `domains` | string[] | no | Replaces the set of domains using this brand; a domain moves from any brand it was on. |
+
+Response `200`:
+
+`Brand`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `app_name` | string \| null | yes | null: the default brand's. |
+| `login_subtitle` | string \| null | yes | null: the default brand's; empty: no message. |
+| `login_gradient` | object \| null { from, to } | yes | null: the default brand's. |
+| `email_accent` | string \| null | yes | null: the default brand's. |
+| `logo_url` | string \| null | yes | This brand's own upload; null uses the default brand's logo. |
+| `custom_css` | string | yes | Empty uses the default brand's stylesheet. |
+| `domains` | string[] | yes | The domains whose people see this brand. |
+| `effective` | object { app_name, login_subtitle, login_gradient, email_accent, logo_url, css_url } | yes | What the pages and emails actually use, with the default brand filling the gaps. |
+| `preview_url` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/branding/brands/{id}`
+
+Delete a brand.
+
+Its domains go back to the default brand; its logo is deleted.
+
+Permission: `branding:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `PUT /api/v1/branding/brands/{id}/logo`
+
+Upload a brand's logo.
+
+Permission: `branding:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `data` | string | yes | The image, base64-encoded (a `data:image/...;base64,` prefix is accepted). PNG or JPEG, at most 256 KB, recognised by its bytes; SVG is refused. |
+
+Response `200`:
+
+`Brand`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `app_name` | string \| null | yes | null: the default brand's. |
+| `login_subtitle` | string \| null | yes | null: the default brand's; empty: no message. |
+| `login_gradient` | object \| null { from, to } | yes | null: the default brand's. |
+| `email_accent` | string \| null | yes | null: the default brand's. |
+| `logo_url` | string \| null | yes | This brand's own upload; null uses the default brand's logo. |
+| `custom_css` | string | yes | Empty uses the default brand's stylesheet. |
+| `domains` | string[] | yes | The domains whose people see this brand. |
+| `effective` | object { app_name, login_subtitle, login_gradient, email_accent, logo_url, css_url } | yes | What the pages and emails actually use, with the default brand filling the gaps. |
+| `preview_url` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/branding/brands/{id}/logo`
+
+Remove a brand's logo.
+
+The brand uses the default brand's logo again.
+
+Permission: `branding:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Brand`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `app_name` | string \| null | yes | null: the default brand's. |
+| `login_subtitle` | string \| null | yes | null: the default brand's; empty: no message. |
+| `login_gradient` | object \| null { from, to } | yes | null: the default brand's. |
+| `email_accent` | string \| null | yes | null: the default brand's. |
+| `logo_url` | string \| null | yes | This brand's own upload; null uses the default brand's logo. |
+| `custom_css` | string | yes | Empty uses the default brand's stylesheet. |
+| `domains` | string[] | yes | The domains whose people see this brand. |
+| `effective` | object { app_name, login_subtitle, login_gradient, email_accent, logo_url, css_url } | yes | What the pages and emails actually use, with the default brand filling the gaps. |
+| `preview_url` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ### `GET /api/v1/branding/email-templates`
 
