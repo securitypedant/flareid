@@ -6,6 +6,10 @@ may break things.
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-11-12
+
+No migrations.
+
 ### Changed
 
 - **Administrators' second factor: secure by default, but changeable.**
