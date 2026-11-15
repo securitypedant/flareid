@@ -1,4 +1,5 @@
-import { accessFor, adminRoleGroupIds, adminRoleGroupNames } from "../lib/admin-roles.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "../lib/admin-roles.js";
+import type { UserRow } from "../lib/types.js";
 import { ServiceError, type ServiceCtx } from "./context.js";
 
 /**
@@ -25,6 +26,19 @@ export async function assertMayAssignGroups(ctx: ServiceCtx, groupIds: number[])
   if (ctx.privileged || groupIds.length === 0) return;
   const roleGroups = await adminRoleGroupIds(ctx.env);
   if (groupIds.some((id) => roleGroups.has(id))) throw new ServiceError(403, `Giving someone an admin role ${NEEDS}.`);
+}
+
+/**
+ * An attribute write can be an admin grant too: the post-write row is checked
+ * against the rule of every dynamic group linked to a role. `before` is null
+ * on the create path - any match is a grant. assertMayTouchUser already stops
+ * a non-privileged caller editing an existing holder; this stops them making
+ * a new one.
+ */
+export async function assertNoAdminRoleGrant(ctx: ServiceCtx, before: UserRow | null, after: UserRow): Promise<void> {
+  if (ctx.privileged) return;
+  const granted = await grantsAdminRoleGroup(ctx.env, before, after);
+  if (granted) throw new ServiceError(403, `That change puts the user in "${granted}", an admin role group - ${NEEDS}.`);
 }
 
 export async function assertMayNameGroup(ctx: ServiceCtx, name: string): Promise<void> {

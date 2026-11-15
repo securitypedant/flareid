@@ -557,6 +557,13 @@ Scope: `settings:write`.
 }
 ```
 
+The endpoint must be a plain `https:` URL with no credentials, query or
+fragment, and must not point at a loopback, private, link-local or otherwise
+reserved address (`400` otherwise). `secret` is write-only: `GET` never
+returns it, and a blank `secret` keeps the stored one. Clearing `endpoint`
+removes the configuration and its credential. Redirects from the endpoint
+are only followed while they stay on the configured origin.
+
 `POST /scim/sync` runs a full sync in batches of 200 users per call, then the
 groups. The response carries `complete` and `remainingUsers`: call it again
 until `complete` is `true` (the hourly cron also carries an unfinished sync on).

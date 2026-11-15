@@ -4,7 +4,78 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [3.9.1] - 2026-11-15
+
+No migrations. Fixes from a deep security audit of the whole codebase: the
+theme is delegated credentials (API keys, scoped admin roles, SCIM
+provisioning) exceeding their intended authority at seams where a second
+write path skipped an invariant the console enforced.
+
+### Security
+
+- **Admin roles can no longer be granted through dynamic-group attributes
+  from a non-Super credential.** A group linked to an admin role with a
+  dynamic rule (for example `department = "IT"`) was previously only safe
+  against the console: a `users:write` API key could create or PATCH a
+  user's attributes to match the rule, `import:write` could do the same
+  through a directory bundle (and could overwrite or delete the role group
+  itself, or write a rule against it), and `directory:write` SCIM keys
+  could push members into it because the SCIM server only refused changes
+  to a group literally named "Super Admins". Every write that could land a
+  user in a group linked to an admin role now simulates the post-write
+  user row against that group's rule and refuses the match (403 / bundle
+  rejection) unless the actor is privileged - Super Admin or an `admin`
+  API key - covering user create/update/status/invite, import bundles
+  (rule fields are also restricted to the non-user-editable set on write),
+  and the SCIM server, whose name-only guard is replaced by the real
+  role-linked-group check for group renames, member replacement,
+  membership deltas and deletes. The role name itself is no longer
+  trusted as a marker: bindings are resolved by group id.
+- **Step-up re-authentication is deny-by-default and id-safe.** The
+  sensitive-path allowlist missed a number of admin mutations - including
+  `POST /admin/users` and `/admin/users/:id/status`, so a stale admin
+  session could create and activate a new Super Admin - and matched ids
+  with `\d+`, which `+2`-style encodings slipped past. Every admin POST is
+  now sensitive except the reauthentication endpoints themselves, and the
+  non-super guard matches the full path-shape the routes declare instead
+  of the digits.
+- **The MFA gate can no longer be satisfied by enrolling into it.** When a
+  session needed a second factor the middleware let `/account/mfa*` and
+  `/account/passkeys*` through for both gate outcomes; a password-only
+  session that was meant to sign in again could instead enrol a factor and
+  upgrade its own `amr`. That path now revokes the untrusted session. The
+  passkey ceremony also upgrades `amr` in the request that stores the
+  credential (and `/account/passkeys-enrolled` only honours the session
+  that ran the ceremony), so a fresh session is never killed mid-enrolment.
+- **`apply-to-all` on domains is a Super-only action.** Rewriting every
+  user's UPN to an attacker-registered domain (then harvesting a
+  forgotten-password link) needed only `domains:write` in the console; the
+  API already required `admin`. The console route and middleware now gate
+  it on Super Admin, the button is hidden from other administrators, and
+  the same-page validation requires the new UPN domain to be a registered
+  domain.
+- **Stored secrets are no longer rendered to read-only roles.**
+  `/admin/integrations/scim` rendered the SCIM bearer secret and
+  `/admin/security` rendered the shared default password into the page for
+  any holder of `scim:read`/`security:read` (including Auditors), while
+  the API never returned them. Both fields are now write-only - blank
+  keeps the stored value, clearing the SCIM endpoint removes the
+  credential - matching the existing Turnstile-secret convention.
+- **The outbound SCIM endpoint is validated and the client is hardened.**
+  A `scim:write` key could store an arbitrary URL and have the worker push
+  the whole directory to it with the Bearer credential attached - an SSRF
+  read primitive on top of exfiltration, since redirects were followed
+  with credentials and downstream error bodies were returned to the
+  caller. Endpoints must now be plain `https:` URLs (no credentials,
+  query or fragment) whose host is not loopback, private, link-local,
+  CGNAT, benchmarking or multicast space, in every spelling the URL
+  parser normalizes (hex/integer IPv4, `*.localhost`, IPv4-mapped and
+  unique-local IPv6); the setting is re-validated on every outbound call.
+  Redirects are followed by hand and the credential is only resent while
+  the target stays on the configured origin; downstream error bodies are
+  bounded to 300 characters before they are logged or returned. The
+  console POST surfaces a validation error inline instead of failing
+  silently.
 
 ## [3.9.0] - 2026-11-12
 

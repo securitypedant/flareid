@@ -1,11 +1,13 @@
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "../lib/admin-roles.js";
 import { auditActor, requireApiAuth, requireScope } from "../lib/api-auth.js";
 import { hasScope } from "../lib/api-keys.js";
 import { logAudit } from "../lib/audit.js";
 import { getUserByExternalId } from "../lib/db.js";
 import { listDomains, getDefaultDomain } from "../lib/domains.js";
-import { resolveGroupMemberUserIds, resolveManyGroupMemberUserIds } from "../lib/groups.js";
+import { isEmailAddress } from "../lib/email.js";
+import { parseRule, resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, userMatchesRule } from "../lib/groups.js";
 import { defaultSchemaId } from "../lib/schemas.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -21,9 +23,9 @@ import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushCh
  *
  * Mapping: a User's id is its external_id (a stable UUID), userName its UPN;
  * a Group's id is its numeric id as a string. The same boundaries as the
- * import API apply: Super Admins - the group and its members - are out of a
- * non-admin key's reach, and dynamic groups take no members (their membership
- * is their rule).
+ * import API apply: admin roles - the groups that grant them, static or
+ * dynamic, and the accounts that hold them - are out of a non-admin key's
+ * reach, and dynamic groups take no members (their membership is their rule).
  */
 export const scimServer = new Hono<{ Bindings: Env }>();
 
@@ -95,10 +97,9 @@ scimServer.onError((err, c) => {
 
 const base = (env: Env) => `${env.ISSUER_URL}/scim/v2`;
 
-async function isSuperAdmin(env: Env, userId: number): Promise<boolean> {
-  return Boolean(
-    await env.DB.prepare("SELECT 1 FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = ? AND g.name = ?").bind(userId, SUPER_ADMINS_GROUP).first()
-  );
+/** Holds any admin role, by static or dynamic membership in a role-linked group. */
+async function holdsAdminRole(env: Env, userId: number): Promise<boolean> {
+  return (await accessFor(env, userId)).isAdmin;
 }
 
 function requireAdminFor(c: Context<{ Bindings: Env }>, what: string) {
@@ -262,7 +263,11 @@ async function columnsFrom(env: Env, body: ScimUserBody): Promise<Record<string,
   }
   if (body.emails) {
     const primary = body.emails.find((e) => e.primary) ?? body.emails[0];
-    if (primary?.value) cols.email = String(primary.value).toLowerCase();
+    if (primary?.value) {
+      const addr = String(primary.value).trim().toLowerCase();
+      if (!isEmailAddress(addr)) throw new ScimError(400, `"${primary.value}" is not a valid email address.`, "invalidValue");
+      cols.email = addr;
+    }
   }
   const ent = body[ENTERPRISE];
   if (ent?.department !== undefined) cols.department = String(ent.department);
@@ -302,6 +307,18 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
 
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
+  const cols = await columnsFrom(c.env, body);
+  // Refuse before anything is written: the check needs the row the request
+  // would leave behind - the insert defaults plus the SCIM columns.
+  const after = {
+    upn, username: local, display_name: local, given_name: "", family_name: "", external_id: externalId,
+    job_title: "", department: "", employee_number: "", hire_date: "", employment_status: "", employment_type: "",
+    location: "", status: "disabled", manager_external_id: null, custom_attributes: "{}", ...cols,
+  } as UserRow;
+  if (!hasScope(c.get("apiActor").scopes, "admin")) {
+    const granted = await grantsAdminRoleGroup(c.env, null, after);
+    if (granted) throw new ScimError(403, `Provisioning into ${granted}, an admin role group, requires an admin-scoped key.`);
+  }
   // No usable password ("!"): an inbound-provisioned account activates by invitation or reset.
   const inserted = await c.env.DB.prepare(
     `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, is_admin, status, schema_id, custom_attributes, created_at, updated_at)
@@ -309,7 +326,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   )
     .bind(upn, local, local, externalId, await defaultSchemaId(c.env, "user"), now, now)
     .first<{ id: number }>();
-  await applyColumns(c.env, inserted!.id, await columnsFrom(c.env, body));
+  await applyColumns(c.env, inserted!.id, cols);
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
   downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
@@ -318,14 +335,28 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
 
 async function guardedUser(c: Context<{ Bindings: Env }>): Promise<UserRow> {
   const user = await loadUser(c);
-  if (await isSuperAdmin(c.env, user.id)) requireAdminFor(c, "Changing a Super Admin");
+  if (await holdsAdminRole(c.env, user.id)) requireAdminFor(c, "Changing an account that holds an admin role");
   return user;
+}
+
+/**
+ * An attribute write must not move the user into a dynamic group linked to an
+ * admin role either: department = "OnCall" can be an admin grant when a rule
+ * says so. `before` is null on the create path; `cols` are the columns about
+ * to be applied, merged onto the row to get the post-write state.
+ */
+async function assertNoAdminRoleGrant(c: Context<{ Bindings: Env }>, user: UserRow | null, cols: Record<string, string | null>) {
+  if (hasScope(c.get("apiActor").scopes, "admin")) return;
+  const granted = await grantsAdminRoleGroup(c.env, user, { ...(user ?? {}), ...cols } as UserRow);
+  if (granted) throw new ScimError(403, `This change moves the user into ${granted}, an admin role group, which requires an admin-scoped key.`);
 }
 
 scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
   const body = await c.req.json<ScimUserBody>();
-  await applyColumns(c.env, user.id, await columnsFrom(c.env, body));
+  const cols = await columnsFrom(c.env, body);
+  await assertNoAdminRoleGrant(c, user, cols);
+  await applyColumns(c.env, user.id, cols);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -362,7 +393,9 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   const user = await guardedUser(c);
   const body = await c.req.json<{ schemas?: string[]; Operations?: { op?: string; path?: string; value?: unknown }[] }>();
   if (!body.schemas?.includes(PATCH_OP) || !Array.isArray(body.Operations)) throw new ScimError(400, "Expected a PatchOp message.", "invalidSyntax");
-  await applyColumns(c.env, user.id, await columnsFrom(c.env, patchToBody(body.Operations)));
+  const cols = await columnsFrom(c.env, patchToBody(body.Operations));
+  await assertNoAdminRoleGrant(c, user, cols);
+  await applyColumns(c.env, user.id, cols);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -383,7 +416,7 @@ scimServer.delete("/scim/v2/Users/:id", requireScope("directory:write"), async (
 async function loadGroup(c: Context<{ Bindings: Env }>, write = false): Promise<GroupRow> {
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(Number(c.req.param("id"))).first<GroupRow>();
   if (!group) throw new ScimError(404, "No such group.");
-  if (write && group.name === SUPER_ADMINS_GROUP) requireAdminFor(c, `Changing ${SUPER_ADMINS_GROUP}`);
+  if (write && (group.name === SUPER_ADMINS_GROUP || (await adminRoleGroupIds(c.env)).has(group.id))) requireAdminFor(c, `Changing ${group.name}, an admin role group`);
   return group;
 }
 
@@ -409,21 +442,41 @@ scimServer.get("/scim/v2/Groups", requireScope("directory:read"), async (c) => {
 
 scimServer.get("/scim/v2/Groups/:id", requireScope("directory:read"), async (c) => c.json(await groupResource(c.env, await loadGroup(c))));
 
-/** Resolves SCIM member references (user ids = external_id) to FlareID user ids, refusing Super Admins for non-admin keys. */
+/** Resolves SCIM member references (user ids = external_id) to FlareID user ids, refusing administrators for non-admin keys. */
 async function memberIds(c: Context<{ Bindings: Env }>, members: { value?: string }[]): Promise<number[]> {
   const ids: number[] = [];
   for (const m of members) {
     const user = m.value ? await getUserByExternalId(c.env, String(m.value)) : null;
     if (!user) throw new ScimError(400, `Unknown member "${m.value}".`, "invalidValue");
-    if (await isSuperAdmin(c.env, user.id)) requireAdminFor(c, "Changing a Super Admin's group memberships");
+    if (await holdsAdminRole(c.env, user.id)) requireAdminFor(c, "Changing an administrator's group memberships");
     ids.push(user.id);
   }
   return ids;
 }
 
-/** A rename may not take the reserved name either (it is free only if an admin removed the built-in group). */
-function guardNewName(c: Context<{ Bindings: Env }>, name: string | undefined) {
-  if (name !== undefined && name.trim() === SUPER_ADMINS_GROUP) requireAdminFor(c, `Naming a group ${SUPER_ADMINS_GROUP}`);
+/** A rename may not take an admin role group's name either (it is free only if an admin removed the link first). */
+async function guardNewName(c: Context<{ Bindings: Env }>, name: string | undefined) {
+  if (name === undefined) return;
+  const trimmed = name.trim();
+  if ((await adminRoleGroupNames(c.env)).includes(trimmed)) requireAdminFor(c, `Naming a group ${trimmed}`);
+}
+
+/** Whether any explicit member of the group holds an admin role - statically, or by matching a role-linked group's rule. */
+async function groupHasAdminMember(env: Env, groupId: number, roleGroups: Set<number>): Promise<boolean> {
+  if (!roleGroups.size) return false;
+  const ids = JSON.stringify([...roleGroups]);
+  const hit = await env.DB.prepare(
+    "SELECT 1 FROM group_members gm JOIN group_members rg ON rg.user_id = gm.user_id WHERE gm.group_id = ? AND rg.group_id IN (SELECT value FROM json_each(?)) LIMIT 1"
+  ).bind(groupId, ids).first();
+  if (hit) return true;
+  const { results: dyn } = await env.DB.prepare("SELECT id, rule FROM groups WHERE rule != '' AND id IN (SELECT value FROM json_each(?))").bind(ids).all<{ id: number; rule: string }>();
+  if (!dyn.length) return false;
+  const { results: members } = await env.DB.prepare("SELECT u.* FROM users u JOIN group_members gm ON gm.user_id = u.id WHERE gm.group_id = ?").bind(groupId).all<UserRow>();
+  for (const d of dyn) {
+    const rule = parseRule(d.rule);
+    if (rule && members.some((u) => userMatchesRule(u, rule))) return true;
+  }
+  return false;
 }
 
 /**
@@ -433,12 +486,10 @@ function guardNewName(c: Context<{ Bindings: Env }>, name: string | undefined) {
  */
 async function memberStatements(env: Env, group: GroupRow, add: number[], remove: number[] | "all", c?: Context<{ Bindings: Env }>): Promise<D1PreparedStatement[]> {
   if (group.rule) throw new ScimError(400, "This is a dynamic group: its membership is its rule.", "mutability");
-  // Replacing or clearing the member list removes Super Admins too.
+  // Replacing or clearing the member list acts on every member - including any administrator.
   if (remove === "all" && c && !hasScope(c.get("apiActor").scopes, "admin")) {
-    const admins = await env.DB.prepare(
-      "SELECT 1 FROM group_members gm JOIN group_members sa ON sa.user_id = gm.user_id JOIN groups g ON g.id = sa.group_id WHERE gm.group_id = ? AND g.name = ? LIMIT 1"
-    ).bind(group.id, SUPER_ADMINS_GROUP).first();
-    if (admins) throw new ScimError(403, "Replacing the members of a group that contains a Super Admin requires an admin-scoped key.");
+    if (await groupHasAdminMember(env, group.id, await adminRoleGroupIds(env)))
+      throw new ScimError(403, "Replacing the members of a group that contains an administrator requires an admin-scoped key.");
   }
   const stmts: D1PreparedStatement[] = [];
   if (remove === "all") stmts.push(env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(group.id));
@@ -456,7 +507,7 @@ scimServer.post("/scim/v2/Groups", requireScope("directory:write"), async (c) =>
   const body = await c.req.json<{ displayName?: string; members?: { value?: string }[] }>();
   const name = String(body.displayName ?? "").trim();
   if (!name) throw new ScimError(400, "displayName is required.", "invalidValue");
-  if (name === SUPER_ADMINS_GROUP) requireAdminFor(c, `Changing ${SUPER_ADMINS_GROUP}`);
+  if ((await adminRoleGroupNames(c.env)).includes(name)) requireAdminFor(c, `Creating an admin role group`);
   if (await c.env.DB.prepare("SELECT 1 FROM groups WHERE name = ?").bind(name).first()) throw new ScimError(409, "A group with that displayName already exists.", "uniqueness");
   const row = await c.env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, NULL, '') RETURNING *").bind(name).first<GroupRow>();
   await setMembers(c.env, row!, await memberIds(c, body.members ?? []), []);
@@ -468,7 +519,7 @@ scimServer.post("/scim/v2/Groups", requireScope("directory:write"), async (c) =>
 scimServer.put("/scim/v2/Groups/:id", requireScope("directory:write"), async (c) => {
   const group = await loadGroup(c, true);
   const body = await c.req.json<{ displayName?: string; members?: { value?: string }[] }>();
-  guardNewName(c, body.displayName);
+  await guardNewName(c, body.displayName);
   const membersBefore = await explicitMembers(c.env, group.id);
   // Everything is resolved and checked before anything is written.
   const stmts: D1PreparedStatement[] = [];
@@ -493,7 +544,7 @@ scimServer.patch("/scim/v2/Groups/:id", requireScope("directory:write"), async (
     const value = op.value as { value?: string }[] | { displayName?: string; members?: { value?: string }[] } | string | undefined;
     if ((path === "displayName" || (!path && typeof value === "object" && value && "displayName" in value)) && kind === "replace") {
       const name = typeof value === "string" ? value : (value as { displayName?: string }).displayName;
-      guardNewName(c, name);
+      await guardNewName(c, name);
       if (name) stmts.push(c.env.DB.prepare("UPDATE groups SET name = ? WHERE id = ?").bind(name.trim(), group.id));
       continue;
     }

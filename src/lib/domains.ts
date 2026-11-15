@@ -15,6 +15,10 @@ export function listDomains(env: Env): Promise<DomainRow[]> {
     .then((r) => r.results);
 }
 
+export async function domainExists(env: Env, domain: string): Promise<boolean> {
+  return Boolean(await env.DB.prepare("SELECT 1 FROM domains WHERE domain = ?").bind(domain).first());
+}
+
 export async function getDefaultDomain(env: Env): Promise<string> {
   const row = await env.DB.prepare("SELECT domain FROM domains WHERE is_default = 1 LIMIT 1").first<{
     domain: string;

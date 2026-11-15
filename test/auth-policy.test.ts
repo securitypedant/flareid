@@ -91,12 +91,33 @@ describe("authentication policies", () => {
     await SELF.fetch(`${BASE}/account/passkeys`, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, Cookie: cookie }, body: JSON.stringify({ response: await auth.register(opts.challenge) }) });
     const enrolled = await SELF.fetch(`${BASE}/account/mfa/passkey-enrolled`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "resume=", redirect: "manual" });
     expect(enrolled.status).toBe(302);
-    expect((await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie }, redirect: "manual" })).status).toBe(200);
+    const acct = await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie }, redirect: "manual" });
+    expect(acct.status).toBe(200);
 
     const off = (k: string) => SELF.fetch(`${BASE}/admin/security/factors/${k}`, { method: "POST", headers: { ...FORM, Cookie: adminCookie }, body: "enabled=0", redirect: "manual" });
     expect((await off("totp")).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await off("passkey")).headers.get("Location")).toContain("error=");
     expect(await (await SELF.fetch(`${BASE}/admin/security/factors`, { headers: { Cookie: adminCookie } })).text()).toContain("Security questions");
+  });
+
+  it("ends a session the gate told to sign in again, rather than letting it enrol past the factor it skipped", async () => {
+    const { apiKey, fin } = await setup();
+    await apiCall("/api/v1/setup", { token: apiKey, body: { require_mfa: true } });
+    // fin HAS a second factor (TOTP enrolled), so a password-only session's
+    // gate outcome is "login" - sign in again - not "enrol".
+    await env.DB.prepare("UPDATE users SET totp_secret = 'AAAA', mfa_enabled = 1 WHERE id = ?").bind(fin).run();
+    const { setCookie, sessionId } = await createSession(env, fin, ["pwd"], new Request(BASE));
+    const cookie = setCookie.split(";")[0]!;
+
+    // The enrolment pages used to be exempt for every outcome, which let this
+    // session mint itself a second factor and upgrade its own amr.
+    for (const path of ["/account/mfa/setup", "/account/passkeys", "/account"]) {
+      const res = await SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie }, redirect: "manual" });
+      expect(res.status, path).toBe(302);
+      expect(res.headers.get("Location"), path).toBe(`/login?next=${encodeURIComponent(path)}`);
+    }
+    // The first gated request ended the session - nothing it did could persist.
+    expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(sessionId).first<{ revoked_at: string | null }>())!.revoked_at).not.toBeNull();
   });
 });
 

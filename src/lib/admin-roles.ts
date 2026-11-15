@@ -1,6 +1,8 @@
 import type { Env } from "../env.js";
 import { getUserGroupNames } from "./db.js";
+import { parseRule, userMatchesRule } from "./groups.js";
 import { expand, grants, type Area, type Permission } from "./permissions.js";
+import type { UserRow } from "./types.js";
 
 /**
  * Roles (migration 0023): named permission sets granted to groups, or to
@@ -93,6 +95,9 @@ const under = (path: string, prefix: string) => path === prefix || path.startsWi
 /** The permission a console request needs, or null for pages any admin may open. */
 export function requiredPermission(method: string, path: string): Permission | null | "super" {
   if (under(path, "/admin/setup")) return "super";
+  // Rewriting every UPN moves Super Admins too, and recovery mail follows the
+  // UPN: the API gates its equivalent on the "admin" scope; this is the same bar.
+  if (under(path, "/admin/domains") && path.endsWith("/apply-to-all")) return "super";
   // The user lookup feeds pickers in several areas; reading users is enough.
   if (path === "/admin/users/lookup") return "users:read";
   const write = method !== "GET" && method !== "HEAD";
@@ -139,6 +144,27 @@ export async function adminRoleGroupNames(env: Env): Promise<string[]> {
   if (!ids.length) return ["Super Admins"];
   const { results } = await env.DB.prepare("SELECT name FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ids)).all<{ name: string }>();
   return [...new Set(["Super Admins", ...results.map((r) => r.name)])];
+}
+
+/**
+ * The name of an admin-role group a user-attribute write would newly put the
+ * user into, or null. A dynamic group's rule can turn an innocent-looking
+ * attribute write (department = "OnCall") into an admin grant, so every writer
+ * below admin authority checks the post-write row against the rules of every
+ * dynamic group linked to a role. `before` is null on the create path: any
+ * match is a grant a provisioning peer may not make.
+ */
+export async function grantsAdminRoleGroup(env: Env, before: UserRow | null, after: UserRow): Promise<string | null> {
+  const roleGroups = await adminRoleGroupIds(env);
+  if (!roleGroups.size) return null;
+  const { results } = await env.DB.prepare("SELECT id, name, rule FROM groups WHERE rule != ''").all<{ id: number; name: string; rule: string }>();
+  for (const g of results) {
+    if (!roleGroups.has(g.id)) continue;
+    const rule = parseRule(g.rule);
+    if (!rule) continue;
+    if (before === null ? userMatchesRule(after, rule) : !userMatchesRule(before, rule) && userMatchesRule(after, rule)) return g.name;
+  }
+  return null;
 }
 
 export async function listRoles(env: Env): Promise<(RoleRow & { groups: { id: number; name: string }[] })[]> {

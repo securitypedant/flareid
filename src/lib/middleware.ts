@@ -4,7 +4,7 @@ import { accessFor, canAccess, type Access } from "./admin-roles.js";
 import { secondFactorGate } from "./auth-policy.js";
 import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
-import { getSession } from "./sessions.js";
+import { clearSessionCookie, getSession, revokeSession } from "./sessions.js";
 import { getUserById, getUserGroupNames } from "./db.js";
 import { isMfaRequired } from "./settings.js";
 import type { UserRow } from "./types.js";
@@ -49,12 +49,22 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
   // Safety net: even outside the forced-enrollment flow right after login
   // (see login.ts), nothing else should be usable without MFA once it's required.
   const path = new URL(c.req.url).pathname;
-  const exempt = path.startsWith("/account/mfa") || path === "/logout";
-  if (!exempt && !path.startsWith("/account/passkeys")) {
+  if (path !== "/logout") {
     const gate = await secondFactorGate(c.env, user, session!.amr);
-    if (gate === "enrol") return c.redirect("/account/mfa/setup", 302);
-    // The policy needs the second factor this session did not use: sign in again.
-    if (gate === "login") return c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
+    // "enrol": no factor exists yet, so the enrolment pages - and only those -
+    // stay reachable; everything else parks at the setup page.
+    if (gate === "enrol" && !path.startsWith("/account/mfa") && !path.startsWith("/account/passkeys")) {
+      return c.redirect("/account/mfa/setup", 302);
+    }
+    // "login": a factor exists but this session did not present it. Nothing
+    // the session can do substitutes for signing in again - enrolment would
+    // upgrade its own amr and launder the missing proof - so it ends here.
+    if (gate === "login") {
+      await revokeSession(c.env, session!.id);
+      const res = c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
+      res.headers.append("Set-Cookie", clearSessionCookie());
+      return res;
+    }
   }
 
   await next();

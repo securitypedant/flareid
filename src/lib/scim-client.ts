@@ -1,7 +1,7 @@
 import { resolveManyGroupMemberUserIds } from "./groups.js";
 import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
-import { getScimConfig, getScimScope, type ScimScope } from "./settings.js";
+import { getScimConfig, getScimScope, validateScimEndpoint, type ScimScope } from "./settings.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
@@ -27,19 +27,39 @@ function isGroupInScimScope(scope: ScimScope, groupId: number): boolean {
   return scope.mode === "all" || scope.groupIds.includes(groupId);
 }
 
+/** A downstream error body is diagnostic only: bounded before it is logged or returned. */
+async function scimError(res: Response): Promise<string> {
+  return (await res.text()).slice(0, 300);
+}
+
 async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Response> {
   const { endpoint, secret } = await getScimConfig(env);
   if (!endpoint || !secret) throw new Error("SCIM is not configured (Admin -> SCIM)");
+  const problem = validateScimEndpoint(endpoint);
+  if (problem) throw new Error(problem);
 
-  return fetch(`${endpoint}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      "Content-Type": "application/scim+json",
-      Accept: "application/scim+json",
-      ...init.headers,
-    },
-  });
+  // Redirects are followed by hand: the Bearer credential is attached again
+  // only while the target stays on the configured origin - fetch's default
+  // 'follow' would forward it cross-origin.
+  let url = `${endpoint}${path}`;
+  for (let hops = 0; ; hops++) {
+    const res = await fetch(url, {
+      ...init,
+      redirect: "manual",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/scim+json",
+        Accept: "application/scim+json",
+        ...init.headers,
+      },
+    });
+    if (res.status < 300 || res.status >= 400 || hops >= 3) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    const next = new URL(location, url);
+    if (next.origin !== new URL(url).origin) return res;
+    url = next.toString();
+  }
 }
 
 /**
@@ -107,7 +127,7 @@ export async function pushUser(env: Env, user: UserRow): Promise<ScimResult> {
       return createScimUser(env, { ...user, scim_id: null }, body);
     }
 
-    return { ok: false, status: res.status, error: await res.text() };
+    return { ok: false, status: res.status, error: await scimError(res) };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
@@ -115,7 +135,7 @@ export async function pushUser(env: Env, user: UserRow): Promise<ScimResult> {
 
 async function createScimUser(env: Env, user: UserRow, body: string): Promise<ScimResult> {
   const res = await scimFetch(env, "/Users", { method: "POST", body });
-  if (!res.ok) return { ok: false, status: res.status, error: await res.text() };
+  if (!res.ok) return { ok: false, status: res.status, error: await scimError(res) };
   const created = await res.json<{ id: string }>();
   const linked = await env.DB.prepare("UPDATE users SET scim_id = ? WHERE id = ?").bind(created.id, user.id).run();
   // Deleted locally while the POST was in flight: the new remote user has no
@@ -135,7 +155,7 @@ export async function deactivateUserScim(env: Env, user: UserRow): Promise<ScimR
         Operations: [{ op: "replace", path: "active", value: false }],
       }),
     });
-    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await res.text() };
+    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await scimError(res) };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
@@ -145,7 +165,7 @@ export async function deleteUserScim(env: Env, user: UserRow): Promise<ScimResul
   if (!user.scim_id) return { ok: true };
   try {
     const res = await scimFetch(env, `/Users/${user.scim_id}`, { method: "DELETE" });
-    return res.ok || res.status === 404 ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await res.text() };
+    return res.ok || res.status === 404 ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await scimError(res) };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
@@ -308,7 +328,7 @@ async function putGroup(env: Env, group: GroupRow, members: ScimMember[]): Promi
   // Self-heal, same as pushUser: recreate if the remote resource is gone.
   if (res.status === 404) return recreateGroup(env, group, members);
   await env.DB.batch(clearGroupPushState(env, group.id));
-  return { ok: false, status: res.status, error: await res.text() };
+  return { ok: false, status: res.status, error: await scimError(res) };
 }
 
 /** The remote group is gone: unlink it and create it again (with `members`, or the group's current members). */
@@ -321,7 +341,7 @@ async function recreateGroup(env: Env, group: GroupRow, members: ScimMember[] | 
 
 async function createScimGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
   const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, members)) });
-  if (!res.ok) return { ok: false, status: res.status, error: await res.text() };
+  if (!res.ok) return { ok: false, status: res.status, error: await scimError(res) };
   const created = await res.json<{ id: string }>();
   const linked = await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ?").bind(created.id, group.id).run();
   if (linked.meta.changes === 0) await queueScimDeprovision(env, "group", created.id, group.name).run();
@@ -333,7 +353,7 @@ export async function deleteGroupScim(env: Env, group: GroupRow): Promise<ScimRe
   if (!group.scim_id) return { ok: true };
   try {
     const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "DELETE" });
-    return res.ok || res.status === 404 ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await res.text() };
+    return res.ok || res.status === 404 ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await scimError(res) };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
@@ -342,7 +362,7 @@ export async function deleteGroupScim(env: Env, group: GroupRow): Promise<ScimRe
 export async function testScimConnection(env: Env): Promise<ScimResult> {
   try {
     const res = await scimFetch(env, "/Users?count=1", { method: "GET" });
-    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await res.text() };
+    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status, error: await scimError(res) };
   } catch (error) {
     return { ok: false, error: String(error) };
   }

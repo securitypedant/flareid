@@ -8,19 +8,22 @@ import type { Env } from "../env.js";
  */
 export const STEP_UP_WINDOW_MINUTES = 10;
 
-const SENSITIVE: RegExp[] = [
-  /^\/admin\/api-keys(\/|$)/, // minting and revoking API keys
-  /^\/admin\/clients\/\d+\/(rotate-secret|delete)$/,
-  /^\/admin\/saml\/\d+\/delete$/,
-  /^\/admin\/users\/\d+\/(reset-password|reset-mfa|delete)$/,
-  /^\/admin\/security\/signing-keys\/[^/]+\/rotate$/, // token signing key rotation (also under /admin/security below; explicit so it survives a narrower rule)
-  /^\/admin\/security(\/|$)/, // policies, factors, password and session rules
-  /^\/admin\/setup(\/|$)/,
-  /^\/admin\/scim$/, // the SCIM endpoint and secret
-];
+/**
+ * Every POST under /admin is sensitive by default: console writes change
+ * credentials, role membership, trust anchors or security policy, and naming
+ * them one by one is how routes slip through (this list once covered 32 of 83
+ * POST routes). The open list is only the re-authentication flow itself - it
+ * is how a stale session becomes fresh, so gating it would deadlock.
+ *
+ * Classifying on the path prefix - never on the shape of an :id segment -
+ * also keeps exotic spellings (`/admin/users/+2/reset-password`, `0x2`,
+ * `2e0`, padded ids) inside the gate while the route's Number() coercion
+ * still resolves them to a real id.
+ */
+const OPEN: RegExp[] = [/^\/admin\/reauth(\/|$)/];
 
 export function isSensitive(method: string, path: string): boolean {
-  return method === "POST" && SENSITIVE.some((r) => r.test(path));
+  return method === "POST" && /^\/admin(\/|$)/.test(path) && !OPEN.some((r) => r.test(path));
 }
 
 /**

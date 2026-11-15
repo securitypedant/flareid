@@ -2,6 +2,7 @@ import type { Env } from "../env.js";
 import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
+import { domainExists } from "../lib/domains.js";
 import { isEmailAddress, recipientFor } from "../lib/email.js";
 import { hashPassword } from "../lib/password.js";
 import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes } from "../lib/schemas.js";
@@ -13,7 +14,7 @@ import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import type { UserRow } from "../lib/types.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
-import { assertMayAssignGroups, assertMayTouchUser } from "./guards.js";
+import { assertMayAssignGroups, assertMayTouchUser, assertNoAdminRoleGrant } from "./guards.js";
 import { scimConfigured, syncGroupBestEffort, syncUserBestEffort } from "./scim-sync.js";
 
 /** Either the shared default password, or a freshly generated one that respects the configured complexity policy - per the "New account password" setting. */
@@ -60,6 +61,8 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const givenName = input.givenName.trim();
   const familyName = input.familyName.trim();
   if (!username || !domain || !givenName) throw new ServiceError(400, "username, domain, and first name are required");
+  // The UPN is where recovery mail goes: its domain must be one the IdP manages.
+  if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
   const upn = `${username}@${domain}`;
   const displayName = `${givenName} ${familyName}`.trim();
   const schemaId = Number(input.schemaId) || (await defaultSchemaId(ctx.env, "user"));
@@ -76,6 +79,40 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
     const policyError = await newPasswordError(ctx.env, input.password);
     if (policyError) throw new ServiceError(400, policyError);
   }
+
+  await assertNoAdminRoleGrant(ctx, null, {
+    id: 0,
+    upn,
+    username,
+    display_name: displayName,
+    given_name: givenName,
+    family_name: familyName,
+    password_hash: "",
+    password_salt: "",
+    password_iterations: 0,
+    totp_secret: null,
+    email,
+    totp_last_counter: null,
+    mfa_enabled: 0,
+    email_otp_enabled: 0,
+    security_questions_enabled: 0,
+    is_admin: 0,
+    status: input.status === "active" ? "active" : "disabled",
+    created_at: "",
+    updated_at: "",
+    scim_id: null,
+    external_id: "",
+    job_title: String(columns.job_title ?? ""),
+    department: String(columns.department ?? ""),
+    manager_external_id: (columns.manager_external_id as string | null) ?? null,
+    employee_number: String(columns.employee_number ?? ""),
+    hire_date: String(columns.hire_date ?? ""),
+    employment_status: String(columns.employment_status ?? ""),
+    employment_type: String(columns.employment_type ?? ""),
+    location: String(columns.location ?? ""),
+    schema_id: schemaId ?? null,
+    custom_attributes: JSON.stringify(custom),
+  });
 
   const password = input.password || (await generateAccountPassword(ctx.env));
   const { hash, salt, iterations } = await hashPassword(password, ctx.env);
@@ -144,6 +181,7 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   const username = input.username.trim().toLowerCase();
   const domain = input.domain.trim().toLowerCase();
   if (!username || !domain) throw new ServiceError(400, "username and domain are required");
+  if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
   const upn = `${username}@${domain}`;
   const givenName = input.givenName.trim();
   const familyName = input.familyName.trim();
@@ -168,6 +206,26 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
     email = String(input.email ?? "").trim().toLowerCase() || null;
     if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
   }
+
+  await assertNoAdminRoleGrant(ctx, existing, {
+    ...existing,
+    upn,
+    username,
+    display_name: displayName,
+    given_name: givenName,
+    family_name: familyName,
+    job_title: String(columns.job_title ?? ""),
+    department: String(columns.department ?? ""),
+    manager_external_id: managerExternalId,
+    employee_number: String(columns.employee_number ?? ""),
+    hire_date: String(columns.hire_date ?? ""),
+    employment_status: String(columns.employment_status ?? ""),
+    employment_type: String(columns.employment_type ?? ""),
+    location: String(columns.location ?? ""),
+    schema_id: schemaId ?? null,
+    custom_attributes: JSON.stringify(custom),
+    email,
+  });
 
   // A rename (or a new contact address) moves where recovery mail goes: links sent to the old one are void.
   if (existing.upn !== upn || existing.email !== email) await revokeAccountTokens(ctx.env, id);
@@ -220,6 +278,8 @@ export async function setUserStatus(ctx: ServiceCtx, id: number, status: "active
   if (!user) throw new ServiceError(404, "Not found");
   if (id === ctx.selfId) throw new ServiceError(400, "You cannot deactivate your own account.");
   await assertMayTouchUser(ctx, id);
+  // `status` is a rule field: a status change can put someone into a dynamic admin role group.
+  await assertNoAdminRoleGrant(ctx, user, { ...user, status });
   await ctx.env.DB.prepare("UPDATE users SET status = ?, updated_at = ? WHERE id = ?").bind(status, new Date().toISOString(), id).run();
   // Deactivation should take effect now, not at the next sign-in - and not at
   // the next introspection or refresh grant either.
@@ -325,6 +385,9 @@ export async function deleteUser(ctx: ServiceCtx, id: number): Promise<UserRow> 
 /** Invitation (choosing a password activates the account) or a password reset link, by email. */
 export async function sendUserLink(ctx: ServiceCtx, user: UserRow, kind: "invite" | "reset"): Promise<{ ok: true } | { ok: false; error: string }> {
   await assertMayTouchUser(ctx, user.id);
+  // An invitation activates the account; `status` is a rule field, so sending
+  // one can be an admin grant the caller had no business making.
+  if (kind === "invite") await assertNoAdminRoleGrant(ctx, user, { ...user, status: "active" });
   const result = kind === "invite" ? await sendInvitation(ctx.env, user) : await sendPasswordReset(ctx.env, user);
   await audit(ctx, kind === "invite" ? "user.invitation_sent" : "user.password_reset_link_sent", user.upn, {
     to: recipientFor(user),

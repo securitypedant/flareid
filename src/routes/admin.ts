@@ -156,9 +156,11 @@ admin.use("/admin/*", async (c, next) => {
   const forbid = (why: string) => consoleError(c, `Forbidden: ${why} needs a Super Admin.`, 403);
   const roleGroupIds = await adminRoleGroupIds(c.env);
   const roleGroupNames = await adminRoleGroupNames(c.env);
-  const userMatch = /^\/admin\/users\/(\d+)(\/|$)/.exec(path);
-  if (userMatch && (await accessFor(c.env, Number(userMatch[1]))).isAdmin) return forbid("changing an account that holds an admin role");
-  const groupMatch = /^\/admin\/groups\/(\d+)(\/|$)/.exec(path);
+  // The id segment accepts any spelling the route's Number() coercion does
+  // ("+2", "0x2", "2e0"), so matching \d+ would be a bypass, not a filter.
+  const userMatch = /^\/admin\/users\/([^/]+)(\/|$)/.exec(path);
+  if (userMatch && userMatch[1] !== "import" && (await accessFor(c.env, Number(userMatch[1]))).isAdmin) return forbid("changing an account that holds an admin role");
+  const groupMatch = /^\/admin\/groups\/([^/]+)(\/|$)/.exec(path);
   if (groupMatch && roleGroupIds.has(Number(groupMatch[1]))) return forbid("changing an admin role group");
   if (path === "/admin/users" || userMatch || path === "/admin/groups") {
     const form = await c.req.raw.clone().formData().catch(() => null);
@@ -2417,6 +2419,7 @@ admin.get("/admin/integrations/scim", async (c) => {
       "SCIM provisioning",
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         ${integrationIntro("FlareID acts as a SCIM 2.0 <em>client</em>, pushing users and groups to a SCIM server &mdash; for example the endpoint and secret Cloudflare generates once you enable SCIM on this IdP's Access identity provider.")}
         <form method="POST" action="/admin/scim">
@@ -2427,7 +2430,8 @@ admin.get("/admin/integrations/scim", async (c) => {
             </div>
             <div>
               <label for="secret">SCIM secret</label>
-              <input type="text" id="secret" name="secret" value="${escapeHtml(config.secret)}" placeholder="Bearer token from Cloudflare" />
+              <input type="password" id="secret" name="secret" value="" autocomplete="new-password" placeholder="${config.secret ? "Saved - leave blank to keep it" : "Bearer token from Cloudflare"}" />
+              <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
             </div>
           </div>
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
@@ -3395,9 +3399,9 @@ admin.get("/admin/domains", async (c) => {
                   <td>${brandCell(d)}</td>
                   <td>
                     ${!d.is_default ? `<form method="POST" action="/admin/domains/${d.id}/set-default" style="display:inline;"><button class="link-button" type="submit">Make default</button></form> · ` : ""}
-                    <form method="POST" action="/admin/domains/${d.id}/apply-to-all" style="display:inline;" ${confirmAttrs(`Every user's UPN domain becomes ${d.domain}. Usernames are kept.`, { title: "Change the domain on every account?", action: "Apply to all" })}>
+                    ${c.get("isSuperAdmin") ? `<form method="POST" action="/admin/domains/${d.id}/apply-to-all" style="display:inline;" ${confirmAttrs(`Every user's UPN domain becomes ${d.domain}. Usernames are kept.`, { title: "Change the domain on every account?", action: "Apply to all" })}>
                       <button class="link-button" type="submit">Apply to all users</button>
-                    </form> ·
+                    </form> · ` : ""}
                     <form method="POST" action="/admin/domains/${d.id}/delete" style="display:inline;">
                       <button class="link-button" type="submit">Delete</button>
                     </form>
@@ -3500,7 +3504,8 @@ admin.get("/admin/security", async (c) => {
         <h2>Default password</h2>
         <p class="muted">Used for newly created accounts and available to bulk-apply to every existing account.</p>
         <form method="POST" action="/admin/security/default-password">
-          <input type="text" name="default_password" value="${escapeHtml(defaultPassword)}" required />
+          <input type="password" name="default_password" value="" autocomplete="new-password" placeholder="${defaultPassword ? "Saved - leave blank to keep it" : "Choose a default password"}" ${defaultPassword ? "" : "required"} />
+          <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving. Blank keeps the stored one.</p>
           <div class="row" style="justify-content:flex-start; gap:10px;">
             <button class="primary" type="submit">Save</button>
             <button class="danger" type="submit" name="apply" value="1" formaction="/admin/security/apply-default-password"
@@ -4772,7 +4777,16 @@ admin.post("/admin/security/audit-retention", async (c) => {
 
 admin.post("/admin/scim", async (c) => {
   const body = await c.req.parseBody();
-  await setScimConfig(c.env, { endpoint: String(body.endpoint ?? ""), secret: String(body.secret ?? "") });
+  const endpoint = String(body.endpoint ?? "").trim();
+  // The field renders write-only: blank keeps the stored secret, and clearing
+  // the endpoint removes the configuration - and its credential - entirely.
+  const posted = String(body.secret ?? "").trim();
+  const secret = endpoint === "" ? "" : posted || (await getScimConfig(c.env)).secret;
+  try {
+    await setScimConfig(c.env, { endpoint, secret });
+  } catch (e) {
+    return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
   await logAudit(c.env, c.get("user"), "settings.scim_config_changed", undefined, undefined, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });

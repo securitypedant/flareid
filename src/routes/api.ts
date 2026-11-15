@@ -37,7 +37,7 @@ import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
-import { getAppName, isSetupCompleted, setScimConfig } from "../lib/settings.js";
+import { getAppName, getScimConfig, isSetupCompleted, setScimConfig } from "../lib/settings.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
@@ -649,7 +649,15 @@ defineRoute({
   const body = await readJson<{ endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] } }>(c);
 
   if (body.endpoint !== undefined || body.secret !== undefined) {
-    await setScimConfig(c.env, { endpoint: String(body.endpoint ?? ""), secret: String(body.secret ?? "") });
+    const endpoint = String(body.endpoint ?? (await getScimConfig(c.env)).endpoint).trim();
+    // A blank secret keeps the stored one (the console's write-only field);
+    // clearing the endpoint removes the credential with it.
+    const secret = endpoint === "" ? "" : String(body.secret ?? "").trim() || (await getScimConfig(c.env)).secret;
+    try {
+      await setScimConfig(c.env, { endpoint, secret });
+    } catch (e) {
+      return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+    }
   }
   if (body.scope) {
     // As in the console: what was already pushed is re-evaluated against the new scope.

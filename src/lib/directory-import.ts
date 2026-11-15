@@ -7,9 +7,9 @@ import { hashPassword, type PasswordHash } from "./password.js";
 import { getDefaultDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
-import { adminRoleGroupNames } from "./admin-roles.js";
+import { adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "./admin-roles.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
-import { parseRule } from "./groups.js";
+import { parseRule, userMatchesRule, type GroupRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups, drainScimDeprovisionQueue } from "./scim-client.js";
 import type { GroupRow, UserRow } from "./types.js";
@@ -209,10 +209,20 @@ async function ensureDomain(env: Env, domain: string): Promise<void> {
  * directory, not for locking yourself out of it. A caller that genuinely wants
  * an empty instance can delete the administrators afterwards.
  */
+/** Rules of the dynamic groups linked to admin roles - who holds a role by attribute, not by a group_members row. */
+async function dynamicAdminRules(env: Env): Promise<GroupRule[]> {
+  const ids = await adminRoleGroupIds(env);
+  if (!ids.size) return [];
+  const { results } = await env.DB.prepare("SELECT rule FROM groups WHERE rule != '' AND id IN (SELECT value FROM json_each(?))")
+    .bind(JSON.stringify([...ids]))
+    .all<{ rule: string }>();
+  return results.map((r) => parseRule(r.rule)).filter((r): r is GroupRule => r !== null);
+}
+
 async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; groups: GroupRow[] }> {
   // Replace keeps the administrators - everyone holding an admin role - and the role groups themselves.
   const roles = JSON.stringify(await adminRoleGroupNames(env));
-  const { results: doomed } = await env.DB.prepare(
+  const { results: doomedStatic } = await env.DB.prepare(
     `SELECT * FROM users
       WHERE id NOT IN (
         SELECT user_id FROM group_members WHERE group_id IN (SELECT id FROM groups WHERE name IN (SELECT value FROM json_each(?)))
@@ -220,6 +230,9 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   )
     .bind(roles)
     .all<UserRow>();
+  // Admins by dynamic membership have no group_members row to keep them - keep them too.
+  const dynRules = await dynamicAdminRules(env);
+  const doomed = dynRules.length ? doomedStatic.filter((u) => !dynRules.some((r) => userMatchesRule(u, r))) : doomedStatic;
   const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(roles).all<GroupRow>();
 
   // The remote ids are queued in the same batch as the deletion: once the
@@ -294,6 +307,17 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       .bind(JSON.stringify(ROLE_GROUP_NAMES))
       .all<{ username: string }>();
     const adminUsernames = new Set(adminRows.map((r) => r.username));
+    // Dynamic role members have no group_members row; resolve them by rule.
+    const dynRules = await dynamicAdminRules(env);
+    if (dynRules.length) {
+      const bundleNames = users.map((u) => cleanString(u.username).toLowerCase()).filter(Boolean);
+      if (bundleNames.length) {
+        const { results: existing } = await env.DB.prepare("SELECT * FROM users WHERE username IN (SELECT value FROM json_each(?))")
+          .bind(JSON.stringify(bundleNames))
+          .all<UserRow>();
+        for (const u of existing) if (dynRules.some((r) => userMatchesRule(u, r))) adminUsernames.add(u.username);
+      }
+    }
     for (const user of users) {
       const username = cleanString(user.username).toLowerCase();
       if (user.super_admin) {
@@ -355,12 +379,20 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   if (users.some((u) => u.super_admin)) described.set(SUPER_ADMINS_GROUP, described.get(SUPER_ADMINS_GROUP) ?? null);
 
   const groupIdByName = new Map<string, number>();
+  const roleGroupIds = opts.allowPrivileged ? new Set<number>() : await adminRoleGroupIds(env);
+  const roleGroupNameSet = opts.allowPrivileged ? new Set<string>() : new Set(await adminRoleGroupNames(env));
   for (const [name, description] of described) {
     try {
       const existing = await env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(name).first<{ id: number }>();
       if (existing) {
         const rule = ruleByName.get(name);
-        if (description !== null || rule !== undefined) {
+        if (roleGroupIds.has(existing.id)) {
+          // A rule or description write on a role-linked group redefines who
+          // holds the role - that is an admin grant, not a group update.
+          if (description !== null || rule !== undefined) {
+            result.errors.push({ group: name, message: `"${name}" grants an admin role; changing it requires an admin-scoped token.` });
+          }
+        } else if (description !== null || rule !== undefined) {
           await env.DB.prepare("UPDATE groups SET description = COALESCE(?, description), rule = COALESCE(?, rule) WHERE id = ?")
             .bind(description, rule ?? null, existing.id)
             .run();
@@ -368,6 +400,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         }
         groupIdByName.set(name, existing.id);
       } else {
+        if (roleGroupNameSet.has(name)) {
+          result.errors.push({ group: name, message: `"${name}" is an admin role group name; creating it requires an admin-scoped token.` });
+          continue;
+        }
         const inserted = await env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, ?, ?) RETURNING id")
           .bind(name, description, ruleByName.get(name) ?? "")
           .first<{ id: number }>();
@@ -439,12 +475,36 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       const schemaAttrs = schema ? await getSchemaAttributes(env, schema.id) : [];
       const { columns: attrColumns, custom: attrCustom } = splitUserAttributes(schemaAttrs, user.attributes ?? {});
 
+      // The attribute columns every write path sets, computed once.
+      const vals = {
+        job_title: cleanString(user.job_title) || String(attrColumns.job_title ?? ""),
+        department: cleanString(user.department) || String(attrColumns.department ?? ""),
+        employee_number: cleanString(user.employee_number) || String(attrColumns.employee_number ?? ""),
+        hire_date: cleanString(user.hire_date) || String(attrColumns.hire_date ?? ""),
+        employment_status: cleanString(user.employment_status) || String(attrColumns.employment_status ?? ""),
+        employment_type: cleanString(user.employment_type) || String(attrColumns.employment_type ?? ""),
+        location: cleanString(user.location) || String(attrColumns.location ?? ""),
+      };
+
       let userId: number;
       if (existing) {
-        const existingCustom = parseCustomAttributes(
-          (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(existing.id).first<{ custom_attributes: string }>())?.custom_attributes
-        );
+        const existingRow = (await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(existing.id).first<UserRow>())!;
+        const existingCustom = parseCustomAttributes(existingRow.custom_attributes);
         const mergedCustom = { ...existingCustom, ...attrCustom };
+        if (!opts.allowPrivileged) {
+          // An attribute update can move the user into a dynamic admin-role
+          // group; that grant is reserved to admin-scoped tokens.
+          const after = {
+            ...existingRow, upn, display_name: displayName, given_name: givenName, family_name: familyName,
+            ...vals, status: user.status ?? "disabled", custom_attributes: JSON.stringify(mergedCustom),
+          } as UserRow;
+          const granted = await grantsAdminRoleGroup(env, existingRow, after);
+          if (granted) {
+            result.errors.push({ username, message: `The update moves "${username}" into ${granted}, an admin role group, which requires an admin-scoped token.` });
+            result.users.skipped++;
+            continue;
+          }
+        }
         if (existing.upn !== upn) await revokeAccountTokens(env, existing.id);
         await env.DB.prepare(
           `UPDATE users SET upn = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?,
@@ -457,13 +517,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
             displayName,
             givenName,
             familyName,
-            cleanString(user.job_title) || String(attrColumns.job_title ?? ""),
-            cleanString(user.department) || String(attrColumns.department ?? ""),
-            cleanString(user.employee_number) || String(attrColumns.employee_number ?? ""),
-            cleanString(user.hire_date) || String(attrColumns.hire_date ?? ""),
-            cleanString(user.employment_status) || String(attrColumns.employment_status ?? ""),
-            cleanString(user.employment_type) || String(attrColumns.employment_type ?? ""),
-            cleanString(user.location) || String(attrColumns.location ?? ""),
+            vals.job_title,
+            vals.department,
+            vals.employee_number,
+            vals.hire_date,
+            vals.employment_status,
+            vals.employment_type,
+            vals.location,
             user.status ?? "disabled",
             user.super_admin ? 1 : 0,
             schema?.id ?? null,
@@ -511,6 +571,20 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         const { hash, salt, iterations } = noPassword ? UNUSABLE_PASSWORD : await hashOnce(password);
         const externalId = crypto.randomUUID();
 
+        if (!opts.allowPrivileged) {
+          // A new account can be born matching a dynamic admin-role rule.
+          const after = {
+            upn, username, display_name: displayName, given_name: givenName, family_name: familyName,
+            ...vals, status: user.status ?? "disabled", manager_external_id: null, custom_attributes: JSON.stringify(attrCustom),
+          } as UserRow;
+          const granted = await grantsAdminRoleGroup(env, null, after);
+          if (granted) {
+            result.errors.push({ username, message: `The account lands in ${granted}, an admin role group, which requires an admin-scoped token.` });
+            result.users.skipped++;
+            continue;
+          }
+        }
+
         const inserted = await env.DB.prepare(
           `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department,
              employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt,
@@ -525,13 +599,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
             givenName,
             familyName,
             externalId,
-            cleanString(user.job_title) || String(attrColumns.job_title ?? ""),
-            cleanString(user.department) || String(attrColumns.department ?? ""),
-            cleanString(user.employee_number) || String(attrColumns.employee_number ?? ""),
-            cleanString(user.hire_date) || String(attrColumns.hire_date ?? ""),
-            cleanString(user.employment_status) || String(attrColumns.employment_status ?? ""),
-            cleanString(user.employment_type) || String(attrColumns.employment_type ?? ""),
-            cleanString(user.location) || String(attrColumns.location ?? ""),
+            vals.job_title,
+            vals.department,
+            vals.employee_number,
+            vals.hire_date,
+            vals.employment_status,
+            vals.employment_type,
+            vals.location,
             hash,
             salt,
             iterations,

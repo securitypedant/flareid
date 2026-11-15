@@ -595,9 +595,18 @@ account.get("/account/passkeys/options", async (c) => {
 
 account.post("/account/passkeys", async (c) => {
   const user = c.get("user");
+  const sessionId = c.get("sessionId");
   const body = await c.req.json<{ response?: unknown; name?: string }>().catch(() => ({}) as { response?: unknown; name?: string });
-  const error = body.response ? await finishRegistration(c.env, c.get("sessionId"), user.id, body.response as never, String(body.name ?? "")) : "Missing response.";
+  const error = body.response ? await finishRegistration(c.env, sessionId, user.id, body.response as never, String(body.name ?? "")) : "Missing response.";
   if (error) return c.json({ ok: false, error }, 400);
+  // Registering a passkey is itself a user-verified factor ceremony by this
+  // session, so its amr gains hwk+mfa here - atomically with the credential.
+  // (Doing it later, at /account/mfa/passkey-enrolled, left a window where the
+  // stored credential made the gate say "login" and killed the mid-ceremony
+  // session - and let a different session claim the upgrade.)
+  const row = await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(sessionId).first<{ amr: string }>();
+  const previous = row ? (JSON.parse(row.amr) as string[]) : ["pwd"];
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify([...new Set([...previous, "hwk", "mfa"])]), sessionId).run();
   await logAudit(c.env, user, "user.passkey_added", user.upn, { name: String(body.name ?? "").slice(0, 60) }, c.req.raw);
   return c.json({ ok: true });
 });
@@ -765,16 +774,17 @@ account.get("/account/mfa/setup", async (c) => {
 /** Forced enrolment finished with a passkey instead of an authenticator app. */
 account.post("/account/mfa/passkey-enrolled", async (c) => {
   const user = c.get("user");
+  const sessionId = c.get("sessionId");
   const resume = String((await c.req.parseBody()).resume ?? "");
-  // The passkey this session just registered (within the last ten minutes) is the new second factor.
-  const recent = await c.env.DB.prepare("SELECT 1 FROM webauthn_credentials WHERE user_id = ? AND created_at > ?")
-    .bind(user.id, new Date(Date.now() - 10 * 60 * 1000).toISOString())
-    .first();
-  if (!recent) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
-  await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
-  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(["pwd", "hwk", "mfa"]), c.get("sessionId")).run();
+  // Only the session that ran the registration ceremony - its amr gained hwk
+  // when the credential was stored - finishes here. Any other session with the
+  // same credential recency gets sent back to start.
+  const session = await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(sessionId).first<{ amr: string }>();
+  const amr = session ? (JSON.parse(session.amr) as string[]) : [];
+  if (!amr.includes("hwk")) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
+  await revokeAllSessionsForUser(c.env, user.id, sessionId);
   await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, c.get("sessionId")) : "/account?saved=passkey-added", 302);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : "/account?saved=passkey-added", 302);
 });
 
 account.post("/account/mfa/setup", async (c) => {

@@ -43,6 +43,9 @@ describe("admin roles", () => {
     const dir = r(["users:write", "groups:write", "domains:write", "schemas:write", "import:write", "audit:read", "performance:read"]);
     const aud = r(["users:read", "groups:read", "oidc:read", "audit:read"]);
     expect(canAccess(dir, "POST", "/admin/users/5")).toBe(true);
+    // domains:write may manage domains, but "apply to all" moves Super Admins'
+    // UPNs - that is Super Admin authority, like its API equivalent's "*" scope.
+    expect(canAccess(dir, "POST", "/admin/domains/1/apply-to-all")).toBe(false);
     expect(canAccess(dir, "GET", "/admin/integrations/oidc")).toBe(false);
     expect(canAccess(r(["oidc:write", "saml:write"]), "POST", "/admin/clients")).toBe(true);
     expect(canAccess(r(["oidc:write"]), "GET", "/admin/integrations/api-keys")).toBe(false);
@@ -84,6 +87,10 @@ describe("admin roles", () => {
     const imp = await SELF.fetch(`${BASE}/admin/users/import`, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, Cookie: dora }, body: JSON.stringify({ version: 1, users: [{ username: "pat", groups: ["Super Admins"] }] }) });
     expect(imp.status).toBe(400);
     expect(await env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(superAdmins, pat).first()).toBeNull();
+
+    // apply-to-all is Super Admin authority: a domains:write role cannot use it.
+    const domain = await idOf("domains", "domain", "horizon.test");
+    expect((await post(`/admin/domains/${domain}/apply-to-all`, dora)).status).toBe(403);
   });
 });
 
@@ -110,6 +117,54 @@ describe("step-up re-authentication", () => {
     expect(ok.headers.get("Location")).toBe("/admin/integrations/api-keys");
     expect((await mint()).status).not.toBe(303);
     expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).not.toBeNull();
+  });
+
+  it("gates every console POST on a stale session - including user create, groups, and non-digit id spellings", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/users", { token: apiKey, body: { username: "pat", given_name: "Pat", status: "active" } });
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const patId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'pat'").first<{ id: number }>())!.id;
+    const { setCookie, sessionId } = await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE));
+    const cookie = setCookie.split(";")[0]!;
+    await env.DB.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").bind(new Date(Date.now() - 30 * 60 * 1000).toISOString(), sessionId).run();
+
+    const stalePost = (path: string) =>
+      SELF.fetch(`${BASE}${path}`, { method: "POST", headers: { ...FORM, Cookie: cookie, Referer: `${BASE}/admin` }, body: "x=1", redirect: "manual" });
+
+    for (const path of [
+      "/admin/users", // mints an account (was the mint-a-Super-Admin door)
+      "/admin/users/import",
+      `/admin/users/${patId}/status`,
+      `/admin/users/${patId}/send-reset`,
+      `/admin/users/${patId}/reset-password`,
+      `/admin/users/+${patId}/reset-password`, // Number() coerces, \d+ did not match
+      `/admin/users/0x${patId.toString(16)}/reset-password`,
+      `/admin/users/${patId}%20/delete`,
+      "/admin/groups",
+      "/admin/clients",
+      "/admin/domains",
+      "/admin/schemas",
+    ]) {
+      const res = await stalePost(path);
+      expect(res.status, path).toBe(303);
+      expect(res.headers.get("Location"), path).toMatch(/^\/admin\/reauth\?next=/);
+    }
+    expect(await env.DB.prepare("SELECT 1 FROM users WHERE username != 'pat' AND username != 'admin'").first()).toBeNull();
+
+    // The re-authentication flow itself stays open - gating it would deadlock.
+    const re = await post("/admin/reauth", cookie, { password: "nope", next: "/admin" });
+    expect(re.headers.get("Location")).toContain("error=");
+  });
+
+  it("lets a fresh session POST to the once-ungated routes", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    // POST /admin/groups with a fresh session reaches the handler, not reauth.
+    const res = await post("/admin/groups", cookie, { name: "Fresh Crew", membership: "static" });
+    expect(res.status).toBe(302);
+    expect(await env.DB.prepare("SELECT 1 FROM groups WHERE name = 'Fresh Crew'").first()).not.toBeNull();
+    void apiKey;
   });
 });
 
