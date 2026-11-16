@@ -4,11 +4,12 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [3.9.3] - 2026-11-15
 
-The confirmed low-severity audit findings, in one pass: token and code
-lifecycle, SAML unlinkability, SCIM delta correctness, input bounds and a
-login timing equalization.
+No migrations. The confirmed low-severity audit findings in one pass -
+token and code lifecycle, SAML unlinkability, SCIM delta correctness,
+input bounds and a login timing equalization - plus the audit's
+remaining validation leads.
 
 ### Security
 
@@ -60,6 +61,21 @@ login timing equalization.
   solved on any hostname the deployment serves (e.g. a brand's custom
   domain), not only the issuer host; and the setup/helper scripts write
   credential-bearing files `0600`.
+- **Email headers and anonymous bodies bounded.** `sendEmail` now
+  enforces the contract at the `send_email` binding boundary: the
+  recipient must be a single well-formed address, and CR/LF is stripped
+  from the subject and display name, so a stored brand name or an
+  imported contact address cannot inject header lines. A request
+  declaring a body over 4 MB gets a 413 before the parser buffers it.
+- **SAML default ACS and login-flow sealing.** `resolveAcsUrl` honours
+  `default_acs_url` only while it is a registered ACS, so a stale or
+  hand-edited row cannot redirect assertions outside the allowlist; and
+  the sealed-flow MAC refuses placeholder-length secret material rather
+  than deriving a forgeable key.
+- **Conformance CI: secrets out of the artifact.** The exported suite
+  results are scrubbed of the shared secrets they can embed - client
+  secrets, the seeded user's password, the suite token - before the
+  artifact upload (`conformance/redact-exports.mjs`).
 
 ## [3.9.2] - 2026-11-15
 
