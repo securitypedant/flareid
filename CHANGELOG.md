@@ -4,7 +4,7 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [3.9.2] - 2026-11-15
 
 Migrations: `0028_consent_claim_groups.sql`, `0029_repairs.sql`. The rest of
 the confirmed medium-severity audit findings: consent tracking, credential
