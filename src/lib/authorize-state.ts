@@ -110,7 +110,9 @@ const SEALED_PREFIX = "s.";
 async function flowSealKey(env: Env): Promise<CryptoKey | null> {
   // KEY_ENCRYPTION_KEY last: a Deploy to Cloudflare install has only that one.
   const material = env.SIGNING_KEY_PKCS8 || env.COOKIE_ENCRYPTION_KEY || env.KEY_ENCRYPTION_KEY;
-  if (!material) return null;
+  // A placeholder-length secret would make sealed flows forgeable; refuse it
+  // so deployments fall back to KV flows rather than a guessable MAC key.
+  if (!material || material.length < 32) return null;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`flareid login-flow seal v1\n${material}`));
   return crypto.subtle.importKey("raw", digest, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }

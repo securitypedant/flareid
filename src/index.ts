@@ -32,6 +32,18 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Every response, the API included.
 app.use("*", securityHeaders);
+
+// A declared body that can never be legitimate is refused before the
+// request parser buffers it. Directory-import bundles are the largest
+// honest payloads and sit far under this; chunked bodies without
+// Content-Length still land, but the per-route caps govern those.
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+app.use("*", async (c, next) => {
+  const declared = Number(c.req.header("content-length") ?? 0);
+  if (declared > MAX_BODY_BYTES) return c.text("Request body too large.", 413);
+  await next();
+});
+
 // Flood control for anonymous routes, before any handler can write anything.
 app.use("*", edgeRateLimit);
 // Per-request performance data point (Analytics Engine; no-op without the binding).

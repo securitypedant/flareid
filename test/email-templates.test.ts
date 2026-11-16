@@ -5,6 +5,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import worker from "../src/index.js";
 import { createSession } from "../src/lib/sessions.js";
 import { DEFAULT_TEMPLATES, getAccent, getTemplate } from "../src/lib/email-templates.js";
+import { sendEmail, setEmailSettings } from "../src/lib/email.js";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 
 beforeEach(resetDatabase);
@@ -153,5 +154,23 @@ describe("email templates in the console", () => {
     expect((await post("/admin/branding/email-templates/invitation/reset", "")).status).toBe(403);
     expect((await post("/admin/branding/email-accent", "accent=%23000000")).status).toBe(403);
     expect(await getTemplate(env, "invitation")).toEqual(DEFAULT_TEMPLATES.invitation);
+  });
+
+  it("refuses a malformed recipient and strips CR/LF from the header fields", async () => {
+    await setup();
+    const email = fakeEmail();
+    const e = { ...env, EMAIL: email.binding } as unknown as typeof env;
+    await setEmailSettings(e, { fromAddress: "no-reply@horizon.test", fromName: "Horizon\r\nBcc: evil@x.test" });
+
+    const bad = await sendEmail(e, { to: "victim@x.test\r\nBcc: evil@x.test", subject: "hi", text: "t", html: "<p>t</p>" });
+    expect(bad).toMatchObject({ ok: false });
+    expect(email.sent).toHaveLength(0);
+
+    const ok = await sendEmail(e, { to: "nina@personal.test", subject: "Hi\r\nBcc: evil@x.test", text: "t", html: "<p>t</p>" });
+    expect(ok).toMatchObject({ ok: true });
+    const sent = email.sent[0] as unknown as { to: string; subject: string; from: { email: string; name: string } };
+    expect(sent.to).toBe("nina@personal.test");
+    expect(sent.subject).not.toMatch(/[\r\n]/);
+    expect(sent.from.name).not.toMatch(/[\r\n]/);
   });
 });

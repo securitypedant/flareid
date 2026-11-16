@@ -63,11 +63,17 @@ export async function sendEmail(env: Env, message: OutboundEmail): Promise<SendR
   const { fromAddress, fromName } = await getEmailSettings(env);
   if (!env.EMAIL || !fromAddress) return { ok: false, error: "Email is not configured." };
   if (!(await isEmailEnabled(env))) return { ok: false, error: "Email is switched off (Admin -> Integrations -> Email)." };
+  // Header fields reach the send_email binding verbatim, so enforce the
+  // contract here: a single well-formed recipient, and no CR/LF in subject
+  // or display name - those can carry a stored field like a brand name or a
+  // directory-imported contact address into injected header lines.
+  if (!isEmailAddress(message.to)) return { ok: false, error: "Recipient address is not a valid email address." };
+  const cleanName = fromName.replace(/[\r\n]+/g, " ").trim();
   try {
     const result = await env.EMAIL.send({
       to: message.to,
-      from: fromName ? { email: fromAddress, name: fromName } : fromAddress,
-      subject: message.subject,
+      from: cleanName ? { email: fromAddress, name: cleanName } : fromAddress,
+      subject: message.subject.replace(/[\r\n]+/g, " ").trim(),
       text: message.text,
       html: message.html,
     });

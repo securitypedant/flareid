@@ -47,5 +47,10 @@ export function spAttributeMap(sp: SamlServiceProviderRow): Record<string, strin
  */
 export function resolveAcsUrl(sp: SamlServiceProviderRow, requested: string | null): string | null {
   if (requested) return requested;
-  return sp.default_acs_url || spAcsUrls(sp)[0] || null;
+  // The default must also be a registered ACS - writes enforce membership,
+  // and the read-side check keeps a stale or hand-edited row from
+  // redirecting assertions somewhere the allowlist never approved.
+  const registered = spAcsUrls(sp);
+  if (sp.default_acs_url && registered.includes(sp.default_acs_url)) return sp.default_acs_url;
+  return registered[0] || null;
 }

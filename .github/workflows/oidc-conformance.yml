@@ -64,6 +64,12 @@ jobs:
             "oidcc-config-certification-test-plan" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
 
+      - name: Scrub shared secrets from the suite exports
+        if: always()
+        env:
+          CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
+        run: node conformance/redact-exports.mjs conformance-results conformance/suite-config.json
+
       - name: Keep the suite's exported results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
