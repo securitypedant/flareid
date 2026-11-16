@@ -98,6 +98,22 @@ describe("SCIM group pushes", () => {
     expect(await stored(b.id)).toContain("p0");
   });
 
+  it("removes a member's previous remote id when it rotates, alongside adding the new one", async () => {
+    const { scim, a, userScimId } = await directory();
+    const oldId = await userScimId("p0");
+
+    // The remote user was deleted and recreated downstream: same account,
+    // new remote id. The last push recorded the old one.
+    await env.DB.prepare("UPDATE users SET scim_id = ? WHERE username = 'p0'").bind("u-rotated").run();
+
+    scim.reset();
+    await syncGroups(env, [a.id]);
+    const patch = scim.groupWrites().find((w) => w.method === "PATCH" && w.path === `/Groups/${a.scim_id}`)!;
+    expect(patch).toBeTruthy();
+    expect(patch.body.Operations).toContainEqual({ op: "remove", path: `members[value eq "${oldId}"]` });
+    expect(patch.body.Operations).toContainEqual({ op: "add", path: "members", value: [{ value: "u-rotated" }] });
+  });
+
   it("sends nothing for a group whose membership did not change (the conformance user's re-import)", async () => {
     const { apiKey, scim } = await directory();
     scim.reset();

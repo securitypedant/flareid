@@ -778,6 +778,10 @@ defineRoute({
 
   const acsUrls = body.acs_urls !== undefined ? body.acs_urls.map((u) => String(u).trim()).filter(Boolean) : existing ? (JSON.parse(existing.acs_urls) as string[]) : [];
   if (acsUrls.length === 0) return c.json(badRequest("At least one acs_url is required."), 400);
+  // Assertions are bearer credentials: only https endpoints are registrable.
+  for (const u of acsUrls) if (!u.startsWith("https://")) return c.json(badRequest(`acs_url "${u}" must be https.`), 400);
+  const defaultAcs = body.default_acs_url !== undefined ? String(body.default_acs_url).trim() : (existing?.default_acs_url ?? "");
+  if (defaultAcs && !acsUrls.includes(defaultAcs)) return c.json(badRequest("default_acs_url must be one of the acs_urls."), 400);
 
   const nameidFormat = body.nameid_format ?? existing?.nameid_format ?? "transient";
   if (!nameIdFormatUri(nameidFormat)) return c.json(badRequest(`Unsupported nameid_format "${nameidFormat}".`), 400);

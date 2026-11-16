@@ -9,7 +9,7 @@ const REDIRECT_URI = "https://rp.test/callback";
 const USER_PASSWORD = "a-test-user-password-1";
 
 /** A client, a user who can sign in, and the credentials to drive both. */
-async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: string; upn: string }> {
+async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: string; upn: string; apiKey: string }> {
   const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
 
   const client = await apiCall("/api/v1/clients", {
@@ -53,6 +53,7 @@ async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: str
     clientId: client.body.client_id as string,
     clientSecret: client.body.client_secret as string,
     upn: `ada.kowalski@${domain}`,
+    apiKey,
   };
 }
 
@@ -416,7 +417,7 @@ describe("refresh grant", () => {
     const { code } = await authorizeAndLogin({ clientId, upn, scope: "openid email offline_access" });
     const { body } = await exchangeCode({ code: code!, clientId, clientSecret });
     expect(body.refresh_token).toBeTruthy();
-    return { clientId, clientSecret, refreshToken: body.refresh_token as string };
+    return { clientId, clientSecret, refreshToken: body.refresh_token as string, accessToken: body.access_token as string };
   }
 
   it("rotates the refresh token on every use", async () => {
@@ -468,6 +469,74 @@ describe("refresh grant", () => {
     });
 
     expect((await refresh(rotated.body.refresh_token, clientId, clientSecret)).status).toBe(400);
+  });
+
+  it("revoking a refresh token also invalidates the grant's access tokens", async () => {
+    const { clientId, clientSecret, refreshToken, accessToken } = await offlineTokens();
+    const rotated = await refresh(refreshToken, clientId, clientSecret);
+    const refreshedAccess = rotated.body.access_token as string;
+
+    // Both access tokens - the one the code minted and the one the refresh
+    // minted - belong to the same grant and die with it (RFC 7009 2.1).
+    await SELF.fetch(`${BASE}/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refreshToken, client_id: clientId, client_secret: clientSecret }).toString(),
+    });
+
+    for (const token of [accessToken, refreshedAccess]) {
+      const res = await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it("refresh reuse revocation reaches the grant's access tokens too", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+    const rotated = await refresh(refreshToken, clientId, clientSecret);
+    const refreshedAccess = rotated.body.access_token as string;
+
+    // Replaying the retired token trips reuse detection: the family dies and
+    // so does the access token the rotated token just minted.
+    await refresh(refreshToken, clientId, clientSecret);
+
+    const res = await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${refreshedAccess}` } });
+    expect(res.status).toBe(401);
+  });
+
+  it("refuses the refresh grant once the user loses signin permission", async () => {
+    const { clientId, clientSecret, refreshToken } = await offlineTokens();
+    const { env } = await import("cloudflare:test");
+
+    // Strip signin from the default User role: no new credentials may be
+    // minted, including by an already-held refresh token.
+    await env.DB.prepare("UPDATE admin_roles SET permissions = '[\"account:read\"]' WHERE is_default = 1").run();
+
+    const result = await refresh(refreshToken, clientId, clientSecret);
+    expect(result.status).toBe(400);
+    expect(result.body.error).toBe("invalid_grant");
+  });
+
+  it("refuses code redemption once the user loses signin permission", async () => {
+    const { clientId, clientSecret, upn } = await seedRelyingParty();
+    const { code } = await authorizeAndLogin({ clientId, upn });
+    const { env } = await import("cloudflare:test");
+    await env.DB.prepare("UPDATE admin_roles SET permissions = '[\"account:read\"]' WHERE is_default = 1").run();
+
+    const { status, body } = await exchangeCode({ code: code!, clientId, clientSecret });
+    expect(status).toBe(400);
+    expect(body.error).toBe("invalid_grant");
+  });
+
+  it("revoking an app's access kills an unredeemed authorization code", async () => {
+    const { clientId, clientSecret, upn, apiKey } = await seedRelyingParty();
+    const { code } = await authorizeAndLogin({ clientId, upn });
+
+    const revoked = await apiCall(`/api/v1/users/ada.kowalski/apps/${clientId}`, { token: apiKey, method: "DELETE" });
+    expect(revoked.status).toBe(200);
+
+    const { status, body } = await exchangeCode({ code: code!, clientId, clientSecret });
+    expect(status).toBe(400);
+    expect(body.error).toBe("invalid_grant");
   });
 });
 

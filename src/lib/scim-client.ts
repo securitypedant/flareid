@@ -46,6 +46,8 @@ async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Res
     const res = await fetch(url, {
       ...init,
       redirect: "manual",
+      // A stalled remote must not head-of-line block the whole sync.
+      signal: AbortSignal.timeout(10_000),
       headers: {
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/scim+json",
@@ -314,7 +316,10 @@ export async function pushGroup(env: Env, group: GroupRow, members: ScimMember[]
     if (last) {
       const wanted = new Map(members.map((m) => [m.userId, m]));
       const add = members.filter((m) => last.members.get(m.userId) !== m.scimId);
-      const gone = [...last.members].filter(([userId]) => !wanted.has(userId)).map(([userId, scimId]) => ({ userId, scimId }));
+      // Gone is per pushed (userId, scimId) pair, not per user: a member
+      // whose remote id rotated keeps its seat but owes the remote group a
+      // remove for the stale reference it was pushed as.
+      const gone = [...last.members].filter(([userId, scimId]) => wanted.get(userId)?.scimId !== scimId).map(([userId, scimId]) => ({ userId, scimId }));
       const rename = last.displayName !== group.name ? group.name : null;
       if (add.length + gone.length === 0 && rename === null) return { ok: true };
       if (add.length + gone.length <= Math.max(wanted.size, last.members.size) / 2) {
@@ -331,13 +336,11 @@ export async function pushGroup(env: Env, group: GroupRow, members: ScimMember[]
 
 /** Sends a membership delta; "fallback" when the server refused it and a full PUT should follow. */
 async function patchGroup(env: Env, group: GroupRow, add: ScimMember[], gone: { userId: number; scimId: string }[], rename: string | null): Promise<ScimResult | "fallback"> {
-  // A member whose user was recreated downstream since (a new remote id)
-  // left the group along with the old remote user: nothing to remove.
-  const { results: current } = gone.length
-    ? await env.DB.prepare("SELECT id, scim_id FROM users WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(gone.map((g) => g.userId))).all<{ id: number; scim_id: string | null }>()
-    : { results: [] as { id: number; scim_id: string | null }[] };
-  const stillRemote = new Map(current.map((u) => [u.id, u.scim_id]));
-  const remove = gone.filter((g) => stillRemote.get(g.userId) === g.scimId).map((g) => g.scimId);
+  // Every pushed reference that is no longer wanted is removed - including a
+  // rotated member's previous remote id, which the server may still hold as a
+  // dangling member. If it was already gone the remove is a no-op, and a
+  // server that refuses it outright falls back to the full PUT below.
+  const remove = gone.map((g) => g.scimId);
 
   for (const body of groupPatchBodies(add.map((m) => m.scimId), remove, rename)) {
     const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PATCH", body });

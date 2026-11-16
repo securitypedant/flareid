@@ -25,9 +25,11 @@ export async function logAudit(
       actor?.upn ?? null,
       action,
       target == null ? null : target.slice(0, 256),
-      details ? JSON.stringify(details) : null,
+      // Attacker-influenced fields are bounded like target: an anonymous
+      // caller must not amplify request volume into unbounded log writes.
+      details ? JSON.stringify(details).slice(0, 4_096) : null,
       request ? getClientIp(request) : null,
-      request?.headers.get("User-Agent") ?? null
+      request?.headers.get("User-Agent")?.slice(0, 512) ?? null
     )
     .run();
 }

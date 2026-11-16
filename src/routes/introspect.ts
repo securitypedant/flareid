@@ -86,9 +86,21 @@ introspect.post("/revoke", async (c) => {
   const tokenHash = await sha256Hex(token);
 
   // Revoking a refresh token ends the grant: every token in its rotation
-  // family goes with it, not just the one presented.
+  // family goes with it, not just the one presented. Access tokens the grant
+  // issued are linked to the family head through code_hash (RFC 7009 2.1).
+  const family = await c.env.DB.prepare(
+    `SELECT COALESCE(f.family_id, f.token_hash) AS family_id, h.code_hash AS code_hash
+       FROM refresh_tokens f LEFT JOIN refresh_tokens h ON h.token_hash = COALESCE(f.family_id, f.token_hash)
+      WHERE f.token_hash = ? AND f.client_id = ?`
+  )
+    .bind(tokenHash, client.client_id)
+    .first<{ family_id: string; code_hash: string | null }>();
+
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM access_tokens WHERE token_hash = ? AND client_id = ?").bind(tokenHash, client.client_id),
+    ...(family?.code_hash
+      ? [c.env.DB.prepare("DELETE FROM access_tokens WHERE code_hash = ? AND client_id = ?").bind(family.code_hash, client.client_id)]
+      : []),
     c.env.DB.prepare(
       `UPDATE refresh_tokens SET revoked_at = ?
         WHERE client_id = ? AND revoked_at IS NULL

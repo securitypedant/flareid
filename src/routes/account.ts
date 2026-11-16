@@ -506,8 +506,9 @@ account.post("/account/profile", async (c) => {
 
   const { columns, custom } = splitUserAttributes(editable, values);
   const mergedCustom: Record<string, string> = { ...parseCustomAttributes(user.custom_attributes), ...custom };
-  // A cleared custom field is removed, not kept at its old value.
-  for (const a of editable) if (!values[a.name] && !(a.name in columns)) delete mergedCustom[a.name];
+  // A cleared custom field is removed, not kept at its old value. hasOwn:
+  // the `in` check would treat an attribute named "constructor" as a column.
+  for (const a of editable) if (!values[a.name] && !Object.hasOwn(columns, a.name)) delete mergedCustom[a.name];
   const columnNames = Object.keys(columns).filter((k) => /^[a-z_]+$/.test(k));
   await c.env.DB.prepare(
     `UPDATE users SET ${[...columnNames.map((k) => `${k} = ?`), "custom_attributes = ?", "updated_at = ?"].join(", ")} WHERE id = ?`
@@ -558,6 +559,9 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
 
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ? AND client_id = ?").bind(user.id, client.client_id),
+    // An authorized-but-unexchanged code dies with the grant, the same
+    // contract revokeTokensForUser applies to the whole account.
+    c.env.DB.prepare("DELETE FROM auth_codes WHERE user_id = ? AND client_id = ?").bind(user.id, client.client_id),
     c.env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND client_id = ?").bind(
       new Date().toISOString(),
       user.id,
@@ -604,6 +608,7 @@ async function secondFactorOk(c: Context<{ Bindings: Env }>, code: string): Prom
 }
 
 account.get("/account/passkeys/options", async (c) => {
+  if (!(await isFactorEnabled(c.env, "passkey"))) return c.json({ error: "Passkeys are not enabled." }, 403);
   const user = c.get("user");
   return c.json(await registrationOptions(c.env, c.get("sessionId"), user));
 });
@@ -611,6 +616,7 @@ account.get("/account/passkeys/options", async (c) => {
 account.post("/account/passkeys", async (c) => {
   const user = c.get("user");
   const sessionId = c.get("sessionId");
+  if (!(await isFactorEnabled(c.env, "passkey"))) return c.json({ ok: false, error: "Passkeys are not enabled." }, 403);
   const body = await c.req.json<{ response?: unknown; name?: string; password?: string }>().catch(() => ({}) as { response?: unknown; name?: string; password?: string });
   const step = await passkeyStepUp(c, String(body.password ?? ""));
   if (step === "budget") return c.json({ ok: false, error: "Too many attempts. Please wait a few minutes." }, 429);

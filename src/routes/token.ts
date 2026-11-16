@@ -8,6 +8,7 @@ import { acrFor, effectiveClaimGroups, parseRequestedClaims } from "../lib/oidc.
 import type { OAuthClientRow } from "../lib/types.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
+import { canSignIn } from "../lib/admin-roles.js";
 import { logAudit } from "../lib/audit.js";
 
 export const token = new Hono<{ Bindings: Env }>();
@@ -87,7 +88,7 @@ token.post("/token", async (c) => {
     if (claimed.meta.changes !== 1) return revokeIssued();
 
     const user = await getUserById(c.env, authCode.user_id);
-    if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
+    if (!user || user.status !== "active" || !(await canSignIn(c.env, user.id))) return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(authCode.amr || '["pwd"]');
     return issueTokenResponse(c.env, client, user.id, authCode.scope, amr, {
@@ -131,13 +132,19 @@ token.post("/token", async (c) => {
     }
 
     const user = await getUserById(c.env, row.user_id);
-    if (!user || user.status !== "active") return c.json({ error: "invalid_grant" }, 400);
+    // A signin-permission downgrade after the grant must stop new
+    // credentials, the same check /authorize SSO reuse applies.
+    if (!user || user.status !== "active" || !(await canSignIn(c.env, user.id))) return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(row.amr || '["pwd"]');
     return issueTokenResponse(c.env, client, user.id, row.scope, amr, {
       authTime: row.auth_time ?? Math.floor(new Date(row.created_at).getTime() / 1000),
       sid: row.sid,
       refreshFamily: row.family_id ?? row.token_hash,
+      // Keep the grant's code_hash so access tokens minted by refreshes stay
+      // linked to the family - revoking the family then reaches them. Rows
+      // rotated before the link existed carry NULL; heal from the family head.
+      codeHash: row.code_hash ?? (await familyCodeHash(c.env, row.family_id ?? row.token_hash)) ?? undefined,
       claims: row.claims,
     });
   }
@@ -158,12 +165,25 @@ interface RefreshTokenRow {
   created_at: string;
   auth_time: number | null;
   sid: string | null;
+  code_hash: string | null;
 }
 
 async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
-  await env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL")
-    .bind(new Date().toISOString(), familyId)
-    .run();
+  const codeHash = await familyCodeHash(env, familyId);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL")
+      .bind(new Date().toISOString(), familyId),
+    // The grant ends, so access tokens it issued go with it (RFC 7009 2.1).
+    ...(codeHash ? [env.DB.prepare("DELETE FROM access_tokens WHERE code_hash = ?").bind(codeHash)] : []),
+  ]);
+}
+
+/** The code_hash linking a refresh family back to its authorization grant. */
+async function familyCodeHash(env: Env, familyId: string): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT code_hash FROM refresh_tokens WHERE token_hash = ? AND code_hash IS NOT NULL")
+    .bind(familyId)
+    .first<{ code_hash: string }>();
+  return row?.code_hash ?? null;
 }
 
 /**

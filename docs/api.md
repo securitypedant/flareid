@@ -472,6 +472,10 @@ supplied keep their values.
 }
 ```
 
+ACS and SLO endpoints must be `https://` on every write path (form,
+metadata, API) - assertions are bearer credentials - and `default_acs_url`
+must be one of the registered `acs_urls`.
+
 `slo_url` (https) enables SAML Single Logout at `/saml/slo` (HTTP-Redirect,
 signed LogoutRequests only, bound to the browser's session by SessionIndex).
 With `encrypt_assertions`, the signed assertion is encrypted to

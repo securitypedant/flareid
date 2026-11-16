@@ -51,7 +51,7 @@ export async function issueSamlResponse(
   // Single-use, enforced here rather than when the request arrives: marking at
   // receipt made every anonymous AuthnRequest a KV write. An ID that has already
   // been answered gets nothing new to post (null), even if it verifies.
-  const replayKey = `saml:req:${request.requestId}`;
+  const replayKey = `saml:req:${sp.id}:${request.requestId}`;
   if (await env.SESSIONS_KV.get(replayKey)) return null;
   await env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
   const xml = await buildSignedResponse(env, {
@@ -136,7 +136,9 @@ saml.get("/saml/sso", async (c) => {
   // Single-use: an AuthnRequest ID may only ever mint one response, so a
   // replayed request - even one that verifies - gets nothing new to post. This
   // is a read; the ID is marked used when the response is issued.
-  if (await c.env.SESSIONS_KV.get(`saml:req:${request.id}`)) {
+  // Single-use per service provider: one SP's request IDs must not burn
+  // another's namespace (SLO keys are namespaced the same way).
+  if (await c.env.SESSIONS_KV.get(`saml:req:${sp.id}:${request.id}`)) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "replayed_request_id" }, c.req.raw);
     return renderAuthMessage(c, 400, ALREADY_ANSWERED);
   }
@@ -206,7 +208,9 @@ saml.get("/saml/complete", async (c) => {
 
   const session = await getSession(c.req.raw, c.env);
   const user = session ? await getUserById(c.env, session.userId) : null;
-  if (!session || !user || user.status !== "active") {
+  // Authorization is re-evaluated at redemption, not parked at binding: a
+  // signin permission revoked while the flow sat must stop the assertion.
+  if (!session || !user || user.status !== "active" || !(await canSignIn(c.env, user.id))) {
     return c.redirect(`/login?next=${encodeURIComponent(`/saml/complete?flow=${flowId}`)}`, 302);
   }
   if (user.id !== boundUserId) {

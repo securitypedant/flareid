@@ -106,5 +106,6 @@ const config = {
   browser: [login],
   override,
 };
-writeFileSync(new URL("../conformance/suite-config.json", import.meta.url), JSON.stringify(config, null, 2));
+// The config carries live client secrets and the test user's password.
+writeFileSync(new URL("../conformance/suite-config.json", import.meta.url), JSON.stringify(config, null, 2), { mode: 0o600 });
 console.log(`seeded ${clients.length} clients and ${upn}; wrote conformance/suite-config.json (alias ${alias})`);

@@ -96,7 +96,8 @@ defineRoute(
     response: z.object({ total: z.number(), limit: z.number(), offset: z.number(), entries: z.array(AuditEntrySchema) }),
   },
   async (c) => {
-    const limit = Math.min(Number(c.req.query("limit") ?? 100) || 100, 500);
+    // Clamp into the documented 1..500: a negative limit is SQLite-unlimited.
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 100) || 100, 1), 500);
     const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
     const filters = logFilters({ search: c.req.query("search"), actor: c.req.query("actor"), category: c.req.query("category"), from: c.req.query("from"), to: c.req.query("to") });
     const { total, entries } = await queryAuditLog(c.env, filters, limit, offset);

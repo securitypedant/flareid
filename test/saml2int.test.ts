@@ -97,7 +97,7 @@ describe("saml2int", () => {
     const before = (await spRow("https://sp.test"))!;
     expect(before.want_authn_requests_signed).toBe(1);
     expect(before.encrypt_assertions).toBe(1);
-    expect(before.slo_url).toBe("http://insecure.test/slo"); // stored as registered (admin's decision)
+    expect(before.slo_url).toBeNull(); // http endpoints are dropped at registration: assertions and logout are bearer traffic
 
     // The malicious doc drops every KeyDescriptor, adds an attacker ACS and a
     // different (still http) SLO endpoint.

@@ -447,3 +447,16 @@ describe("branding permissions and preview", () => {
     expect((await apiCall("/api/v1/domains/acme.test/brand", { token: reader, method: "PUT", body: { brand_id: null } })).status).toBe(403);
   });
 });
+
+describe("default-brand bounds", () => {
+  it("refuses an app_name or login_subtitle beyond the documented limits on every write path", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const longName = await apiCall("/api/v1/branding", { token: apiKey, method: "PATCH", body: { app_name: "A".repeat(61) } });
+    expect(longName.status).toBe(400);
+    const longSubtitle = await apiCall("/api/v1/branding", { token: apiKey, method: "PATCH", body: { login_subtitle: "S".repeat(141) } });
+    expect(longSubtitle.status).toBe(400);
+    // At the bound is fine.
+    const ok = await apiCall("/api/v1/branding", { token: apiKey, method: "PATCH", body: { app_name: "A".repeat(60), login_subtitle: "S".repeat(140) } });
+    expect(ok.status).toBe(200);
+  });
+});

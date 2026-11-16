@@ -30,10 +30,13 @@ export async function getRateLimitPolicy(env: Env): Promise<RateLimitPolicy> {
   };
 }
 
+/** The longest window a counter may live: the hourly cleanup's purge horizon. */
+export const RATE_LIMIT_WINDOW_MAX_MINUTES = 7 * 24 * 60;
+
 export async function setRateLimitPolicy(env: Env, policy: RateLimitPolicy): Promise<void> {
   await Promise.all([
     setSetting(env, "rate_limit_max_attempts", String(Math.max(1, policy.maxAttempts))),
-    setSetting(env, "rate_limit_window_minutes", String(Math.max(1, policy.windowMinutes))),
+    setSetting(env, "rate_limit_window_minutes", String(Math.min(Math.max(1, policy.windowMinutes), RATE_LIMIT_WINDOW_MAX_MINUTES))),
   ]);
 }
 

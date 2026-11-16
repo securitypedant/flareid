@@ -4,6 +4,63 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+The confirmed low-severity audit findings, in one pass: token and code
+lifecycle, SAML unlinkability, SCIM delta correctness, input bounds and a
+login timing equalization.
+
+### Security
+
+- **Revocation now covers every credential in a grant.** Revoking a
+  connected app (self-service or admin) deletes its unredeemed
+  authorization codes too, and `POST /revoke` on a refresh token
+  invalidates the access tokens the grant issued - refresh-minted access
+  tokens are linked to the family by `code_hash`, so reuse-detection
+  revocation reaches them as well (RFC 7009 §2.1).
+- **Sign-in permission is re-checked at credential minting.** The refresh
+  grant and authorization-code redemption both refuse `invalid_grant`
+  once the user's roles no longer include `signin`, and `/saml/complete`
+  re-evaluates it at redemption rather than trusting the parked flow.
+- **The passkey factor switch is a gate, not only UI.** Disabled passkeys
+  cannot authenticate (`/login/passkey*`) or enrol (`/account/passkeys*`),
+  matching the checks the MFA verification path already applied.
+- **SAML transient identifiers are unlinkable across service providers.**
+  The transient NameID and SessionIndex now derive from
+  `sha256(session id | entity id)`, so two SPs can no longer correlate the
+  pseudonym to link one user's sessions. Single-use AuthnRequest replay
+  keys are namespaced per SP, and ACS/SLO endpoints must be `https://` on
+  every registration path - admin form, metadata import and API upsert -
+  with `default_acs_url` required to be a member of `acs_urls`.
+- **SCIM outbound calls are bounded and deltas are complete.** `scimFetch`
+  applies a 10-second timeout so one stalled remote cannot head-of-line
+  block the sync, and a membership PATCH now removes a member's previous
+  remote id when it rotates instead of leaving a stale reference in the
+  remote group.
+- **Input bounds tightened.** `GET /api/v1/audit` clamps `limit` into
+  1..500 (a negative value was SQLite-unlimited); the default-brand
+  `app_name` and `login_subtitle` enforce the documented 60/140-character
+  caps on every write path; `logAudit` bounds `details` (4 KB) and
+  `user_agent` (512) the way `target` already was; the console domain
+  set-default refuses an unknown id instead of leaving zero defaults, and
+  `deleteDomain`'s last-domain and in-use refusals are enforced inside the
+  DELETE statement so concurrent writes cannot slip past the check.
+- **Every refused sign-in costs a uniform verification.** Login failure
+  now always pays one scrypt plus one PBKDF2 verification, so response
+  time cannot distinguish an unknown username from an account on a legacy
+  hash format.
+- **Other hardening.** The `/admin` overview hides its audit-derived
+  sections (most-active accounts, sign-in outcomes, directory activity)
+  from roles holding neither `performance:read` nor `audit:read`, matching
+  the API's bar for the same numbers; the hourly cleanup keeps
+  rate-limit counters alive at least as long as the configured window;
+  `replace` imports and the remove-sample-data wipe keep the `All
+  Employees` built-in the docs promise; clearing a user-editable attribute
+  named `constructor` actually removes it; Turnstile accepts a token
+  solved on any hostname the deployment serves (e.g. a brand's custom
+  domain), not only the issuer host; and the setup/helper scripts write
+  credential-bearing files `0600`.
+
 ## [3.9.2] - 2026-11-15
 
 Migrations: `0028_consent_claim_groups.sql`, `0029_repairs.sql`. The rest of

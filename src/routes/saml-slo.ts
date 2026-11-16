@@ -94,7 +94,7 @@ samlSlo.get("/saml/slo", async (c) => {
   const session = await getSession(c.req.raw, c.env);
   let status = "urn:oasis:names:tc:SAML:2.0:status:Success";
   if (session) {
-    const ours = `_${await sha256Hex(session.id)}`;
+    const ours = `_${await sha256Hex(`${session.id}|${sp.entity_id}`)}`;
     // Only the session the SP names: a request without SessionIndex could be
     // replayed against whoever opens it.
     if (sessionIndexes.includes(ours)) {

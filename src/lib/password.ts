@@ -91,6 +91,18 @@ export async function hashPassword(password: string, env?: Pick<Env, "PASSWORD_H
 
 export type StoredPassword = { password_hash: string; password_salt: string; password_iterations: number };
 
+/**
+ * Which verification path a stored row takes - "other" covers the unusable
+ * "!" marker and unrecognized formats, both of which fail instantly. The
+ * login timing equalization pads failures by this, so it must classify every
+ * row, not only the ones this build can verify.
+ */
+export function storedHashFormat(stored: StoredPassword): "scrypt" | "pbkdf2" | "other" {
+  if (parseScrypt(stored.password_hash)) return "scrypt";
+  if (stored.password_hash.startsWith("$") || stored.password_hash.startsWith("!")) return "other";
+  return "pbkdf2";
+}
+
 export async function verifyPassword(password: string, stored: StoredPassword): Promise<boolean> {
   // "!" marks an account created without a usable password (bulk import): it
   // waits for an invitation or reset, and nothing verifies against it.

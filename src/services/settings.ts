@@ -39,6 +39,7 @@ import {
   type PasswordPolicy,
   type SessionPolicy,
 } from "../lib/settings.js";
+import { APP_NAME_MAX, SUBTITLE_MAX } from "../lib/brands.js";
 import { breachedPasswordError } from "../lib/breached-passwords.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
 
@@ -282,14 +283,17 @@ export async function deleteSecurityQuestion(ctx: ServiceCtx, id: number): Promi
 // ---------------------------------------------------------------------------
 
 export async function saveAppName(ctx: ServiceCtx, name: string): Promise<void> {
+  if (name.length > APP_NAME_MAX) throw new ServiceError(400, `The app name can be at most ${APP_NAME_MAX} characters.`);
   await setAppName(ctx.env, name);
   await audit(ctx, "settings.app_name_changed", name);
 }
 
 /** Empty is a valid choice - it means "show no message". */
 export async function saveLoginSubtitle(ctx: ServiceCtx, subtitle: string): Promise<void> {
-  await setLoginSubtitle(ctx.env, subtitle.trim());
-  await audit(ctx, "settings.login_subtitle_changed", undefined, { subtitle: subtitle.trim() });
+  const v = subtitle.trim();
+  if (v.length > SUBTITLE_MAX) throw new ServiceError(400, `The sign-in message can be at most ${SUBTITLE_MAX} characters.`);
+  await setLoginSubtitle(ctx.env, v);
+  await audit(ctx, "settings.login_subtitle_changed", undefined, { subtitle: v });
 }
 
 /** Throws (RangeError) unless both are #rrggbb. */

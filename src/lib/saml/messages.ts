@@ -55,10 +55,12 @@ const CLOCK_SKEW_MS = 60 * 1000;
  * cookie itself, a bearer credential for /account and /admin, and it must
  * never appear in a document handed to a third party. Hashing keeps the value
  * opaque while staying stable across assertions within one session, which is
- * what Single Logout will later match a LogoutRequest against.
+ * what Single Logout will later match a LogoutRequest against. The entity id
+ * salts the hash so two service providers cannot correlate the pseudonym and
+ * link one user's sessions - the pairwise guarantee OIDC's sid already gives.
  */
-async function sessionIdentifiers(sessionId: string): Promise<{ nameId: string; sessionIndex: string }> {
-  const hash = await sha256Hex(sessionId);
+export async function sessionIdentifiers(sessionId: string, entityId: string): Promise<{ nameId: string; sessionIndex: string }> {
+  const hash = await sha256Hex(`${sessionId}|${entityId}`);
   return { nameId: `_${hash}`, sessionIndex: `_${hash}` };
 }
 
@@ -79,7 +81,7 @@ async function nameId(env: Env, sp: SamlServiceProviderRow, user: UserRow, sessi
   const format = NAMEID_FORMAT_URIS[sp.nameid_format] ? sp.nameid_format : "transient";
   if (format === "emailAddress") return { format: NAMEID_FORMAT_URIS[format]!, value: user.upn };
   if (format === "persistent") return { format: NAMEID_FORMAT_URIS[format]!, value: user.external_id };
-  const { nameId } = await sessionIdentifiers(sessionId);
+  const { nameId } = await sessionIdentifiers(sessionId, sp.entity_id);
   return { format: NAMEID_FORMAT_URIS[format]!, value: nameId };
 }
 
@@ -89,7 +91,7 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
   const issueInstant = samlInstant(new Date());
   const notBefore = samlInstant(new Date(Date.now() - CLOCK_SKEW_MS));
   const notOnOrAfter = samlInstant(new Date(Date.now() + ASSERTION_TTL_MS));
-  const { sessionIndex } = await sessionIdentifiers(sessionId);
+  const { sessionIndex } = await sessionIdentifiers(sessionId, sp.entity_id);
   const nid = await nameId(env, sp, user, sessionId);
   const attributes = await resolveAttributes(env, sp, user);
 

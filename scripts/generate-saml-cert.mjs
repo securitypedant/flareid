@@ -58,7 +58,7 @@ const keyPem = forge.pki.privateKeyInfoToPem(forge.pki.wrapRsaPrivateKey(forge.p
 
 if (outDir) {
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(resolve(outDir, ".saml-key.pem"), keyPem);
+  writeFileSync(resolve(outDir, ".saml-key.pem"), keyPem, { mode: 0o600 });
   writeFileSync(resolve(outDir, ".saml-cert.pem"), certPem);
 } else {
   // Files rather than paste-at-a-prompt: a multi-line PEM pasted into

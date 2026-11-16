@@ -330,4 +330,15 @@ describe("monitoring", () => {
     expect((await call(reader, "GET", "/api/v1/audit")).status).toBe(403);
     expect((await call(reader, "GET", "/api/v1/stats")).status).toBe(403);
   });
+
+  it("clamps the audit limit into the documented 1..500 - a negative is not unlimited", async () => {
+    const { apiKey } = await bootstrapInstance();
+    for (const bad of ["-1", "0", "99999"]) {
+      const log = await call(apiKey, "GET", `/api/v1/audit?limit=${bad}`);
+      expect(log.status).toBe(200);
+      expect(log.body.limit).toBeGreaterThanOrEqual(1);
+      expect(log.body.limit).toBeLessThanOrEqual(500);
+      expect(log.body.entries.length).toBeLessThanOrEqual(500);
+    }
+  });
 });

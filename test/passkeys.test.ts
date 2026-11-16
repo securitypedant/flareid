@@ -137,4 +137,32 @@ describe("passkey step-up", () => {
     expect(new URL(rm.headers.get("Location")!, BASE).search).toContain("saved=passkey-removed");
     expect(await env.DB.prepare("SELECT 1 FROM webauthn_credentials WHERE user_id = ?").bind(id).first()).toBeNull();
   });
+
+  it("the factor switch gates passkey sign-in and enrolment, not only the UI", async () => {
+    const { cookie } = await signedIn();
+    const auth = await new SoftAuthenticator().init();
+    const opts = (await (await SELF.fetch(`${BASE}/account/passkeys/options`, { headers: { Cookie: cookie } })).json()) as { challenge: string };
+    await SELF.fetch(`${BASE}/account/passkeys`, { method: "POST", headers: { ...JSON_POST, Cookie: cookie }, body: JSON.stringify({ response: await auth.register(opts.challenge) }) });
+
+    const { setFactorEnabled } = await import("../src/lib/auth-policy.js");
+    await setFactorEnabled(env, "passkey", false);
+
+    // Sign-in options and verification are refused...
+    const page = await (await SELF.fetch(`${BASE}/login`)).text();
+    const flowId = /name="flow_id" value="([^"]+)"/.exec(page)![1]!;
+    expect((await SELF.fetch(`${BASE}/login/passkey/options?flow_id=${encodeURIComponent(flowId)}`)).status).toBe(403);
+    const response = await auth.assert(opts.challenge);
+    const login = await SELF.fetch(`${BASE}/login/passkey`, {
+      method: "POST", redirect: "manual",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE },
+      body: new URLSearchParams({ flow_id: flowId, attempt: "x", response: JSON.stringify(response) }).toString(),
+    });
+    expect(login.status).toBe(200);
+    expect(await login.text()).toContain("That passkey could not sign you in.");
+
+    // ...and so is enrolment of a new credential.
+    expect((await SELF.fetch(`${BASE}/account/passkeys/options`, { headers: { Cookie: cookie } })).status).toBe(403);
+    const enrol = await SELF.fetch(`${BASE}/account/passkeys`, { method: "POST", headers: { ...JSON_POST, Cookie: cookie }, body: JSON.stringify({ response: await auth.register("AAAA") }) });
+    expect(enrol.status).toBe(403);
+  });
 });

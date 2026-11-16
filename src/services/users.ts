@@ -365,6 +365,8 @@ export async function revokeUserAppAccess(ctx: ServiceCtx, id: number, clientDbI
   if (!client) return false;
   await ctx.env.DB.batch([
     ctx.env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ? AND client_id = ?").bind(id, client.client_id),
+    // An unredeemed authorization code dies with the grant it belongs to.
+    ctx.env.DB.prepare("DELETE FROM auth_codes WHERE user_id = ? AND client_id = ?").bind(id, client.client_id),
     ctx.env.DB.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND client_id = ?").bind(new Date().toISOString(), id, client.client_id),
   ]);
   await audit(ctx, "user.app_access_revoked", client.name, { userId: id });

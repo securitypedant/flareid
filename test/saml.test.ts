@@ -416,6 +416,75 @@ describe("provisioning API", () => {
     });
     expect(response.status).toBe(400);
   });
+
+  it("refuses http ACS endpoints and a default outside the registered list", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const http = await apiCall("/api/v1/saml/service-providers", {
+      token: apiKey,
+      body: { entity_id: SP_ENTITY_ID, acs_urls: ["http://sp.test/acs"] },
+    });
+    expect(http.status).toBe(400);
+
+    const stray = await apiCall("/api/v1/saml/service-providers", {
+      token: apiKey,
+      body: { entity_id: SP_ENTITY_ID, acs_urls: [SP_ACS], default_acs_url: "https://sp.test/other" },
+    });
+    expect(stray.status).toBe(400);
+  });
+});
+
+describe("transient identifiers", () => {
+  it("gives two service providers different NameIDs and SessionIndexes for one session", async () => {
+    const { upn, apiKey } = await seedServiceProvider();
+    const sp2Entity = "https://other-sp.test/saml";
+    const sp2Acs = "https://other-sp.test/acs";
+    const created = await apiCall("/api/v1/saml/service-providers", {
+      token: apiKey,
+      body: { entity_id: sp2Entity, name: "Other SP", acs_urls: [sp2Acs] },
+    });
+    expect(created.status).toBe(200);
+
+    // One login, then SSO to each SP against the same session cookie.
+    const first = await ssoViaLogin((await ssoQuery(authnRequestXml())).query, upn);
+    const cookie = first.sessionCookie!;
+    expect(cookie).toBeTruthy();
+
+    const second = await SELF.fetch(`${BASE}/saml/sso?${(await ssoQuery(authnRequestXml({ issuer: sp2Entity, acsUrl: sp2Acs }))).query}`, {
+      redirect: "manual",
+      headers: { Cookie: cookie },
+    });
+    const fields2 = postFormFields(await second.text());
+    const xml1 = decodeResponse(postFormFields(first.html).samlResponse!);
+    const xml2 = decodeResponse(fields2.samlResponse!);
+
+    const nameId = (x: string) => /<saml:NameID[^>]*>([^<]*)<\/saml:NameID>/.exec(x)?.[1];
+    const sessionIndex = (x: string) => /SessionIndex="([^"]*)"/.exec(x)?.[1];
+    expect(nameId(xml1)).toBeTruthy();
+    expect(nameId(xml1)).not.toBe(nameId(xml2));
+    expect(sessionIndex(xml1)).not.toBe(sessionIndex(xml2));
+  });
+
+  it("enforces request-ID single-use per service provider, not globally", async () => {
+    const { upn, apiKey } = await seedServiceProvider();
+    const sp2Entity = "https://other-sp.test/saml";
+    const sp2Acs = "https://other-sp.test/acs";
+    await apiCall("/api/v1/saml/service-providers", {
+      token: apiKey,
+      body: { entity_id: sp2Entity, name: "Other SP", acs_urls: [sp2Acs] },
+    });
+
+    // SP1 consumes the shared-looking ID...
+    const first = await ssoViaLogin((await ssoQuery(authnRequestXml({ id: "_shared-id" }))).query, upn);
+    expect(postFormFields(first.html).samlResponse).toBeTruthy();
+
+    // ...and SP2's request with the same ID is still a first use.
+    const cookie = first.sessionCookie!;
+    const second = await SELF.fetch(
+      `${BASE}/saml/sso?${(await ssoQuery(authnRequestXml({ id: "_shared-id", issuer: sp2Entity, acsUrl: sp2Acs }))).query}`,
+      { redirect: "manual", headers: { Cookie: cookie } }
+    );
+    expect(postFormFields(await second.text()).samlResponse).toBeTruthy();
+  });
 });
 
 describe("SAML v3: metadata import, encryption, Single Logout", () => {

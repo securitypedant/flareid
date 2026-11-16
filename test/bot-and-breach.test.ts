@@ -332,6 +332,18 @@ describe("Turnstile", () => {
     expect(await (await postLogin({ "cf-turnstile-response": "good-token" })).text()).toContain("Please complete the check and try again.");
   });
 
+  it("accepts a token solved on another hostname the deployment actually serves", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await enable(apiKey);
+    const { verifyTurnstileToken } = await import("../src/lib/turnstile.js");
+
+    // The issuer is idp.test; a brand host this deployment answers on is
+    // honoured, while a site it does not serve stays refused.
+    stubFetch(goodToken("login", "brand.horizon.test"));
+    expect(await verifyTurnstileToken(env, SECRET, "good-token", "198.51.100.7", "login", "brand.horizon.test")).toBe(true);
+    expect(await verifyTurnstileToken(env, SECRET, "good-token", "198.51.100.7", "login")).toBe(false);
+  });
+
   it("fails closed when Siteverify cannot be reached, retrying once with the same key", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await enable(apiKey);

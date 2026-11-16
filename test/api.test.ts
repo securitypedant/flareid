@@ -358,8 +358,8 @@ describe("directory import", () => {
 
     // Engineering and Executives are gone; the two built-ins remain.
     const groups = await apiCall("/api/v1/groups", { token: apiKey });
-    // The admin role groups are FlareID's own and survive a replace, like Super Admins.
-    expect(groups.body.groups.map((g: any) => g.name).sort()).toEqual(["Application Admins", "Auditors", "Directory Admins", "Super Admins"]);
+    // The admin role groups are FlareID's own and survive a replace, like Super Admins - as does All Employees, the other built-in the docs name.
+    expect(groups.body.groups.map((g: any) => g.name).sort()).toEqual(["All Employees", "Application Admins", "Auditors", "Directory Admins", "Super Admins"]);
   });
 
   describe("schemas", () => {

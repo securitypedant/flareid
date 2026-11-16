@@ -55,9 +55,12 @@ export function parseSpMetadata(xml: string): ParsedSpMetadata {
   const acs = Array.from(sp.getElementsByTagNameNS(NS_MD, "AssertionConsumerService"))
     .filter((e) => e.getAttribute("Binding") === BINDING_POST)
     .sort((a, b) => Number(a.getAttribute("index") ?? 0) - Number(b.getAttribute("index") ?? 0));
-  const acsUrls = acs.map((e) => e.getAttribute("Location")?.trim() ?? "").filter((u) => /^https?:\/\//.test(u));
-  if (acsUrls.length === 0) throw new SpMetadataError("No AssertionConsumerService with the HTTP-POST binding.");
-  const defaultAcs = acs.find((e) => e.getAttribute("isDefault") === "true")?.getAttribute("Location")?.trim() ?? null;
+  // Assertions are bearer credentials: only https endpoints are registrable,
+  // whatever the publisher advertised.
+  const acsUrls = acs.map((e) => e.getAttribute("Location")?.trim() ?? "").filter((u) => /^https:\/\//.test(u));
+  if (acsUrls.length === 0) throw new SpMetadataError("No https AssertionConsumerService with the HTTP-POST binding.");
+  const defaultAcsRaw = acs.find((e) => e.getAttribute("isDefault") === "true")?.getAttribute("Location")?.trim() ?? null;
+  const defaultAcs = defaultAcsRaw && acsUrls.includes(defaultAcsRaw) ? defaultAcsRaw : null;
 
   const certs = (use: string) =>
     Array.from(sp.getElementsByTagNameNS(NS_MD, "KeyDescriptor"))
@@ -82,7 +85,10 @@ export function parseSpMetadata(xml: string): ParsedSpMetadata {
     defaultAcsUrl: defaultAcs,
     signingCerts: [...new Set(certs("signing"))],
     encryptionCert: certs("encryption")[0] ?? null,
-    sloUrl: slo?.getAttribute("Location")?.trim() || null,
+    sloUrl: (() => {
+      const u = slo?.getAttribute("Location")?.trim() ?? "";
+      return /^https:\/\//.test(u) ? u : null;
+    })(),
     nameIdFormat,
     wantAuthnRequestsSigned: sp.getAttribute("AuthnRequestsSigned") === "true",
     subjectId: subjectIdRequest(entity),

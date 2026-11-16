@@ -595,7 +595,12 @@ admin.get("/admin/performance", async (c) => {
 });
 
 admin.get("/admin", async (c) => {
-  // The same numbers GET /api/v1/stats returns (services/monitoring.ts).
+  // The same numbers GET /api/v1/stats returns (services/monitoring.ts) -
+  // which is why the audit-derived sections need the same permission the API
+  // demands (performance:read), with audit:read accepted as the console's
+  // own monitor role. Directory counts are safe for every admin.
+  const access = c.get("access");
+  const monitor = Boolean(access && (access.isSuper || grants(access.perms, "performance:read") || grants(access.perms, "audit:read")));
   const [stats, perf] = await Promise.all([overviewStats(c.env), readPerformance(c.env, 24)]);
   const successSeries = stats.last_30d.sign_ins_by_day.map(({ day, success }) => ({
     label: day.slice(8, 10) === "01" ? day.slice(5, 10) : day.slice(8, 10),
@@ -614,14 +619,17 @@ admin.get("/admin", async (c) => {
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${users}</h2><p>Users</p></div></a>
         <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groups}</h2><p>Groups</p></div></a>
         <a class="stat-card" href="/admin/clients"><div class="card"><h2>${oidcClients}</h2><p>OIDC Clients</p></div></a>
-        <a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>
+        ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>` : `<a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>`}
       </div>
       <div class="stat-grid">
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${activeUsers}</h2><p>Active accounts</p></div></a>
-        <a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>
+        ${monitor ? `<a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>` : ""}
         <a class="stat-card" href="/admin/integrations/api-keys"><div class="card"><h2>${apiKeys}</h2><p>Active API keys</p></div></a>
-        <a class="stat-card" href="/admin/log"><div class="card"><h2>${refreshLive}</h2><p>Live refresh grants</p></div></a>
+        ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${refreshLive}</h2><p>Live refresh grants</p></div></a>` : ""}
       </div>
+      ${
+        monitor
+          ? `
 
       <div class="two-col">
         ${cardSection(`
@@ -690,6 +698,9 @@ admin.get("/admin", async (c) => {
           <div style="margin-top:14px;"><a href="/admin/log">View the full log</a></div>
         `)}
       </div>
+`
+          : ""
+      }
       `,
       [{ label: "Admin" }]
     )
@@ -782,11 +793,13 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
   const { results: sampleUsers } = await c.env.DB.prepare("SELECT * FROM users WHERE id != ?")
     .bind(currentUserId)
     .all<UserRow>();
-  // The admin role groups are FlareID's own, like Super Admins: never sample data.
+  // The admin role groups and All Employees are FlareID's own, like Super
+  // Admins: never sample data - the consent dialog promises both built-ins.
+  const keepGroups = JSON.stringify([...(await adminRoleGroupNames(c.env)), "All Employees"]);
   const { results: sampleGroups } = await c.env.DB.prepare(
     `SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`
   )
-    .bind(JSON.stringify(await adminRoleGroupNames(c.env)))
+    .bind(keepGroups)
     .all<GroupRow>();
 
   // The shared deletion (every users(id)-referencing table), with the remote
@@ -796,7 +809,7 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
     ...sampleUsers.filter((u) => u.scim_id).map((u) => queueScimDeprovision(c.env, "user", u.scim_id!, u.upn)),
     ...sampleGroups.filter((g) => g.scim_id).map((g) => queueScimDeprovision(c.env, "group", g.scim_id!, g.name)),
     ...(sampleUserIds.length > 0 ? deleteUserStatements(c.env, ...sampleUserIds) : []),
-    c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(JSON.stringify(await adminRoleGroupNames(c.env))),
+    c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(keepGroups),
   ]);
   if (await scimConfigured(c.env)) await drainScimDeprovisionQueue(c.env);
 }
@@ -2885,7 +2898,9 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     .map((s) => s.trim())
     .filter(Boolean);
   if (acsUrls.length === 0) return "At least one ACS URL is required.";
+  for (const u of acsUrls) if (!/^https:\/\//.test(u)) return `ACS URL "${u}" must be https - assertions are bearer credentials.`;
   const defaultAcsUrl = String(body.default_acs_url ?? "").trim();
+  if (defaultAcsUrl && !acsUrls.includes(defaultAcsUrl)) return "The default ACS URL must be one of the registered ACS URLs.";
 
   const nameidFormat = String(body.nameid_format ?? "transient");
   if (!nameIdFormatUri(nameidFormat)) return `Unsupported NameID format "${nameidFormat}".`;
@@ -3384,6 +3399,7 @@ admin.get("/admin/domains", async (c) => {
       "Domains",
       `
             ${c.req.query("saved") ? successBanner("Saved.") : ""}
+            ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <form method="POST" action="/admin/domains">
           <div class="row between" style="margin:0; gap:12px;">
@@ -3436,6 +3452,9 @@ admin.post("/admin/domains", async (c) => {
 
 admin.post("/admin/domains/:id/set-default", async (c) => {
   const id = Number(c.req.param("id"));
+  if (!(await c.env.DB.prepare("SELECT 1 FROM domains WHERE id = ?").bind(id).first())) {
+    return c.redirect("/admin/domains?error=" + encodeURIComponent("That domain does not exist."), 302);
+  }
   await setDefaultDomain(c.env, id);
   await logAudit(c.env, c.get("user"), "domain.set_default", String(id), undefined, c.req.raw);
   return c.redirect("/admin/domains", 302);

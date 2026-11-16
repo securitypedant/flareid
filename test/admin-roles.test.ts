@@ -31,7 +31,7 @@ async function setup() {
     return (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
   };
   const idOf = async (table: string, col: string, v: string) => (await env.DB.prepare(`SELECT id FROM ${table} WHERE ${col} = ?`).bind(v).first<{ id: number }>())!.id;
-  return { dora: await sessionFor("dora"), apu: await sessionFor("apu"), audi: await sessionFor("audi"), pat: await sessionFor("pat"), idOf };
+  return { apiKey, dora: await sessionFor("dora"), apu: await sessionFor("apu"), audi: await sessionFor("audi"), pat: await sessionFor("pat"), idOf };
 }
 const get = (path: string, cookie: string) => SELF.fetch(`${BASE}${path}`, { headers: { Cookie: cookie }, redirect: "manual" });
 const post = (path: string, cookie: string, body: Record<string, string> = {}) =>
@@ -72,6 +72,27 @@ describe("admin roles", () => {
     expect(side).toContain('href="/admin/users"');
     expect(side).not.toContain('href="/admin/security"');
     expect(side).not.toContain('href="/admin/integrations"');
+  });
+
+  it("hides the audit-derived overview from roles without a monitoring permission", async () => {
+    const { apiKey, audi, idOf } = await setup();
+    // Every built-in admin role carries audit:read + performance:read, so the
+    // gate only bites for a custom role: OIDC management, no monitoring.
+    const crew = await idOf("groups", "name", "Crew");
+    await apiCall("/api/v1/security/roles", { token: apiKey, body: { name: "OIDC Managers", permissions: ["oidc:write"], groups: ["Crew"] } });
+    const patId = await idOf("users", "username", "pat");
+    const patCookie = (await createSession(env, patId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+
+    const patPage = await (await get("/admin", patCookie)).text();
+    expect(patPage).not.toContain("Most active accounts");
+    expect(patPage).not.toContain("Sign-in outcomes");
+    expect(patPage).not.toContain("Last 24 hours");
+    expect(patPage).toContain("OIDC Clients");
+
+    // An Auditor reads the log, so the same numbers are theirs.
+    const audiPage = await (await get("/admin", audi)).text();
+    expect(audiPage).toContain("Most active accounts");
+    expect(audiPage).toContain("Last 24 hours");
   });
 
   it("keeps admin roles and their holders out of reach below Super Admin", async () => {

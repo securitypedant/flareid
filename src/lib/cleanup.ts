@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { getRateLimitPolicy } from "./rate-limit.js";
 import { getAuditRetentionDays, getSessionPolicy } from "./settings.js";
 
 /**
@@ -37,7 +38,7 @@ export interface CleanupResult {
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export async function purgeExpiredState(env: Env, now = Date.now()): Promise<CleanupResult> {
-  const [retentionDays, sessionPolicy] = await Promise.all([getAuditRetentionDays(env), getSessionPolicy(env)]);
+  const [retentionDays, sessionPolicy, rateWindowMinutes] = await Promise.all([getAuditRetentionDays(env), getSessionPolicy(env), getRateLimitPolicy(env).then((p) => p.windowMinutes)]);
   const day = 24 * 60 * 60 * 1000;
 
   const results = await env.DB.batch([
@@ -57,7 +58,10 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
     env.DB.prepare("DELETE FROM audit_log WHERE at < ?").bind(iso(now - retentionDays * day)),
     // window_start is epoch milliseconds, not an ISO string: compared with
     // text, SQLite sorts every integer lower, which deleted every counter.
-    env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 7 * day),
+    // The horizon follows the configured window so a counter never dies
+    // before the lockout it counts towards could expire (window is itself
+    // capped at 7 days; a longer stored value is honoured here anyway).
+    env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - Math.max(7 * day, rateWindowMinutes * 60_000)),
     // After the counted statements above: the result indexes below are positional.
     env.DB.prepare("DELETE FROM account_tokens WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)").bind(iso(now), iso(now - day)),
     env.DB.prepare("DELETE FROM session_clients WHERE session_id NOT IN (SELECT id FROM sessions)"),

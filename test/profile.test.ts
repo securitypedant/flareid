@@ -45,6 +45,24 @@ describe("self-service profile editing", () => {
     expect(JSON.parse(row.custom_attributes).pronouns).toBeUndefined();
   });
 
+  it("clears a custom attribute even when its name shadows an Object property", async () => {
+    // "constructor" is a legal attribute name; the old `in` check treated it
+    // as column-mapped through the prototype chain and kept the old value.
+    const { userId, cookie } = await setup([{ name: "constructor", label: "Constructor", user_editable: true }]);
+    await env.DB.prepare("UPDATE users SET custom_attributes = ? WHERE id = ?").bind(JSON.stringify({ constructor: "kept?" }), userId).run();
+
+    const res = await SELF.fetch(`${BASE}/account/profile`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie },
+      body: new URLSearchParams({ attr_constructor: "" }).toString(),
+      redirect: "manual",
+    });
+    expect(res.headers.get("Location")).toBe("/account?saved=profile");
+    const row = (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(userId).first<{ custom_attributes: string }>())!;
+    // Own-key check, not `.constructor` - the inherited property reads the same way.
+    expect(Object.hasOwn(JSON.parse(row.custom_attributes), "constructor")).toBe(false);
+  });
+
   it("refuses to make an attribute editable while a dynamic group's rule uses it, and the reverse", async () => {
     const { apiKey, schemaId } = await setup([{ name: "location", label: "Location" }]);
     await apiCall("/api/v1/directory/import", {

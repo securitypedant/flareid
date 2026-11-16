@@ -38,22 +38,35 @@ export async function deleteDomain(env: Env, id: number): Promise<{ error?: stri
   const domain = await env.DB.prepare("SELECT * FROM domains WHERE id = ?").bind(id).first<DomainRow>();
   if (!domain) return { error: "Unknown domain" };
 
-  const countRow = await env.DB.prepare("SELECT COUNT(*) as count FROM domains").first<{ count: number }>();
-  if ((countRow?.count ?? 0) <= 1) return { error: "Cannot delete the last remaining domain" };
-
-  const inUse = await env.DB.prepare("SELECT COUNT(*) as n FROM users WHERE upn LIKE ?")
-    .bind(`%@${domain.domain}`)
-    .first<{ n: number }>();
-  if (inUse && inUse.n > 0) return { error: `${inUse.n} user(s) still use this domain - reassign them first` };
-
-  await env.DB.prepare("DELETE FROM domains WHERE id = ?").bind(id).run();
+  // The refusals must hold when the DELETE commits, not only when they were
+  // read - the guards live inside the statement so a concurrent insert or
+  // delete cannot slip through the check-then-act gap.
+  const deleted = await env.DB.prepare(
+    `DELETE FROM domains WHERE id = ?
+       AND (SELECT COUNT(*) FROM domains) > 1
+       AND NOT EXISTS (SELECT 1 FROM users WHERE upn LIKE '%@' || (SELECT domain FROM domains WHERE id = ?))`
+  )
+    .bind(id, id)
+    .run();
+  if ((deleted.meta.changes ?? 0) === 0) {
+    const countRow = await env.DB.prepare("SELECT COUNT(*) as count FROM domains").first<{ count: number }>();
+    if ((countRow?.count ?? 0) <= 1) return { error: "Cannot delete the last remaining domain" };
+    const inUse = await env.DB.prepare("SELECT COUNT(*) as n FROM users WHERE upn LIKE ?")
+      .bind(`%@${domain.domain}`)
+      .first<{ n: number }>();
+    return { error: `${inUse?.n ?? 0} user(s) still use this domain - reassign them first` };
+  }
   if (domain.is_default) {
-    await env.DB.prepare("UPDATE domains SET is_default = 1 WHERE id = (SELECT id FROM domains LIMIT 1)").run();
+    await env.DB.prepare("UPDATE domains SET is_default = 1 WHERE id = (SELECT id FROM domains LIMIT 1) AND NOT EXISTS (SELECT 1 FROM domains WHERE is_default = 1)").run();
   }
   return {};
 }
 
 export async function setDefaultDomain(env: Env, id: number): Promise<void> {
+  // Clearing every default when the id does not exist must be impossible:
+  // refuse rather than leave zero default domains.
+  const exists = await env.DB.prepare("SELECT 1 FROM domains WHERE id = ?").bind(id).first();
+  if (!exists) throw new Error(`Cannot set default: domain ${id} does not exist.`);
   await env.DB.batch([
     env.DB.prepare("UPDATE domains SET is_default = 0"),
     env.DB.prepare("UPDATE domains SET is_default = 1 WHERE id = ?").bind(id),

@@ -15,7 +15,7 @@ import { accessFor } from "../lib/admin-roles.js";
 import { grants } from "../lib/permissions.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { turnstileRefused } from "../lib/turnstile.js";
-import { hashPassword, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
+import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
   deleteLoginFlow,
@@ -62,12 +62,12 @@ export function safeNextPath(next: string | undefined): string {
  * cost of every failed sign-in.
  */
 const dummyHashes = new Map<string, Promise<StoredPassword>>();
-function dummyPasswordHash(env: Env): Promise<StoredPassword> {
-  const key = env.PASSWORD_HASHER ?? "scrypt";
+function dummyPasswordHash(env: Env, hasher?: "scrypt" | "pbkdf2"): Promise<StoredPassword> {
+  const key = hasher ?? env.PASSWORD_HASHER ?? "scrypt";
   if (!dummyHashes.has(key)) {
     dummyHashes.set(
       key,
-      hashPassword(crypto.randomUUID(), env).then((h) => ({ password_hash: h.hash, password_salt: h.salt, password_iterations: h.iterations }))
+      hashPassword(crypto.randomUUID(), { PASSWORD_HASHER: key }).then((h) => ({ password_hash: h.hash, password_salt: h.salt, password_iterations: h.iterations }))
     );
   }
   return dummyHashes.get(key)!;
@@ -265,13 +265,21 @@ login.post("/login", async (c) => {
     return sendLoginForm(c, flowId, appearance, msg("common.tooManyAttempts"));
   }
 
-  // An unknown or disabled account still costs one real hash verification, so
+  // An unknown or disabled account still costs a real hash verification, so
   // the response time no longer tells an attacker which usernames exist
-  // (previously ~70 ms for a real account against ~5 ms for a miss).
-  // An account with no usable password (imported, awaiting an invitation)
-  // costs the same, too - its "!" hash would otherwise fail instantly.
+  // (previously ~70 ms for a real account against ~5 ms for a miss). And the
+  // cost must not depend on the account's stored format - a legacy PBKDF2 row
+  // would otherwise verify cheaply and expose the account again. So every
+  // failure is padded to one scrypt plus one PBKDF2 verification, whichever
+  // of them the real attempt already paid. An account with no usable
+  // password (imported, awaiting an invitation) fails instantly without this.
   const usable = user && user.status === "active" && !user.password_hash.startsWith("!");
-  const valid = usable ? await verifyPassword(password, user) : (await verifyPassword(password, await dummyPasswordHash(c.env)), false);
+  const valid = usable ? await verifyPassword(password, user) : false;
+  if (!valid) {
+    const format = usable ? storedHashFormat(user) : null;
+    if (format !== "scrypt") await verifyPassword(password, await dummyPasswordHash(c.env, "scrypt"));
+    if (format !== "pbkdf2") await verifyPassword(password, await dummyPasswordHash(c.env, "pbkdf2"));
+  }
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
@@ -322,6 +330,7 @@ login.post("/login", async (c) => {
 // Passkey sign-in (discoverable credentials, no username typed).
 login.get("/login/passkey/options", async (c) => {
   const flowId = c.req.query("flow_id") ?? "";
+  if (!(await isFactorEnabled(c.env, "passkey"))) return c.json({ error: "passkeys are not enabled" }, 403);
   if (!(await getLoginFlow(c.env, flowId))) return c.json({ error: "expired" }, 400);
   const attempt = randomToken(16);
   return c.json({ attempt, options: await authenticationOptions(c.env, attempt) });
@@ -341,7 +350,9 @@ login.post("/login/passkey", async (c) => {
   }
   const userId = response ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
   const user = userId ? await getUserById(c.env, userId) : null;
-  if (!user || user.status !== "active") {
+  // The factor switch is a gate, not only UI: a disabled passkey factor must
+  // not authenticate or enrol, however the request arrived.
+  if (!user || user.status !== "active" || !(await isFactorEnabled(c.env, "passkey"))) {
     await logAudit(c.env, null, "login.passkey_failed", undefined, { ip: getClientIp(c.req.raw) }, c.req.raw);
     return sendLoginForm(c, flowId, appearance, msg("login.error.passkey"));
   }

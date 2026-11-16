@@ -78,12 +78,18 @@ interface SiteverifyResult {
   "error-codes"?: string[];
 }
 
-function expectedHostname(env: Env): string {
+function expectedHostnames(env: Env, requestHost: string): Set<string> {
+  const hosts = new Set<string>();
   try {
-    return new URL(env.ISSUER_URL).hostname;
+    hosts.add(new URL(env.ISSUER_URL).hostname);
   } catch {
-    return "";
+    // No issuer configured: only the request's own host is acceptable.
   }
+  // The deployment may legitimately answer on more hosts than the issuer -
+  // a brand's custom domain, for one. A token solved on a foreign site is
+  // still refused; one solved on a host we actually serve is honoured.
+  if (requestHost) hosts.add(requestHost.toLowerCase());
+  return hosts;
 }
 
 async function siteverify(secret: string, token: string, remoteip: string, idempotencyKey: string): Promise<SiteverifyResult> {
@@ -100,7 +106,7 @@ async function siteverify(secret: string, token: string, remoteip: string, idemp
  * Cloudflare's `internal-error` - the key makes the retry safe for a token
  * that is otherwise single-use.
  */
-export async function verifyTurnstileToken(env: Env, secret: string, token: string, remoteip: string, action: TurnstileAction): Promise<boolean> {
+export async function verifyTurnstileToken(env: Env, secret: string, token: string, remoteip: string, action: TurnstileAction, requestHost = ""): Promise<boolean> {
   if (!token || token.length > MAX_TOKEN_LENGTH) {
     console.log(JSON.stringify({ event: "turnstile_refused", action, reason: token ? "token_too_long" : "missing_token" }));
     return false;
@@ -120,7 +126,7 @@ export async function verifyTurnstileToken(env: Env, secret: string, token: stri
     ? "unavailable"
     : !result.success
       ? (result["error-codes"] ?? []).join(",") || "failed"
-      : result.hostname !== expectedHostname(env)
+      : !result.hostname || !expectedHostnames(env, requestHost).has(result.hostname)
         ? "hostname_mismatch"
         : result.action !== action
           ? "action_mismatch"
@@ -137,5 +143,5 @@ export async function turnstileRefused(c: Context<{ Bindings: Env }>, body: Reco
   const config = await getTurnstileConfig(c.env);
   if (!activeTurnstileSiteKey(config)) return false;
   const token = typeof body["cf-turnstile-response"] === "string" ? body["cf-turnstile-response"] : "";
-  return !(await verifyTurnstileToken(c.env, config.secret, token, getClientIp(c.req.raw), action));
+  return !(await verifyTurnstileToken(c.env, config.secret, token, getClientIp(c.req.raw), action, c.req.raw.headers.get("host")?.split(":")[0] ?? ""));
 }

@@ -220,8 +220,13 @@ async function dynamicAdminRules(env: Env): Promise<GroupRule[]> {
 }
 
 async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; groups: GroupRow[] }> {
-  // Replace keeps the administrators - everyone holding an admin role - and the role groups themselves.
-  const roles = JSON.stringify(await adminRoleGroupNames(env));
+  // Replace keeps the administrators - everyone holding an admin role - and
+  // the two built-in groups the docs promise survive (role groups plus All
+  // Employees). All Employees is not a keep-everyone clause: it lands only
+  // in the group list, users are still decided by role membership.
+  const roleNames = await adminRoleGroupNames(env);
+  const roles = JSON.stringify(roleNames);
+  const keepGroups = JSON.stringify([...roleNames, "All Employees"]);
   const { results: doomedStatic } = await env.DB.prepare(
     `SELECT * FROM users
       WHERE id NOT IN (
@@ -233,7 +238,7 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   // Admins by dynamic membership have no group_members row to keep them - keep them too.
   const dynRules = await dynamicAdminRules(env);
   const doomed = dynRules.length ? doomedStatic.filter((u) => !dynRules.some((r) => userMatchesRule(u, r))) : doomedStatic;
-  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(roles).all<GroupRow>();
+  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(keepGroups).all<GroupRow>();
 
   // The remote ids are queued in the same batch as the deletion: once the
   // rows are gone they are the only way to find these objects downstream.
@@ -245,7 +250,7 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   await env.DB.batch([
     ...queue,
     ...(doomed.length > 0 ? deleteUserStatements(env, ...doomed.map((r) => r.id)) : []),
-    env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`).bind(roles),
+    env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`).bind(keepGroups),
   ]);
 
   // Returned so the caller can remove them from the SCIM server too: once the
