@@ -17,6 +17,7 @@ import {
   type SecurityQuestionRow,
 } from "../lib/security-questions.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
+import { isFreshlyAuthenticated } from "../lib/step-up.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { brandFor } from "../lib/brands.js";
@@ -36,7 +37,7 @@ import { newPasswordError } from "../lib/breached-passwords.js";
 import { logAudit } from "../lib/audit.js";
 import { getRateLimitPolicy, recordRateAttempt } from "../lib/rate-limit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
-import { listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
+import { createSession, listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
@@ -275,6 +276,7 @@ account.get("/account", async (c) => {
         }
         <div class="row" style="justify-content:flex-start; gap:8px; margin-top:10px;">
           <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
+          <input type="password" id="passkey-confirm" placeholder="Current password" autocomplete="current-password" maxlength="1024" style="max-width:180px; margin:0; display:none;" />
           <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
         </div>
         <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
@@ -579,6 +581,19 @@ async function stepUpBudgetExceeded(c: Context<{ Bindings: Env }>): Promise<bool
   return recordRateAttempt(c.env, `account:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
 }
 
+/**
+ * Adding or removing a sign-in credential needs a recent sign-in or the
+ * current password, within the step-up budget - a session cookie left behind
+ * (or stolen) must not mint a passkey, which thereafter signs in as a full
+ * multi-factor credential. A freshly-signed-in session (including the forced
+ * enrolment flow straight after login) passes without the extra proof.
+ */
+async function passkeyStepUp(c: Context<{ Bindings: Env }>, password: string): Promise<"fresh" | "password" | "denied" | "budget"> {
+  if (await isFreshlyAuthenticated(c.env, c.get("sessionId"))) return "fresh";
+  if (await stepUpBudgetExceeded(c)) return "budget";
+  return password.length > 0 && (await verifyPassword(password.slice(0, 1024), c.get("user"))) ? "password" : "denied";
+}
+
 /** A current TOTP (claimed, so it cannot be replayed) or an unused backup code. */
 async function secondFactorOk(c: Context<{ Bindings: Env }>, code: string): Promise<"totp" | "backup_code" | null> {
   const user = c.get("user");
@@ -596,7 +611,13 @@ account.get("/account/passkeys/options", async (c) => {
 account.post("/account/passkeys", async (c) => {
   const user = c.get("user");
   const sessionId = c.get("sessionId");
-  const body = await c.req.json<{ response?: unknown; name?: string }>().catch(() => ({}) as { response?: unknown; name?: string });
+  const body = await c.req.json<{ response?: unknown; name?: string; password?: string }>().catch(() => ({}) as { response?: unknown; name?: string; password?: string });
+  const step = await passkeyStepUp(c, String(body.password ?? ""));
+  if (step === "budget") return c.json({ ok: false, error: "Too many attempts. Please wait a few minutes." }, 429);
+  if (step === "denied") {
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "passkey_add" }, c.req.raw);
+    return c.json({ ok: false, error: "Enter your current password to add a passkey.", needsPassword: true }, 403);
+  }
   const error = body.response ? await finishRegistration(c.env, sessionId, user.id, body.response as never, String(body.name ?? "")) : "Missing response.";
   if (error) return c.json({ ok: false, error }, 400);
   // Registering a passkey is itself a user-verified factor ceremony by this
@@ -611,9 +632,43 @@ account.post("/account/passkeys", async (c) => {
   return c.json({ ok: true });
 });
 
+account.get("/account/passkeys/:id/remove", async (c) => {
+  const user = c.get("user");
+  const id = decodeURIComponent(c.req.param("id") ?? "");
+  const passkey = (await listPasskeys(c.env, user.id)).find((p) => p.id === id);
+  if (!passkey) return c.redirect("/account#passkeys", 302);
+  const fresh = await isFreshlyAuthenticated(c.env, c.get("sessionId"));
+  return c.html(
+    layout(
+      c,
+      "Remove passkey",
+      cardSection(`
+        <h2>Remove this passkey?</h2>
+        <p>You will no longer be able to sign in with <strong>${escapeHtml(passkey.name)}</strong>.</p>
+        ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+        <form method="POST" action="/account/passkeys/${encodeURIComponent(id)}/remove">
+          ${fresh ? "" : `<label for="pk_current_password">You signed in a while ago - confirm your password to remove it.</label><input type="password" id="pk_current_password" name="current_password" required autocomplete="current-password" maxlength="1024" style="max-width:320px;" />`}
+          <div class="form-actions"><button class="danger" type="submit">Remove passkey</button><a class="button secondary" href="/account#passkeys">Cancel</a></div>
+        </form>`)
+    )
+  );
+});
+
 account.post("/account/passkeys/:id/remove", async (c) => {
   const user = c.get("user");
-  await removePasskey(c.env, user.id, decodeURIComponent(c.req.param("id") ?? ""));
+  const id = decodeURIComponent(c.req.param("id") ?? "");
+  const back = (q: string) => c.redirect(`/account/passkeys/${encodeURIComponent(id)}/remove${q ? `?error=${encodeURIComponent(q)}` : ""}`, 303);
+  if (!(await isFreshlyAuthenticated(c.env, c.get("sessionId")))) {
+    const body = await c.req.parseBody();
+    const password = String(body.current_password ?? "");
+    if (!password) return back(""); // the row form has no field for it - ask on the confirm page
+    if (await stepUpBudgetExceeded(c)) return back("Too many attempts. Please wait a few minutes.");
+    if (!(await verifyPassword(password.slice(0, 1024), user))) {
+      await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "passkey_remove" }, c.req.raw);
+      return back("That password is not right.");
+    }
+  }
+  await removePasskey(c.env, user.id, id);
   await logAudit(c.env, user, "user.passkey_removed", user.upn, undefined, c.req.raw);
   return c.redirect("/account?saved=passkey-removed", 302);
 });
@@ -648,14 +703,25 @@ account.post("/account/password", async (c) => {
     .bind(hash, salt, iterations, new Date().toISOString(), user.id)
     .run();
 
-  // A password change is a compromise response: end every other session,
-  // keeping only the one that just proved knowledge of the old password.
-  await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
+  // A password change is a compromise response. Every session ends - this
+  // one included, because a stolen copy of its cookie value must die with
+  // the row - and the browser gets a fresh session id carrying the same
+  // assurances, so the legitimate user is never interrupted. Passkeys go
+  // too: one registered by a session the compromise included would keep
+  // signing in without a password.
+  const amr = JSON.parse((await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(c.get("sessionId")).first<{ amr: string }>())?.amr ?? '["pwd"]') as string[];
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(new Date().toISOString(), user.id),
+    c.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(user.id),
+  ]);
   await revokeTokensForUser(c.env, user.id);
+  const rotated = await createSession(c.env, user.id, amr, c.req.raw);
 
   await logAudit(c.env, user, "user.password_changed_self", user.upn, undefined, c.req.raw);
 
-  return c.redirect("/account?saved=password", 302);
+  const res = c.redirect("/account?saved=password", 302);
+  res.headers.append("Set-Cookie", rotated.setCookie);
+  return res;
 });
 
 function errorRedirectPage(c: Context<{ Bindings: Env }>, message: string) {

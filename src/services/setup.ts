@@ -10,7 +10,6 @@ import {
   markSetupCompleted,
   setAppName,
   setCursorTrail,
-  setDefaultPassword,
   setLoginGradient,
   setLoginSubtitle,
   setMfaRequired,
@@ -19,6 +18,7 @@ import {
   setSessionPolicy,
   type PasswordPolicy,
 } from "../lib/settings.js";
+import { saveDefaultPassword } from "./settings.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
 
 /**
@@ -109,6 +109,16 @@ export async function runSetup(ctx: ServiceCtx, body: SetupInput, via: "api" | "
   if (body.admin_mfa === false && body.require_mfa === true) {
     throw new ServiceError(400, "admin_mfa: false cannot be combined with require_mfa: true - the default policy would still make administrators use a second factor.");
   }
+  // Creating or re-pointing UPN domains is directory authority - the
+  // dedicated route gates it behind domains:write and the console behind
+  // Super Admin - and `complete` fixes the issuer and retires the bootstrap
+  // token. Neither is a settings:write effect.
+  if (body.domain !== undefined && !ctx.privileged) {
+    throw new ServiceError(403, 'Changing the primary domain requires the "admin" scope (or POST /api/v1/domains with "domains:write").');
+  }
+  if (body.complete && !ctx.privileged) {
+    throw new ServiceError(403, 'Completing setup requires the "admin" scope.');
+  }
   const applied: string[] = [];
 
   if (body.domain !== undefined) {
@@ -122,7 +132,7 @@ export async function runSetup(ctx: ServiceCtx, body: SetupInput, via: "api" | "
   }
 
   if (body.default_password !== undefined) {
-    await setDefaultPassword(env, String(body.default_password));
+    await saveDefaultPassword(ctx, String(body.default_password));
     applied.push("default_password");
   }
   if (body.new_user_password_mode !== undefined) {

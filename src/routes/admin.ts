@@ -25,7 +25,6 @@ import {
   getPasswordPolicy,
   isSetupCompleted,
   markSetupCompleted,
-  setDefaultPassword,
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
@@ -764,7 +763,7 @@ admin.post("/admin/setup", async (c) => {
     const row = (await listDomains(c.env)).find((d) => d.domain === domain);
     if (row) await setDefaultDomain(c.env, row.id);
   }
-  if (defaultPassword) await setDefaultPassword(c.env, defaultPassword);
+  if (defaultPassword) await saveDefaultPassword(consoleCtx(c), defaultPassword);
 
   if (removeSampleData) {
     await removeSampleDirectoryData(c);
@@ -2078,6 +2077,12 @@ document.addEventListener("click", async function (e) {
         if (!res.ok) { line("Stopped: the server answered " + res.status + ". Press Sync all now to carry on from here."); throw new Error("HTTP " + res.status); }
         data = await res.json();
         first = false;
+        if (data.busy) {
+          line("Another sync is already running; following it...");
+          p.textContent = "Another sync is in progress; following it...";
+          await new Promise((r) => setTimeout(r, 2500));
+          continue;
+        }
         const secs = ((Date.now() - t0) / 1000).toFixed(1);
         if (data.phase === "users") {
           users += data.users; userErrors += data.userErrors;

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
 import { apiCall, BOOTSTRAP, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { MAX_USERS_PER_IMPORT } from "../src/lib/directory-import.js";
 
@@ -56,6 +57,22 @@ describe("API authentication", () => {
       body: { version: 1, users: [] },
     });
     expect(afterwards.status).toBe(403);
+  });
+
+  it("a settings:write key can tune settings but not reach domain or lifecycle effects", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const sw = (await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "ops", scopes: ["settings:write"] } })).body.token as string;
+
+    // Settings themselves are in scope.
+    const ok = await apiCall("/api/v1/setup", { token: sw, body: { require_mfa: true } });
+    expect(ok.status).toBe(200);
+
+    // Directory and lifecycle effects are not.
+    for (const body of [{ domain: "usurped.test" }, { complete: true }, { domain: "usurped.test", complete: true }]) {
+      const res = await apiCall("/api/v1/setup", { token: sw, body });
+      expect(res.status, JSON.stringify(body)).toBe(403);
+    }
+    expect(await env.DB.prepare("SELECT 1 FROM domains WHERE domain = 'usurped.test'").first()).toBeNull();
   });
 
   it("enforces scopes", async () => {

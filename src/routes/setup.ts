@@ -5,7 +5,7 @@ import { logAudit } from "../lib/audit.js";
 import { escapeHtml } from "../lib/html.js";
 import { authPage, fieldMsg, formErrors, loginAppearance, msg, requestLocale, type Text } from "../lib/login-views.js";
 import { html, t, tHtml, type Locale, type MessageKey } from "../lib/i18n.js";
-import { getClientIp, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
+import { getClientIp, rateLimitAddress, rateLimitAddress48, recordRateAttempt } from "../lib/rate-limit.js";
 import { getPasswordPolicy, isSetupCompleted, passwordPolicySummary } from "../lib/settings.js";
 import { ServiceError, type ServiceCtx } from "../services/context.js";
 import { runSetup, SetupAdminError } from "../services/setup.js";
@@ -148,7 +148,11 @@ setup.post("/setup", async (c) => {
   const ip = getClientIp(c.req.raw);
 
   // Counted before the token is checked: the increment is the attempt.
-  if (await recordRateAttempt(c.env, `setup:ip:${rateLimitAddress(ip)}`, SETUP_ATTEMPTS_PER_IP, SETUP_WINDOW_MINUTES)) {
+  if (
+    (await recordRateAttempt(c.env, `setup:ip:${rateLimitAddress(ip)}`, SETUP_ATTEMPTS_PER_IP, SETUP_WINDOW_MINUTES)) ||
+    // The coarser /48 aggregate for IPv6 sources - see recovery's.
+    (ip.includes(":") && (await recordRateAttempt(c.env, `setup:ip48:${rateLimitAddress48(ip)}`, SETUP_ATTEMPTS_PER_IP * 4, SETUP_WINDOW_MINUTES)))
+  ) {
     c.header("Retry-After", String(SETUP_WINDOW_MINUTES * 60));
     return form(c, values, [msg("setup.error.rateLimited", { minutes: SETUP_WINDOW_MINUTES })], 429);
   }

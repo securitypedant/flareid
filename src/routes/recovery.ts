@@ -13,7 +13,7 @@ import { getPasswordPolicy, passwordPolicySummary } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { allowTurnstileCsp, turnstileRefused, turnstileWidget } from "../lib/turnstile.js";
 import { revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
-import { clearLoginAttempts, getClientIp, loginRateKey, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
+import { clearLoginAttempts, getClientIp, loginRateKey, rateLimitAddress, rateLimitAddress48, recordRateAttempt } from "../lib/rate-limit.js";
 import { logAudit } from "../lib/audit.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { UserRow } from "../lib/types.js";
@@ -105,6 +105,9 @@ recovery.post("/forgot-password", async (c) => {
   c.executionCtx.waitUntil(
     (async () => {
       if (await recordRateAttempt(c.env, `recovery:ip:${rateLimitAddress(ip)}`, RESETS_PER_IP_PER_HOUR, 60)) return;
+      // The coarser /48 aggregate: an IPv6 holder rotating /64s inside one
+      // allocation does not mint a fresh budget per prefix.
+      if (ip.includes(":") && (await recordRateAttempt(c.env, `recovery:ip48:${rateLimitAddress48(ip)}`, RESETS_PER_IP_PER_HOUR * 4, 60))) return;
       const user = identifier ? await getUserByLoginIdentifier(c.env, identifier) : null;
       if (!user || user.status !== "active") return;
       if (await recordRateAttempt(c.env, `recovery:user:${user.id}`, RESETS_PER_ACCOUNT_PER_HOUR, 60)) {
@@ -203,7 +206,11 @@ async function acceptPassword(c: Context<{ Bindings: Env }>, purpose: AccountTok
   )
     .bind(hash, salt, iterations, now, user.id)
     .run();
-  // Whoever had the old password, or an older link, is out.
+  // Whoever had the old password, or an older link, is out - and so is any
+  // passkey the compromise may have seen registered: it would keep signing
+  // in with no password at all. (An invitation has no old credential set to
+  // distrust, so it keeps enrolments.)
+  if (purpose === "reset") await c.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(user.id).run();
   await revokeAllSessionsForUser(c.env, user.id);
   await revokeTokensForUser(c.env, user.id);
   await clearLoginAttempts(c.env, loginRateKey(user.upn, user));

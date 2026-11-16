@@ -32,6 +32,10 @@ async function staticOnly(env: Env, groupIds: number[]): Promise<number[]> {
   return groupIds.filter((gid) => staticIds.has(gid));
 }
 
+// The local part of every UPN: the same pattern the SCIM server and the directory
+// import apply, so all three writers admit the same identities.
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
 const TAKEN = (username: string) => `Username "${username}" is already taken by another account (usernames must be unique across every domain).`;
 
 export interface NewUser {
@@ -61,6 +65,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const givenName = input.givenName.trim();
   const familyName = input.familyName.trim();
   if (!username || !domain || !givenName) throw new ServiceError(400, "username, domain, and first name are required");
+  if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
   // The UPN is where recovery mail goes: its domain must be one the IdP manages.
   if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
   const upn = `${username}@${domain}`;
@@ -72,7 +77,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const groupIds = await staticOnly(ctx.env, input.groupIds);
   await assertMayAssignGroups(ctx, groupIds);
 
-  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first()) throw new ServiceError(409, TAKEN(username));
+  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ? OR upn = ?").bind(username, upn).first()) throw new ServiceError(409, TAKEN(username));
   const email = String(input.email ?? "").trim().toLowerCase() || null;
   if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
   if (input.password) {
@@ -181,6 +186,7 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   const username = input.username.trim().toLowerCase();
   const domain = input.domain.trim().toLowerCase();
   if (!username || !domain) throw new ServiceError(400, "username and domain are required");
+  if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
   if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
   const upn = `${username}@${domain}`;
   const givenName = input.givenName.trim();
@@ -199,7 +205,7 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   let managerExternalId = (columns.manager_external_id as string | null) ?? null;
   if (managerExternalId && managerExternalId === existing.external_id) managerExternalId = null; // can't manage yourself
 
-  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first()) throw new ServiceError(409, TAKEN(username));
+  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE (username = ? OR upn = ?) AND id != ?").bind(username, upn, id).first()) throw new ServiceError(409, TAKEN(username));
 
   let email = existing.email;
   if (input.email !== undefined) {
@@ -305,7 +311,10 @@ export async function resetUserPassword(ctx: ServiceCtx, id: number, chosen: str
   await ctx.env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?")
     .bind(hash, salt, iterations, new Date().toISOString(), id)
     .run();
-  // Same as the self-service change, which keeps only its own session.
+  // Same compromise response as the self-service change: sessions, tokens
+  // and passkeys all go - a passkey minted while the account was exposed
+  // would otherwise keep authenticating without the new password.
+  await ctx.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(id).run();
   await revokeAllSessionsForUser(ctx.env, id);
   await revokeTokensForUser(ctx.env, id);
   await audit(ctx, "user.password_reset", user.upn, { chosen: Boolean(chosen) });

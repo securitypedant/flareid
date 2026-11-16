@@ -100,3 +100,34 @@ describe("users:write vs dynamic admin roles", () => {
     expect((await accessFor(env, uid)).isAdmin).toBe(true);
   });
 });
+
+describe("identity admission", () => {
+  it("refuses usernames and domains the sibling writers would reject", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const uw = await usersWriter(apiKey);
+
+    // Uppercase is normalized away, but '@', ',', whitespace and a leading
+    // '-' never produce a valid local part.
+    for (const username of ["ceo@victim.test", "a,b", "white space", "-lead"]) {
+      const res = await apiCall("/api/v1/users", { token: uw, body: { username, given_name: "X", status: "active", password: USER_PASSWORD } });
+      expect(res.status, username).toBe(400);
+      expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = ?").bind(username.toLowerCase()).first()).toBeNull();
+    }
+
+    const foreign = await apiCall("/api/v1/users", { token: uw, body: { username: "ceo", domain: "victim-corp.test", given_name: "X", status: "active", password: USER_PASSWORD } });
+    expect(foreign.status).toBe(400);
+    expect(await env.DB.prepare("SELECT 1 FROM users WHERE upn = 'ceo@victim-corp.test'").first()).toBeNull();
+  });
+
+  it("refuses a rename that collides with another user's UPN", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const uw = await usersWriter(apiKey);
+    await apiCall("/api/v1/domains", { token: apiKey, body: { domain: "other.test" } });
+    await apiCall("/api/v1/users", { token: apiKey, body: { username: "taken", domain: "other.test", given_name: "T", status: "active", password: USER_PASSWORD } });
+    await apiCall("/api/v1/users", { token: apiKey, body: { username: "mover", given_name: "M", status: "active", password: USER_PASSWORD } });
+
+    const res = await apiCall("/api/v1/users/mover", { token: uw, method: "PATCH", body: { username: "taken", domain: "other.test" } });
+    expect(res.status).toBe(409);
+    expect((await env.DB.prepare("SELECT upn FROM users WHERE username = 'mover'").first<{ upn: string }>())!.upn).toBe("mover@horizon.test");
+  });
+});

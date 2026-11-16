@@ -1,7 +1,7 @@
 import { errorResponse } from "./html.js";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import type { Env } from "../env.js";
-import { getClientIp, rateLimitAddress } from "./rate-limit.js";
+import { getClientIp, rateLimitAddress, rateLimitAddress48 } from "./rate-limit.js";
 
 /**
  * The first line of defence for every route anyone can reach without signing
@@ -40,8 +40,11 @@ function routeGroup(method: string, path: string): Group | null {
  * OAuth back-channel endpoints are keyed on the client as well as the address:
  * relying parties that reach FlareID from a shared egress (other Workers,
  * Cloudflare Access) must not share one budget, so one cannot throttle another.
+ * The dimension is honoured only for a client_id that exists - a made-up one
+ * must not mint a fresh budget per spelling, or one address could rotate
+ * through unlimited buckets.
  */
-async function clientDimension(request: Request, path: string): Promise<string> {
+async function clientDimension(env: Env, request: Request, path: string): Promise<string> {
   if (path !== "/token" && path !== "/introspect" && path !== "/revoke") return "";
   const basic = /^Basic\s+(.+)$/i.exec(request.headers.get("Authorization") ?? "");
   let id = "";
@@ -54,7 +57,9 @@ async function clientDimension(request: Request, path: string): Promise<string> 
   } else if ((request.headers.get("Content-Type") ?? "").includes("application/x-www-form-urlencoded")) {
     id = new URLSearchParams(await request.clone().text()).get("client_id") ?? "";
   }
-  return id ? `:client:${id.slice(0, 128)}` : "";
+  if (!id) return "";
+  const exists = await env.DB.prepare("SELECT 1 FROM oauth_clients WHERE client_id = ?").bind(id).first();
+  return exists ? `:client:${id.slice(0, 128)}` : "";
 }
 
 export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
@@ -65,9 +70,21 @@ export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, nex
   const limiter = group === "auth" ? c.env.AUTH_LIMITER : group === "api" ? c.env.API_LIMITER : undefined;
   if (!group || !limiter) return next();
 
-  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(getClientIp(c.req.raw))}${await clientDimension(c.req.raw, path)}` });
-  if (success) return next();
+  const ip = getClientIp(c.req.raw);
+  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(ip)}${await clientDimension(c.env, c.req.raw, path)}` });
+  if (!success) return limited(c, group);
+  // The coarser aggregate for IPv6: one binding means one rate, so a /48
+  // holder rotating /64s inside its allocation meets the same budget - while
+  // co-located /64s still share that aggregate rather than each unlimited.
+  if (ip.includes(":")) {
+    const { success: within48 } = await limiter.limit({ key: `${group}:48:${rateLimitAddress48(ip)}` });
+    if (!within48) return limited(c, group);
+  }
+  return next();
 
+};
+
+function limited(c: Context<{ Bindings: Env }>, group: Group): Response {
   // No audit entry here on purpose: logging every refusal would be the very
   // write amplification this exists to stop.
   c.header("Retry-After", "60");
@@ -75,4 +92,4 @@ export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, nex
   const res = errorResponse(c.req.raw, c.get("appName") ?? "FlareID", 429, "Too many requests from this network. Please wait a minute and try again.");
   res.headers.set("Retry-After", "60");
   return res;
-};
+}

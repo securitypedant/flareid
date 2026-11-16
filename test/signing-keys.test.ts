@@ -1,13 +1,14 @@
 // Security > Signing keys: rotation from the console (step-up protected), the
 // per-client id_token algorithm, what /jwks.json publishes around a rotation,
 // and the hourly purge of keys past their publication window.
-import { SELF, env } from "cloudflare:test";
+import { SELF, env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 import { beforeEach, describe, expect, it } from "vitest";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
 import { purgeRetiredKeys, RETIRED_PUBLISH_HOURS } from "../src/lib/signing-keys.js";
 
+import worker from "../src/index.js";
 beforeEach(resetDatabase);
 
 const FORM = { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE };
@@ -214,5 +215,38 @@ describe("retired key cleanup", () => {
     expect(left).toContain(await activeKid("ES256"));
     // Nothing else is due.
     expect(await purgeRetiredKeys(env)).toBe(0);
+  });
+});
+
+describe("/jwks.json never republishes private JWK members", () => {
+  it("strips them from a stored key row and from the env-supplied previous key", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    await SELF.fetch(`${BASE}/jwks.json`); // generate the active keys
+
+    // A row that already contains private members (e.g. seeded by an operator
+    // pasting a full JWK into SIGNING_PUBLIC_JWK) is sanitized at publish time.
+    await env.DB.prepare("UPDATE signing_keys SET public_jwk = ? WHERE alg = 'RS256'")
+      .bind(JSON.stringify({ kty: "RSA", n: "pub", e: "AQAB", d: "SECRET", p: "SECRET", q: "SECRET", dp: "SECRET", dq: "SECRET", qi: "SECRET" }))
+      .run();
+    let keys = (await jwks()).keys as Record<string, unknown>[];
+    for (const key of keys) {
+      for (const member of ["d", "p", "q", "dp", "dq", "qi", "oth", "k"]) expect(key[member]).toBeUndefined();
+      expect(key.n ?? key.x).toBeTruthy(); // public members survive
+    }
+
+    // The env-supplied "previous" key is sanitized on the way out too.
+    const envWithPrev = {
+      ...env,
+      SIGNING_KEY_ID_PREVIOUS: "old-key",
+      SIGNING_PUBLIC_JWK_PREVIOUS: JSON.stringify({ kty: "RSA", n: "oldpub", e: "AQAB", d: "LEAKED" }),
+    } as typeof env;
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(new Request(`${BASE}/jwks.json`), envWithPrev, ctx);
+    await waitOnExecutionContext(ctx);
+    keys = (await res.json() as { keys: Record<string, unknown>[] }).keys;
+    const prev = keys.find((k) => k.kid === "old-key")!;
+    expect(prev).toBeTruthy();
+    expect(prev.d).toBeUndefined();
+    expect(prev.n).toBe("oldpub");
   });
 });

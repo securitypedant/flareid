@@ -1,4 +1,5 @@
-import { adminMfaRelaxedDetail, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
+import { adminMfaRelaxedDetail, adminsWithoutMfaPolicy, anyAdminUnderMfaPolicy } from "../lib/admin-mfa.js";
+import { ADMIN_FACTORS, FACTOR_KEYS, isFactorUsable } from "../lib/auth-policy.js";
 import { SUPER_ROLE, type RoleRow } from "../lib/admin-roles.js";
 import { grants, isPermission, type Permission } from "../lib/permissions.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
@@ -42,6 +43,23 @@ async function savePolicyGroups(ctx: ServiceCtx, policyId: number, groupIds: num
   ]);
 }
 
+
+/**
+ * The same invariant saveFactor enforces in the other direction: a policy may
+ * not require a second factor while none is usable - and, while the write
+ * would put an administrator under it, while none of the factors they may use
+ * is usable. Caller evaluates coverage against the post-write state and reverts
+ * on a throw.
+ */
+async function assertFactorsExistForMfa(ctx: ServiceCtx): Promise<void> {
+  if (!(await Promise.all(FACTOR_KEYS.map((k) => isFactorUsable(ctx.env, k)))).some(Boolean)) {
+    throw new ServiceError(400, "At least one second factor must be on before a policy can require one.");
+  }
+  if (!(await Promise.all(ADMIN_FACTORS.map((k) => isFactorUsable(ctx.env, k)))).some(Boolean) && (await anyAdminUnderMfaPolicy(ctx.env))) {
+    throw new ServiceError(400, "This policy would make administrators use a second factor, but none they may use is on: keep the authenticator app, passkeys or email codes on.");
+  }
+}
+
 /**
  * Policy changes can leave administrators on a password alone (an admin group
  * taken out of "Password and a second factor", a password policy made the
@@ -55,19 +73,39 @@ export async function createPolicy(ctx: ServiceCtx, f: PolicyInput): Promise<num
     .bind(f.name, f.description, f.requirement, f.priority, new Date().toISOString())
     .first<{ id: number }>();
   await savePolicyGroups(ctx, row!.id, f.groupIds);
+  try {
+    if (f.requirement === "mfa") await assertFactorsExistForMfa(ctx);
+  } catch (e) {
+    await ctx.env.DB.batch([ctx.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(row!.id), ctx.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(row!.id)]);
+    throw e;
+  }
   await audit(ctx, "auth_policy.created", f.name, { requirement: f.requirement, groups: f.groupIds.length, ...(await adminMfaRelaxedDetail(ctx.env, before)) });
   return row!.id;
 }
 
 export async function updatePolicy(ctx: ServiceCtx, id: number, f: PolicyInput): Promise<void> {
-  const current = await ctx.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string }>();
+  const current = await ctx.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string; description: string; requirement: string; priority: number }>();
   if (!current) throw new ServiceError(404, "Not found");
   const before = await adminsWithoutMfaPolicy(ctx.env);
   if (await ctx.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ? AND id != ?").bind(f.name, id).first()) throw new ServiceError(400, "A policy with that name already exists.");
+  // Captured so a refused write leaves nothing behind.
+  const beforeGroups = (await ctx.env.DB.prepare("SELECT group_id FROM auth_policy_groups WHERE policy_id = ?").bind(id).all<{ group_id: number }>()).results.map((g) => g.group_id);
+  const beforeDefault = (await ctx.env.DB.prepare("SELECT id FROM auth_policies WHERE is_default = 1").first<{ id: number }>())?.id ?? 0;
   await ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, id).run();
   await savePolicyGroups(ctx, id, f.groupIds);
   if (!current.is_default && f.makeDefault) {
     await ctx.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id).run();
+  }
+  try {
+    if (f.requirement === "mfa") await assertFactorsExistForMfa(ctx);
+  } catch (e) {
+    await ctx.env.DB.batch([
+      ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ?, is_default = ? WHERE id = ?").bind(current.name, current.description, current.requirement, current.priority, current.is_default, id),
+      ctx.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id),
+      ctx.env.DB.prepare("INSERT OR IGNORE INTO auth_policy_groups (policy_id, group_id) SELECT ?, g.id FROM groups g WHERE g.id IN (SELECT value FROM json_each(?))").bind(id, JSON.stringify(beforeGroups)),
+      ctx.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(beforeDefault),
+    ]);
+    throw e;
   }
   await audit(ctx, "auth_policy.updated", f.name, { requirement: f.requirement, default: Boolean(current.is_default || f.makeDefault), ...(await adminMfaRelaxedDetail(ctx.env, before)) });
 }

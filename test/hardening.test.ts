@@ -33,16 +33,37 @@ describe("hardening", () => {
     expect(await env.DB.prepare("SELECT id FROM users WHERE username = 'weak'").first()).toBeNull();
   });
 
-  it("keys /token limits per client as well as per address", async () => {
-    await bootstrapInstance({ domain: "horizon.test" });
+  it("keys /token limits per client as well as per address - but only for a client that exists", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const a = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "A", redirect_uris: ["https://a.test/cb"] } })).body.client_id as string;
+    const b = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "B", redirect_uris: ["https://b.test/cb"] } })).body.client_id as string;
     const keys: string[] = [];
     const limiter = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
     const ctx = createExecutionContext();
     const form = (id: string) => new Request(`${BASE}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.9" }, body: `grant_type=x&client_id=${id}` });
-    await worker.fetch(form("rp-a"), { ...env, API_LIMITER: limiter } as typeof env, ctx);
-    await worker.fetch(form("rp-b"), { ...env, API_LIMITER: limiter } as typeof env, ctx);
+    await worker.fetch(form(a), { ...env, API_LIMITER: limiter } as typeof env, ctx);
+    await worker.fetch(form(b), { ...env, API_LIMITER: limiter } as typeof env, ctx);
+    // A made-up client_id does not mint its own budget: it shares the address's.
+    await worker.fetch(form("attacker-invented-id"), { ...env, API_LIMITER: limiter } as typeof env, ctx);
     await waitOnExecutionContext(ctx);
-    expect(keys).toEqual(["api:203.0.113.9:client:rp-a", "api:203.0.113.9:client:rp-b"]);
+    expect(keys).toEqual([`api:203.0.113.9:client:${a}`, `api:203.0.113.9:client:${b}`, "api:203.0.113.9"]);
+  });
+
+  it("IPv6 sources are charged at /64 and /48 so rotating prefixes cannot escape the budget", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const keys: string[] = [];
+    const limiter = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
+    const ctx = createExecutionContext();
+    for (const addr of ["2001:db8:aa:1::1", "2001:db8:aa:2::1", "2001:db8:bb:1::1"]) {
+      await worker.fetch(new Request(`${BASE}/api/v1/status`, { headers: { Authorization: "Bearer x", "CF-Connecting-IP": addr } }), { ...env, API_LIMITER: limiter } as typeof env, ctx);
+    }
+    await waitOnExecutionContext(ctx);
+    // Two /64s under the same /48 plus one outside it.
+    expect(keys).toEqual([
+      "api:2001:db8:aa:1::/64", "api:48:2001:db8:aa::/48",
+      "api:2001:db8:aa:2::/64", "api:48:2001:db8:aa::/48",
+      "api:2001:db8:bb:1::/64", "api:48:2001:db8:bb::/48",
+    ]);
   });
 });
 

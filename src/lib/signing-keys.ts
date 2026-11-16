@@ -53,9 +53,15 @@ async function unseal(env: Env, sealed: string): Promise<JWK> {
 
 const newKid = (alg: SigningAlg) => `flareid-${alg.toLowerCase()}-${new Date().toISOString().slice(0, 10)}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36)}`;
 
+/** RFC 7518 private parameters that must never be stored as - or published at /jwks.json - a "public" JWK (d, p, q, dp, dq, qi, oth for RSA/EC; k for oct). An operator pasting a full JWK into SIGNING_PUBLIC_JWK* would otherwise leak the private key. */
+const PRIVATE_JWK_MEMBERS = new Set(["d", "p", "q", "dp", "dq", "qi", "oth", "k"]);
+function publicJwkOnly<T extends Record<string, unknown>>(jwk: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(jwk).filter(([k]) => !PRIVATE_JWK_MEMBERS.has(k)));
+}
+
 async function insertKey(env: Env, alg: SigningAlg, kid: string, privateJwk: JWK, publicJwk: JWK): Promise<void> {
   await env.DB.prepare("INSERT INTO signing_keys (kid, alg, public_jwk, private_jwk_enc, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)")
-    .bind(kid, alg, JSON.stringify({ ...publicJwk, kid, alg, use: "sig" }), await seal(env, privateJwk), new Date().toISOString())
+    .bind(kid, alg, JSON.stringify({ ...publicJwkOnly(publicJwk), kid, alg, use: "sig" }), await seal(env, privateJwk), new Date().toISOString())
     .run();
 }
 
@@ -102,10 +108,10 @@ export async function publishedKeys(env: Env): Promise<Record<string, unknown>[]
   await ensureKeys(env);
   const cutoff = new Date(Date.now() - RETIRED_PUBLISH_HOURS * 3600 * 1000).toISOString();
   const { results } = await env.DB.prepare("SELECT public_jwk FROM signing_keys WHERE status = 'active' OR retired_at > ? ORDER BY alg, created_at DESC").bind(cutoff).all<{ public_jwk: string }>();
-  const keys = results.map((r) => JSON.parse(r.public_jwk) as Record<string, unknown>);
+  const keys = results.map((r) => publicJwkOnly(JSON.parse(r.public_jwk) as Record<string, unknown>));
   // The pre-0021 previous key from the environment, while it is still configured.
   if (env.SIGNING_PUBLIC_JWK_PREVIOUS && env.SIGNING_KEY_ID_PREVIOUS && !keys.some((k) => k.kid === env.SIGNING_KEY_ID_PREVIOUS)) {
-    keys.push({ ...(JSON.parse(env.SIGNING_PUBLIC_JWK_PREVIOUS) as Record<string, unknown>), kid: env.SIGNING_KEY_ID_PREVIOUS, use: "sig", alg: "RS256" });
+    keys.push({ ...publicJwkOnly(JSON.parse(env.SIGNING_PUBLIC_JWK_PREVIOUS) as Record<string, unknown>), kid: env.SIGNING_KEY_ID_PREVIOUS, use: "sig", alg: "RS256" });
   }
   return keys;
 }

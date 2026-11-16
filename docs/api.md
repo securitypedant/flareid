@@ -165,9 +165,13 @@ Scope: `directory:read`.
 
 Scope: `settings:write` for the settings fields; the `admin` block additionally
 requires the `admin` scope (it creates or resets a Super Admin), and is checked
-before anything is applied. Every field is optional; only what is present is
-applied, in a fixed order - settings, then the administrator, then
-`admin_mfa`, then the completion flag. That order matters: the account is created using whatever
+before anything is applied. Two more fields need `admin` as well: `domain`
+(creating or re-pointing UPN domains is directory authority; use
+`POST /api/v1/domains` with `domains:write` for later changes) and `complete`
+(it fixes the issuer and retires the bootstrap token). Every field is
+optional; only what is present is applied, in a fixed order - settings, then
+the administrator, then `admin_mfa`, then the completion flag. That order
+matters: the account is created using whatever
 `new_user_password_mode` and `default_password` say, so applying those
 afterwards would mint an administrator with the wrong credential.
 
@@ -566,7 +570,10 @@ are only followed while they stay on the configured origin.
 
 `POST /scim/sync` runs a full sync in batches of 200 users per call, then the
 groups. The response carries `complete` and `remainingUsers`: call it again
-until `complete` is `true` (the hourly cron also carries an unfinished sync on).
+until `complete` is `true` (the hourly cron also carries an unfinished sync
+on). Syncs are single-flight: while another caller or the cron holds the
+sync, a call does no work and answers `busy: true` instead of pushing the
+same batch twice - poll again rather than treating it as an error.
 
 ### SCIM 2.0 server (`/scim/v2`)
 

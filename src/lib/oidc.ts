@@ -151,21 +151,30 @@ export function redirectUriAllowed(client: Pick<OAuthClientRow, "redirect_uris" 
   });
 }
 
-/** Whether this user has already agreed to share these scopes with this client. */
-export async function hasConsent(env: Env, userId: number, clientId: string, scope: string): Promise<boolean> {
-  const row = await env.DB.prepare("SELECT scope FROM oauth_consents WHERE user_id = ? AND client_id = ?").bind(userId, clientId).first<{ scope: string }>();
+/**
+ * Whether this user has already agreed to share this release set with this
+ * client: the scopes AND the claim groups - groups the `claims` request
+ * parameter can add are not part of the scope string, so consent recorded
+ * only by scope would silently release them.
+ */
+export async function hasConsent(env: Env, userId: number, clientId: string, scope: string, requestedGroups: ClaimGroup[] = []): Promise<boolean> {
+  const row = await env.DB.prepare("SELECT scope, claim_groups FROM oauth_consents WHERE user_id = ? AND client_id = ?").bind(userId, clientId).first<{ scope: string; claim_groups: string | null }>();
   if (!row) return false;
   const granted = new Set(row.scope.split(/\s+/));
-  return scope.split(/\s+/).filter(Boolean).every((s) => granted.has(s));
+  if (!scope.split(/\s+/).filter(Boolean).every((s) => granted.has(s))) return false;
+  const grantedGroups = new Set<string>(JSON.parse(row.claim_groups ?? "[]"));
+  return requestedGroups.every((g) => grantedGroups.has(g));
 }
 
-export async function recordConsent(env: Env, userId: number, clientId: string, scope: string): Promise<void> {
-  const existing = await env.DB.prepare("SELECT scope FROM oauth_consents WHERE user_id = ? AND client_id = ?").bind(userId, clientId).first<{ scope: string }>();
+/** `shownGroups` are the claim groups the consent screen listed when the user approved. */
+export async function recordConsent(env: Env, userId: number, clientId: string, scope: string, shownGroups: ClaimGroup[]): Promise<void> {
+  const existing = await env.DB.prepare("SELECT scope, claim_groups FROM oauth_consents WHERE user_id = ? AND client_id = ?").bind(userId, clientId).first<{ scope: string; claim_groups: string | null }>();
   const merged = [...new Set([...(existing?.scope.split(/\s+/) ?? []), ...scope.split(/\s+/)].filter(Boolean))].join(" ");
+  const mergedGroups = JSON.stringify([...new Set([...(existing ? (JSON.parse(existing.claim_groups ?? "[]") as string[]) : []), ...shownGroups])]);
   await env.DB.prepare(
-    "INSERT INTO oauth_consents (user_id, client_id, scope, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, client_id) DO UPDATE SET scope = excluded.scope, granted_at = excluded.granted_at"
+    "INSERT INTO oauth_consents (user_id, client_id, scope, claim_groups, granted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, client_id) DO UPDATE SET scope = excluded.scope, claim_groups = excluded.claim_groups, granted_at = excluded.granted_at"
   )
-    .bind(userId, clientId, merged, new Date().toISOString())
+    .bind(userId, clientId, merged, mergedGroups, new Date().toISOString())
     .run();
 }
 

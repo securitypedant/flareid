@@ -148,6 +148,27 @@ describe("breached-password check", () => {
     expect(await res.text()).toContain("This password has appeared in a data breach 42 times; choose another.");
   });
 
+  it("refuses a breached default password on save, on apply-to-all, and at setup", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    stubFetch();
+
+    const save = await apiCall("/api/v1/security/new-user-password", { token: apiKey, method: "PUT", body: { mode: "default", default_password: BREACHED } });
+    expect(save.status).toBe(400);
+    expect(save.body.message).toContain("data breach 42 times");
+    expect((await apiCall("/api/v1/security", { token: apiKey })).body.new_user_password.default_password_set).toBe(false);
+
+    // A default stored before the check existed is caught at apply time -
+    // the refusal names the breach, not "no default set".
+    await env.DB.prepare("INSERT OR REPLACE INTO idp_settings (key, value, updated_at) VALUES ('default_password', ?, ?)").bind(BREACHED, new Date().toISOString()).run();
+    const apply = await apiCall("/api/v1/security/new-user-password/apply-to-all", { token: apiKey, method: "POST", body: {} });
+    expect(apply.status).toBe(400);
+    expect(apply.body.message).toContain("data breach 42 times");
+
+    // The setup funnel takes the same checked path.
+    const setup = await apiCall("/api/v1/setup", { token: apiKey, body: { default_password: BREACHED } });
+    expect(setup.status).toBe(400);
+  });
+
   it("refuses breached imported passwords", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     stubFetch();

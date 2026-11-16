@@ -13,6 +13,8 @@ dist/
 # Generated load-test directories (scripts/generate-test-directory.mjs)
 test-data/
 conformance/suite-config.json
+# Suite exports (locally replicated runs may embed live tokens and secrets)
+conformance-results/
 
 # Local secrets (conformance suite credentials, etc.)
 openid.net.env

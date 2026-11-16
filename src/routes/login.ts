@@ -381,7 +381,10 @@ login.post("/login/mfa/passkey", async (c) => {
   }
   const provedUser = response ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
   const user = await getUserById(c.env, pending.userId);
-  if (!user || user.status !== "active" || provedUser !== pending.userId) {
+  // The same gate at verify time as at offer time: a passkey factor the
+  // administrator switched off stops authorizing sign-ins.
+  const passkeyAllowed = user !== null && (await isFactorEnabled(c.env, "passkey"));
+  if (!user || user.status !== "active" || !passkeyAllowed || provedUser !== pending.userId) {
     await logAudit(c.env, null, "login.mfa_failed", user?.upn, { method: "passkey" }, c.req.raw);
     const factors = user ? await secondStepFactors(c.env, user) : { totp: false, passkey: true };
     return c.html(mfaForm(mfaId, appearance, msg("mfa.error.passkey"), { ...factors, passkey: true }));
@@ -413,7 +416,11 @@ login.post("/login/mfa", async (c) => {
     await deletePendingMfa(c.env, mfaId);
     return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
   }
-  if (!user.totp_secret) {
+  // Verify-time gate, not just the offer layer: a TOTP factor the
+  // administrator switched off must stop authorizing sign-ins - backup
+  // codes included (factors.totp is mfa_enabled && isFactorEnabled("totp")).
+  const factors = await secondStepFactors(c.env, user);
+  if (!user.totp_secret || !factors.totp) {
     return renderAuthMessage(c, 400, { title: msg("mfa.notSetUp.title"), message: msg("mfa.notSetUp.message") }, { locale: pending.locale });
   }
   const appearance = await loginAppearance(c, { userId: pending.userId, locale: pending.locale });

@@ -388,9 +388,14 @@ describe("credential change", () => {
     expect(change.status).toBe(302);
 
     const remaining = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND revoked_at IS NULL").bind(uid).first<{ n: number }>();
-    expect(remaining?.n).toBe(1); // only the session that changed the password
+    expect(remaining?.n).toBe(1); // only the rotated replacement session
     expect((await SELF.fetch(`${BASE}/account`, { headers: { Cookie: two.cookie }, redirect: "manual" })).status).toBe(302);
-    expect((await SELF.fetch(`${BASE}/account`, { headers: { Cookie: one.cookie }, redirect: "manual" })).status).toBe(200);
+    // The original cookie died with its row; the rotated one issued on the
+    // redirect carries the session forward.
+    expect((await SELF.fetch(`${BASE}/account`, { headers: { Cookie: one.cookie }, redirect: "manual" })).status).toBe(302);
+    const rotated = change.headers.get("Set-Cookie")?.split(";")[0];
+    expect(rotated).toBeTruthy();
+    expect((await SELF.fetch(`${BASE}/account`, { headers: { Cookie: rotated! }, redirect: "manual" })).status).toBe(200);
   });
 
   it("an admin password reset signs out all of that user's sessions", async () => {
@@ -538,6 +543,40 @@ describe("TOTP replay guard", () => {
     // A later-window code still works (clock drift of one step is tolerated).
     const next = await mfaLogin(upn, secret, 1);
     expect(next.headers.get("Set-Cookie")).toContain("flareid_session");
+  });
+
+  it("a disabled TOTP factor stops authorizing sign-ins, backup codes included", async () => {
+    const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
+    const upn = `petra@${domain}`;
+    await importUser(apiKey, { username: "petra", password: USER_PASSWORD, status: "active" });
+    const secret = "JBSWY3DPEHPK3PXP";
+    const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'petra'").first<{ id: number }>())!.id;
+    await env.DB.prepare("UPDATE users SET totp_secret = ?, mfa_enabled = 1 WHERE id = ?").bind(secret, uid).run();
+    const { generateBackupCodes } = await import("../src/lib/backup-codes.js");
+    const [backup] = await generateBackupCodes(env, uid);
+
+    const { setFactorEnabled } = await import("../src/lib/auth-policy.js");
+    await setFactorEnabled(env, "totp", false);
+
+    const tryCode = async (code: string) => {
+      const flowId = await getFlowId("/login");
+      const pw = await postLogin({ flowId, upn, password: USER_PASSWORD });
+      const mfaId = /name="mfa_id" value="([^"]+)"/.exec(await pw.text())?.[1] ?? "";
+      return SELF.fetch(`${BASE}/login/mfa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE },
+        body: new URLSearchParams({ mfa_id: mfaId, code }).toString(),
+        redirect: "manual",
+      });
+    };
+    for (const code of [await totp(secret), backup!]) {
+      const res = await tryCode(code);
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+      expect(res.status).toBe(400);
+    }
+    // Re-enabling restores sign-in.
+    await setFactorEnabled(env, "totp", true);
+    expect((await mfaLogin(upn, secret)).headers.get("Set-Cookie")).toContain("flareid_session");
   });
 });
 

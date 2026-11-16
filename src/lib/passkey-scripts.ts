@@ -20,12 +20,12 @@ export const PASSKEY_REGISTER_SCRIPT = `(function(){
       return navigator.credentials.create({publicKey:o});
     }).then(function(cred){
       var r=cred.response;
-      var body={name:(document.getElementById("passkey-name")||{}).value||"",response:{id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,
+      var body={name:(document.getElementById("passkey-name")||{}).value||"",password:(document.getElementById("passkey-confirm")||{}).value||"",response:{id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,
         clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},authenticatorAttachment:cred.authenticatorAttachment||undefined,
         response:{clientDataJSON:bufToB64u(r.clientDataJSON),attestationObject:bufToB64u(r.attestationObject),transports:r.getTransports?r.getTransports():[]}}};
       return fetch("/account/passkeys",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     }).then(function(r){return r.json();}).then(function(j){
-      if(!j.ok){status.textContent=j.error||"The passkey was not added."; btn.disabled=false; return;}
+      if(!j.ok){var pw=document.getElementById("passkey-confirm");if(j.needsPassword&&pw){pw.style.display="";pw.focus();}status.textContent=j.error||"The passkey was not added."; btn.disabled=false; return;}
       // On the enrolment page the passkey is the second factor: post on to finish the sign-in.
       var done=btn.getAttribute("data-done");
       if(!done){location.href="/account?saved=passkey-added"; return;}

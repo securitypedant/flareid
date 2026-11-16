@@ -26,6 +26,7 @@ import {
   setAuditRetentionDays,
   setCursorTrail,
   setDefaultLanguage,
+  getDefaultPassword,
   setDefaultPassword,
   setLoginGradient,
   setLoginSubtitle,
@@ -38,6 +39,7 @@ import {
   type PasswordPolicy,
   type SessionPolicy,
 } from "../lib/settings.js";
+import { breachedPasswordError } from "../lib/breached-passwords.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
 
 /**
@@ -117,6 +119,10 @@ export async function saveNewUserPasswordMode(ctx: ServiceCtx, mode: unknown): P
 /** An empty password is ignored, not stored: "no default" is not a password. */
 export async function saveDefaultPassword(ctx: ServiceCtx, password: string): Promise<boolean> {
   if (!password) return false;
+  // The breach check every sibling path applies (not the complexity policy -
+  // admin-chosen passwords are documented exempt from that).
+  const breached = await breachedPasswordError(ctx.env, password);
+  if (breached) throw new ServiceError(400, breached);
   await setDefaultPassword(ctx.env, password);
   await audit(ctx, "settings.default_password_changed");
   return true;
@@ -128,6 +134,9 @@ export async function saveDefaultPassword(ctx: ServiceCtx, password: string): Pr
  */
 export async function applyDefaultPasswordToAll(ctx: ServiceCtx, password: string): Promise<number> {
   await saveDefaultPassword(ctx, password);
+  // Also covers a default stored before the check existed.
+  const breached = await breachedPasswordError(ctx.env, await getDefaultPassword(ctx.env));
+  if (breached) throw new ServiceError(400, breached);
   const count = await applyDefaultPasswordToAllUsers(ctx.env);
   await audit(ctx, "settings.default_password_applied_to_all", undefined, { count });
   return count;
@@ -135,6 +144,17 @@ export async function applyDefaultPasswordToAll(ctx: ServiceCtx, password: strin
 
 export async function saveRequireMfa(ctx: ServiceCtx, required: boolean): Promise<void> {
   const before = await adminsWithoutMfaPolicy(ctx.env);
+  // The same lockout invariant the policy writes enforce: nobody may require
+  // a second factor while none is usable - and administrators, while none of
+  // the factors they may use is usable.
+  if (required) {
+    if (!(await Promise.all(FACTOR_KEYS.map((k) => isFactorUsable(ctx.env, k)))).some(Boolean)) {
+      throw new ServiceError(400, "At least one second factor must be on before one can be required.");
+    }
+    if (!(await Promise.all(ADMIN_FACTORS.map((k) => isFactorUsable(ctx.env, k)))).some(Boolean)) {
+      throw new ServiceError(400, "Administrators would need a second factor, but none they may use is on: keep the authenticator app, passkeys or email codes on.");
+    }
+  }
   await setMfaRequired(ctx.env, required);
   await audit(ctx, "settings.require_mfa_changed", undefined, { required, ...(await adminMfaRelaxedDetail(ctx.env, before)) });
 }

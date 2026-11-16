@@ -121,13 +121,41 @@ export async function fetchSpMetadata(url: string): Promise<ParsedSpMetadata> {
   if (u.protocol !== "https:") throw new SpMetadataError("The metadata URL must use https.");
   let res: Response;
   try {
-    res = await fetch(u.toString(), { headers: { Accept: "application/samlmetadata+xml, application/xml, text/xml" }, signal: AbortSignal.timeout(10_000) });
+    // No redirects: https on the registered URL is what authenticates the
+    // publisher, and a redirect would silently move that trust to a host
+    // (or scheme) the administrator never chose.
+    res = await fetch(u.toString(), { headers: { Accept: "application/samlmetadata+xml, application/xml, text/xml" }, signal: AbortSignal.timeout(10_000), redirect: "error" });
   } catch (e) {
     throw new SpMetadataError(`Could not fetch the metadata: ${String((e as Error).message ?? e).slice(0, 120)}`);
   }
   if (!res.ok) throw new SpMetadataError(`The metadata URL answered ${res.status}.`);
-  const text = await res.text();
-  return parseSpMetadata(text);
+  if (!res.body) throw new SpMetadataError("The metadata response had no body.");
+  // Bound the read itself: checking the string after res.text() would already
+  // have buffered the whole body.
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_METADATA_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new SpMetadataError("Metadata is larger than 256 KB.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return parseSpMetadata(new TextDecoder().decode(bytes));
 }
 
 /** Creates or updates (by entityID) an SP registry row from parsed metadata. Returns its id. */
@@ -173,14 +201,35 @@ async function afterUpsert(env: import("../../env.js").Env, id: number, meta: Pa
     .run();
 }
 
-/** Cron: re-reads metadata for SPs registered from a URL, at most daily and a few per run. */
+/**
+ * Cron: re-reads metadata for SPs registered from a URL, at most daily and a
+ * few per run. The remote document is unsigned, so a refresh may only
+ * strengthen the stored trust configuration - never weaken or re-point it:
+ * registered ACS endpoints are never removed and new ones are never added
+ * (that is the administrator's decision, by re-importing or editing the SP),
+ * signing certificates accumulate (old + new stay valid through rollover),
+ * signed-request and encryption requirements, once on, stay on, and any new
+ * endpoint must be https. Non-security fields (NameID format, subject-id
+ * preference, validity bookkeeping) still track the document.
+ */
 export async function refreshSpMetadata(env: import("../../env.js").Env): Promise<{ refreshed: number; failed: number }> {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { results } = await env.DB.prepare(
-    "SELECT id, entity_id, metadata_url FROM saml_service_providers WHERE metadata_url IS NOT NULL AND metadata_url != '' AND (metadata_last_refreshed_at IS NULL OR metadata_last_refreshed_at < ? OR (metadata_valid_until IS NOT NULL AND metadata_valid_until < ?)) LIMIT 5"
+    "SELECT * FROM saml_service_providers WHERE metadata_url IS NOT NULL AND metadata_url != '' AND (metadata_last_refreshed_at IS NULL OR metadata_last_refreshed_at < ? OR (metadata_valid_until IS NOT NULL AND metadata_valid_until < ?)) LIMIT 5"
   )
     .bind(dayAgo, new Date().toISOString())
-    .all<{ id: number; entity_id: string; metadata_url: string }>();
+    .all<{
+      id: number;
+      entity_id: string;
+      metadata_url: string;
+      acs_urls: string;
+      default_acs_url: string | null;
+      want_authn_requests_signed: number;
+      signing_certs: string;
+      slo_url: string | null;
+      encryption_cert: string | null;
+      encrypt_assertions: number;
+    }>();
   let refreshed = 0;
   let failed = 0;
   for (const sp of results) {
@@ -188,7 +237,49 @@ export async function refreshSpMetadata(env: import("../../env.js").Env): Promis
       const meta = await fetchSpMetadata(sp.metadata_url);
       // The URL must keep describing the same SP; a different entityID is refused, not re-pointed.
       if (meta.entityId !== sp.entity_id) throw new SpMetadataError(`entityID changed to ${meta.entityId}`);
-      await upsertSpFromMetadata(env, meta, undefined, sp.metadata_url);
+
+      const storedAcs = JSON.parse(sp.acs_urls) as string[];
+      const storedCerts = JSON.parse(sp.signing_certs) as string[];
+      const httpsOnly = (u: string | null) => (u && u.startsWith("https://") ? u : null);
+      const merged = {
+        acsUrls: storedAcs.filter((u) => meta.acsUrls.includes(u)), // an endpoint the publisher withdrew stops being offered; it is never re-pointed
+        certs: [...new Set([...storedCerts, ...meta.signingCerts])],
+        wantSigned: sp.want_authn_requests_signed === 1 || (meta.wantAuthnRequestsSigned && meta.signingCerts.length > 0),
+        sloUrl: httpsOnly(sp.slo_url) ?? httpsOnly(meta.sloUrl),
+        encryptionCert: sp.encryption_cert ?? meta.encryptionCert,
+      };
+      // A withdrawn ACS that was the only one registered is kept rather than
+      // leaving the SP with no legal assertion target.
+      if (merged.acsUrls.length === 0) merged.acsUrls = storedAcs;
+
+      const now = new Date().toISOString();
+      const drifts: string[] = [];
+      if (meta.acsUrls.some((u) => !storedAcs.includes(u))) drifts.push("acs_added");
+      if (!sp.want_authn_requests_signed && meta.wantAuthnRequestsSigned && meta.signingCerts.length === 0) drifts.push("signing_downgrade");
+      if (sp.encryption_cert && !meta.encryptionCert) drifts.push("encryption_dropped");
+      await env.DB.prepare(
+        `UPDATE saml_service_providers SET acs_urls = ?, default_acs_url = ?, nameid_format = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, metadata_valid_until = ?, metadata_last_refreshed_at = ?${meta.subjectId ? ", subject_id = ?" : ""} WHERE id = ?`
+      )
+        .bind(
+          JSON.stringify(merged.acsUrls),
+          merged.acsUrls.includes(sp.default_acs_url ?? "") ? sp.default_acs_url : merged.acsUrls[0],
+          meta.nameIdFormat ?? "transient",
+          merged.wantSigned ? 1 : 0,
+          JSON.stringify(merged.certs),
+          merged.sloUrl,
+          merged.encryptionCert,
+          merged.encryptionCert ? 1 : 0,
+          meta.validUntil,
+          now,
+          ...(meta.subjectId ? [meta.subjectId] : []),
+          sp.id
+        )
+        .run();
+      if (drifts.length) {
+        await env.DB.prepare("INSERT INTO audit_log (at, actor_upn, action, target, details) VALUES (?, 'cron', 'saml.metadata_refresh_held', ?, ?)")
+          .bind(now, sp.entity_id, JSON.stringify({ held: drifts }))
+          .run();
+      }
       refreshed++;
     } catch (e) {
       failed++;

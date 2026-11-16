@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { fetchSpMetadata, parseSpMetadata, refreshSpMetadata, upsertSpFromMetadata } from "../src/lib/saml/sp-metadata.js";
 import { PAIRWISE_ID, resolveAttributes, SUBJECT_ID } from "../src/lib/saml/attributes.js";
+import { TEST_SAML_SP_CERT_PEM } from "./fixtures/saml-keys.js";
 import type { SamlServiceProviderRow, UserRow } from "../src/lib/types.js";
 
 beforeEach(resetDatabase);
@@ -63,12 +64,57 @@ describe("saml2int", () => {
     served = spMetadata("https://sp.test", undefined, "https://sp.test/acs-2");
     await env.DB.prepare("UPDATE saml_service_providers SET metadata_last_refreshed_at = '2000-01-01T00:00:00Z'").run();
     expect(await refreshSpMetadata(env)).toEqual({ refreshed: 1, failed: 0 });
-    expect(JSON.parse((await spRow("https://sp.test"))!.acs_urls)).toEqual(["https://sp.test/acs-2"]);
+    // A refresh may never add ACS endpoints - the registered set is the
+    // administrator's trust decision, so acs-1 stays until an admin re-imports.
+    expect(JSON.parse((await spRow("https://sp.test"))!.acs_urls)).toEqual(["https://sp.test/acs-1"]);
+    const held = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'saml.metadata_refresh_held'").first<{ details: string }>();
+    expect(held!.details).toContain("acs_added");
 
     served = spMetadata("https://other.test");
     await env.DB.prepare("UPDATE saml_service_providers SET metadata_last_refreshed_at = '2000-01-01T00:00:00Z'").run();
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await refreshSpMetadata(env)).toEqual({ refreshed: 0, failed: 1 });
-    expect(JSON.parse((await spRow("https://sp.test"))!.acs_urls)).toEqual(["https://sp.test/acs-2"]);
+    expect(JSON.parse((await spRow("https://sp.test"))!.acs_urls)).toEqual(["https://sp.test/acs-1"]);
+  });
+
+  it("a refresh cannot strip signing or encryption requirements, and non-security fields still track the document", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const certBody = TEST_SAML_SP_CERT_PEM.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+    const signedMeta = (acs: string, withKeys: boolean) =>
+      `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.test">` +
+      `<md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"${withKeys ? ' AuthnRequestsSigned="true"' : ""}>` +
+      (withKeys
+        ? `<md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>${certBody}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>` +
+          `<md:KeyDescriptor use="encryption"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>${certBody}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>`
+        : "") +
+      `<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://insecure.test/slo"/>` +
+      `<md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</md:NameIDFormat>` +
+      `<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${acs}" index="0"/></md:SPSSODescriptor></md:EntityDescriptor>`;
+
+    let served = signedMeta("https://sp.test/acs", true);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(served, { headers: { "Content-Type": "application/samlmetadata+xml" } }));
+    await upsertSpFromMetadata(env, parseSpMetadata(await (await fetch("https://sp.test/metadata")).text()), undefined, "https://sp.test/metadata");
+    const before = (await spRow("https://sp.test"))!;
+    expect(before.want_authn_requests_signed).toBe(1);
+    expect(before.encrypt_assertions).toBe(1);
+    expect(before.slo_url).toBe("http://insecure.test/slo"); // stored as registered (admin's decision)
+
+    // The malicious doc drops every KeyDescriptor, adds an attacker ACS and a
+    // different (still http) SLO endpoint.
+    served = signedMeta("https://attacker.test/acs", false);
+    await env.DB.prepare("UPDATE saml_service_providers SET metadata_last_refreshed_at = '2000-01-01T00:00:00Z'").run();
+    expect(await refreshSpMetadata(env)).toEqual({ refreshed: 1, failed: 0 });
+    const after = (await spRow("https://sp.test"))!;
+    expect(after.want_authn_requests_signed).toBe(1);
+    expect(after.encrypt_assertions).toBe(1);
+    expect(after.encryption_cert).toBe(before.encryption_cert);
+    expect(JSON.parse(after.signing_certs)).toEqual(JSON.parse(before.signing_certs));
+    expect(JSON.parse(after.acs_urls)).toEqual(["https://sp.test/acs"]);
+    // An http SLO never lands through a refresh.
+    expect(after.slo_url).toBeNull();
+    // But the harmless fields still track the document.
+    expect(after.nameid_format).toBe("persistent");
+    const held = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'saml.metadata_refresh_held'").first<{ details: string }>();
+    expect(held!.details).toContain("acs_added");
   });
 });

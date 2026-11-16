@@ -80,6 +80,34 @@ describe("credential lifecycle", () => {
     expect((await env.DB.prepare("SELECT status FROM users WHERE username = 'nina'").first<{ status: string }>())!.status).toBe("disabled");
   });
 
+  it("a password change rotates the session id, and a reset clears enrolled passkeys", async () => {
+    const { apiKey, upn } = await setup();
+    const { cookie } = await login(upn);
+    const oldSessionId = cookie.split("=")[1]!;
+    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO webauthn_credentials (id, user_id, public_key, created_at) VALUES ('cred-1', ?, 'pk', ?)").bind(id, new Date().toISOString()).run();
+
+    const pw = await call("/account/password", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: new URLSearchParams({ current_password: PW, new_password: "New-password-456!", confirm_password: "New-password-456!" }).toString() });
+    expect(pw.headers.get("Location")).toBe("/account?saved=password");
+    const rotated = pw.headers.get("Set-Cookie")?.split(";")[0];
+    expect(rotated).toBeTruthy();
+    expect(rotated).not.toBe(cookie);
+    // The stolen copy of the old cookie is dead; the rotated one works.
+    expect((await call("/account", { headers: { Cookie: cookie } })).status).toBe(302);
+    expect((await call("/account", { headers: { Cookie: rotated! } })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT 1 FROM webauthn_credentials WHERE user_id = ?").bind(id).first()).toBeNull();
+    expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(oldSessionId).first<{ revoked_at: string }>())!.revoked_at).toBeTruthy();
+
+    // Reset link: same response - sessions and passkeys cleared.
+    await env.DB.prepare("INSERT INTO webauthn_credentials (id, user_id, public_key, created_at) VALUES ('cred-2', ?, 'pk', ?)").bind(id, new Date().toISOString()).run();
+    expect((await call(`/api/v1/users/ola/invite`, { method: "POST", headers: { Authorization: `Bearer ${apiKey}` } })).status).toBe(200);
+    const resetLink = /\/reset-password\/[0-9a-f]{64}/.exec(sent[sent.length - 1]!.text)![0];
+    const { cookie: secondCookie } = await login("ola@horizon.test", "New-password-456!");
+    expect((await call(resetLink, { method: "POST", headers: FORM, body: "password=reset-chosen-34&confirm=reset-chosen-34" })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT 1 FROM webauthn_credentials WHERE user_id = ?").bind(id).first()).toBeNull();
+    expect((await call("/account", { headers: { Cookie: secondCookie } })).status).toBe(302);
+  });
+
   it("a backup code is consumed exactly once under concurrency", async () => {
     await setup();
     const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;

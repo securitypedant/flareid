@@ -31,6 +31,12 @@ function check(id, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${id}${detail ? `  - ${detail}` : ""}`);
 }
 const warn = (id, detail) => (results.push({ id, ok: true, warn: true, detail }), console.log(`WARN  ${id}  - ${detail}`));
+// Details go to stdout - CI logs and scrollback outlive the tokens they would print.
+const redact = (u) => {
+  const x = new URL(String(u), IDP);
+  for (const p of ["code", "state", "id_token_hint", "access_token", "refresh_token", "session_state"]) if (x.searchParams.has(p)) x.searchParams.set(p, "redacted");
+  return String(x);
+};
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 const basic = "Basic " + Buffer.from(`${encodeURIComponent(CLIENT_ID)}:${encodeURIComponent(CLIENT_SECRET)}`).toString("base64");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,14 +98,14 @@ const nonce = b64url(randomBytes(12));
 const state = b64url(randomBytes(12));
 const first = await authorize({ nonce, state });
 check("authorize: login form shown without a session", first.showedLogin);
-check("authorize: redirects back to the registered redirect_uri", first.location?.origin + first.location?.pathname === REDIRECT, String(first.location));
+check("authorize: redirects back to the registered redirect_uri", first.location?.origin + first.location?.pathname === REDIRECT, first.location ? redact(first.location) : "no redirect");
 check("authorize: state echoed unchanged", first.location?.searchParams.get("state") === state);
 const code = first.location?.searchParams.get("code");
 check("authorize: authorization code issued", Boolean(code));
 let cookie = first.cookie;
 
 const t = await token({ grant_type: "authorization_code", code, redirect_uri: REDIRECT });
-check("token: 200 for a valid code (client_secret_basic)", t.status === 200, JSON.stringify(t.json).slice(0, 120));
+check("token: 200 for a valid code (client_secret_basic)", t.status === 200, `fields: ${Object.keys(t.json).join(", ")}`);
 check("token: token_type Bearer", String(t.json.token_type).toLowerCase() === "bearer");
 check("token: Cache-Control no-store (RFC 6749 5.1)", (t.headers.get("cache-control") ?? "").includes("no-store"));
 check("token: expires_in present", typeof t.json.expires_in === "number");
@@ -197,7 +203,7 @@ const out = await fetch(`${d.end_session_endpoint}?${new URLSearchParams({ id_to
   redirect: "manual",
   headers: { Cookie: cookie },
 });
-check("logout: redirects to the registered post_logout_redirect_uri with state", out.headers.get("location") === `${POST_LOGOUT}?state=${logoutState}`, out.headers.get("location") ?? `HTTP ${out.status}`);
+check("logout: redirects to the registered post_logout_redirect_uri with state", out.headers.get("location") === `${POST_LOGOUT}?state=${logoutState}`, out.headers.get("location") ? redact(out.headers.get("location")) : `HTTP ${out.status}`);
 const afterLogout = await fetch(authorizeUrl({ prompt: "none" }), { redirect: "manual", headers: { Cookie: cookie } });
 check("logout: the session is gone (prompt=none -> login_required)", new URL(afterLogout.headers.get("location") ?? `${IDP}/`, IDP).searchParams.get("error") === "login_required");
 const evil = await fetch(`${d.end_session_endpoint}?${new URLSearchParams({ client_id: CLIENT_ID, post_logout_redirect_uri: "https://attacker.invalid/" })}`, { redirect: "manual" });

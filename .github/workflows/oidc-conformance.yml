@@ -26,9 +26,8 @@ jobs:
     env:
       CONFORMANCE_SERVER: https://www.certification.openid.net/
       CONFORMANCE_SERVER_MTLS: https://www.certification.openid.net/
-      CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
-      FLAREID_ISSUER: ${{ vars.FLAREID_CONFORMANCE_ISSUER }}
-      FLAREID_API_KEY: ${{ secrets.FLAREID_CONFORMANCE_API_KEY }}
+      # Secrets are scoped to the single step that needs them (see below): a
+      # third-party suite or a hijacked PyPI release must not inherit them.
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -39,14 +38,22 @@ jobs:
           node-version: 22
 
       - name: Seed clients and the test user, write the plan config
+        env:
+          FLAREID_ISSUER: ${{ vars.FLAREID_CONFORMANCE_ISSUER }}
+          FLAREID_API_KEY: ${{ secrets.FLAREID_CONFORMANCE_API_KEY }}
         run: node scripts/oidc-suite-setup.mjs
 
-      - name: Fetch the suite's runner (pinned release)
+      - name: Fetch the suite's runner (pinned commit)
         run: |
+          # Clone the tagged release, then verify it is the reviewed commit:
+          # the tag itself is mutable and this job runs with secrets in scope.
           git clone --depth 1 --branch release-v5.3.4 https://gitlab.com/openid/conformance-suite.git /tmp/suite
-          pip install --quiet httpx pyparsing
+          git -C /tmp/suite checkout 23353b36957d6466010de767c812d2c91ed37638
+          pip install --quiet --require-hashes -r conformance/requirements.txt
 
       - name: Basic OP, Config OP and RP-initiated logout plans
+        env:
+          CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
         working-directory: /tmp/suite/scripts
         run: |
           python3 run-test-plan.py \
@@ -64,3 +71,5 @@ jobs:
           name: conformance-results
           path: conformance-results
           if-no-files-found: ignore
+          # Suite exports can embed live tokens and client secrets; short retention.
+          retention-days: 14

@@ -119,6 +119,29 @@ describe("authentication policies", () => {
     // The first gated request ended the session - nothing it did could persist.
     expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(sessionId).first<{ revoked_at: string | null }>())!.revoked_at).not.toBeNull();
   });
+
+  it("refuses an MFA requirement while no factor is usable, and leaves nothing behind", async () => {
+    const { apiKey, adminCookie } = await setup();
+    // Every factor off: a policy demanding a second one would strand everyone.
+    const { setFactorEnabled, FACTOR_KEYS } = await import("../src/lib/auth-policy.js");
+    for (const k of FACTOR_KEYS) await setFactorEnabled(env, k, false);
+
+    const res = await apiCall("/api/v1/security/policies", { token: apiKey, body: { name: "Impossible", requirement: "mfa", priority: 5, group_ids: [] } });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/second factor/);
+    expect(await env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = 'Impossible'").first()).toBeNull();
+
+    // The default policy cannot be switched to mfa either - and stays password.
+    const def = (await env.DB.prepare("SELECT id, requirement FROM auth_policies WHERE is_default = 1").first<{ id: number; requirement: string }>())!;
+    const patch = await apiCall(`/api/v1/security/policies/${def.id}`, { token: apiKey, method: "PATCH", body: { name: "Password only", requirement: "mfa", priority: 10, group_ids: [] } });
+    expect(patch.status).toBe(400);
+    expect((await env.DB.prepare("SELECT requirement FROM auth_policies WHERE id = ?").bind(def.id).first<{ requirement: string }>())!.requirement).toBe("password");
+
+    // With a factor back on, the same write is fine.
+    await setFactorEnabled(env, "totp", true);
+    expect((await apiCall("/api/v1/security/policies", { token: apiKey, body: { name: "Impossible", requirement: "mfa", priority: 5, group_ids: [] } })).status).toBe(201);
+    void adminCookie;
+  });
 });
 
 describe("secure defaults", () => {

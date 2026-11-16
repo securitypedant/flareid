@@ -133,15 +133,50 @@ export async function pushUser(env: Env, user: UserRow): Promise<ScimResult> {
   }
 }
 
+/**
+ * Asks the remote which id it already gave this object - the recovery for a
+ * create that conflicts (409) or whose link was lost. A SCIM server that
+ * enforces externalId/userName uniqueness answers 409 rather than minting a
+ * second copy; servers that do not enforce it get the single-flight lock and
+ * the guarded link write below instead.
+ */
+async function resolveRemoteId(env: Env, collection: "/Users" | "/Groups", externalId: string, userName?: string): Promise<string | null> {
+  for (const filter of [`externalId eq "${externalId.replace(/["\\]/g, "\\$&")}"`, ...(userName ? [`userName eq "${userName.replace(/["\\]/g, "\\$&")}"`] : [])]) {
+    const res = await scimFetch(env, `${collection}?filter=${encodeURIComponent(filter)}`, {});
+    if (!res.ok) continue;
+    const id = (await res.json<{ Resources?: { id?: string }[] }>()).Resources?.[0]?.id;
+    if (id) return id;
+  }
+  return null;
+}
+
 async function createScimUser(env: Env, user: UserRow, body: string): Promise<ScimResult> {
   const res = await scimFetch(env, "/Users", { method: "POST", body });
-  if (!res.ok) return { ok: false, status: res.status, error: await scimError(res) };
+  if (!res.ok) {
+    if (res.status === 409) {
+      const id = await resolveRemoteId(env, "/Users", user.external_id, user.upn);
+      if (id && (await linkUserScimId(env, user.id, id, user.upn))) return { ok: true, status: res.status };
+    }
+    return { ok: false, status: res.status, error: await scimError(res) };
+  }
   const created = await res.json<{ id: string }>();
-  const linked = await env.DB.prepare("UPDATE users SET scim_id = ? WHERE id = ?").bind(created.id, user.id).run();
-  // Deleted locally while the POST was in flight: the new remote user has no
-  // local link, so it goes straight onto the deprovision queue.
-  if (linked.meta.changes === 0) await queueScimDeprovision(env, "user", created.id, user.upn).run();
+  await linkUserScimId(env, user.id, created.id, user.upn);
   return { ok: true, status: res.status };
+}
+
+/**
+ * Links a remote id to the user. The `scim_id IS NULL` guard keeps a second
+ * writer (another push overlapping the same create) from overwriting the
+ * first link; when the write loses - the row was deleted or already linked -
+ * the just-created remote object goes onto the deprovision queue instead of
+ * becoming an untracked orphan the IdP can never deactivate.
+ */
+async function linkUserScimId(env: Env, userId: number, scimId: string, upn: string): Promise<boolean> {
+  const linked = await env.DB.prepare("UPDATE users SET scim_id = ? WHERE id = ? AND scim_id IS NULL").bind(scimId, userId).run();
+  if (linked.meta.changes > 0) return true;
+  const label = (await env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? upn;
+  await queueScimDeprovision(env, "user", scimId, label).run();
+  return false;
 }
 
 /** Marks a user inactive in the SCIM server (Access treats this as deprovisioning) rather than hard-deleting. */
@@ -341,12 +376,27 @@ async function recreateGroup(env: Env, group: GroupRow, members: ScimMember[] | 
 
 async function createScimGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
   const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, members)) });
-  if (!res.ok) return { ok: false, status: res.status, error: await scimError(res) };
+  if (!res.ok) {
+    if (res.status === 409) {
+      const id = await resolveRemoteId(env, "/Groups", String(group.id));
+      if (id && (await linkGroupScimId(env, group, id, members))) return { ok: true, status: res.status };
+    }
+    return { ok: false, status: res.status, error: await scimError(res) };
+  }
   const created = await res.json<{ id: string }>();
-  const linked = await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ?").bind(created.id, group.id).run();
-  if (linked.meta.changes === 0) await queueScimDeprovision(env, "group", created.id, group.name).run();
-  else await recordFullPush(env, group, created.id, members);
+  await linkGroupScimId(env, group, created.id, members);
   return { ok: true, status: res.status };
+}
+
+/** The group counterpart of linkUserScimId: guarded write, losing remote id queued for deprovision. */
+async function linkGroupScimId(env: Env, group: GroupRow, scimId: string, members: ScimMember[]): Promise<boolean> {
+  const linked = await env.DB.prepare("UPDATE groups SET scim_id = ? WHERE id = ? AND scim_id IS NULL").bind(scimId, group.id).run();
+  if (linked.meta.changes === 0) {
+    await queueScimDeprovision(env, "group", scimId, group.name).run();
+    return false;
+  }
+  await recordFullPush(env, group, scimId, members);
+  return true;
 }
 
 export async function deleteGroupScim(env: Env, group: GroupRow): Promise<ScimResult> {
@@ -391,9 +441,49 @@ export interface SyncStep {
   remainingUsers: number;
   /** Up to five failures from this step, for the sync log. */
   errors: { target: string; status?: number; error: string }[];
+  /** True when this call did no work because another sync holds the lock. */
+  busy?: boolean;
+}
+
+const SYNC_LOCK_KEY = "scim_sync_lock";
+/** A batch is bounded by the SCIM server's own timeouts; a lock older than this belonged to a dead runner. */
+const SYNC_LOCK_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Claims the full-sync lock. idp_settings.value is "ISO timestamp : uuid", so
+ * lexical comparison doubles as a staleness check: an abandoned lock expires
+ * instead of wedging every later sync.
+ */
+async function claimSyncLock(env: Env): Promise<string | null> {
+  const token = `${new Date().toISOString()}:${crypto.randomUUID()}`;
+  const stale = new Date(Date.now() - SYNC_LOCK_STALE_MS).toISOString();
+  const claimed = await env.DB.prepare(
+    `INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+     WHERE idp_settings.value < ?`
+  )
+    .bind(SYNC_LOCK_KEY, token, new Date().toISOString(), stale)
+    .run();
+  return claimed.meta.changes ? token : null;
 }
 
 export async function syncAll(env: Env, opts: { restart?: boolean } = {}): Promise<SyncStep> {
+  const lock = await claimSyncLock(env);
+  if (!lock) {
+    // The console poller, an API caller, or the hourly cron can all invoke a
+    // sync at once; two runners processing the same batch create duplicate
+    // remote objects, so the loser coalesces instead.
+    const remainingUsers = (await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE scim_id IS NULL").first<{ n: number }>())?.n ?? 0;
+    return { phase: "users", users: 0, userErrors: 0, groups: 0, groupErrors: 0, complete: false, remainingUsers, busy: true, errors: [] };
+  }
+  try {
+    return await syncAllLocked(env, opts);
+  } finally {
+    await env.DB.prepare("DELETE FROM idp_settings WHERE key = ? AND value = ?").bind(SYNC_LOCK_KEY, lock).run();
+  }
+}
+
+async function syncAllLocked(env: Env, opts: { restart?: boolean }): Promise<SyncStep> {
   await drainScimDeprovisionQueue(env);
   const setCursor = (v: string) =>
     env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")

@@ -4,6 +4,78 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+Migrations: `0028_consent_claim_groups.sql`, `0029_repairs.sql`. The rest of
+the confirmed medium-severity audit findings: consent tracking, credential
+lifecycle, policy-write safety, rate-limit dimensions, secret hygiene and
+SCIM/SAML robustness.
+
+### Security
+
+- **OIDC `claims=` requests now share consent with the scopes they imply.**
+  Consent was recorded per requested scope only, so a client holding consent
+  for `openid` could add `claims={"id_token":{"department":...}}` and release
+  attributes the user was never asked about. Consent now tracks the union of
+  scopes and the claim groups the `claims` parameter resolves to, both at
+  `/authorize` and in the OIDC session grant path (`0028`).
+- **Password and passkey lifecycle fixes.** Changing your password rotates
+  the session id (a cloned cookie dies with the old one), a completed
+  password reset clears WebAuthn credentials (a passkey an attacker
+  registered no longer survives the reset), and adding or removing a
+  passkey now needs a fresh session or the current password within the
+  step-up budget - a bare session cookie can no longer mint a standalone
+  multi-factor credential. Removal goes through a confirmation page that
+  asks for the password when the session is stale.
+- **Identity and setup admission.** `users` writes reject UPNs that break
+  the username pattern, duplicate another account's UPN, or name a domain
+  the deployment does not serve; `POST /api/v1/setup` refuses
+  domain/complete effects for non-privileged callers; the MFA gate no
+  longer accepts a TOTP or passkey the account has disabled.
+- **Policy-write guards.** Auth-policy writes that would require MFA while
+  no usable factor exists are refused instead of locking every admin out
+  (`assertFactorsExistForMfa`), and saving or applying the default
+  password runs the breached-password check the single-user path already
+  had.
+- **Migration repairs for name-keyed bindings** (`0029_repairs.sql`):
+  upgrades that bound admin roles or the admin MFA policy to objects by
+  display name are re-bound by id - a renamed policy or group can no
+  longer silently un-guard administrators or smuggle an admin grant in.
+- **Rate-limit dimensions an attacker could mint are gone.** The edge
+  limiter only keys `/token` per `client_id` for clients that actually
+  exist (a made-up id no longer gets its own budget), and IPv6 sources are
+  charged at both /64 and a shared /48 so rotating subnets cannot escape
+  the budget.
+- **`/jwks.json` can never republish private key material.** Env-supplied
+  public JWKs (`SIGNING_PUBLIC_JWK`, `SIGNING_PUBLIC_JWK_PREVIOUS`) are
+  stripped of private members (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`,
+  `k`) at storage and again at publish time.
+- **Scheduled SAML SP-metadata refresh may only strengthen trust
+  configuration.** The unsigned remote document previously rewrote ACS
+  allowlists, signing certs, signed-request and encryption requirements
+  wholesale. A refresh now keeps registered ACS endpoints (never adds, and
+  only narrows when the publisher withdraws), unions signing
+  certificates, preserves `want_authn_requests_signed` and
+  `encrypt_assertions` once enabled, applies https-only endpoints, logs a
+  `saml.metadata_refresh_held` audit entry when it declines a change, and
+  still tracks non-security fields. The fetch no longer follows redirects
+  (the registered https URL is what authenticates the publisher) and the
+  256 KB cap is enforced while the body streams in, not after buffering.
+- **SCIM full sync is single-flight and creates are race-safe.** The
+  console poller, `POST /api/v1/scim/sync` and the hourly cron can no
+  longer run overlapping syncs (a DB lock coalesces the loser into a
+  `busy` response). Link writes are guarded by `scim_id IS NULL` - a
+  losing remote id is queued for deprovision instead of orphaned - and a
+  409 from the remote resolves the existing object by `externalId`/
+  `userName` and adopts it.
+- **Conformance CI no longer runs mutable, unpinned code next to
+  secrets.** The workflow clones the conformance suite at a pinned commit
+  (the tag is verified, not trusted), installs Python deps from a
+  hash-locked `conformance/requirements.txt`, scopes each secret to the
+  step that needs it, keeps result artifacts 14 days, and the local
+  conformance script redacts `code`/`state`/tokens from what it prints.
+  `conformance-results/` is git-ignored for local runs.
+
 ## [3.9.1] - 2026-11-15
 
 No migrations. Fixes from a deep security audit of the whole codebase: the

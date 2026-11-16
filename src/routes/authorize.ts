@@ -11,7 +11,7 @@ import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
-import { authorizeErrorRedirect, hasConsent, redirectUriAllowed } from "../lib/oidc.js";
+import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed } from "../lib/oidc.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -45,7 +45,8 @@ export async function finishOidcAuthorize(
   const client = await getClientByClientId(env, req.clientId);
   const prompts = new Set((req.prompt ?? "").split(/\s+/).filter(Boolean));
   if (client && !opts.consented && (!client.trusted || prompts.has("consent"))) {
-    const alreadyAgreed = !prompts.has("consent") && (await hasConsent(env, userId, client.client_id, req.scope));
+    const requestedGroups = [...effectiveClaimGroups(client, req.scope, [...(req.claimGroups?.id_token ?? []), ...(req.claimGroups?.userinfo ?? [])])];
+    const alreadyAgreed = !prompts.has("consent") && (await hasConsent(env, userId, client.client_id, req.scope, requestedGroups));
     if (!alreadyAgreed) {
       if (prompts.has("none")) return { redirectTo: authorizeErrorRedirect(req.redirectUri, "consent_required", req.state) };
       const consentId = randomToken(16);

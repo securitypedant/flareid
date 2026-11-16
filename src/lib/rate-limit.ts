@@ -15,6 +15,9 @@ const DEFAULT_POLICY: RateLimitPolicy = { maxAttempts: 5, windowMinutes: 15 };
  * sharing the IP (office NAT, VPN, CGNAT). 20x still throttles real sprays.
  */
 const IP_BUCKET_ATTEMPT_MULTIPLIER = 20;
+// The /48 aggregate gets a further multiplier - several /64s may legitimately
+// share one allocation (a site, a campus) - but it is not unlimited.
+const IP48_BUCKET_ATTEMPT_MULTIPLIER = 4;
 
 export async function getRateLimitPolicy(env: Env): Promise<RateLimitPolicy> {
   const [maxAttempts, windowMinutes] = await Promise.all([
@@ -87,6 +90,21 @@ export function rateLimitAddress(ip: string): string {
   return `${groups.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
 
+/**
+ * The coarser aggregate beside the /64 key: a /48 is a common allocation size,
+ * and without it an attacker holding one mints a fresh /64 budget for every
+ * address. IPv4 returns the address unchanged - callers only record a second
+ * bucket for IPv6 sources, so IPv4 is never double-counted.
+ */
+export function rateLimitAddress48(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head, tail = ""] = ip.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${groups.slice(0, 3).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/48`;
+}
+
 /** A successful step gives its unit back to the shared per-IP bucket, so that bucket counts failures only. */
 async function refundIpAttempt(env: Env, ip: string): Promise<void> {
   await env.DB.prepare("UPDATE rate_limits SET count = MAX(count - 1, 0) WHERE key = ?").bind(`login:ip:${rateLimitAddress(ip)}`).run();
@@ -114,11 +132,12 @@ export function loginRateKey(identifier: string, user: { username: string } | nu
 export async function recordLoginAttempt(env: Env, accountKey: string, ip: string): Promise<boolean> {
   const policy = await getRateLimitPolicy(env);
   const windowMs = policy.windowMinutes * 60_000;
-  const [byAccount, byIp] = await Promise.all([
+  const [byAccount, byIp, byIp48] = await Promise.all([
     recordAttempt(env, `login:upn:${accountKey}`, windowMs),
     recordAttempt(env, `login:ip:${rateLimitAddress(ip)}`, windowMs),
+    ip.includes(":") ? recordAttempt(env, `login:ip48:${rateLimitAddress48(ip)}`, windowMs) : Promise.resolve(0),
   ]);
-  return byAccount > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
+  return byAccount > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER || byIp48 > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER * IP48_BUCKET_ATTEMPT_MULTIPLIER;
 }
 
 /** Clears the account bucket after a successful password step. */
@@ -134,11 +153,12 @@ export async function clearLoginAttempts(env: Env, accountKey: string, ip?: stri
 export async function recordMfaAttempt(env: Env, userId: number, ip: string): Promise<boolean> {
   const policy = await getRateLimitPolicy(env);
   const windowMs = policy.windowMinutes * 60_000;
-  const [byUser, byIp] = await Promise.all([
+  const [byUser, byIp, byIp48] = await Promise.all([
     recordAttempt(env, `login:mfa:${userId}`, windowMs),
     recordAttempt(env, `login:ip:${rateLimitAddress(ip)}`, windowMs),
+    ip.includes(":") ? recordAttempt(env, `login:ip48:${rateLimitAddress48(ip)}`, windowMs) : Promise.resolve(0),
   ]);
-  return byUser > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER;
+  return byUser > policy.maxAttempts || byIp > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER || byIp48 > policy.maxAttempts * IP_BUCKET_ATTEMPT_MULTIPLIER * IP48_BUCKET_ATTEMPT_MULTIPLIER;
 }
 
 /** Clears the account's MFA bucket after a successful second factor. */

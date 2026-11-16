@@ -158,6 +158,29 @@ describe("consent for non-trusted clients", () => {
     expect(new URL(deny.headers.get("Location")!).searchParams.get("error")).toBe("access_denied");
   });
 
+  it("claims= groups the user never saw re-ask for consent instead of releasing silently", async () => {
+    const { upn, clientId, clientSecret } = await setup({ trusted: false, allowed_claims: ["email", "groups"] });
+    // Consent once on openid alone: the screen showed only 'identifier'.
+    const first = await signInVia(authorizeUrl(clientId, { scope: "openid" }), upn);
+    await SELF.fetch(`${BASE}${first.location}`, { method: "POST", headers: { ...FORM, Cookie: first.cookie }, body: "decision=allow", redirect: "manual" });
+
+    // Asking for email via claims= must not ride on that stored consent.
+    const claims = JSON.stringify({ userinfo: { email: null }, id_token: { groups: null } });
+    const sneak = await SELF.fetch(authorizeUrl(clientId, { scope: "openid", claims }), { redirect: "manual", headers: { Cookie: first.cookie } });
+    expect(sneak.headers.get("Location")).toMatch(/^\/consent\//);
+    const page = await (await SELF.fetch(`${BASE}${sneak.headers.get("Location")!}`, { headers: { Cookie: first.cookie } })).text();
+    expect(page).toContain("Email address");
+    expect(page).toContain("Group membership");
+
+    // Approve it: the groups join the stored set, so the same request now passes silently.
+    const allow = await SELF.fetch(`${BASE}${sneak.headers.get("Location")!}`, { method: "POST", headers: { ...FORM, Cookie: first.cookie }, body: "decision=allow", redirect: "manual" });
+    const tokens = await exchange(codeOf(allow.headers.get("Location")!), clientId, { client_secret: clientSecret! });
+    expect(tokens.status).toBe(200);
+    const again = await SELF.fetch(authorizeUrl(clientId, { scope: "openid", claims }), { redirect: "manual", headers: { Cookie: first.cookie } });
+    expect(codeOf(again.headers.get("Location")!)).toBeTruthy();
+    expect(decodeJwt((await exchange(codeOf(again.headers.get("Location")!), clientId, { client_secret: clientSecret! })).body.id_token!).groups).toBeDefined();
+  });
+
   it("a consent page cannot be answered by someone else's session", async () => {
     const { apiKey, upn, clientId } = await setup({ trusted: false });
     const first = await signInVia(authorizeUrl(clientId), upn);
