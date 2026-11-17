@@ -1386,6 +1386,8 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 | `DELETE` | `/api/v1/scim/targets/{id}` | `scim:write` | Remove a SCIM target |
 | `POST` | `/api/v1/scim/test` | `scim:write` | Test a SCIM connection |
 | `POST` | `/api/v1/scim/sync` | `scim:write` | Push the next batch of users, then the groups |
+| `GET` | `/api/v1/scim/mappings` | `scim:read` | List inbound attribute mappings |
+| `PUT` | `/api/v1/scim/mappings` | `scim:write` | Replace the inbound attribute mappings |
 
 ### `GET /api/v1/scim/config`
 
@@ -1600,6 +1602,46 @@ Response `200`:
 |---|---|---|---|
 | `ok` | boolean | yes |  |
 | `complete` | boolean | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/scim/mappings`
+
+List inbound attribute mappings.
+
+The expressions that rewrite fields on users an upstream provisioner creates or updates over the SCIM server API. Fields with no mapping keep the standard SCIM attribute mapping.
+
+Permission: `scim:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mappings` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/scim/mappings`
+
+Replace the inbound attribute mappings.
+
+The whole set at once, in evaluation order. Each `target` is a user field: a column name (display_name, department, ...), `upn`, `active`, `manager`, `emails`, or `custom.<key>`. An expression yielding nothing clears its field on PUT and leaves it alone on PATCH.
+
+Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mappings` | object[] | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

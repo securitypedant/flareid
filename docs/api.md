@@ -603,6 +603,34 @@ holds the sync, a call does no work and answers `busy: true` instead of
 pushing the same batch twice - poll again rather than treating it as an
 error.
 
+### `GET /scim/mappings`, `PUT /scim/mappings`
+
+Scope: `scim:read` / `scim:write`.
+
+The inbound attribute mappings applied when an upstream provisioner writes a
+user over the SCIM server API. Each row rewrites one field with an expression
+evaluated over the incoming SCIM body; fields with no row keep the standard
+attribute mapping. `PUT` replaces the whole set in evaluation order.
+
+```json
+{
+  "mappings": [
+    { "target": "upn", "expression": "lower(name.givenName + \".\" + name.familyName) + \"@example.com\"", "enabled": true },
+    { "target": "department", "expression": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:costCenter" },
+    { "target": "custom.pronouns", "expression": "\"she/her\"" }
+  ]
+}
+```
+
+Targets are `upn` (create only), user columns (`display_name`, `given_name`,
+`family_name`, `job_title`, `department`, `employee_number`, `hire_date`,
+`employment_status`, `employment_type`, `location`), `active`, `manager`,
+`emails`, and `custom.<key>` for custom attributes. Expressions accept
+attribute paths (`name.givenName`, `emails[type eq "work"].value`, URN
+extension attributes), `+` concatenation, literals, and the functions
+`lower upper trim concat join coalesce first split eq ne if`. An expression
+yielding nothing leaves the field alone on `PATCH` but clears it on `PUT`.
+
 ### SCIM 2.0 server (`/scim/v2`)
 
 FlareID also *accepts* provisioning: an HR system or upstream IdP can manage
@@ -611,8 +639,11 @@ users and groups over SCIM 2.0 at `/scim/v2` (`Users`, `Groups`,
 API key - `directory:read` for reads, `directory:write` for writes. Filters
 support `userName`/`externalId`/`displayName eq "..."`; `PATCH` follows
 RFC 7644 and is all-or-nothing. Super Admins (the users and their group
-memberships) need an `admin`-scoped key. Every inbound change is passed on to
-the outbound SCIM target when one is configured.
+memberships) need an `admin`-scoped key. Inbound writes pass through the
+attribute mappings above - on `PATCH` each expression evaluates against the
+patch merged onto the current resource, so it can combine the changed
+attribute with untouched ones. Every inbound change is passed on to the
+outbound SCIM target when one is configured.
 
 ### `GET /ldap/apps`, `POST /ldap/apps`, `POST /ldap/apps/{slug}/rotate`, `DELETE /ldap/apps/{slug}`
 

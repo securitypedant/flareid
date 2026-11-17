@@ -29,6 +29,7 @@ import {
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
+import { listScimMappings, replaceScimMappings, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -2618,8 +2619,19 @@ function scimHost(endpoint: string): string {
   }
 }
 
+/** One mapping row in the inbound-mapping table (parallel map_target/map_expr/map_enabled arrays). */
+function scimMappingRowHtml(m?: { target: string; expression: string; enabled: boolean }): string {
+  return `<tr class="mapping-row">
+    <td><input type="text" name="map_target" value="${escapeHtml(m?.target ?? "")}" placeholder="display_name" list="scim-map-targets" required style="margin:0;" /></td>
+    <td><input type="text" name="map_expr" value="${escapeHtml(m?.expression ?? "")}" placeholder='name.givenName + " " + name.familyName' required style="margin:0; font-family:monospace;" /></td>
+    <td style="text-align:center;"><input type="hidden" name="map_enabled" value="${m && !m.enabled ? 0 : 1}" /><input type="checkbox" ${m && !m.enabled ? "" : "checked"} data-mirror-prev style="width:auto; margin:0;" /></td>
+    <td><button type="button" class="secondary" data-remove-closest=".mapping-row" aria-label="Remove mapping">&times;</button></td>
+  </tr>`;
+}
+
 admin.get("/admin/integrations/scim", async (c) => {
   const targets = await listScimTargets(c.env);
+  const mappings = await listScimMappings(c.env);
   // Per-target pushed counts for the list (one grouped query each way).
   const [{ results: userCounts }, { results: groupCounts }] = await Promise.all([
     c.env.DB.prepare("SELECT target_id, COUNT(*) AS n FROM scim_user_links GROUP BY target_id").all<{ target_id: number; n: number }>(),
@@ -2658,6 +2670,24 @@ admin.get("/admin/integrations/scim", async (c) => {
                 </tbody>
               </table>`
         }
+      `)}
+      ${cardSection(`
+        <h2>Inbound attribute mapping</h2>
+        <p class="muted">FlareID is also a SCIM <em>server</em>: an upstream provisioner (an HR system or another IdP) writes users over <code>/scim/v2</code> with a <code>directory:write</code> API key. Each row rewrites one field with an expression evaluated over the incoming SCIM body &mdash; fields with no row keep the standard mapping. A row whose expression yields nothing leaves the field alone on PATCH but clears it on PUT. Expressions accept attribute paths (<code>name.givenName</code>, <code>emails[type eq "work"].value</code>, URN extension attributes), <code>+</code> concatenation, literals, and <code>lower upper trim concat join coalesce first split eq ne if</code>. Use <code>custom.&lt;key&gt;</code> for a custom attribute.</p>
+        <datalist id="scim-map-targets">${USER_MAPPING_TARGETS.map((t) => `<option value="${t}"></option>`).join("")}</datalist>
+        <form method="POST" action="/admin/scim/mappings">
+          <table>
+            <thead><tr><th style="width:220px;">Field</th><th>Expression</th><th style="width:60px;">On</th><th style="width:40px;"></th></tr></thead>
+            <tbody id="mapping-rows">
+              ${mappings.map(scimMappingRowHtml).join("")}
+            </tbody>
+          </table>
+          <template id="mapping-row-template">${scimMappingRowHtml()}</template>
+          <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+            <button type="button" class="secondary" data-append-template="mapping-row-template" data-append-to="mapping-rows">+ Add mapping</button>
+            <button class="primary" type="submit">Save mappings</button>
+          </div>
+        </form>
       `)}
       ${cardSection(`
         <h2>Sync log</h2>
@@ -5292,6 +5322,19 @@ admin.post("/admin/scim/targets/:id/delete", async (c) => {
   if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   await deleteScimTarget(c.env, id);
   await logAudit(c.env, c.get("user"), "settings.scim_target_deleted", target.name, undefined, c.req.raw);
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
+});
+
+admin.post("/admin/scim/mappings", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const targets = list(body.map_target), exprs = list(body.map_expr), enabled = list(body.map_enabled);
+  try {
+    await replaceScimMappings(c.env, "user", targets.map((target, i) => ({ target, expression: exprs[i] ?? "", enabled: enabled[i] === "1" })));
+  } catch (e) {
+    return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, c.get("user"), "settings.scim_mappings_changed", undefined, { count: targets.length }, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 

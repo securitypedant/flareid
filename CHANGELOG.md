@@ -11,8 +11,24 @@ SCIM server) plus the per-target link tables `scim_user_links` /
 `scim_group_links`; the existing single-target settings and `scim_id` columns
 seed the first target, and `scim_group_state`, `scim_group_members` and
 `scim_deprovision_queue` are rebuilt keyed by target.
+**Migration `0035_scim_mappings.sql`** - `scim_mappings`, the inbound
+attribute-mapping rules for the SCIM server API.
 
 ### Added
+
+- **Inbound attribute mapping for SCIM provisioning.** Upstream provisioners
+  whose dialect doesn't match FlareID's fields can be translated instead of
+  forked: each mapping row feeds one user field (`upn`, the profile columns,
+  `active`, `manager`, `emails`, or `custom.<key>`) from an expression over
+  the incoming SCIM body - attribute paths, filters like
+  `emails[type eq "work"].value`, URN extension attributes, `+`
+  concatenation, and `lower upper trim concat join coalesce first split eq
+  ne if`. So `upn` can be `lower(name.givenName + "." + name.familyName) +
+  "@example.com"`, and `active` can key off an enterprise extension value.
+  PATCH evaluates each expression against the patch merged onto the current
+  resource, and an expression yielding nothing leaves the field alone there
+  but clears it on PUT. Managed on the Integrations → SCIM page and over
+  `GET|PUT /api/v1/scim/mappings`.
 
 - **Outbound SCIM is multi-target.** FlareID can push users and groups to
   several SCIM servers at once - Cloudflare Access and Google Workspace side

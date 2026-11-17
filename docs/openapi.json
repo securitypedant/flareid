@@ -12842,6 +12842,182 @@
         }
       }
     },
+    "/api/v1/scim/mappings": {
+      "get": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "List inbound attribute mappings",
+        "description": "The expressions that rewrite fields on users an upstream provisioner creates or updates over the SCIM server API. Fields with no mapping keep the standard SCIM attribute mapping.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mappings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "string"
+                          },
+                          "expression": {
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "target",
+                          "expression",
+                          "enabled"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "mappings"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "Replace the inbound attribute mappings",
+        "description": "The whole set at once, in evaluation order. Each `target` is a user field: a column name (display_name, department, ...), `upn`, `active`, `manager`, `emails`, or `custom.<key>`. An expression yielding nothing clears its field on PUT and leaves it alone on PATCH.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mappings": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "target": {
+                          "type": "string"
+                        },
+                        "expression": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "target",
+                        "expression"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "mappings"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/saml/service-providers": {
       "get": {
         "tags": [

@@ -39,6 +39,7 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
 import { getAppName, isSetupCompleted } from "../lib/settings.js";
+import { listScimMappings, replaceScimMappings } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
@@ -806,6 +807,37 @@ defineRoute({
   const summary = await syncAll(c.env, { targetId: body?.target_id });
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, { ...summary, target_id: body?.target_id }, c.req.raw);
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
+});
+
+// ---------------------------------------------------------------------------
+// SCIM inbound attribute mappings (FlareID as a SCIM server)
+// ---------------------------------------------------------------------------
+
+defineRoute({
+  method: "get", path: "/api/v1/scim/mappings", tag: "SCIM", permission: "scim:read", summary: "List inbound attribute mappings",
+  description:
+    "The expressions that rewrite fields on users an upstream provisioner creates or updates over the SCIM server API. Fields with no mapping keep the standard SCIM attribute mapping.",
+  response: z.object({ mappings: z.array(z.object({ target: z.string(), expression: z.string(), enabled: z.boolean() })) }),
+}, async (c) => {
+  const mappings = await listScimMappings(c.env, "user");
+  return c.json({ mappings: mappings.map((m) => ({ target: m.target, expression: m.expression, enabled: m.enabled })) });
+});
+
+defineRoute({
+  method: "put", path: "/api/v1/scim/mappings", tag: "SCIM", permission: "scim:write", summary: "Replace the inbound attribute mappings",
+  description:
+    "The whole set at once, in evaluation order. Each `target` is a user field: a column name (display_name, department, ...), `upn`, `active`, `manager`, `emails`, or `custom.<key>`. An expression yielding nothing clears its field on PUT and leaves it alone on PATCH.",
+  body: z.object({ mappings: z.array(z.object({ target: z.string(), expression: z.string().min(1), enabled: z.boolean().optional() })) }),
+  errors: [400],
+}, async (c) => {
+  const body = await readJson<{ mappings?: { target: string; expression: string; enabled?: boolean }[] }>(c);
+  try {
+    await replaceScimMappings(c.env, "user", body.mappings ?? []);
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_mappings_changed", undefined, { count: (body.mappings ?? []).length }, c.req.raw);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

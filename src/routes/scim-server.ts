@@ -14,6 +14,7 @@ import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } f
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
+import { applyUserMappings, mergeScimBody, ScimMappingError } from "../lib/scim-mapping.js";
 import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushChangedDynamicGroups, pushGroupCurrent, pushUser, pushUsersById, scimDeprovisionStatements, type ScimResult } from "../lib/scim-client.js";
 
 /**
@@ -255,8 +256,15 @@ interface ScimUserBody {
   [key: string]: unknown;
 }
 
-/** Columns a SCIM user body sets, plus its address list. Only what is present is changed (PUT callers send everything anyway). */
-async function columnsFrom(env: Env, body: ScimUserBody): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined }> {
+/**
+ * Columns a SCIM user body sets, plus its address list, custom-attribute
+ * changes, and any mapping-derived userName. Only what is present is changed
+ * (PUT callers send everything anyway). `doc` is the document configured
+ * mappings evaluate over: the body itself for POST/PUT, or the body merged
+ * onto the current resource for PATCH, where `partial` keeps an expression
+ * yielding nothing from clearing the field.
+ */
+async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown; partial?: boolean }): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined; custom: Record<string, string | null> | undefined; userName: string | undefined }> {
   const cols: Record<string, string | null> = {};
   if (body.name?.givenName !== undefined) cols.given_name = String(body.name.givenName);
   if (body.name?.familyName !== undefined) cols.family_name = String(body.name.familyName);
@@ -276,18 +284,39 @@ async function columnsFrom(env: Env, body: ScimUserBody): Promise<{ cols: Record
   // The whole list lands in user_emails; the primary mirrors into users.email.
   // Format is refused here, before anything has been written (ownership is
   // enforced inside setUserEmails, where the target user is known).
-  const emails = body.emails
+  let emails: UserEmailInput[] | undefined = body.emails
     ? body.emails
         .filter((e) => e && typeof e.value === "string" && e.value.trim())
         .map((e) => ({ value: String(e.value), type: e.type ?? "work", primary: e.primary === true }))
     : undefined;
+  let custom: Record<string, string | null> | undefined;
+  let userName: string | undefined;
+  try {
+    const mapped = await applyUserMappings(env, opts?.doc ?? body, { partial: opts?.partial ?? false });
+    Object.assign(cols, mapped.cols);
+    if (mapped.emails !== undefined) emails = mapped.emails;
+    if (mapped.custom) custom = mapped.custom;
+    userName = mapped.userName;
+  } catch (e) {
+    if (e instanceof ScimMappingError) throw new ScimError(400, e.message, "invalidValue");
+    throw e;
+  }
   for (const e of emails ?? []) {
     if (!isEmailAddress(e.value.trim())) throw new ScimError(400, `"${e.value}" is not a valid email address.`, "invalidValue");
   }
-  return { cols, emails };
+  return { cols, emails, custom, userName };
 }
 
-async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined) {
+async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined, custom?: Record<string, string | null>) {
+  if (custom && Object.keys(custom).length) {
+    const current = (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(userId).first<{ custom_attributes: string }>())?.custom_attributes ?? "{}";
+    const attrs = JSON.parse(current) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(custom)) {
+      if (v === null) delete attrs[k];
+      else attrs[k] = v;
+    }
+    cols.custom_attributes = JSON.stringify(attrs);
+  }
   const keys = Object.keys(cols);
   if (keys.length > 0) {
     await env.DB.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
@@ -315,7 +344,8 @@ async function applyColumns(env: Env, userId: number, cols: Record<string, strin
 
 scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => {
   const body = await c.req.json<ScimUserBody>();
-  const userName = String(body.userName ?? "").trim().toLowerCase();
+  const { cols, emails, custom, userName: mappedName } = await columnsFrom(c.env, body);
+  const userName = String(mappedName ?? body.userName ?? "").trim().toLowerCase();
   if (!userName) throw new ScimError(400, "userName is required.", "invalidValue");
   const [local, domainPart] = userName.includes("@") ? userName.split("@") : [userName, await getDefaultDomain(c.env)];
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(local!)) throw new ScimError(400, `"${local}" is not a valid username.`, "invalidValue");
@@ -325,7 +355,6 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
 
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
-  const { cols, emails } = await columnsFrom(c.env, body);
   // An address another account already holds refuses the create outright -
   // checked here so nothing is left behind.
   if (emails?.length) {
@@ -343,6 +372,14 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
     job_title: "", department: "", employee_number: "", hire_date: "", employment_status: "", employment_type: "",
     location: "", status: "disabled", manager_external_id: null, custom_attributes: "{}", ...cols,
   } as UserRow;
+  if (custom) {
+    const attrs = { ...(JSON.parse(after.custom_attributes) as Record<string, unknown>) };
+    for (const [k, v] of Object.entries(custom)) {
+      if (v === null) delete attrs[k];
+      else attrs[k] = v;
+    }
+    after.custom_attributes = JSON.stringify(attrs);
+  }
   if (!hasScope(c.get("apiActor").scopes, "admin")) {
     const granted = await grantsAdminRoleGroup(c.env, null, after);
     if (granted) throw new ScimError(403, `Provisioning into ${granted}, an admin role group, requires an admin-scoped key.`);
@@ -354,7 +391,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   )
     .bind(upn, local, local, externalId, await defaultSchemaId(c.env, "user"), now, now)
     .first<{ id: number }>();
-  await applyColumns(c.env, inserted!.id, cols, emails);
+  await applyColumns(c.env, inserted!.id, cols, emails, custom);
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
   downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
@@ -382,9 +419,9 @@ async function assertNoAdminRoleGrant(c: Context<{ Bindings: Env }>, user: UserR
 scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
   const body = await c.req.json<ScimUserBody>();
-  const { cols, emails } = await columnsFrom(c.env, body);
+  const { cols, emails, custom } = await columnsFrom(c.env, body);
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails);
+  await applyColumns(c.env, user.id, cols, emails, custom);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -421,9 +458,14 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   const user = await guardedUser(c);
   const body = await c.req.json<{ schemas?: string[]; Operations?: { op?: string; path?: string; value?: unknown }[] }>();
   if (!body.schemas?.includes(PATCH_OP) || !Array.isArray(body.Operations)) throw new ScimError(400, "Expected a PatchOp message.", "invalidSyntax");
-  const { cols, emails } = await columnsFrom(c.env, patchToBody(body.Operations));
+  const patchBody = patchToBody(body.Operations);
+  // Mappings see the patch applied to the current resource, so an expression
+  // can combine the changed attribute with untouched ones. `partial` keeps an
+  // expression that yields nothing from clearing its field.
+  const doc = mergeScimBody(await userResource(c.env, user), patchBody);
+  const { cols, emails, custom } = await columnsFrom(c.env, patchBody, { doc, partial: true });
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails);
+  await applyColumns(c.env, user.id, cols, emails, custom);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
