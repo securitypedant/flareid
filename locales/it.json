@@ -29,6 +29,8 @@
     "login.submit": "Accedi",
     "login.passkey": "Accedi con una passkey",
     "login.passkeyFailed": "L'accesso con la passkey è stato annullato o non è riuscito.",
+    "login.or": "o",
+    "login.federatedWith": "Continua con {name}",
     "login.forgotPassword": "Hai dimenticato la password?",
     "login.previewDefault": "Anteprima del brand predefinito. Hai già effettuato l'accesso.",
     "login.previewNamed": "Anteprima del brand \"{name}\". Hai già effettuato l'accesso.",

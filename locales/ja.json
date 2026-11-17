@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "試行回数が多すぎます。数分待ってからもう一度お試しください。",
     "common.listSeparator": "、",
     "common.listFinalSeparator": " と ",
-
     "login.title": "ログイン",
     "login.heading": "{appName} にログイン",
     "login.defaultSubtitle": "ログインして続行してください。",
@@ -29,6 +28,8 @@
     "login.submit": "ログイン",
     "login.passkey": "パスキーでログイン",
     "login.passkeyFailed": "パスキーでのログインがキャンセルまたは失敗しました。",
+    "login.or": "または",
+    "login.federatedWith": "{name} でログイン",
     "login.forgotPassword": "パスワードをお忘れですか？",
     "login.previewDefault": "デフォルトブランドのプレビュー。すでにログインしています。",
     "login.previewNamed": "「{name}」ブランドのプレビュー。すでにログインしています。",
@@ -36,10 +37,8 @@
     "login.error.credentials": "ユーザー名/UPN またはパスワードが正しくありません。",
     "login.error.passkey": "そのパスキーではログインできませんでした。",
     "login.error.setupIncomplete": "FlareID はまだ初期セットアップを完了していません。現在ログインできるのは管理者のみです。",
-
     "turnstile.label": "セキュリティチェック",
     "turnstile.failed": "チェックを完了してもう一度お試しください。",
-
     "mfa.title": "二要素認証",
     "mfa.heading": "二段階認証",
     "mfa.totp.intro": "認証アプリの 6 桁のコードを入力してください。アクセスできない場合はバックアップコードのいずれかを入力してください。",
@@ -71,7 +70,6 @@
     "mfa.error.kbaWrong": "1 つ以上の回答が正しくありませんでした。もう一度お試しください。",
     "mfa.notSetUp.title": "二段階認証が設定されていません",
     "mfa.notSetUp.message": "このアカウントには登録済みの認証器がありません。ログインをやり直してください。解決しない場合は管理者にお問い合わせください。",
-
     "msg.expired.title": "このログインは期限切れです",
     "msg.expired.message": "セキュリティのため、ログイン試行は数分でタイムアウトします。ログインしようとしたアプリに戻ってやり直すか、下からアカウントにログインしてください。",
     "msg.notReady.title": "まだ準備ができていません",
@@ -100,7 +98,6 @@
     "msg.passwordChanged.message": "新しいパスワードが設定され、他のすべてのセッションがログアウトされました。",
     "msg.accountReady.title": "アカウントの準備ができました",
     "msg.accountReady.message": "パスワードが設定され、アカウントが有効になりました。",
-
     "consent.title": "アクセスを許可しますか？",
     "consent.heading": "{client} がログインを求めています",
     "consent.asking": "{appName} に次を要求しています：",
@@ -114,7 +111,6 @@
     "consent.cancel": "キャンセル",
     "consent.allow": "許可",
     "consent.withdraw": "マイアカウント → 接続済みアプリ からいつでも取り消せます。",
-
     "device.title": "デバイスを接続",
     "device.heading": "デバイスを接続",
     "device.intro": "デバイスに表示されたコードを入力してください。",
@@ -132,7 +128,6 @@
     "device.approvedMessage": "{client} に戻ることができます。",
     "device.deniedTitle": "アクセスが拒否されました",
     "device.deniedMessage": "拒否したことが {client} に通知されました。",
-
     "logout.title": "ログアウトしますか？",
     "logout.askedBy": "{client} が {appName} からのログアウトを要求しました。",
     "logout.confirm": "{appName} からログアウトしますか？",
@@ -144,7 +139,6 @@
     "logout.progress.apps.other": "{count} 個の接続済みアプリからログアウト中...",
     "logout.progress.frame": "ログアウト",
     "logout.progress.done": "ログアウトしました。",
-
     "recovery.forgot.title": "パスワードをリセット",
     "recovery.forgot.intro": "ユーザー名またはメールアドレスを入力してください。アカウントと一致した場合、新しいパスワードを設定するリンクをお送りします。",
     "recovery.forgot.identifier": "ユーザー名またはメール",
@@ -157,7 +151,6 @@
     "recovery.invite.heading": "ようこそ、{name} さん",
     "recovery.invite.intro": "{upn} のパスワードを設定してアカウントを有効化してください。",
     "recovery.choose.title": "パスワードを設定",
-
     "password.new": "新しいパスワード",
     "password.confirmNew": "新しいパスワード（確認）",
     "password.save": "パスワードを保存",
@@ -175,7 +168,6 @@
     "password.error.symbol": "パスワードには記号を含める必要があります。",
     "password.error.breached.one": "このパスワードはデータ侵害で {count} 回見つかっています。別のものを選んでください。",
     "password.error.breached.other": "このパスワードはデータ侵害で {count} 回見つかっています。別のものを選んでください。",
-
     "setup.complete.title": "セットアップは完了しています",
     "setup.complete.message": "この ID プロバイダーはすでにセットアップ済みです。作成された管理者アカウントでログインしてください。",
     "setup.secrets.title": "セットアップにはまずシークレットが必要です",

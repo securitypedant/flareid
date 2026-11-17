@@ -186,7 +186,7 @@ export type LoginFlowOutcome =
   | { type: "redirect"; to: string }
   | { type: "saml-post"; acsUrl: string; samlResponse: string; relayState: string | null };
 
-async function completeLoginFlow(
+export async function completeLoginFlow(
   env: Env,
   flow: LoginFlow,
   userId: number,

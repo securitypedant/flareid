@@ -15,8 +15,32 @@ seed the first target, and `scim_group_state`, `scim_group_members` and
 attribute-mapping rules for the SCIM server API.
 **Migration `0036_user_source_id.sql`** - `users.source_id`, the
 provisioner's own stable id (SCIM `externalId`), unique when present.
+**Migration `0037_upstream_idps.sql`** - `upstream_idps` (one row per
+upstream identity provider) and `federated_identities`, the links binding an
+upstream subject to a local account; the new `federation` permission area is
+granted to every role already managing SAML or clients.
 
 ### Added
+
+- **Inbound federation.** People can sign in *through* an upstream identity
+  provider - FlareID as the OIDC relying party and SAML service provider,
+  the reverse of the OIDC clients and SAML service providers it already
+  serves. Each enabled provider puts a "Continue with ..." button on the
+  sign-in page. OIDC providers run the authorization-code flow with PKCE and
+  verify the `id_token` against the provider's JWKS; SAML providers send an
+  AuthnRequest (HTTP-Redirect) and verify the response signature against the
+  configured IdP certificate - never one embedded in the document - plus
+  audience, recipient, issuer and validity-window checks. The first sign-in
+  links the upstream identity to a local account: a stored link, adoption by
+  UPN or contact address, or just-in-time provisioning when the provider has
+  it switched on (`jit` + an optional `jit_domain`; usernames get a numeric
+  suffix on collision). The round trip rides a one-shot KV state that
+  carries the original login flow, so an OIDC authorization request or SAML
+  login completes exactly as a password sign-in would - MFA gates and all.
+  Managed on Integrations → Federation and over `GET|POST
+  /api/v1/federation/idps` and `GET|PATCH|DELETE
+  /api/v1/federation/idps/{id}` (a new `federation` permission area, also
+  granted by the `clients:write` scope).
 
 - **Correlation rules for inbound creates.** An upstream POST whose
   `userName` is new no longer has to be a conflict: ordered match keys

@@ -117,8 +117,13 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     expressions deriving UPN/displayName/attributes), correlation rules
     (ordered match keys, update-instead-of-create), and field mastering
     (HR-owned fields read-only in the console and API).
-35. **Inbound federation**: sign in *via* an upstream IdP (OIDC RP + SAML SP)
-    with JIT provisioning - FlareID as the hub behind an existing IdP.
+~~35. **Inbound federation**: sign in *via* an upstream IdP (OIDC RP + SAML
+    SP) with JIT provisioning - FlareID as the hub behind an existing IdP.~~
+    (done - `upstream_idps` + `federated_identities`, OIDC auth-code + PKCE
+    with JWKS-verified id_tokens, SAML responses pinned to the configured
+    IdP cert with audience/recipient/issuer/window checks, address-adoption
+    or JIT account creation, "Continue with" buttons riding the sealed
+    login flow, Integrations → Federation + /api/v1/federation/idps)
 36. **Access requests and certification campaigns**: request/approve flows for
     group membership, periodic access reviews.
 37. **Machine grants**: `client_credentials` service tokens (signed JWTs,

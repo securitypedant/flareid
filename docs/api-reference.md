@@ -18,6 +18,7 @@ API version 4.0.0.
 - [SAML](#saml) - SAML service providers.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
 - [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
+- [Federation](#federation) - Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
 - [Email](#email) - Outbound email settings and templates.
 - [API keys](#api-keys) - Bearer tokens for this API.
 - [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
@@ -1917,6 +1918,142 @@ Response `200`:
 | `otp_rebind_seconds` | number | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+## Federation
+
+Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/federation/idps` | `federation:read` | List upstream identity providers |
+| `POST` | `/api/v1/federation/idps` | `federation:write` | Add an upstream identity provider |
+| `GET` | `/api/v1/federation/idps/{id}` | `federation:read` | Read one upstream identity provider |
+| `PATCH` | `/api/v1/federation/idps/{id}` | `federation:write` | Change an upstream identity provider |
+| `DELETE` | `/api/v1/federation/idps/{id}` | `federation:write` | Remove an upstream identity provider |
+
+### `GET /api/v1/federation/idps`
+
+List upstream identity providers.
+
+Providers people can sign in through - FlareID as the relying party. `config` never carries the client secret, only whether one is stored.
+
+Permission: `federation:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `idps` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/federation/idps`
+
+Add an upstream identity provider.
+
+FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches.
+
+Permission: `federation:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `protocol` | "oidc" \| "saml" | yes |  |
+| `enabled` | boolean | no |  |
+| `jit` | boolean | no |  |
+| `jit_domain` | string | no |  |
+| `config` | map of string \| map of string | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `409` (`{ "error", "message" }`).
+
+### `GET /api/v1/federation/idps/{id}`
+
+Read one upstream identity provider.
+
+Permission: `federation:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `protocol` | "oidc" \| "saml" | yes |  |
+| `enabled` | boolean | yes |  |
+| `jit` | boolean | yes |  |
+| `jit_domain` | string \| null | yes |  |
+| `config` | map of string \| boolean \| map of string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/federation/idps/{id}`
+
+Change an upstream identity provider.
+
+Fields not supplied keep their values; `config` keys merge onto the stored config, and an omitted client_secret keeps the stored credential.
+
+Permission: `federation:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no |  |
+| `protocol` | "oidc" \| "saml" | no |  |
+| `enabled` | boolean | no |  |
+| `jit` | boolean | no |  |
+| `jit_domain` | string | no |  |
+| `config` | map of string \| map of string | no |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/federation/idps/{id}`
+
+Remove an upstream identity provider.
+
+Its sign-in button and linked identities go with it; the accounts themselves are kept.
+
+Permission: `federation:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ## Email
 

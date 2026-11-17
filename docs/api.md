@@ -72,7 +72,7 @@ The original scopes keep working, as shorthand:
 |---|---|
 | `directory:read` | `users:read`, `groups:read`, `domains:read`, `schemas:read`, `oidc:read`, `saml:read` |
 | `directory:write` | `users:write`, `groups:write`, `domains:write`, `import:write`, and reading clients, SAML apps and schemas |
-| `clients:write` | `oidc:write`, `saml:write` |
+| `clients:write` | `oidc:write`, `saml:write`, `federation:write` |
 | `settings:write` | `security:write`, `branding:write`, `email:write`, `scim:write`, `schemas:write` |
 | `admin` | `*`: everything, plus minting further keys |
 
@@ -100,6 +100,7 @@ does - in summary:
 | Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members paged, `?search=`), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}` |
 | OIDC clients | `GET`/`PATCH`/`DELETE /clients/{client_id}`, `POST .../rotate-secret` |
 | SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config`, `GET /scim/targets`, `GET /scim/targets/{id}` |
+| Federation | `GET`/`POST /federation/idps`, `GET`/`PATCH`/`DELETE /federation/idps/{id}` - upstream identity providers people sign in through |
 | Domains | `DELETE /domains/{domain}`, `PUT /domains/{domain}/brand` |
 | API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
@@ -716,6 +717,55 @@ Scopes: `directory:read` / `settings:write`. Only the fields sent change;
 use. `unscoped_bind_app` chooses which app's policy applies to user binds
 whose DN names no app (`alice@example.com`, `NETBIOS\alice`, bare usernames)
 - empty denies them.
+
+### `GET|POST /federation/idps`, `GET|PATCH|DELETE /federation/idps/{id}`
+
+Scope: `federation:write` (reads: `federation:read`; both come with
+`clients:write`).
+
+Inbound federation: the upstream identity providers people can sign in
+*through* - FlareID as the OIDC relying party / SAML service provider, the
+reverse of `/clients` and `/saml/service-providers`. Each enabled provider
+puts a "Continue with ..." button on the sign-in page.
+
+```json
+{
+  "name": "Entra ID",
+  "protocol": "oidc",
+  "enabled": true,
+  "jit": true,
+  "jit_domain": "example.com",
+  "config": {
+    "issuer": "https://login.microsoftonline.com/<tenant>/v2.0",
+    "client_id": "...",
+    "client_secret": "...",
+    "scopes": "openid profile email"
+  }
+}
+```
+
+For OIDC `config` takes `issuer` (https; discovery is fetched and cached),
+`client_id`, `client_secret` (write-only: `GET` returns only `secret_set`,
+and an omitted secret on PATCH keeps the stored one) and optional `scopes`.
+The redirect URI to register upstream is `<origin>/federation/oidc/callback`;
+the flow is PKCE-protected and the returned `id_token` is verified against
+the provider's JWKS.
+
+For SAML `config` takes `sso_url`, `certificate` (the IdP's signing cert -
+responses are verified against it, not against anything the document
+embeds), `idp_entity_id`, and optional `nameid_format` and `attr_map`
+(upstream attribute name → `email` / `given_name` / `family_name` / `name` /
+`preferred_username`). The SP entity ID is `<issuer>/federation/saml/{id}`
+and the ACS URL `<origin>/federation/saml/acs/{id}`; responses must be
+signed (response or assertion) and pass audience, recipient, issuer and
+validity-window checks.
+
+`jit` creates a local account when an upstream identity matches nothing:
+first sign-in links a `federated_identities` row either way - by the stored
+link, by UPN/email adoption, or by JIT. The JIT account's domain is
+`jit_domain`, else the claim's email domain when it is managed, else the
+default domain; usernames get a numeric suffix on collision. `DELETE` drops
+the provider and its identity links - the local accounts stay.
 
 ### `POST /api-keys`
 

@@ -29,6 +29,8 @@
     "login.submit": "Se connecter",
     "login.passkey": "Se connecter avec une clé d'accès",
     "login.passkeyFailed": "La connexion par clé d'accès a été annulée ou a échoué.",
+    "login.or": "ou",
+    "login.federatedWith": "Continuer avec {name}",
     "login.forgotPassword": "Mot de passe oublié\u00a0?",
     "login.previewDefault": "Aperçu de la marque par défaut. Vous êtes déjà connecté.",
     "login.previewNamed": "Aperçu de la marque «\u00a0{name}\u00a0». Vous êtes déjà connecté.",

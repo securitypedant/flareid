@@ -422,15 +422,19 @@ export interface LoginAppearance {
   turnstileSiteKey: string | null;
   /** The language the page is rendered in (negotiated per request: see requestLocale in login-views.ts). */
   locale: Locale;
+  /** Enabled upstream identity providers - the "Sign in with ..." buttons under the form. */
+  federationIdps: { id: number; name: string }[];
 }
 
 /** The appearance for a brand; resolve the brand with brandFor (brands.ts) or loginAppearance (login-views.ts). */
 export async function getLoginAppearance(env: Env, brand: Brand, opts: { customCss?: boolean; locale?: Locale } = {}): Promise<LoginAppearance> {
-  const [cursorTrail, fromAddress, emailSwitch, turnstile] = await Promise.all([
+  const [cursorTrail, fromAddress, emailSwitch, turnstile, federationIdps] = await Promise.all([
     getCursorTrail(env),
     getSetting(env, "email_from_address"),
     getSetting(env, "email_enabled"),
     getTurnstileConfig(env),
+    // Tolerated: a deployment whose migrations predate upstream_idps still signs in.
+    env.DB.prepare("SELECT id, name FROM upstream_idps WHERE enabled = 1 ORDER BY name").all<{ id: number; name: string }>().then((r) => r.results).catch(() => []),
   ]);
   // Same rule as isEmailConfigured() in email.ts, inlined: email.ts imports this module.
   return {
@@ -443,6 +447,7 @@ export async function getLoginAppearance(env: Env, brand: Brand, opts: { customC
     recoveryEnabled: Boolean(env.EMAIL) && Boolean(fromAddress) && emailSwitch !== "false",
     turnstileSiteKey: activeTurnstileSiteKey(turnstile),
     locale: opts.locale && isSupportedLocale(opts.locale) ? opts.locale : DEFAULT_LOCALE,
+    federationIdps,
   };
 }
 

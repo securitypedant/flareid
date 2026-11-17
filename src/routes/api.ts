@@ -34,6 +34,7 @@ import {
   defaultSchemaId,
 } from "../lib/schemas.js";
 import { addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, updateUpstreamIdp, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -882,6 +883,83 @@ defineRoute({
     return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
   }
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_mastering_changed", undefined, { fields: body.fields ?? [] }, c.req.raw);
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Federation (upstream identity providers)
+// ---------------------------------------------------------------------------
+
+const UpstreamIdpBody = z.object({
+  name: z.string().min(1).max(80),
+  protocol: z.enum(["oidc", "saml"]),
+  enabled: z.boolean().optional(),
+  jit: z.boolean().optional(),
+  jit_domain: z.string().optional(),
+  config: z.record(z.string(), z.union([z.string(), z.record(z.string(), z.string())])),
+});
+
+function upstreamInput(body: { name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }, existing?: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
+  const cfg: Record<string, string | Record<string, string>> = existing ? { ...(idpConfig(existing) as unknown as Record<string, string | Record<string, string>>) } : {};
+  for (const [k, v] of Object.entries(body.config ?? {})) {
+    if (typeof v === "string") cfg[k] = v;
+    else if (v && typeof v === "object" && !Array.isArray(v)) cfg[k] = v as Record<string, string>;
+  }
+  return {
+    name: String(body.name ?? existing?.name ?? ""),
+    protocol: (body.protocol ?? existing?.protocol ?? "oidc") === "saml" ? "saml" : "oidc",
+    jit: body.jit ?? (existing ? existing.jit === 1 : false),
+    jitDomain: body.jit_domain ?? existing?.jit_domain ?? "",
+    enabled: body.enabled ?? (existing ? existing.enabled === 1 : true),
+    keepSecret: existing != null && cfg.client_secret === undefined,
+    config: cfg,
+  };
+}
+
+defineRoute({
+  method: "post", path: "/api/v1/federation/idps", tag: "Federation", permission: "federation:write", summary: "Add an upstream identity provider",
+  description:
+    "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches.",
+  body: UpstreamIdpBody, errors: [400, 409],
+}, async (c) => {
+  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }>(c);
+  try {
+    const created = await createUpstreamIdp(c.env, upstreamInput(body));
+    await logAudit(c.env, auditActor(c.get("apiActor")), "federation.idp_created", created.name, { protocol: created.protocol }, c.req.raw);
+    return c.json({ id: created.id, ok: true });
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+});
+
+defineRoute({
+  method: "patch", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "federation:write", summary: "Change an upstream identity provider",
+  description: "Fields not supplied keep their values; `config` keys merge onto the stored config, and an omitted client_secret keeps the stored credential.",
+  body: UpstreamIdpBody.partial(), errors: [400, 404],
+}, async (c) => {
+  const id = Number(c.req.param("id"));
+  const existing = await getUpstreamIdp(c.env, id);
+  if (!existing) return notFound(c, "No such upstream identity provider.");
+  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }>(c);
+  try {
+    const updated = await updateUpstreamIdp(c.env, id, upstreamInput(body, existing));
+    await logAudit(c.env, auditActor(c.get("apiActor")), "federation.idp_updated", updated.name, { protocol: updated.protocol, enabled: updated.enabled }, c.req.raw);
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+});
+
+defineRoute({
+  method: "delete", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "federation:write", summary: "Remove an upstream identity provider",
+  description: "Its sign-in button and linked identities go with it; the accounts themselves are kept.",
+  errors: [404],
+}, async (c) => {
+  const id = Number(c.req.param("id"));
+  const existing = await getUpstreamIdp(c.env, id);
+  if (!existing) return notFound(c, "No such upstream identity provider.");
+  await deleteUpstreamIdp(c.env, id);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "federation.idp_deleted", existing.name, { protocol: existing.protocol }, c.req.raw);
   return c.json({ ok: true });
 });
 

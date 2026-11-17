@@ -75,6 +75,8 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/scim", "scim"],
   ["/admin/integrations/ldap", "ldap"],
   ["/admin/ldap", "ldap"],
+  ["/admin/integrations/federation", "federation"],
+  ["/admin/federation", "federation"],
   ["/admin/integrations/email", "email"],
   ["/admin/email", "email"],
   ["/admin/users/import", "import"],

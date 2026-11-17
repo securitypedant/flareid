@@ -29,6 +29,8 @@
     "login.submit": "Sign in",
     "login.passkey": "Sign in with a passkey",
     "login.passkeyFailed": "Passkey sign-in was cancelled or failed.",
+    "login.or": "or",
+    "login.federatedWith": "Continue with {name}",
     "login.forgotPassword": "Forgot your password?",
     "login.previewDefault": "Preview of the default brand. You're already signed in.",
     "login.previewNamed": "Preview of the \"{name}\" brand. You're already signed in.",

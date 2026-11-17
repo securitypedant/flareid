@@ -29,6 +29,8 @@
     "login.submit": "Iniciar sesión",
     "login.passkey": "Iniciar sesión con una llave de acceso",
     "login.passkeyFailed": "No se pudo iniciar sesión con la llave de acceso.",
+    "login.or": "o",
+    "login.federatedWith": "Continuar con {name}",
     "login.forgotPassword": "¿Olvidaste tu contraseña?",
     "login.previewDefault": "Vista previa de la marca predeterminada. Ya has iniciado sesión.",
     "login.previewNamed": "Vista previa de la marca \"{name}\". Ya has iniciado sesión.",

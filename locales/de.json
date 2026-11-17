@@ -29,6 +29,8 @@
     "login.submit": "Anmelden",
     "login.passkey": "Mit einem Passkey anmelden",
     "login.passkeyFailed": "Die Anmeldung mit dem Passkey wurde abgebrochen oder ist fehlgeschlagen.",
+    "login.or": "oder",
+    "login.federatedWith": "Weiter mit {name}",
     "login.forgotPassword": "Passwort vergessen?",
     "login.previewDefault": "Vorschau der Standardmarke. Sie sind bereits angemeldet.",
     "login.previewNamed": "Vorschau der Marke „{name}“. Sie sind bereits angemeldet.",

@@ -3,6 +3,7 @@ import { isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.js";
 import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimTarget, listScimTargets, type ScimTarget } from "../lib/scim-targets.js";
+import { getUpstreamIdp, idpConfig, listUpstreamIdps, type UpstreamIdpRow } from "../lib/federation.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { apiCtx } from "../services/context.js";
@@ -313,5 +314,48 @@ defineRoute(
   async (c) => {
     const t = await getScimTarget(c.env, Number(c.req.param("id")));
     return t ? c.json(targetJson(t)) : notFound(c, "No such SCIM target.");
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Federation (upstream identity providers)
+// ---------------------------------------------------------------------------
+
+const UpstreamIdpSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  protocol: z.enum(["oidc", "saml"]),
+  enabled: z.boolean(),
+  jit: z.boolean(),
+  jit_domain: z.string().nullable(),
+  config: z.record(z.string(), z.union([z.string(), z.boolean(), z.record(z.string(), z.string())])),
+});
+
+function idpJson(u: UpstreamIdpRow) {
+  const cfg = { ...idpConfig(u) } as Record<string, unknown>;
+  const secretSet = Boolean(cfg.client_secret);
+  delete cfg.client_secret;
+  return {
+    id: u.id,
+    name: u.name,
+    protocol: u.protocol,
+    enabled: u.enabled === 1,
+    jit: u.jit === 1,
+    jit_domain: u.jit_domain,
+    config: { ...cfg, ...(u.protocol === "oidc" ? { secret_set: secretSet } : {}) },
+  };
+}
+
+defineRoute({
+  method: "get", path: "/api/v1/federation/idps", tag: "Federation", permission: "federation:read", summary: "List upstream identity providers",
+  description: "Providers people can sign in through - FlareID as the relying party. `config` never carries the client secret, only whether one is stored.",
+  response: z.object({ idps: z.array(UpstreamIdpSchema) }),
+}, async (c) => c.json({ idps: (await listUpstreamIdps(c.env)).map(idpJson) }));
+
+defineRoute(
+  { method: "get", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "federation:read", summary: "Read one upstream identity provider", params: IdParam, errors: [404], response: UpstreamIdpSchema },
+  async (c) => {
+    const u = await getUpstreamIdp(c.env, Number(c.req.param("id")));
+    return u ? c.json(idpJson(u)) : notFound(c, "No such upstream identity provider.");
   }
 );

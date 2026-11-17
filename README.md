@@ -47,6 +47,11 @@ happens to run on Cloudflare's platform.
   to all groups or a chosen set; deletions are queued and retried.
 - **SCIM 2.0 server** at `/scim/v2`: an HR system or upstream directory can
   provision FlareID, and changes flow on to the outbound target.
+- **Inbound federation**: people can also sign in *through* an upstream IdP -
+  FlareID as an OIDC relying party (auth-code + PKCE, JWKS-verified tokens)
+  and a SAML service provider (responses verified against the configured IdP
+  certificate). Accounts link on first sign-in by address match or JIT
+  provisioning; managed under Integrations → Federation.
 - **LDAP interface**: a read-only, LDAPS-only directory over TCP 636 (with a
   Global Catalog view on 3269) via Spectrum's Worker origin, for apps that
   only speak LDAP. Per-app branches (`ou=<app>`), per-app policy, TOTP in the
@@ -60,8 +65,8 @@ happens to run on Cloudflare's platform.
   back-channel, ECP/PAOS, Name Identifier Management, Assertion Query/Request,
   embedded-signature AuthnRequests (see below).
 - **Admin UX** at `/admin`: users (with CSV import), groups, OIDC clients, SAML
-  service providers, API keys, SCIM, email, domains, security settings,
-  branding, and a filterable audit log.
+  service providers, API keys, SCIM, federation, email, domains, security
+  settings, branding, and a filterable audit log.
 - **Branding, per domain**: an uploaded logo (PNG/JPEG, stored in D1), app
   name, sign-in message and gradient, email accent and a custom stylesheet for
   the sign-in pages - for everyone, or per UPN domain through brands chosen by

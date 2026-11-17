@@ -114,6 +114,12 @@ function gradientStyles(gradient: LoginGradient): string {
     a.button { display: block; box-sizing: border-box; text-align: center; border-radius: 8px; border: 1px solid transparent; font-weight: 550; }
     a.button:hover { text-decoration: none; }
     .auth-alt { text-align: center; margin: 14px 0 0; font-size: 0.875rem; }
+    .auth-fed { margin-top: 18px; }
+    .auth-fed-sep { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; font-size: 0.8125rem; }
+    .auth-fed-sep::before, .auth-fed-sep::after { content: ""; flex: 1; border-top: 1px solid var(--fi-line); }
+    .auth-fed form { margin: 0 0 8px; }
+    .auth-fed form:last-child { margin-bottom: 0; }
+    .auth-fed button { width: 100%; padding: 10px 16px; font-size: 0.9375rem; }
     .consent-list { margin: 0 0 18px; padding-inline-start: 20px; line-height: 1.7; }
     .auth-foot { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--fi-line); text-align: center; }
     .auth-lang { margin-top: 10px; }
@@ -323,6 +329,18 @@ export function loginLanguageHref(flowId: string): (code: Locale) => string {
   return (code) => `/login/language?lang=${encodeURIComponent(code)}&flow_id=${encodeURIComponent(flowId)}`;
 }
 
+/** "Or continue with <IdP>" - one button per enabled upstream provider, carrying the flow along. */
+function federationButtons(appearance: LoginAppearance, flowId: string, locale: Locale): string {
+  if (!appearance.federationIdps?.length) return "";
+  const buttons = appearance.federationIdps
+    .map(
+      (idp) =>
+        `<form method="GET" action="/login/federated/${idp.id}"><input type="hidden" name="flow" value="${escapeHtml(flowId)}" /><button class="secondary" type="submit" style="width:100%;">${escapeHtml(t(locale, "login.federatedWith", { name: idp.name }))}</button></form>`
+    )
+    .join("");
+  return `<div class="auth-fed"><p class="auth-fed-sep muted">${escapeHtml(t(locale, "login.or"))}</p>${buttons}</div>`;
+}
+
 export function loginForm(flowId: string, appearance: LoginAppearance, error?: Text, notice?: string): string {
   const { appName, locale } = appearance;
   const subtitle = subtitleText(appearance);
@@ -345,6 +363,7 @@ export function loginForm(flowId: string, appearance: LoginAppearance, error?: T
       <div class="row"><button class="primary" type="submit">${escapeHtml(t(locale, "login.submit"))}</button></div>
     </form>
     ${passkeyButton(locale, t(locale, "login.passkey"), "secondary", `data-flow="${escapeHtml(flowId)}"`)}
+    ${federationButtons(appearance, flowId, locale)}
     ${appearance.recoveryEnabled ? `<p class="auth-alt"><a href="/forgot-password">${escapeHtml(t(locale, "login.forgotPassword"))}</a></p>` : ""}
     ${authFoot(appearance, loginLanguageHref(flowId))}
     `

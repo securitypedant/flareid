@@ -29,6 +29,8 @@
     "login.submit": "Entrar",
     "login.passkey": "Entrar com uma chave de acesso",
     "login.passkeyFailed": "O login com a chave de acesso foi cancelado ou falhou.",
+    "login.or": "ou",
+    "login.federatedWith": "Continuar com {name}",
     "login.forgotPassword": "Esqueceu sua senha?",
     "login.previewDefault": "Pré-visualização da marca padrão. Você já está conectado.",
     "login.previewNamed": "Pré-visualização da marca \"{name}\". Você já está conectado.",

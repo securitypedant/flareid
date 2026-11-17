@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "尝试次数过多。请稍等几分钟后再试。",
     "common.listSeparator": "、",
     "common.listFinalSeparator": "和",
-
     "login.title": "登录",
     "login.heading": "登录 {appName}",
     "login.defaultSubtitle": "登录以继续。",
@@ -29,6 +28,8 @@
     "login.submit": "登录",
     "login.passkey": "使用通行密钥登录",
     "login.passkeyFailed": "通行密钥登录已取消或失败。",
+    "login.or": "或",
+    "login.federatedWith": "通过 {name} 继续",
     "login.forgotPassword": "忘记密码？",
     "login.previewDefault": "默认品牌预览。您已登录。",
     "login.previewNamed": "\"{name}\" 品牌预览。您已登录。",
@@ -36,10 +37,8 @@
     "login.error.credentials": "用户名/UPN 或密码不正确。",
     "login.error.passkey": "无法使用该通行密钥登录。",
     "login.error.setupIncomplete": "FlareID 尚未完成初始设置。目前只有管理员可以登录。",
-
     "turnstile.label": "安全检查",
     "turnstile.failed": "请完成检查并重试。",
-
     "mfa.title": "双重身份验证",
     "mfa.heading": "两步验证",
     "mfa.totp.intro": "请输入您身份验证应用中的 6 位验证码；如果无法访问该应用，请使用您的备用验证码之一。",
@@ -71,7 +70,6 @@
     "mfa.error.kbaWrong": "一个或多个答案不正确。请重试。",
     "mfa.notSetUp.title": "未设置两步验证",
     "mfa.notSetUp.message": "此账户不再拥有已注册的身份验证器。请重新开始登录；如果问题仍然存在，请联系您的管理员。",
-
     "msg.expired.title": "此登录已过期",
     "msg.expired.message": "为保障您的安全，登录尝试会在几分钟后超时。请返回您要登录的应用重新开始，或在下方登录您的账户。",
     "msg.notReady.title": "尚未就绪",
@@ -100,7 +98,6 @@
     "msg.passwordChanged.message": "您的新密码已生效，其他所有会话均已退出。",
     "msg.accountReady.title": "您的账户已就绪",
     "msg.accountReady.message": "您的密码已设置，账户已激活。",
-
     "consent.title": "允许访问？",
     "consent.heading": "{client} 希望让您登录",
     "consent.asking": "它正在向 {appName} 请求：",
@@ -114,7 +111,6 @@
     "consent.cancel": "取消",
     "consent.allow": "允许",
     "consent.withdraw": "您可以随时在“我的账户 → 已连接应用”中撤销。",
-
     "device.title": "连接设备",
     "device.heading": "连接设备",
     "device.intro": "请输入设备上显示的代码。",
@@ -132,7 +128,6 @@
     "device.approvedMessage": "您现在可以返回 {client}。",
     "device.deniedTitle": "访问被拒绝",
     "device.deniedMessage": "已告知 {client} 您拒绝了该请求。",
-
     "logout.title": "退出？",
     "logout.askedBy": "{client} 请求退出您在 {appName} 的会话。",
     "logout.confirm": "您要退出 {appName} 吗？",
@@ -144,7 +139,6 @@
     "logout.progress.apps.other": "正在退出 {count} 个已连接应用...",
     "logout.progress.frame": "退出",
     "logout.progress.done": "您已退出。",
-
     "recovery.forgot.title": "重置密码",
     "recovery.forgot.intro": "请输入您的用户名或邮箱。如果与某个账户匹配，我们将发送一个用于设置新密码的链接。",
     "recovery.forgot.identifier": "用户名或邮箱",
@@ -157,7 +151,6 @@
     "recovery.invite.heading": "欢迎，{name}",
     "recovery.invite.intro": "请为 {upn} 设置密码以激活您的账户。",
     "recovery.choose.title": "设置密码",
-
     "password.new": "新密码",
     "password.confirmNew": "确认新密码",
     "password.save": "保存密码",
@@ -175,7 +168,6 @@
     "password.error.symbol": "密码必须包含一个符号。",
     "password.error.breached.one": "此密码已在数据泄露中出现 {count} 次；请换一个。",
     "password.error.breached.other": "此密码已在数据泄露中出现 {count} 次；请换一个。",
-
     "setup.complete.title": "设置已完成",
     "setup.complete.message": "此身份提供商已完成设置。请使用当时创建的管理员账户登录。",
     "setup.secrets.title": "设置需要先配置密钥",

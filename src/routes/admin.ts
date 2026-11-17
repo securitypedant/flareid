@@ -16,7 +16,7 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -31,6 +31,7 @@ import {
 import { logAudit } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
+import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -414,6 +415,7 @@ const INTEGRATION_PAGES = [
   { key: "api-keys", label: "API keys" },
   { key: "scim", label: "SCIM provisioning" },
   { key: "ldap", label: "LDAP" },
+  { key: "federation", label: "Federation" },
   { key: "email", label: "Email" },
 ] as const;
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
@@ -2364,13 +2366,14 @@ function summaryCard(opts: { title: string; count: string; rows: string[]; empty
 }
 
 admin.get("/admin/integrations", async (c) => {
-  const [{ results: clients }, { results: sps }, apiKeys, scimTargets, ldapApps, ldapSettings] = await Promise.all([
+  const [{ results: clients }, { results: sps }, apiKeys, scimTargets, ldapApps, ldapSettings, upstreamIdps] = await Promise.all([
     c.env.DB.prepare("SELECT id, name, client_id FROM oauth_clients ORDER BY name").all<Pick<OAuthClientRow, "id" | "name" | "client_id">>(),
     c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers ORDER BY name").all<Pick<SamlServiceProviderRow, "id" | "name" | "entity_id">>(),
     listApiKeys(c.env),
     listScimTargets(c.env),
     listLdapApps(c.env),
     getLdapSettings(c.env),
+    listUpstreamIdps(c.env),
   ]);
   const activeKeys = apiKeys.filter((k) => !k.revoked_at);
   const revokedKeys = apiKeys.length - activeKeys.length;
@@ -2424,6 +2427,16 @@ admin.get("/admin/integrations", async (c) => {
           rows: ldapApps.map((a) => `<tr><td><a href="/admin/ldap/${escapeHtml(a.slug)}">${escapeHtml(a.name)}</a></td><td><code>${escapeHtml(a.slug)}</code></td>${a.revoked_at ? '<td><span class="badge badge-disabled">Revoked</span></td>' : ""}</tr>`),
           empty: ldapSettings.enabled ? "No LDAP apps registered yet." : "The LDAP interface is disabled.",
           manage: "ldap",
+        })}
+        ${summaryCard({
+          title: "Federation",
+          count: `${upstreamIdps.length} provider${upstreamIdps.length === 1 ? "" : "s"}`,
+          rows: upstreamIdps.map(
+            (u) =>
+              `<tr><td><a href="/admin/integrations/federation/${u.id}">${escapeHtml(u.name)}</a></td><td class="muted">${u.protocol.toUpperCase()}${u.jit ? " · JIT" : ""}</td>${u.enabled ? "" : '<td><span class="badge badge-disabled">Disabled</span></td>'}</tr>`
+          ),
+          empty: "Nobody signs in through an upstream IdP.",
+          manage: "federation",
         })}
       </div>
       `,
@@ -5429,6 +5442,263 @@ admin.post("/admin/scim/sync", async (c) => {
     await logAudit(c.env, c.get("user"), summary.complete ? "scim.sync_all" : "scim.sync_batch_errors", undefined, { ...summary, target: scimTargetParam(c) }, c.req.raw);
   }
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
+});
+
+// ---------- Federation (upstream identity providers) ----------
+
+function upstreamFormFields(idp: UpstreamIdpRow | null, protocol: "oidc" | "saml", error?: string): string {
+  const cfg = idp ? idpConfig(idp) : ({} as Record<string, string>);
+  const v = (k: string) => escapeHtml((cfg as Record<string, string>)[k] ?? "");
+  const oidc = protocol === "oidc";
+  return `
+    <form method="POST" action="${idp ? `/admin/federation/idps/${idp.id}` : "/admin/federation/idps"}">
+      <input type="hidden" name="protocol" value="${protocol}" />
+      <label for="name">Name</label>
+      <input type="text" id="name" name="name" required value="${escapeHtml(idp?.name ?? "")}" placeholder="e.g. Entra ID, Okta" />
+      ${
+        oidc
+          ? `<div class="field-row">
+              <div>
+                <label for="issuer">Issuer URL</label>
+                <input type="text" id="issuer" name="issuer" required value="${v("issuer")}" placeholder="https://login.microsoftonline.com/&lt;tenant&gt;/v2.0" />
+              </div>
+              <div>
+                <label for="scopes">Scopes <span class="muted">(optional)</span></label>
+                <input type="text" id="scopes" name="scopes" value="${v("scopes")}" placeholder="openid profile email" />
+              </div>
+            </div>
+            <div class="field-row">
+              <div>
+                <label for="client_id">Client ID</label>
+                <input type="text" id="client_id" name="client_id" required value="${v("client_id")}" />
+              </div>
+              <div>
+                <label for="client_secret">Client secret</label>
+                <input type="password" id="client_secret" name="client_secret" autocomplete="new-password" placeholder="${idp ? "Saved - leave blank to keep it" : "From the provider's app registration"}" ${idp ? "" : "required"} />
+                <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
+              </div>
+            </div>`
+          : `<div class="field-row">
+              <div>
+                <label for="idp_entity_id">IdP entity ID <span class="muted">(optional)</span></label>
+                <input type="text" id="idp_entity_id" name="idp_entity_id" value="${v("idp_entity_id")}" placeholder="https://sts.windows.net/&lt;tenant&gt;/" />
+              </div>
+              <div>
+                <label for="sso_url">SSO URL (HTTP-Redirect)</label>
+                <input type="text" id="sso_url" name="sso_url" required value="${v("sso_url")}" placeholder="https://login.example.com/&lt;id&gt;/sso/saml" />
+              </div>
+            </div>
+            <label for="certificate">Signing certificate (PEM or base64)</label>
+            <textarea id="certificate" name="certificate" rows="5" ${idp ? "" : "required"} placeholder="-----BEGIN CERTIFICATE-----">${v("certificate")}</textarea>
+            <label for="nameid_format">NameID format <span class="muted">(optional)</span></label>
+            <input type="text" id="nameid_format" name="nameid_format" value="${v("nameid_format")}" placeholder="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" />`
+      }
+      <h3 style="margin-top:18px;">Accounts</h3>
+      <label style="font-weight:400;"><input type="checkbox" name="jit" value="1" ${idp?.jit ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Just-in-time provisioning &mdash; create an account for an upstream identity nobody here has</label>
+      <label for="jit_domain">JIT domain <span class="muted">(optional - else the claim's email domain when managed, or the default)</span></label>
+      <input type="text" id="jit_domain" name="jit_domain" value="${escapeHtml(idp?.jit_domain ?? "")}" placeholder="example.com" />
+      ${
+        idp
+          ? `<label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${idp.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; offered on the sign-in page</label>`
+          : ""
+      }
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+      <div class="form-actions" style="margin-top:16px;">
+        <button class="primary" type="submit">${idp ? "Save" : "Create provider"}</button>
+        ${cancelLink("/admin/integrations/federation", "Cancel")}
+      </div>
+    </form>`;
+}
+
+function upstreamInputFrom(body: Record<string, unknown>, idp: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
+  const protocol = String(body.protocol ?? "") === "saml" ? "saml" : "oidc";
+  return {
+    name: String(body.name ?? ""),
+    protocol,
+    jit: String(body.jit ?? "") === "1",
+    jitDomain: String(body.jit_domain ?? ""),
+    enabled: String(body.enabled ?? "") === "1" || !idp,
+    keepSecret: idp !== null && String(body.client_secret ?? "") === "",
+    config: {
+      issuer: String(body.issuer ?? ""),
+      client_id: String(body.client_id ?? ""),
+      client_secret: String(body.client_secret ?? ""),
+      scopes: String(body.scopes ?? ""),
+      idp_entity_id: String(body.idp_entity_id ?? ""),
+      sso_url: String(body.sso_url ?? ""),
+      certificate: String(body.certificate ?? ""),
+      nameid_format: String(body.nameid_format ?? ""),
+    },
+  };
+}
+
+admin.get("/admin/integrations/federation", async (c) => {
+  const idps = await listUpstreamIdps(c.env);
+  const { results: linkCounts } = await c.env.DB.prepare("SELECT idp_id, COUNT(*) AS n FROM federated_identities GROUP BY idp_id").all<{ idp_id: number; n: number }>();
+  const linkedBy = new Map(linkCounts.map((r) => [r.idp_id, r.n]));
+  return c.html(
+    layout(
+      c,
+      "Federation",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro("Sign in <em>through</em> an upstream identity provider &mdash; FlareID as the relying party. Each provider gets a \"Continue with ...\" button on the sign-in page; the first sign-in links the upstream identity to an account here (by address match, or by JIT provisioning when switched on).", { href: "/admin/integrations/federation/new", label: "+ New provider" })}
+        ${
+          idps.length === 0
+            ? '<p class="muted">No upstream providers yet &mdash; everyone signs in with a password or passkey.</p>'
+            : `<table>
+                <thead><tr><th>Name</th><th>Protocol</th><th>Linked accounts</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${idps
+                    .map(
+                      (u) =>
+                        `<tr${u.enabled ? "" : ' style="opacity:.55;"'}>
+                          <td><a href="/admin/integrations/federation/${u.id}">${escapeHtml(u.name)}</a></td>
+                          <td>${u.protocol === "oidc" ? "OIDC" : "SAML"}${u.jit ? ' <span class="muted">+ JIT</span>' : ""}</td>
+                          <td class="muted">${linkedBy.get(u.id) ?? 0}</td>
+                          <td><span class="badge ${u.enabled ? "badge-active" : "badge-disabled"}">${u.enabled ? "Enabled" : "Disabled"}</span></td>
+                        </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "Federation" }]
+    )
+  );
+});
+
+admin.get("/admin/integrations/federation/new", async (c) => {
+  const protocol = c.req.query("protocol") === "saml" ? "saml" : "oidc";
+  return c.html(
+    layout(
+      c,
+      "New upstream provider",
+      `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <p class="sub">One upstream identity provider people can sign in through.</p>
+        <p class="muted">Protocol:
+          <a href="/admin/integrations/federation/new?protocol=oidc"${protocol === "oidc" ? ' style="font-weight:600;"' : ""}>OIDC</a> &middot;
+          <a href="/admin/integrations/federation/new?protocol=saml"${protocol === "saml" ? ' style="font-weight:600;"' : ""}>SAML</a>
+        </p>
+        ${upstreamFormFields(null, protocol)}
+      `)}
+      ${cardSection(`
+        <h2>Registering with the provider</h2>
+        <p class="muted">Create the provider first, then take the callback details from its page to the upstream side:</p>
+        <ul class="muted">
+          <li><strong>OIDC</strong>: register an app for the redirect URI <code>${escapeHtml(new URL(c.req.url).origin)}/federation/oidc/callback</code>.</li>
+          <li><strong>SAML</strong>: register FlareID as a service provider &mdash; its entity ID and ACS URL appear on the saved provider's page.</li>
+        </ul>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("federation"), { label: "New provider" }]
+    )
+  );
+});
+
+admin.get("/admin/integrations/federation/:id", async (c) => {
+  const idp = await getUpstreamIdp(c.env, Number(c.req.param("id")));
+  if (!idp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const { n: linked } = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE idp_id = ?").bind(idp.id).first<{ n: number }>()) ?? { n: 0 };
+  const { results: links } = await c.env.DB.prepare(
+    "SELECT f.subject, f.email, f.last_login_at, u.upn FROM federated_identities f JOIN users u ON u.id = f.user_id WHERE f.idp_id = ? ORDER BY f.last_login_at DESC LIMIT 50"
+  ).bind(idp.id).all<{ subject: string; email: string | null; last_login_at: string | null; upn: string }>();
+  const origin = new URL(c.req.url).origin;
+  const registration =
+    idp.protocol === "oidc"
+      ? `<dl class="attr-list">
+          ${attrHtml("Redirect URI (to register)", `<code>${escapeHtml(oidcCallbackUrl(origin))}</code>`)}
+          ${attrHtml("Issuer", `<code>${escapeHtml(idpConfig<OidcIdpConfig>(idp).issuer)}</code>`)}
+        </dl>`
+      : `<dl class="attr-list">
+          ${attrHtml("SP entity ID", `<code>${escapeHtml(samlSpEntityId(c.env.ISSUER_URL, idp.id))}</code>`)}
+          ${attrHtml("ACS URL", `<code>${escapeHtml(samlAcsUrl(origin, idp.id))}</code>`)}
+        </dl>`;
+  return c.html(
+    layout(
+      c,
+      idp.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <div class="row between" style="margin:0 0 14px 0; align-items:flex-start;">
+          <p class="muted" style="margin:0;">${linked} linked account${linked === 1 ? "" : "s"}.</p>
+          <span class="badge ${idp.enabled ? "badge-active" : "badge-disabled"}">${idp.enabled ? "Enabled" : "Disabled"}</span>
+        </div>
+        <h3 style="margin-top:0;">Give the provider</h3>
+        ${registration}
+        ${upstreamFormFields(idp, idp.protocol)}
+        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
+          <form method="POST" action="/admin/federation/idps/${idp.id}/delete" ${confirmAttrs(
+            `Deleting "${idp.name}" removes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`,
+            { title: `Delete the provider "${idp.name}"?`, action: "Delete provider", danger: true }
+          )}>
+            <button class="danger" type="submit">Delete provider</button>
+          </form>
+        </div>
+      `)}
+      ${cardSection(`
+        <h2>Linked identities</h2>
+        ${
+          links.length === 0
+            ? '<p class="muted">Nobody has signed in through this provider yet.</p>'
+            : `<table>
+                <thead><tr><th>Account</th><th>Subject</th><th>Last sign-in</th></tr></thead>
+                <tbody>
+                  ${links
+                    .map(
+                      (l) =>
+                        `<tr><td>${escapeHtml(l.upn)}</td><td><code>${escapeHtml(l.subject)}</code></td><td class="muted">${l.last_login_at ? ts(l.last_login_at) : "—"}</td></tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("federation"), { label: idp.name }]
+    )
+  );
+});
+
+admin.post("/admin/federation/idps", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    const created = await createUpstreamIdp(c.env, upstreamInputFrom(body, null));
+    await logAudit(c.env, c.get("user"), "federation.idp_created", created.name, { protocol: created.protocol }, c.req.raw);
+    return c.redirect(`/admin/integrations/federation/${created.id}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/federation/new?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/federation/idps/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.parseBody();
+  try {
+    const updated = await updateUpstreamIdp(c.env, id, upstreamInputFrom(body, await getUpstreamIdp(c.env, id)));
+    await logAudit(c.env, c.get("user"), "federation.idp_updated", updated.name, { protocol: updated.protocol, enabled: updated.enabled }, c.req.raw);
+    return c.redirect(`/admin/integrations/federation/${id}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/federation/${id}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/federation/idps/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const idp = await getUpstreamIdp(c.env, id);
+  if (idp) {
+    await deleteUpstreamIdp(c.env, id);
+    await logAudit(c.env, c.get("user"), "federation.idp_deleted", idp.name, { protocol: idp.protocol }, c.req.raw);
+  }
+  return c.redirect("/admin/integrations/federation?saved=1", 302);
 });
 
 // ---------- Audit log ----------

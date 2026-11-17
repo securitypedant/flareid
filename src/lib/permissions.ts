@@ -15,6 +15,7 @@ export const AREAS = [
   { key: "saml", label: "SAML apps", group: "Applications" },
   { key: "scim", label: "SCIM provisioning", group: "Applications" },
   { key: "ldap", label: "LDAP apps", group: "Applications" },
+  { key: "federation", label: "Federation", group: "Applications" },
   { key: "email", label: "Email", group: "Applications" },
   { key: "api_keys", label: "API keys", group: "Platform" },
   { key: "security", label: "Security settings and policies", group: "Platform" },
@@ -49,7 +50,7 @@ export function isPermission(p: string): boolean {
 export const LEGACY_SCOPES: Record<string, Permission[]> = {
   "directory:read": ["users:read", "groups:read", "domains:read", "schemas:read", "oidc:read", "saml:read"],
   "directory:write": ["users:write", "groups:write", "domains:write", "import:write", "oidc:read", "saml:read", "schemas:read"],
-  "clients:write": ["oidc:write", "saml:write"],
+  "clients:write": ["oidc:write", "saml:write", "federation:write"],
   "settings:write": ["security:write", "branding:write", "email:write", "scim:write", "schemas:write"],
   admin: ["*"],
 };

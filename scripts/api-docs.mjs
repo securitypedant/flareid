@@ -32,6 +32,9 @@ try {
     format: "esm",
     outfile: out,
     logLevel: "error",
+    // CJS dependencies (xml-crypto) keep their require() calls after bundling;
+    // without a real require in scope they throw "Dynamic require" under ESM.
+    banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
     // Modules that are never executed while building the document.
     external: ["cloudflare:*"],
   });
