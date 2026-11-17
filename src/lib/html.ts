@@ -439,6 +439,7 @@ const STYLES = `
   .multiselect-option input { width: auto; margin: 0 6px 0 0; display: inline; vertical-align: middle; }
   .multiselect-option.hidden { display: none; }
   .multiselect-option.selected { display: none; }
+  .multiselect-option-desc { color: var(--fi-muted); font-size: 0.78rem; padding-left: 22px; }
 
   /* Copy-to-clipboard buttons */
   .copy-btn {
@@ -566,6 +567,12 @@ function msRemote(input) {
       const box = document.createElement('input');
       box.type = 'checkbox'; box.name = root.dataset.name; box.value = String(it.id); box.dataset.label = it.label;
       label.append(box, document.createTextNode(' ' + it.label));
+      if (it.desc) {
+        const d = document.createElement('div');
+        d.className = 'multiselect-option-desc';
+        d.textContent = it.desc;
+        label.appendChild(d);
+      }
       optionsEl.appendChild(label);
       msBind(root, box);
     });

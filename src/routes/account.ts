@@ -24,7 +24,7 @@ import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, scriptTag, successBanner, ts } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
@@ -231,18 +231,10 @@ account.get("/account", async (c) => {
           requestable.length
             ? `<p class="muted">Ask to join a group - an administrator approves or denies each request.</p>
                <form method="POST" action="/account/access/request">
-                 <div class="field-row">
-                   <div>
-                     <label for="access_group_id">Group</label>
-                     <select id="access_group_id" name="group_id" required>
-                       ${requestable.map((g) => `<option value="${g.id}">${escapeHtml(g.name)}${g.description ? ` — ${escapeHtml(g.description)}` : ""}</option>`).join("")}
-                     </select>
-                   </div>
-                   <div>
-                     <label for="access_reason">Reason (optional)</label>
-                     <input type="text" id="access_reason" name="reason" maxlength="500" placeholder="Why you need it" />
-                   </div>
-                 </div>
+                 <label>Group</label>
+                 ${remoteMultiSelect("group_id", "/account/access/groups", [], "Search groups you can ask for...", true)}
+                 <label for="access_reason">Reason (optional)</label>
+                 <input type="text" id="access_reason" name="reason" maxlength="500" placeholder="Why you need it" />
                  <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Request access</button></div>
                </form>`
             : ""
@@ -581,6 +573,15 @@ account.post("/account/profile", async (c) => {
     if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).then(() => undefined));
   }
   return c.redirect("/account?saved=profile", 302);
+});
+
+// Feeds the request-access picker's search-as-you-type: only the requestable
+// static groups this person could still ask for, as {id, label, desc} items.
+account.get("/account/access/groups", async (c) => {
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+  if (!q) return c.json([]);
+  const groups = await requestableGroups(c.env, c.get("user").id, q, 20);
+  return c.json(groups.map((g) => ({ id: g.id, label: g.name, desc: g.description ?? "" })));
 });
 
 account.post("/account/access/request", async (c) => {

@@ -44,15 +44,22 @@ export interface AccessRequestRow {
 
 export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; group_name: string };
 
-/** Requestable static groups `userId` is not already an explicit member of. */
-export async function requestableGroups(env: Env, userId: number): Promise<GroupRow[]> {
+/**
+ * Requestable static groups `userId` could still ask for: not already a
+ * member of, and with no request still waiting (a decided one can be asked
+ * again, so the decided statuses don't exclude).
+ */
+export async function requestableGroups(env: Env, userId: number, search = "", limit = 200): Promise<GroupRow[]> {
+  const like = `%${search.replace(/[%_]/g, (m) => `\\${m}`)}%`;
   return (
     await env.DB.prepare(
       `SELECT * FROM groups WHERE requestable = 1 AND (rule IS NULL OR rule = '')
         AND id NOT IN (SELECT group_id FROM group_members WHERE user_id = ?)
-        ORDER BY name`
+        AND id NOT IN (SELECT group_id FROM access_requests WHERE user_id = ? AND status = 'pending')
+        AND (name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
+        ORDER BY name LIMIT ?`
     )
-      .bind(userId)
+      .bind(userId, userId, like, like, limit)
       .all<GroupRow>()
   ).results;
 }

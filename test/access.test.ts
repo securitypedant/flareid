@@ -38,13 +38,16 @@ describe("access requests", () => {
   it("runs the full ask -> approve -> member cycle through console and API", async () => {
     const { apiKey } = await bootstrapInstance();
     const uid = await seedUser(apiKey, "pat");
-    const groupId = await makeGroup(apiKey, "VPN users", { requestable: true });
+    const groupId = await makeGroup(apiKey, "VPN users", { requestable: true, description: "For the field team" });
     const cookie = await sessionFor(uid);
 
-    // The group shows up on My account as something to ask for.
+    // The group shows up on My account as something to ask for, searchable by
+    // name or description, with both shown.
     const accountPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
     expect(accountPage).toContain("Access requests");
-    expect(accountPage).toContain("VPN users");
+    const found = await (await SELF.fetch(`${BASE}/account/access/groups?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string }[];
+    expect(found).toEqual([{ id: groupId, label: "VPN users", desc: "For the field team" }]);
+    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=nomatch`, { headers: { Cookie: cookie } })).json()).toEqual([]);
 
     const ask = await SELF.fetch(`${BASE}/account/access/request`, {
       method: "POST",
@@ -55,6 +58,8 @@ describe("access requests", () => {
     expect(ask.headers.get("Location")).toContain("saved=access-requested");
     const req = await env.DB.prepare("SELECT id, status FROM access_requests WHERE user_id = ?").bind(uid).first<{ id: number; status: string }>();
     expect(req!.status).toBe("pending");
+    // While the ask waits it drops out of the picker - asking twice would only error.
+    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
 
     // The console queue lists it for a groups admin.
     const admin = await adminCookie();
@@ -78,7 +83,7 @@ describe("access requests", () => {
     const after = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
     expect(after).toContain("Approved");
     // And can't ask again - already a member.
-    expect(await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text()).not.toContain('name="group_id"');
+    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
   });
 
   it("refuses requests for anything not open to them, and double-asking", async () => {
