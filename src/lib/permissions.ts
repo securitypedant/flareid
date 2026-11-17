@@ -14,6 +14,7 @@ export const AREAS = [
   { key: "oidc", label: "OIDC clients", group: "Applications" },
   { key: "saml", label: "SAML apps", group: "Applications" },
   { key: "scim", label: "SCIM provisioning", group: "Applications" },
+  { key: "ldap", label: "LDAP apps", group: "Applications" },
   { key: "email", label: "Email", group: "Applications" },
   { key: "api_keys", label: "API keys", group: "Platform" },
   { key: "security", label: "Security settings and policies", group: "Platform" },

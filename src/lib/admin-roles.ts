@@ -73,6 +73,8 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/saml", "saml"],
   ["/admin/integrations/scim", "scim"],
   ["/admin/scim", "scim"],
+  ["/admin/integrations/ldap", "ldap"],
+  ["/admin/ldap", "ldap"],
   ["/admin/integrations/email", "email"],
   ["/admin/email", "email"],
   ["/admin/users/import", "import"],
@@ -100,9 +102,14 @@ export function requiredPermission(method: string, path: string): Permission | n
   if (under(path, "/admin/domains") && path.endsWith("/apply-to-all")) return "super";
   // The user lookup feeds pickers in several areas; reading users is enough.
   if (path === "/admin/users/lookup") return "users:read";
+  // Open to every admin role: the console root, the integrations index and the
+  // step-up ceremony itself.
+  if (path === "/admin" || path === "/admin/integrations" || under(path, "/admin/reauth")) return null;
   const write = method !== "GET" && method !== "HEAD";
   const hit = PATH_AREAS.find(([prefix]) => under(path, prefix));
-  if (!hit) return null;
+  // Anything unmapped fails closed to Super Admin - a new console page is
+  // denied until it deliberately joins PATH_AREAS, never accidentally open.
+  if (!hit) return "super";
   const area = hit[1];
   if (area === "import") return write ? "import:write" : "users:read";
   return `${area}:${write ? "write" : "read"}`;
@@ -125,7 +132,7 @@ export function visibleSections(access: Access): Set<string> {
   if (can("groups")) s.add("groups");
   if (can("domains")) s.add("domains");
   if (can("schemas")) s.add("schemas");
-  if (can("oidc") || can("saml") || can("scim") || can("email") || can("api_keys")) s.add("integrations");
+  if (can("oidc") || can("saml") || can("scim") || can("ldap") || can("email") || can("api_keys")) s.add("integrations");
   if (can("branding")) s.add("branding");
   if (can("security") || can("roles") || can("signing_keys")) s.add("security");
   if (can("audit")) s.add("audit");

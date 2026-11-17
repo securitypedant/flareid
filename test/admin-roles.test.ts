@@ -55,6 +55,19 @@ describe("admin roles", () => {
     expect(canAccess({ ...r(["signin", "account:read"]), isAdmin: false }, "GET", "/admin")).toBe(false);
     expect(canAccess(r(["*"]), "POST", "/admin/setup")).toBe(true);
     expect(canAccess(dir, "POST", "/admin/setup")).toBe(false);
+    // LDAP console pages have their own area: a scoped admin without the
+    // grant cannot read them, one with it can, and writes need ldap:write.
+    expect(canAccess(aud, "GET", "/admin/ldap")).toBe(false);
+    expect(canAccess(aud, "GET", "/admin/integrations/ldap")).toBe(false);
+    expect(canAccess(r(["ldap:read"]), "GET", "/admin/ldap/some-app")).toBe(true);
+    expect(canAccess(r(["ldap:read"]), "POST", "/admin/ldap/some-app/revoke")).toBe(false);
+    expect(canAccess(r(["ldap:write"]), "POST", "/admin/ldap/some-app/revoke")).toBe(true);
+    // The console root and integrations index stay open to every admin; any
+    // other unmapped /admin path fails closed to Super Admin.
+    expect(canAccess(aud, "GET", "/admin")).toBe(true);
+    expect(canAccess(aud, "GET", "/admin/integrations")).toBe(true);
+    expect(canAccess(aud, "GET", "/admin/no-such-page")).toBe(false);
+    expect(canAccess(aud, "GET", "/admin/reauth")).toBe(true);
   });
 
   it("lets each role in only where it belongs, and filters the sidebar", async () => {

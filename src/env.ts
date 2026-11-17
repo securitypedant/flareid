@@ -71,6 +71,8 @@ export interface Env {
   API_LIMITER?: RateLimit;
   /** Optional Analytics Engine dataset for per-request performance metrics (lib/metrics.ts). */
   METRICS?: AnalyticsEngineDataset;
+  /** Optional dataset for sub-request telemetry: spans and events (lib/metrics.ts). */
+  METRICS_SPANS?: AnalyticsEngineDataset;
   /** Account id and Account Analytics:Read token for reading those metrics back on the overview. */
   CF_ACCOUNT_ID?: string;
   CF_ANALYTICS_TOKEN?: string;

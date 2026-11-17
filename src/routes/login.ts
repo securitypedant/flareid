@@ -16,6 +16,7 @@ import { grants } from "../lib/permissions.js";
 import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
 import { turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
+import { timed } from "../lib/metrics.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import {
   deleteLoginFlow,
@@ -274,7 +275,7 @@ login.post("/login", async (c) => {
   // of them the real attempt already paid. An account with no usable
   // password (imported, awaiting an invitation) fails instantly without this.
   const usable = user && user.status === "active" && !user.password_hash.startsWith("!");
-  const valid = usable ? await verifyPassword(password, user) : false;
+  const valid = usable ? await timed(c.env, "auth.verify", verifyPassword(password, user)) : false;
   if (!valid) {
     const format = usable ? storedHashFormat(user) : null;
     if (format !== "scrypt") await verifyPassword(password, await dummyPasswordHash(c.env, "scrypt"));

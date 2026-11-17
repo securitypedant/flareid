@@ -2,6 +2,7 @@ import { resolveManyGroupMemberUserIds } from "./groups.js";
 import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
 import { getScimConfig, getScimScope, validateScimEndpoint, type ScimScope } from "./settings.js";
+import { timed } from "./metrics.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
@@ -43,7 +44,7 @@ async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Res
   // 'follow' would forward it cross-origin.
   let url = `${endpoint}${path}`;
   for (let hops = 0; ; hops++) {
-    const res = await fetch(url, {
+    const res = await timed(env, "scim.outbound", fetch(url, {
       ...init,
       redirect: "manual",
       // A stalled remote must not head-of-line block the whole sync.
@@ -54,7 +55,7 @@ async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Res
         Accept: "application/scim+json",
         ...init.headers,
       },
-    });
+    }));
     if (res.status < 300 || res.status >= 400 || hops >= 3) return res;
     const location = res.headers.get("location");
     if (!location) return res;

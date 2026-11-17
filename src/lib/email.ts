@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { getSetting, setSetting } from "./settings.js";
+import { timed } from "./metrics.js";
 import type { UserRow } from "./types.js";
 
 /**
@@ -70,13 +71,13 @@ export async function sendEmail(env: Env, message: OutboundEmail): Promise<SendR
   if (!isEmailAddress(message.to)) return { ok: false, error: "Recipient address is not a valid email address." };
   const cleanName = fromName.replace(/[\r\n]+/g, " ").trim();
   try {
-    const result = await env.EMAIL.send({
+    const result = await timed(env, "email.send", env.EMAIL.send({
       to: message.to,
       from: cleanName ? { email: fromAddress, name: cleanName } : fromAddress,
       subject: message.subject.replace(/[\r\n]+/g, " ").trim(),
       text: message.text,
       html: message.html,
-    });
+    }));
     return { ok: true, messageId: result.messageId };
   } catch (error) {
     const e = error as { code?: string; message?: string };

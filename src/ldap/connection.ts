@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from "../lib/password.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { clearLoginAttempts, loginRateKey, recordLoginAttempt } from "../lib/rate-limit.js";
 import { revokeTokensForUser } from "../lib/sessions.js";
+import { timed } from "../lib/metrics.js";
 import { BerError, BerReader, concat, seq, ctx, tlv } from "./ber.js";
 import { ldapBind, inAppGroups, AD_BAD_CREDENTIALS, type BindCtx } from "./bind.js";
 import { loadSnapshot, viewForApp, type DirectorySnapshot } from "./directory.js";
@@ -62,7 +63,7 @@ const td = new TextDecoder();
 let snapshotCache: { at: number; snap: DirectorySnapshot } | null = null;
 const SNAPSHOT_TTL_MS = 30_000;
 export async function cachedSnapshot(env: Env): Promise<DirectorySnapshot> {
-  if (!snapshotCache || Date.now() - snapshotCache.at > SNAPSHOT_TTL_MS) snapshotCache = { at: Date.now(), snap: await loadSnapshot(env) };
+  if (!snapshotCache || Date.now() - snapshotCache.at > SNAPSHOT_TTL_MS) snapshotCache = { at: Date.now(), snap: await timed(env, "ldap.snapshot", loadSnapshot(env)) };
   return snapshotCache.snap;
 }
 export function resetSnapshotCache(): void {
@@ -71,7 +72,11 @@ export function resetSnapshotCache(): void {
 
 /** Pulls whole BER frames off the byte stream, keeping leftovers between reads. */
 class FrameReader {
-  private buf: Uint8Array = new Uint8Array(0);
+  // Chunks, not one buffer: a peer can pace writes so each read() yields a few
+  // bytes, and `buf = concat(buf, chunk)` would make a 64KB frame cost O(n^2)
+  // copying. We pay one copy per complete frame in take() instead.
+  private chunks: Uint8Array[] = [];
+  private len = 0;
   constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
 
   async next(): Promise<Uint8Array | null> {
@@ -80,18 +85,49 @@ class FrameReader {
       if (frame) return frame;
       const { done, value } = await this.reader.read();
       if (done) return null; // EOF - a truncated trailing frame is just a close
-      this.buf = concat(this.buf, value);
-      if (this.buf.length > MAX_FRAME) throw new BerError("message exceeds 64KB");
+      this.chunks.push(value);
+      this.len += value.length;
+      if (this.len > MAX_FRAME) throw new BerError("message exceeds 64KB");
     }
   }
 
-  private tryFrame(): Uint8Array | null {
-    const b = this.buf;
-    if (b.length < 2 || b[0] !== 0x30) {
-      if (b.length && b[0] !== 0x30) throw new BerError("expected LDAPMessage SEQUENCE");
-      return null;
+  /** The first n buffered bytes, contiguous, without consuming. */
+  private head(n: number): Uint8Array {
+    const out = new Uint8Array(n);
+    let off = 0;
+    for (const c of this.chunks) {
+      if (off >= n) break;
+      const take = Math.min(c.length, n - off);
+      out.set(c.subarray(0, take), off);
+      off += take;
     }
-    const first = b[1]!;
+    return out;
+  }
+
+  /** Consume n buffered bytes, returning them contiguous. */
+  private take(n: number): Uint8Array {
+    const out = new Uint8Array(n);
+    const rest: Uint8Array[] = [];
+    let off = 0;
+    for (const c of this.chunks) {
+      if (off < n) {
+        const part = Math.min(c.length, n - off);
+        out.set(c.subarray(0, part), off);
+        off += part;
+        if (part < c.length) rest.push(c.subarray(part));
+      } else rest.push(c);
+    }
+    this.chunks = rest;
+    this.len -= n;
+    return out;
+  }
+
+  private tryFrame(): Uint8Array | null {
+    if (this.len === 0) return null;
+    const h = this.head(Math.min(this.len, 6));
+    if (h[0] !== 0x30) throw new BerError("expected LDAPMessage SEQUENCE");
+    if (this.len < 2) return null;
+    const first = h[1]!;
     let headerLen: number, len: number;
     if (first < 0x80) {
       headerLen = 2;
@@ -99,16 +135,14 @@ class FrameReader {
     } else {
       const n = first & 0x7f;
       if (n === 0 || n > 4) throw new BerError("indefinite or oversized length");
-      if (b.length < 2 + n) return null;
+      if (this.len < 2 + n) return null;
       len = 0;
-      for (let k = 0; k < n; k++) len = len * 256 + b[2 + k]!;
+      for (let k = 0; k < n; k++) len = len * 256 + h[2 + k]!;
       headerLen = 2 + n;
     }
     if (len > MAX_FRAME) throw new BerError("message exceeds 64KB");
-    if (b.length < headerLen + len) return null;
-    const frame = b.subarray(0, headerLen + len);
-    this.buf = b.subarray(headerLen + len);
-    return frame;
+    if (this.len < headerLen + len) return null;
+    return this.take(headerLen + len);
   }
 }
 
@@ -181,6 +215,16 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
       const op = msg.op;
       if (op.kind === "unbind") break;
       if (op.kind === "abandon") continue;
+
+      // RFC 4511 4.1.11: a control marked critical that we cannot honour for
+      // this op must fail the whole operation - today the only honoured
+      // controls are pagedResults and serverSort, and only on search.
+      const unhonored = msg.controls.find((c) => c.critical && !(op.kind === "search" && (SEARCH_CONTROLS as Set<string>).has(c.type)));
+      if (unhonored) {
+        await refuseOp(send, msg.id, op, RC.unavailableCriticalExtension, `unsupported critical control ${unhonored.type}`);
+        track(op.kind, RC.unavailableCriticalExtension);
+        continue;
+      }
 
       // LDAP.md section 14 req 11: settings are re-read per op, so disabling
       // LDAP disconnects in-flight connections on their next operation and
@@ -320,11 +364,15 @@ async function refuseOp(send: (bytes: Uint8Array) => Promise<unknown>, id: numbe
   if (op.kind === "search") await send(message(id, searchDone(code, "", diagnostic)));
   else if (op.kind === "compare") await send(message(id, compareResponse(code, "", diagnostic)));
   else if (op.kind === "extended") await send(message(id, extendedResponse(code, diagnostic, op.name)));
+  else if (op.kind === "bind") await send(message(id, bindResponse(code, diagnostic)));
   else if (op.kind === "write") {
     const tag = op.op === "modify" ? OP.modifyResponse : op.op === "add" ? OP.addResponse : op.op === "del" ? OP.delResponse : OP.modifyDnResponse;
     await send(refusal(id, tag, code, diagnostic));
   } else await send(noticeOfDisconnection(code, diagnostic));
 }
+
+/** Controls we honour today, and only on search. */
+const SEARCH_CONTROLS = new Set([OID.pagedResults, OID.serverSort]);
 
 async function searchCtx(env: Env, settings: LdapSettings, bound: Bound, stickyApp: LdapAppRow | null): Promise<SearchCtx | null> {
   const app = bound.kind === "service" ? bound.app : bound.kind === "user" ? (bound.app ?? stickyApp) : stickyApp;
@@ -334,16 +382,17 @@ async function searchCtx(env: Env, settings: LdapSettings, bound: Bound, stickyA
 }
 
 /** Parse the Simple Paged Results request control: SEQUENCE { size INTEGER, cookie OCTET STRING }. */
-function pagedRequest(controls: Control[]): { size: number; cookie: Uint8Array | null } | null {
+function pagedRequest(controls: Control[]): { size: number; cookie: Uint8Array | null } | null | "bad" {
   const c = controls.find((x) => x.type === OID.pagedResults);
-  if (!c?.value) return null;
+  if (!c) return null;
+  if (!c.value) return "bad";
   try {
     const r = new BerReader(c.value).readConstructed(0x30);
     const size = r.readInteger();
     const cookie = r.readOctetString();
     return { size, cookie: cookie.length ? cookie : null };
   } catch {
-    return null;
+    return "bad";
   }
 }
 
@@ -411,6 +460,14 @@ async function handleSearch(writer: WritableStreamDefaultWriter<Uint8Array>, dep
   }
   const out = await executeSearch(ctx, op);
   const paged = pagedRequest(controls);
+  if (paged === "bad") {
+    // Present but unparseable: refuse rather than silently run unpaged.
+    const critical = controls.find((x) => x.type === OID.pagedResults)?.critical;
+    const code = critical ? RC.unavailableCriticalExtension : RC.unwillingToPerform;
+    await send(message(msgId, searchDone(code, "malformed paged results control")));
+    track("search", code);
+    return;
+  }
   const sort = sortRequest(controls);
   if (sort === "bad") {
     await send(message(msgId, searchDone(RC.unwillingToPerform, "malformed server-side sort control"), [sortResultControl(RC.unwillingToPerform)]));
@@ -517,7 +574,7 @@ async function handlePasswordModify(args: {
   // Share the web sign-in lockout budget: guessing old passwords over LDAP
   // must not get a second allowance.
   if (await recordLoginAttempt(deps.env, loginRateKey(user.username, user), deps.ip)) return fail(RC.unwillingToPerform, "too many attempts", "rate_limited");
-  const oldOk = await verifyPassword(oldPw, { password_hash: user.password_hash, password_salt: user.password_salt, password_iterations: user.password_iterations });
+  const oldOk = await timed(deps.env, "auth.verify", verifyPassword(oldPw, { password_hash: user.password_hash, password_salt: user.password_salt, password_iterations: user.password_iterations }));
   if (!oldOk) return fail(RC.invalidCredentials, AD_BAD_CREDENTIALS, "old_password");
 
   let generated: string | null = null;
@@ -529,7 +586,7 @@ async function handlePasswordModify(args: {
     if (policyError) return fail(RC.unwillingToPerform, policyError, "policy");
   }
 
-  const { hash, salt, iterations } = await hashPassword(newPw, deps.env);
+  const { hash, salt, iterations } = await timed(deps.env, "auth.hash", hashPassword(newPw, deps.env));
   const now = new Date().toISOString();
   await deps.env.DB.batch([
     deps.env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?").bind(hash, salt, iterations, now, user.id),

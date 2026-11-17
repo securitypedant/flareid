@@ -121,7 +121,9 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
 
   const matched: EvalEntry[] = [];
   const limit = op.sizeLimit === 0 ? SERVER_SIZE_LIMIT : Math.min(op.sizeLimit, SERVER_SIZE_LIMIT);
-  const deadline = op.timeLimit > 0 ? Date.now() + Math.min(op.timeLimit, 30) * 1000 : Infinity;
+  // LDAP.md section 11: client timeLimit honoured, capped at 30s - and the cap
+  // applies when the client sets none, so a scan can never run unbounded.
+  const deadline = Date.now() + Math.min(op.timeLimit || 30, 30) * 1000;
 
   // A user-bound connection sees only their own entry and the groups they
   // actually belong to (LDAP.md section 10) - group visibility is matched per
@@ -131,7 +133,14 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
 
   let code: number = RC.success;
   let diagnostic = "";
-  outer: for (const cand of candidates) {
+  for (const cand of candidates) {
+    // Check per candidate, not only after a match: a scan that matches
+    // nothing is exactly the one the limit exists to stop.
+    if (Date.now() > deadline) {
+      code = RC.timeLimitExceeded;
+      diagnostic = "time limit exceeded";
+      break;
+    }
     if (!dnWithin(cand.rdns, eff)) continue;
     if (!inScope(cand.rdns)) continue;
     const entry = await cand.build();
@@ -148,11 +157,6 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
       code = RC.sizeLimitExceeded;
       diagnostic = "size limit exceeded";
       break;
-    }
-    if (Date.now() > deadline) {
-      code = RC.timeLimitExceeded;
-      diagnostic = "time limit exceeded";
-      break outer;
     }
   }
 

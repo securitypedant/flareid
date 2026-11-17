@@ -1,4 +1,5 @@
 import { SignJWT, importJWK, jwtVerify, decodeProtectedHeader, type JWTPayload } from "jose";
+import { timed } from "./metrics.js";
 import { activeSigningKey, publishedKeys, type SigningAlg } from "./signing-keys.js";
 import type { Env } from "../env.js";
 import type { ClaimGroup } from "./oidc.js";
@@ -87,7 +88,7 @@ export async function signIdToken(env: Env, clientId: string, claims: IdTokenCla
     .setIssuedAt()
     .setExpirationTime("10m");
 
-  return jwt.sign(key);
+  return timed(env, "oidc.sign", jwt.sign(key));
 }
 
 export async function atHash(accessToken: string): Promise<string> {

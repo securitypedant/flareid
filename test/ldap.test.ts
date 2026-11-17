@@ -691,3 +691,66 @@ describe("ldap session revalidation", { timeout: 60000 }, () => {
     expect(updated.exposed_group_ids).toBe(`[${grp!.id}]`);
   });
 });
+
+describe("ldap protocol hardening", { timeout: 60000 }, () => {
+  const critControl = (oid: string, value?: Uint8Array) => seq(octetString(oid), booleanValue(true), ...(value ? [octetString(value)] : []));
+
+  it("fails any op carrying a critical control it cannot honour", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    // Unknown critical OID on a search -> unavailableCriticalExtension (12).
+    const bad = await c.search(2, `ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), [], [critControl("1.2.3.4")]);
+    expect(bad.done.code).toBe(12);
+    // And on a non-search op - compare here - the same refusal.
+    const cmp = ldapMessage(3, tlv(appC(14), concat(octetString(ALICE_DN), seq(octetString("uid"), octetString("alice")))), [critControl("1.2.3.4")]);
+    await c.send(cmp);
+    expect((await c.recv()).code).toBe(12);
+    // The honoured controls stay honoured when critical.
+    const paged = await c.search(4, `ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), ["cn"], [critControl(PAGED, seq(integer(2), octetString(new Uint8Array(0))))]);
+    expect(paged.done.code).toBe(0);
+    // A non-critical unknown control is ignored, not fatal.
+    const ok = await c.search(5, `ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), [], [control("1.2.3.4", new Uint8Array(0))]);
+    expect(ok.done.code).toBe(0);
+    await c.close();
+  });
+
+  it("refuses a malformed paged control instead of silently running unpaged", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    // Garbage value where the paging SEQUENCE should be.
+    const bad = await c.search(2, `ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), ["cn"], [control(PAGED, octetString(new Uint8Array([1, 2, 3])))]);
+    expect(bad.done.code).toBe(53); // unwillingToPerform
+    // The same, marked critical -> unavailableCriticalExtension.
+    const crit = await c.search(3, `ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), ["cn"], [critControl(PAGED, octetString(new Uint8Array([1, 2, 3])))]);
+    expect(crit.done.code).toBe(12);
+    await c.close();
+  });
+
+  it("never emits a forged memberOf from a custom attribute", async () => {
+    await setupLdap();
+    // Bob has no groups - the built-in memberOf is unpopulated, which is what
+    // made a same-named custom attribute visible before the fix.
+    await env.DB.prepare("UPDATE users SET custom_attributes = ? WHERE username = 'bob'").bind(JSON.stringify({ memberof: `cn=admins,ou=groups,ou=${SLUG},${BASE_DN}` })).run();
+    resetSnapshotCache();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    const { entries } = await c.search(2, `uid=bob,ou=people,ou=${SLUG},${BASE_DN}`, 0, presentFilter("objectClass"), ["memberof", "*"]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.attrs!.get("memberof")).toBeUndefined();
+    await c.close();
+  });
+
+  it("rejects schema attributes that collide with LDAP-emitted names", async () => {
+    const { apiKey } = await setupLdap();
+    const res = await apiCall("/api/v1/schemas", { token: apiKey, body: { name: "Evil", attributes: [{ name: "memberof", label: "memberOf" }] } });
+    expect(res.status).not.toBe(201);
+    // Column-mapped names stay allowed - department lives in a user column.
+    const ok = await apiCall("/api/v1/schemas", { token: apiKey, body: { name: "Fine", attributes: [{ name: "department", label: "Dept" }] } });
+    expect(ok.status).toBe(201);
+  });
+});

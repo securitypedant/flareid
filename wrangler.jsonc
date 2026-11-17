@@ -61,7 +61,10 @@
   ],
   // Per-request performance data points (src/lib/metrics.ts); read back on the
   // admin overview when CF_ANALYTICS_TOKEN is set as a secret.
-  "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "flareid_requests" }],
+  "analytics_engine_datasets": [
+    { "binding": "METRICS", "dataset": "flareid_requests" },
+    { "binding": "METRICS_SPANS", "dataset": "flareid_spans" }
+  ],
   "kv_namespaces": [
     {
       // Short-lived login-flow state, pending MFA challenges, and rate-limit

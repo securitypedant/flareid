@@ -95,7 +95,10 @@ export async function userEntry(user: UserRow, view: DirectoryView, app: LdapApp
     const custom = JSON.parse(user.custom_attributes || "{}") as Record<string, string>;
     for (const [k, v] of Object.entries(custom)) {
       const name = k.toLowerCase();
-      if (CUSTOM_ATTR_NAME.test(k) && !attrs.has(name) && !NEVER_RETURNED.has(name)) put(attrs, k, String(v).slice(0, 1024));
+      // Reserved names are skipped whether or not this entry happens to have
+      // the built-in populated - a group-less user's memberOf must not be
+      // forgeable from a custom attribute.
+      if (CUSTOM_ATTR_NAME.test(k) && !RESERVED_LDAP_ATTRIBUTE_NAMES.has(name) && !attrs.has(name) && !NEVER_RETURNED.has(name)) put(attrs, k, String(v).slice(0, 1024));
     }
   } catch {
     /* malformed custom_attributes JSON adds nothing */
@@ -267,6 +270,14 @@ const ATTRIBUTE_DEFS: Record<string, AttrDef> = {
   hasSubordinates: { oid: "2.5.18.9", syntax: "1.3.6.1.4.1.1466.115.121.1.7", eq: "booleanMatch" },
   subschemaSubentry: { oid: "2.5.18.10", syntax: DN_SYNTAX, eq: DNM },
 };
+
+/**
+ * Names the directory asserts itself (the whole emitted vocabulary plus the
+ * structural attrs handled outside ATTRIBUTE_DEFS), lowercased. Custom
+ * attributes are never emitted under these - see userEntry - and
+ * saveSchemaAttributes refuses them at definition time.
+ */
+export const RESERVED_LDAP_ATTRIBUTE_NAMES = new Set([...Object.keys(ATTRIBUTE_DEFS).map((n) => n.toLowerCase()), "objectclass", "entrydn"]);
 
 const OBJECT_CLASSES: [string, string, string, string[], string[]][] = [
   ["top", "2.5.6.0", "top", ["objectClass"], []],

@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import type { UserRow } from "./types.js";
 import { getClientIp } from "./rate-limit.js";
+import { recordEvent } from "./metrics.js";
 
 /**
  * `actor.id` is nullable because not every actor is a user: an action taken
@@ -51,4 +52,5 @@ async function insertAudit(env: Env, actor: UserRow | { id: number | null; upn: 
       userAgent?.slice(0, 512) ?? null
     )
     .run();
+  recordEvent(env, action); // audited actions double as live metrics (lib/metrics.ts)
 }

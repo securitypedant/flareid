@@ -138,6 +138,8 @@ function decodeOid(b: Uint8Array): string {
 export interface EvalEntry {
   dn: string;
   attrs: Map<string, (string | Uint8Array)[]>;
+  /** Lazily parsed DN values per attribute - DN filters would otherwise re-parse every stored value per assertion node. */
+  parsedDns?: Map<string, (ReturnType<typeof parseDn> | null)[]>;
 }
 
 /** Attributes compared as DNs (RFC 4517 distinguishedNameMatch). */
@@ -205,7 +207,22 @@ function matchEquality(attr: string, value: Uint8Array, entry: EvalEntry): Tri {
   if (DN_ATTRS.has(a)) {
     const want = safeDn(value);
     if (want === "undefined") return "undefined";
-    return values.some((v) => typeof v === "string" && safeDn(new TextEncoder().encode(v)) !== "undefined" && dnEquals(parseDn(v), want as ReturnType<typeof parseDn>)) ? true : false;
+    // Parse each stored DN at most once per entry: a filter with many DN
+    // assertions (a hand-built memberOf chain, say) must not re-parse every
+    // value for every node.
+    let parsed = entry.parsedDns?.get(a);
+    if (!parsed) {
+      parsed = values.map((v) => {
+        if (typeof v !== "string") return null;
+        try {
+          return parseDn(v);
+        } catch {
+          return null;
+        }
+      });
+      (entry.parsedDns ??= new Map()).set(a, parsed);
+    }
+    return parsed.some((rdns) => rdns !== null && dnEquals(rdns, want as ReturnType<typeof parseDn>)) ? true : false;
   }
   if (INT_ATTRS.has(a)) {
     const want = Number(decodeText(value));

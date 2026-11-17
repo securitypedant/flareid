@@ -93,8 +93,10 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
 ~~25. Breached-password check via the HIBP k-anonymity API; Turnstile on login
     and recovery.~~ (done in v3.4.0-v3.6.0)
 26. Audit log export (Logpush or R2), a retention policy, and tamper-evidence.
-27. Observability: structured logs, login success and failure metrics,
-    alerting.
+~~27. Observability: structured logs, login success and failure metrics,
+    alerting.~~ (partly done - JSON access logs, an audit-event metrics
+    dataset, sub-request spans and a live view on the performance page.
+    Alerting still means configuring Workers notifications in the dashboard.)
 28. Documented backup, restore and disaster recovery for D1; a directory export
     endpoint.
 ~~29. Scale: paginated and searchable group-membership editing - the current

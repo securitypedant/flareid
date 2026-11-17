@@ -4,6 +4,47 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## Unreleased
+
+No migrations. The remaining run-2 audit findings, plus the first pass of
+observability work.
+
+### Added
+
+- **Sub-request performance telemetry.** A second Analytics Engine dataset
+  (`flareid_spans`, binding `METRICS_SPANS`) records what inside a request
+  costs time - password verification and hashing, token signing, the LDAP
+  directory snapshot, outbound SCIM calls and email sends - and every audited
+  action doubles as a counted event. The performance page gains a
+  "Where the time goes" table, a security-events table, and a live strip of
+  per-minute requests that refreshes every ten seconds.
+- **A structured access log.** Every HTTP request logs one JSON line
+  (`msg: "http.request"`, family, method, status, ms) to Workers Logs, so
+  `wrangler tail` and Logpush see machine-readable traffic.
+
+### Security
+
+- **Remaining run-2 audit findings closed.**
+  - The LDAP frame reader accumulates chunks and joins once per frame - a
+    peer pacing writes can no longer inflate per-frame CPU quadratically.
+  - The search deadline is checked per candidate (not only after a match)
+    and applies a 30s server cap when the client sets no `timeLimit`, so a
+    non-matching scan can no longer run unbounded; DN-valued filter
+    comparisons parse each stored DN at most once per entry.
+  - Critical controls are honoured per RFC 4511 - an unsupported critical
+    control fails the whole op with `unavailableCriticalExtension`, and a
+    malformed paged-results control refuses instead of silently running
+    unpaged.
+  - Schema attributes can no longer be defined under names the LDAP
+    directory asserts itself (`memberof`, `objectguid`, ...), and stored
+    custom attributes are never emitted under reserved names - a
+    group-less user's `memberOf` is no longer forgeable.
+  - Failed LDAP user binds now pay a uniform verification cost across hash
+    formats, closing the legacy-format timing oracle.
+  - LDAP console pages join the `ldap` admin area (`ldap:read` /
+    `ldap:write`); every unmapped `/admin` path now fails closed to Super
+    Admin instead of failing open to any admin role.
+
 ## [3.10.0] - 2026-11-16
 
 **Migration `0030_ldap.sql`** - `ldap_apps` and the `ldap_*` settings.

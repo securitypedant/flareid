@@ -13,6 +13,99 @@ import type { Env } from "../env.js";
  */
 
 const DATASET = "flareid_requests";
+const SPANS_DATASET = "flareid_spans";
+
+/**
+ * Sub-request telemetry (the `flareid_spans` dataset): which pieces inside a
+ * request cost time, and discrete events worth counting. One datapoint per
+ * record, all fire-and-forget like the request points above.
+ *   blobs:   [kind ("span" | "event"), name, detail]
+ *   doubles: [ms or count, 0]
+ * `name` is from a fixed vocabulary - never user input - and `detail` carries
+ * a coarse outcome (for events) or stays empty (for spans).
+ */
+export function recordSpan(env: Pick<Env, "METRICS_SPANS">, name: string, ms: number): void {
+  try {
+    env.METRICS_SPANS?.writeDataPoint({ indexes: [name], blobs: ["span", name, ""], doubles: [Math.max(0, Math.round(ms)), 0] });
+  } catch {
+    // Metrics never break a request.
+  }
+}
+
+/** Time an async operation into a named span. */
+export async function timed<T>(env: Pick<Env, "METRICS_SPANS">, name: string, p: Promise<T>): Promise<T> {
+  const started = Date.now();
+  try {
+    return await p;
+  } finally {
+    recordSpan(env, name, Date.now() - started);
+  }
+}
+
+/** Count an occurrence - sign-ins, bind failures, token mints. */
+export function recordEvent(env: Pick<Env, "METRICS_SPANS">, name: string, detail = ""): void {
+  try {
+    env.METRICS_SPANS?.writeDataPoint({ indexes: [name], blobs: ["event", name, detail], doubles: [1, 0] });
+  } catch {
+    // Metrics never break a request.
+  }
+}
+
+export interface SpanStats {
+  name: string;
+  calls: number;
+  totalMs: number;
+  avgMs: number;
+  p95: number;
+}
+
+/** Time spent inside each instrumented span over the last `hours`. */
+export async function readSpanStats(env: Env, hours = 24): Promise<SpanStats[] | null> {
+  if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return null;
+  const sql = `SELECT blob2 AS name, SUM(_sample_interval) AS calls,
+      SUM(double1 * _sample_interval) AS total_ms,
+      quantileWeighted(0.95)(double1, _sample_interval) AS p95
+    FROM ${SPANS_DATASET} WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(168, Math.floor(hours)))}' HOUR AND blob1 = 'span'
+    GROUP BY name ORDER BY total_ms DESC FORMAT JSON`;
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
+      body: sql,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Record<string, string | number>[] };
+    return (body.data ?? []).map((r) => ({
+      name: String(r.name),
+      calls: Number(r.calls) || 0,
+      totalMs: Math.round(Number(r.total_ms) || 0),
+      avgMs: Math.round((Number(r.total_ms) || 0) / Math.max(1, Number(r.calls) || 1)),
+      p95: Math.round(Number(r.p95) || 0),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/** Event counts (sign-ins etc.) over the last `minutes` - the live strip. */
+export async function readEventCounts(env: Env, minutes = 30): Promise<{ name: string; detail: string; count: number }[] | null> {
+  if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return null;
+  const sql = `SELECT blob2 AS name, blob3 AS detail, SUM(_sample_interval) AS count
+    FROM ${SPANS_DATASET} WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(1440, Math.floor(minutes)))}' MINUTE AND blob1 = 'event'
+    GROUP BY name, detail ORDER BY count DESC FORMAT JSON`;
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
+      body: sql,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Record<string, string | number>[] };
+    return (body.data ?? []).map((r) => ({ name: String(r.name), detail: String(r.detail), count: Number(r.count) || 0 }));
+  } catch {
+    return null;
+  }
+}
 
 /** Route family for a path - coarse on purpose, so ids and tokens never become dimensions. */
 export function routeFamily(path: string): string {
@@ -32,13 +125,21 @@ export function routeFamily(path: string): string {
 export const recordRequestMetrics: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const started = Date.now();
   await next();
+  const ms = Date.now() - started;
+  // One structured line per request: Workers Logs (wrangler tail, Logpush)
+  // captures console output, so this is the machine-readable access log.
+  try {
+    console.log(JSON.stringify({ msg: "http.request", family: routeFamily(c.req.path), method: c.req.method, status: c.res.status, ms }));
+  } catch {
+    /* logging never breaks a request */
+  }
   const ds = c.env.METRICS;
   if (!ds) return;
   try {
     ds.writeDataPoint({
       indexes: [routeFamily(c.req.path)],
       blobs: [routeFamily(c.req.path), c.req.method, String(c.res.status)],
-      doubles: [Date.now() - started, c.res.status],
+      doubles: [ms, c.res.status],
     });
   } catch {
     // Metrics never break a request.

@@ -3,7 +3,8 @@ import type { GroupRow, LdapAppRow, UserRow } from "../lib/types.js";
 import { getUserByLoginIdentifier } from "../lib/db.js";
 import { resolveManyGroupMemberUserIds } from "../lib/groups.js";
 import { clearLoginAttempts, loginRateKey, recordLoginAttempt, recordMfaAttempt, clearMfaAttempts, recordRateAttempt } from "../lib/rate-limit.js";
-import { upgradePasswordHashIfNeeded, verifyPassword, hashPassword, type StoredPassword } from "../lib/password.js";
+import { upgradePasswordHashIfNeeded, storedHashFormat, verifyPassword, hashPassword, type StoredPassword } from "../lib/password.js";
+import { timed } from "../lib/metrics.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { mfaRequiredFor, isFactorEnabled } from "../lib/auth-policy.js";
@@ -129,11 +130,17 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   const pw = otp !== null ? passwordStr.slice(0, comma) : passwordStr;
 
   // Unknown or unusable users still pay a verification, against the dummy
-  // hash - timing must not reveal which accounts exist.
+  // hash - timing must not reveal which accounts exist. And like the web
+  // sign-in (login.ts), the cost must not depend on the stored format: a
+  // legacy PBKDF2 row verifies cheaper than scrypt, so every failure is
+  // padded to one verification of each.
   const stored: StoredPassword = usable && user ? { password_hash: user.password_hash, password_salt: user.password_salt, password_iterations: user.password_iterations } : await dummyHash(env);
-  const ok = await verifyPassword(pw, stored);
+  const ok = await timed(env, "auth.verify", verifyPassword(pw, stored));
 
   if (!ok || !usable || !user) {
+    const format = usable && user ? storedHashFormat(stored) : null;
+    if (format !== "scrypt") await verifyPassword(pw, await dummyHash(env, "scrypt"));
+    if (format !== "pbkdf2") await verifyPassword(pw, await dummyHash(env, "pbkdf2"));
     const reason = !user ? "unknown_user" : user.status !== "active" ? "disabled" : user.password_hash.startsWith("!") ? "no_usable_password" : !inGroups ? "not_in_app_groups" : "bad_password";
     return { ok: false, reason };
   }
@@ -181,8 +188,8 @@ export async function inAppGroups(env: Env, user: UserRow, app: LdapAppRow): Pro
 
 /** The dummy verify target (same idea as login.ts's dummyPasswordHash, kept local so both share the pattern). */
 const dummyHashes = new Map<string, Promise<StoredPassword>>();
-async function dummyHash(env: Env): Promise<StoredPassword> {
-  const key = env.PASSWORD_HASHER ?? "scrypt";
+async function dummyHash(env: Env, hasher?: "scrypt" | "pbkdf2"): Promise<StoredPassword> {
+  const key = hasher ?? env.PASSWORD_HASHER ?? "scrypt";
   if (!dummyHashes.has(key)) {
     dummyHashes.set(key, hashPassword(crypto.randomUUID(), { PASSWORD_HASHER: key }).then((h) => ({ password_hash: h.hash, password_salt: h.salt, password_iterations: h.iterations })));
   }

@@ -12,7 +12,7 @@ import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
-import { readPerformance } from "../lib/metrics.js";
+import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts } from "../lib/metrics.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -544,8 +544,41 @@ async function domainSelect(env: Env, name: string, selectedDomain?: string) {
 
 // DASHBOARD_DAYS, dayKey and PERF_RANGES live in services/monitoring.ts, shared with the API.
 
+// Auto-refreshing request strip on /admin/performance: polls the JSON
+// endpoint and redraws DOM bars. A fixed string so the CSP hash covers it -
+// all data arrives via fetch, nothing is interpolated.
+const PERFORMANCE_LIVE_SCRIPT = `(function(){
+  var el=document.getElementById('live-chart'),meta=document.getElementById('live-meta'),sp=document.getElementById('live-spans');
+  if(!el)return;
+  function bars(pts){
+    var max=1,i;for(i=0;i<pts.length;i++)if(pts[i].requests>max)max=pts[i].requests;
+    el.innerHTML=pts.map(function(p){
+      var h=Math.round(p.requests/max*56),e=p.errors?'<div style="height:'+Math.max(1,Math.round(p.errors/max*56))+'px;background:var(--fi-red)"></div>':'';
+      return '<div title="'+String(p.t).slice(11,16)+' - '+p.requests+' req, '+p.errors+' err" style="flex:1;min-width:2px;display:flex;flex-direction:column;justify-content:flex-end">'+(p.requests?'<div style="height:'+Math.max(2,h)+'px;background:var(--fi-accent)"></div>':'')+e+'</div>';
+    }).join('');
+  }
+  function poll(){
+    fetch('/admin/performance/live').then(function(r){return r.ok?r.json():null}).then(function(d){
+      if(!d||!d.ok)return;
+      bars(d.points||[]);
+      if(meta)meta.textContent='Live - updated '+new Date(d.fetchedAt).toLocaleTimeString();
+      if(sp)sp.innerHTML=(d.spans||[]).slice(0,4).map(function(s){return '<code>'+s.name+'</code> '+s.avgMs+'ms';}).join(' &middot; ');
+    }).catch(function(){});
+  }
+  poll();setInterval(poll,10000);
+})();`;
+
+/** Live data for the performance page's auto-refreshing strip (same numbers, JSON). */
+admin.get("/admin/performance/live", async (c) => {
+  const [series, spans, events] = await Promise.all([readPerformanceSeries(c.env, 1, 1), readSpanStats(c.env, 1), readEventCounts(c.env, 30)]);
+  if (!series.configured) return c.json({ configured: false });
+  if (!series.ok) return c.json({ configured: true, ok: false, error: series.error });
+  return c.json({ configured: true, ok: true, fetchedAt: new Date().toISOString(), points: series.points.slice(-30), spans: spans ?? [], events: events ?? [] });
+});
+
 admin.get("/admin/performance", async (c) => {
   const { rangeKey, range, family, series, totals } = await performanceReport(c.env, c.req.query("range"), c.req.query("endpoint"));
+  const [spans, events] = series.configured ? await Promise.all([readSpanStats(c.env, range.hours), readEventCounts(c.env, range.hours * 60)]) : [null, null];
   const tabs = `<div class="range-tabs">${(Object.keys(PERF_RANGES) as (keyof typeof PERF_RANGES)[])
     .map((k) => `<a href="/admin/performance?range=${k}${family ? `&endpoint=${family}` : ""}" class="${k === rangeKey ? "active" : ""}">${PERF_RANGES[k].label}</a>`)
     .join("")}</div>`;
@@ -582,6 +615,25 @@ admin.get("/admin/performance", async (c) => {
         ${cardSection(`<h2>Server errors</h2><p class="muted">Responses with status 500 and above.</p>
           ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { barClass: "err" })}`)}
       </div>
+      ${cardSection(`<div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">Live</h2><span class="muted" id="live-meta">starting…</span></div>
+        <div id="live-chart" style="display:flex;gap:1px;align-items:flex-end;height:64px;"></div>
+        <p class="muted" style="margin:8px 0 0;">Requests per minute, last 30 minutes - refreshes every 10s. <span id="live-spans"></span></p>${scriptTag(PERFORMANCE_LIVE_SCRIPT)}`)}
+      ${
+        spans && spans.length
+          ? cardSection(`<h2>Where the time goes</h2><p class="muted">Instrumented operations inside requests (lib/metrics.ts spans), last ${range.label.toLowerCase()}.</p>
+        <table><thead><tr><th>Operation</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>p95 ms</th></tr></thead><tbody>
+          ${spans.map((s) => `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${s.calls.toLocaleString("en")}</td><td>${s.totalMs.toLocaleString("en")}</td><td>${s.avgMs}</td><td>${s.p95}</td></tr>`).join("")}
+        </tbody></table>`)
+          : ""
+      }
+      ${
+        events && events.length
+          ? cardSection(`<h2>Security events</h2><p class="muted">Audited actions counted as they happen, last ${range.label.toLowerCase()}.</p>
+        <table><thead><tr><th>Action</th><th>Count</th></tr></thead><tbody>
+          ${events.slice(0, 15).map((e) => `<tr><td><code>${escapeHtml(e.name)}</code></td><td>${e.count.toLocaleString("en")}</td></tr>`).join("")}
+        </tbody></table>`)
+          : ""
+      }
       ${cardSection(`<h2>By endpoint</h2>
         <table><thead><tr><th>Endpoint</th><th>Requests</th><th>5xx</th><th>p50 ms</th><th>p95 ms</th></tr></thead><tbody>
           ${totals.families.map((f) => `<tr><td><a href="/admin/performance?range=${rangeKey}&endpoint=${escapeHtml(f.family)}">${escapeHtml(f.family)}</a></td><td>${f.requests.toLocaleString("en")}</td><td>${f.errors}</td><td>${f.p50}</td><td>${f.p95}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No requests recorded in this period.</td></tr>'}
