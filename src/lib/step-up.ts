@@ -57,3 +57,52 @@ function sessionUsedSecurityQuestions(amr: string): boolean {
 export async function markSteppedUp(env: Env, sessionId: string): Promise<void> {
   await env.DB.prepare("UPDATE sessions SET stepped_up_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();
 }
+
+/**
+ * A sensitive POST interrupted for step-up, kept server-side so completing
+ * the re-authentication replays it instead of dropping the admin back on an
+ * emptied form. Bound to the session that submitted it, single-use, and gone
+ * within the step-up window.
+ */
+export interface PendingAction {
+  path: string;
+  fields: [string, string][];
+  /** The page the form was on, for the fallback when the stash has expired. */
+  back: string;
+}
+
+const PENDING_PREFIX = "stepup-pending:";
+const PENDING_MAX_BYTES = 64 * 1024;
+
+/** Stashes a form POST for replay after step-up; null when it can't be replayed (a file upload, an oversized body, a KV failure). */
+export async function stashPendingAction(env: Env, sessionId: string, req: Request, back: string): Promise<string | null> {
+  try {
+    const form = await req.formData();
+    const fields: [string, string][] = [];
+    let bytes = 0;
+    for (const [name, value] of form.entries()) {
+      if (typeof value !== "string") return null;
+      bytes += name.length + value.length;
+      if (bytes > PENDING_MAX_BYTES) return null;
+      fields.push([name, value]);
+    }
+    const id = crypto.randomUUID();
+    await env.SESSIONS_KV.put(PENDING_PREFIX + id, JSON.stringify({ sessionId, path: new URL(req.url).pathname, fields, back }), { expirationTtl: STEP_UP_WINDOW_MINUTES * 60 });
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns and consumes the stash - only for the session that submitted it. */
+export async function takePendingAction(env: Env, sessionId: string, id: string): Promise<PendingAction | null> {
+  let parsed: PendingAction & { sessionId?: string };
+  try {
+    parsed = JSON.parse((await env.SESSIONS_KV.get(PENDING_PREFIX + id)) ?? "") as PendingAction & { sessionId?: string };
+  } catch {
+    return null;
+  }
+  if (!parsed?.sessionId || parsed.sessionId !== sessionId || !parsed.path.startsWith("/admin")) return null;
+  await env.SESSIONS_KV.delete(PENDING_PREFIX + id);
+  return { path: parsed.path, fields: parsed.fields, back: parsed.back.startsWith("/admin") ? parsed.back : "/admin" };
+}

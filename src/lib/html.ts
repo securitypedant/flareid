@@ -76,7 +76,8 @@ const STYLES = `
     }
   }
   input, select, textarea { background-color: var(--fi-surface); color: var(--fi-ink); }
-  .theme-toggle { background: none; border: 1px solid var(--fi-line); border-radius: 6px; color: var(--fi-muted); cursor: pointer; font-size: 0.8125rem; padding: 4px 10px; }
+  .theme-toggle { background: none; border: 1px solid var(--fi-line); border-radius: 6px; color: var(--fi-muted); cursor: pointer; font-size: 0.8125rem; padding: 4px 8px; display: inline-flex; align-items: center; }
+  .theme-toggle svg { width: 14px; height: 14px; }
   .theme-toggle:hover { color: var(--fi-ink); background: var(--fi-line-soft); }
   .brand-version { color: var(--fi-faint); font-weight: 500; margin-left: 4px; }
   .topbar .brand-row { display: flex; align-items: center; gap: 6px; }
@@ -209,8 +210,8 @@ const STYLES = `
   .attr-row input, .attr-row select { margin-bottom: 0; }
   .attr-row label { margin: 0; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .header-meta { font-size: 0.875rem; font-weight: 400; color: var(--fi-muted); margin-left: 10px; }
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; margin-bottom: 18px; }
-  .two-col .card { margin-bottom: 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+  .two-col .card { margin-bottom: 0; height: 100%; }
   @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
 
   .breadcrumbs { font-size: 0.8125rem; color: var(--fi-muted); margin-bottom: 6px; }
@@ -244,6 +245,8 @@ const STYLES = `
   }
   .field-row { display: flex; gap: 12px; }
   .field-row > * { flex: 1; }
+  /* Field pairs stack on small screens rather than squeezing side by side. */
+  @media (max-width: 640px) { .field-row { flex-direction: column; gap: 0; } }
 
   button {
     padding: 8px 15px; border-radius: 8px; border: 1px solid transparent; font-size: 0.875rem;
@@ -302,9 +305,9 @@ const STYLES = `
   /* -------------------------------------------------------------- stats */
   .stat-grid { display: flex; gap: 16px; }
   .stat-card { flex: 1; text-decoration: none; color: inherit; }
-  .stat-card:hover { text-decoration: none; }
+  a.stat-card:hover { text-decoration: none; }
   .stat-card .card { text-align: left; transition: border-color 0.12s, box-shadow 0.12s; }
-  .stat-card:hover .card { border-color: var(--fi-accent); box-shadow: 0 2px 10px rgba(246, 130, 31, 0.14); }
+  a.stat-card:hover .card { border-color: var(--fi-accent); box-shadow: 0 2px 10px rgba(246, 130, 31, 0.14); }
   .stat-card h2 { font-size: 2rem; margin: 0; color: var(--fi-ink); font-weight: 300; letter-spacing: -0.02em; }
   .stat-card p {
     margin: 2px 0 0 0; color: var(--fi-muted); font-size: 0.6875rem;
@@ -473,7 +476,7 @@ const STYLES = `
 
   /* Dashboard charts (server-rendered SVG - no chart library, no fetch). */
   .chart { width: 100%; height: auto; display: block; overflow: visible; }
-  .chart text { font-size: 10px; fill: var(--fi-muted); }
+  .chart text { font-size: 11px; fill: var(--fi-muted); }
   .chart .gridline { stroke: var(--fi-line-soft); stroke-width: 1; }
   .chart .axis { stroke: var(--fi-line); stroke-width: 1; }
   .chart .bar { fill: var(--fi-accent); }
@@ -482,7 +485,7 @@ const STYLES = `
   .chart .line { stroke: var(--fi-accent); stroke-width: 2; fill: none; }
   .chart .dot { fill: var(--fi-accent); }
   .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
-  .chart-legend span { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--fi-muted); }
+  .chart-legend span { display: flex; align-items: center; gap: 6px; font-size: 0.6875rem; color: var(--fi-muted); }
   .chart-swatch { width: 10px; height: 10px; border-radius: 2px; }
 
   /* "Saved" success confirmation banner */
@@ -884,8 +887,8 @@ function niceCeiling(max: number): number {
  * and no client-side data fetching, and a charting library would be a larger
  * dependency than everything else here combined.
  */
-export function barChart(points: ChartPoint[], opts: { height?: number; muteWeekends?: boolean; barClass?: string } = {}): string {
-  const width = 640;
+export function barChart(points: ChartPoint[], opts: { height?: number; width?: number; muteWeekends?: boolean; barClass?: string } = {}): string {
+  const width = opts.width ?? 640;
   const height = opts.height ?? 180;
   const pad = { top: 14, right: 8, bottom: 26, left: 34 };
   const plotW = width - pad.left - pad.right;
@@ -923,15 +926,15 @@ export function barChart(points: ChartPoint[], opts: { height?: number; muteWeek
     )
     .join("");
 
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bar chart">
+  return `<svg class="chart" style="max-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bar chart">
     ${gridlines}${bars}${labels}
     <line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" />
   </svg>`;
 }
 
 /** A server-rendered multi-series line chart (same conventions as barChart). */
-export function lineChart(labels: string[], series: { name: string; className: string; values: number[] }[], opts: { height?: number; unit?: string } = {}): string {
-  const width = 640;
+export function lineChart(labels: string[], series: { name: string; className: string; values: number[] }[], opts: { height?: number; width?: number; unit?: string } = {}): string {
+  const width = opts.width ?? 640;
   const height = opts.height ?? 200;
   const pad = { top: 14, right: 8, bottom: 26, left: 40 };
   const plotW = width - pad.left - pad.right;
@@ -949,7 +952,7 @@ export function lineChart(labels: string[], series: { name: string; className: s
     .join("");
   const step = Math.ceil(labels.length / 8) || 1;
   const xl = labels.map((l, i) => (i % step === 0 ? `<text x="${x(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(l)}</text>` : "")).join("");
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Line chart">${grid}${lines}${xl}<line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
+  return `<svg class="chart" style="max-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="Line chart">${grid}${lines}${xl}<line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
 }
 
 /** Ranked horizontal bars, for "top N" breakdowns. */
@@ -959,7 +962,7 @@ export function rankedBars(points: ChartPoint[]): string {
   return points
     .map(
       (p) => `<div style="margin-bottom:10px;">
-        <div style="display:flex; justify-content:space-between; font-size:0.8125rem; margin-bottom:3px;">
+        <div style="display:flex; justify-content:space-between; font-size:0.6875rem; margin-bottom:3px;">
           <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(p.label)}</span>
           <span class="muted" style="flex-shrink:0; margin-left:12px;">${p.value}</span>
         </div>
@@ -1094,7 +1097,12 @@ const THEME_TOGGLE_SCRIPT = `(function(){
   var b=document.querySelector("[data-theme-toggle]"); if(!b) return;
   var order=["system","dark","light"];
   function cur(){try{return localStorage.getItem("fi-theme")||"system";}catch(e){return "system";}}
-  function label(){b.textContent={system:"Theme: auto",dark:"Theme: dark",light:"Theme: light"}[cur()];}
+  var icons={
+    system:'<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg>',
+    dark:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M13.7 9.6A6 6 0 116.4 2.3a.5.5 0 01.7.6 5 5 0 006 6 .5.5 0 01.6.7z"/></svg>',
+    light:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3" fill="currentColor" stroke="none"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M13 3l-1.1 1.1M4.1 11.9L3 13"/></svg>'
+  };
+  function label(){var k=cur();b.innerHTML=icons[k];b.setAttribute("aria-label","Theme: "+({system:"auto",dark:"dark",light:"light"})[k]);}
   b.addEventListener("click",function(){
     var next=order[(order.indexOf(cur())+1)%order.length];
     try{ if(next==="system") localStorage.removeItem("fi-theme"); else localStorage.setItem("fi-theme",next);}catch(e){}
@@ -1118,7 +1126,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null):
       </a>
     </div>
     <nav>
-      <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme">Theme</button>
+      <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>
       <a href="/account">My account</a>
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
       <form method="POST" action="/logout" style="display:inline"><button class="link-button signout" type="submit">Sign out</button></form>

@@ -22,6 +22,25 @@ observability work.
   (`msg: "http.request"`, family, method, status, ms) to Workers Logs, so
   `wrangler tail` and Logpush see machine-readable traffic.
 
+### Changed
+
+- **Step-up re-authentication resumes the interrupted action.** A sensitive
+  POST that needs a fresh sign-in is stashed server-side; completing the
+  check replays it automatically instead of dropping the admin back on an
+  emptied form. The stash is bound to the session, single-use, and expires
+  inside the step-up window.
+- **Console layout and density.** Card pairs in `two-col` grids now match
+  heights; chart and ranked-bar labels render at the stat-label size
+  everywhere (charts take a width matching their card so the SVG no longer
+  upscales its text); the theme toggle shows icons instead of "Theme: x"
+  text; `/admin/users` shows the filtered count in its heading; and more
+  forms lay related fields out in pairs (`field-row`, which now stacks on
+  small screens) - the SAML default-ACS/NameID pair, setup wizard, password
+  policy checkboxes, Turnstile keys and the LDAP app name/slug.
+- **Dashboard "IdP performance" card** also shows the busiest endpoint and
+  the slowest endpoint p95, and non-link stat cards no longer get the
+  hover highlight that implied they were clickable.
+
 ### Fixed
 
 - **Directory writes no longer wait on the SCIM remote.** Creating, editing,

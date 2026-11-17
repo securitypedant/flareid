@@ -140,15 +140,28 @@ describe("step-up re-authentication", () => {
     const mint = () => SELF.fetch(`${BASE}/admin/api-keys`, { method: "POST", headers: { ...FORM, Cookie: cookie, Referer: `${BASE}/admin/integrations/api-keys` }, body: new URLSearchParams({ name: "k", perm_users: "read" }).toString(), redirect: "manual" });
     const blocked = await mint();
     expect(blocked.status).toBe(303);
-    expect(blocked.headers.get("Location")).toBe(`/admin/reauth?next=${encodeURIComponent("/admin/integrations/api-keys")}`);
+    const loc = blocked.headers.get("Location")!;
+    expect(loc).toMatch(/^\/admin\/reauth\?next=/);
+    // The interrupted POST is stashed: success goes to a resume URL, cancel to the form's page.
+    const dest = new URL(`${BASE}${loc}`);
+    const next = dest.searchParams.get("next")!;
+    expect(next).toMatch(/^\/admin\/reauth\/resume\?id=/);
+    expect(dest.searchParams.get("back")).toBe("/admin/integrations/api-keys");
     expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).toBeNull();
     // Non-sensitive actions are not interrupted.
     expect((await get("/admin/users", cookie)).status).toBe(200);
 
-    const wrong = await post("/admin/reauth", cookie, { password: "nope", next: "/admin/integrations/api-keys" });
+    const wrong = await post("/admin/reauth", cookie, { password: "nope", next });
     expect(wrong.headers.get("Location")).toContain("error=");
-    const ok = await post("/admin/reauth", cookie, { password: "test-admin-password-1", next: "/admin/integrations/api-keys" });
-    expect(ok.headers.get("Location")).toBe("/admin/integrations/api-keys");
+    const ok = await post("/admin/reauth", cookie, { password: "test-admin-password-1", next });
+    expect(ok.headers.get("Location")).toBe(next);
+    // The resume page replays the stashed POST as an auto-submitting form - once.
+    const resume = await (await get(next, cookie)).text();
+    expect(resume).toContain('action="/admin/api-keys"');
+    expect(resume).toContain('name="name" value="k"');
+    expect(resume).toContain('name="perm_users" value="read"');
+    expect((await get(next, cookie)).status).not.toBe(200);
+    // What the form replays is just a normal POST: the session is fresh now.
     expect((await mint()).status).not.toBe(303);
     expect(await env.DB.prepare("SELECT 1 FROM api_keys WHERE name = 'k'").first()).not.toBeNull();
   });

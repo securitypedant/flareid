@@ -4,7 +4,7 @@ import { verifyPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { userHasPasskey } from "../lib/auth-policy.js";
-import { isFreshlyAuthenticated, isSensitive, markSteppedUp, STEP_UP_WINDOW_MINUTES } from "../lib/step-up.js";
+import { isFreshlyAuthenticated, isSensitive, markSteppedUp, stashPendingAction, STEP_UP_WINDOW_MINUTES, takePendingAction } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
@@ -178,10 +178,13 @@ admin.use("/admin/*", async (c, next) => {
 /** Sensitive actions need a recent sign-in or re-authentication (step-up.ts). */
 admin.use("/admin/*", async (c, next) => {
   if (!isSensitive(c.req.method, c.req.path) || (await isFreshlyAuthenticated(c.env, c.get("sessionId"), { superAdmin: Boolean(c.get("isSuperAdmin")) }))) return next();
-  // Back to the page the form was on, which the user resubmits after confirming.
+  // Back to the page the form was on - and keep the POST itself stashed, so a
+  // successful step-up replays it instead of making the admin retype the form.
   const ref = c.req.header("Referer");
   const back = ref && new URL(ref).origin === new URL(c.req.url).origin ? new URL(ref).pathname + new URL(ref).search : "/admin";
-  return c.redirect(`/admin/reauth?next=${encodeURIComponent(back)}`, 303);
+  const pending = await stashPendingAction(c.env, c.get("sessionId"), c.req.raw, back);
+  const dest = pending ? `/admin/reauth/resume?id=${pending}&to=${encodeURIComponent(back)}` : back;
+  return c.redirect(`/admin/reauth?next=${encodeURIComponent(dest)}&back=${encodeURIComponent(back)}`, 303);
 });
 
 function safeNext(next: string | undefined): string {
@@ -191,6 +194,7 @@ function safeNext(next: string | undefined): string {
 admin.get("/admin/reauth", async (c) => {
   const user = c.get("user");
   const next = safeNext(c.req.query("next"));
+  const back = safeNext(c.req.query("back") ?? next);
   const hasPasskey = await userHasPasskey(c.env, user.id);
   const emailStep = await reauthNeedsEmailCode(c.env, user);
   const sentTo = c.req.query("sent");
@@ -200,7 +204,7 @@ admin.get("/admin/reauth", async (c) => {
       "Confirm it's you",
       cardSection(`
         ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
-        <p class="muted" style="margin-top:0;">This action changes credentials or security settings, so it needs you to have signed in within the last ${STEP_UP_WINDOW_MINUTES} minutes. Confirm, then repeat what you were doing.</p>
+        <p class="muted" style="margin-top:0;">This action changes credentials or security settings, so it needs you to have signed in within the last ${STEP_UP_WINDOW_MINUTES} minutes. Confirm, and what you were doing carries on.</p>
         <form method="POST" action="/admin/reauth">
           <input type="hidden" name="next" value="${escapeHtml(next)}" />
           <label for="password">Password</label>
@@ -213,7 +217,7 @@ admin.get("/admin/reauth", async (c) => {
                  <p class="muted" style="margin-top:-6px;">${sentTo ? `Sent to ${escapeHtml(sentTo)}. It works for ${EMAIL_OTP_MINUTES} minutes.` : "Send yourself a code first."}</p>`
               : ""
           }
-          <div class="form-actions"><button class="primary" type="submit">Confirm</button>${emailStep ? `<button class="secondary" type="submit" formaction="/admin/reauth/email/send" formnovalidate>${sentTo ? "Send another code" : "Email me a code"}</button>` : ""}${cancelLink(next)}</div>
+          <div class="form-actions"><button class="primary" type="submit">Confirm</button>${emailStep ? `<button class="secondary" type="submit" formaction="/admin/reauth/email/send" formnovalidate>${sentTo ? "Send another code" : "Email me a code"}</button>` : ""}${cancelLink(back)}</div>
         </form>
         ${
           hasPasskey
@@ -225,6 +229,30 @@ admin.get("/admin/reauth", async (c) => {
         }
       `),
       [{ label: "Admin", href: "/admin" }, { label: "Confirm it's you" }]
+    )
+  );
+});
+
+// Replays a POST stashed for step-up: the fields go back out as an
+// auto-submitting form against the original URL, which this time passes the
+// freshness check. One-shot - the stash is consumed on read.
+const RESUME_ACTION_SCRIPT = `(function(){var f=document.getElementById("resume-action");if(f)f.submit();})();`;
+
+admin.get("/admin/reauth/resume", async (c) => {
+  const back = safeNext(c.req.query("to"));
+  const pending = await takePendingAction(c.env, c.get("sessionId"), String(c.req.query("id") ?? ""));
+  if (!pending) return c.redirect(back, 303);
+  return c.html(
+    layout(
+      c,
+      "Continuing",
+      cardSection(`
+        <p class="muted">Confirmed - finishing what you were doing.</p>
+        <form id="resume-action" method="POST" action="${escapeHtml(pending.path)}">
+          ${pending.fields.map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`).join("")}
+          <noscript><div class="form-actions"><button class="primary" type="submit">Continue</button></div></noscript>
+        </form>${scriptTag(RESUME_ACTION_SCRIPT)}`),
+      [{ label: "Admin", href: "/admin" }, { label: "Continuing" }]
     )
   );
 });
@@ -607,13 +635,13 @@ admin.get("/admin/performance", async (c) => {
         <div class="stat-card"><div class="card"><h2>${worstP95} ms</h2><p>Worst p95 in a bucket</p></div></div>
       </div>
       ${cardSection(`<div class="row between" style="margin-bottom:12px;"><h2 style="margin:0;">Requests</h2><span class="muted">per ${range.bucket >= 60 ? `${range.bucket / 60} h` : `${range.bucket} min`}</span></div>
-        ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.requests })))}`)}
+        ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.requests })), { width: 1000 })}`)}
       <div class="two-col">
         ${cardSection(`<h2>Latency</h2><p class="muted">Worker time per request, ms.</p>
-          ${lineChart(labels, [{ name: "p50", className: "s-p50", values: series.points.map((p) => p.p50) }, { name: "p95", className: "s-p95", values: series.points.map((p) => p.p95) }], { unit: "" })}
+          ${lineChart(labels, [{ name: "p50", className: "s-p50", values: series.points.map((p) => p.p50) }, { name: "p95", className: "s-p95", values: series.points.map((p) => p.p95) }], { width: 560, unit: "" })}
           <div class="chart-legend"><span><span class="chart-swatch" style="background:var(--fi-accent);"></span>p50</span><span><span class="chart-swatch" style="background:var(--fi-faint);"></span>p95</span></div>`)}
         ${cardSection(`<h2>Server errors</h2><p class="muted">Responses with status 500 and above.</p>
-          ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { barClass: "err" })}`)}
+          ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { width: 560, barClass: "err" })}`)}
       </div>
       ${cardSection(`<div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">Live</h2><span class="muted" id="live-meta">starting…</span></div>
         <div id="live-chart" style="display:flex;gap:1px;align-items:flex-end;height:64px;"></div>
@@ -716,7 +744,20 @@ admin.get("/admin", async (c) => {
         `)}
         ${cardSection(`
           <div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">IdP performance</h2><a href="/admin/performance">Open the performance dashboard &rarr;</a></div>
-          ${perf.configured && perf.ok ? attrGrid([attr("Requests (24h)", perf.total.toLocaleString("en")), attr("Server errors (5xx)", perf.errors)]) : '<p class="muted">Request volume, errors and latency for every endpoint, with graphs.</p>'}
+          ${
+            perf.configured && perf.ok
+              ? (() => {
+                  const busiest = perf.families.reduce<{ family: string; requests: number } | null>((w, f) => (w === null || f.requests > w.requests ? f : w), null);
+                  const slowest = perf.families.reduce<{ family: string; p95: number } | null>((w, f) => (w === null || f.p95 > w.p95 ? f : w), null);
+                  return attrGrid([
+                    attr("Requests (24h)", perf.total.toLocaleString("en")),
+                    attr("Server errors (5xx)", perf.errors),
+                    ...(busiest ? [attr("Busiest endpoint", `${busiest.family} · ${busiest.requests.toLocaleString("en")}`)] : []),
+                    ...(slowest ? [attr("Slowest endpoint (p95)", `${slowest.family} · ${slowest.p95} ms`)] : []),
+                  ]);
+                })()
+              : '<p class="muted">Request volume, errors and latency for every endpoint, with graphs.</p>'
+          }
         `)}
       </div>
 
@@ -728,7 +769,7 @@ admin.get("/admin", async (c) => {
         ${
           successTotal + failedTotal === 0
             ? '<p class="muted">No sign-in activity recorded yet. This fills in as people use the directory.</p>'
-            : barChart(successSeries)
+            : barChart(successSeries, { width: 1000 })
         }
         <div class="chart-legend">
           <span><span class="chart-swatch" style="background:var(--fi-accent);"></span>${successTotal} successful</span>
@@ -803,10 +844,16 @@ admin.get("/admin/setup", async (c) => {
           "Every user except your own admin account is permanently deleted, along with every group except Super Admins and All Employees.",
           { title: "Remove the sample directory?", action: "Remove and finish", danger: true, when: 'input[name=sample_data][value=remove]' }
         )}>
-          <label for="domain">Primary domain for user accounts</label>
-          <input type="text" id="domain" name="domain" value="${escapeHtml(domains[0]?.domain ?? "")}" required />
-          <label for="default_password">Default password for new/seeded accounts</label>
-          <input type="text" id="default_password" name="default_password" value="${escapeHtml(defaultPassword)}" required />
+          <div class="field-row">
+            <div>
+              <label for="domain">Primary domain for user accounts</label>
+              <input type="text" id="domain" name="domain" value="${escapeHtml(domains[0]?.domain ?? "")}" required />
+            </div>
+            <div>
+              <label for="default_password">Default password for new/seeded accounts</label>
+              <input type="text" id="default_password" name="default_password" value="${escapeHtml(defaultPassword)}" required />
+            </div>
+          </div>
 
           <label>Sample data</label>
           <label style="font-weight:400;"><input type="radio" name="sample_data" value="keep" checked style="width:auto; display:inline; margin-right:6px;" /> Keep the ${sampleUserCount?.n ?? 0} sample users and ${sampleGroupCount?.n ?? 0} sample groups</label>
@@ -959,7 +1006,7 @@ admin.get("/admin/users", async (c) => {
   return c.html(
     layout(
       c,
-      "Users",
+      `Users (${total.toLocaleString("en")})`,
       `
             ${cardSection(`
         <form method="GET">
@@ -3047,14 +3094,20 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
       </div>
       <label for="acs_urls">Assertion Consumer Service URLs (one per line)</label>
       <textarea id="acs_urls" name="acs_urls" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback">${escapeHtml((v.acsUrls ?? []).join("\n"))}</textarea>
-      <label for="default_acs_url">Default ACS URL (used when the request omits one)</label>
-      <input type="text" id="default_acs_url" name="default_acs_url" value="${escapeHtml(v.defaultAcsUrl ?? "")}" />
-      <label for="nameid_format">NameID format</label>
-      <select id="nameid_format" name="nameid_format">
-        ${supportedNameIdFormats()
-          .map((f) => `<option value="${f}" ${(v.nameidFormat ?? "transient") === f ? "selected" : ""}>${f}</option>`)
-          .join("")}
-      </select>
+      <div class="field-row">
+        <div>
+          <label for="default_acs_url">Default ACS URL (used when the request omits one)</label>
+          <input type="text" id="default_acs_url" name="default_acs_url" value="${escapeHtml(v.defaultAcsUrl ?? "")}" />
+        </div>
+        <div>
+          <label for="nameid_format">NameID format</label>
+          <select id="nameid_format" name="nameid_format">
+            ${supportedNameIdFormats()
+              .map((f) => `<option value="${f}" ${(v.nameidFormat ?? "transient") === f ? "selected" : ""}>${f}</option>`)
+              .join("")}
+          </select>
+        </div>
+      </div>
       <label for="attribute_map">Attribute map (JSON - leave empty for the default email/name/groups map)</label>
       <textarea id="attribute_map" name="attribute_map" rows="4" placeholder='{"email": "email", "department": "department"}'>${escapeHtml(Object.keys(v.attributeMap ?? {}).length ? JSON.stringify(v.attributeMap, null, 2) : "")}</textarea>
       <p class="muted" style="margin:-8px 0 14px;">Field names: <code>${USER_ATTRIBUTE_FIELDS.join("</code>, <code>")}</code></p>
@@ -3063,7 +3116,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
       <label style="font-weight:400;"><input type="checkbox" name="sign_response" value="1" ${v.signResponse !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Response</label>
       <label style="font-weight:400;"><input type="checkbox" name="sign_assertion" value="1" ${v.signAssertion !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Assertion</label>
       <label style="font-weight:400;"><input type="checkbox" name="want_authn_requests_signed" value="1" ${v.wantSigned ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require signed AuthnRequests from this SP</label>
-      <label for="slo_url" style="margin-top:12px;">Single Logout URL (HTTP-Redirect; leave empty to turn SLO off)</label>
+      <label for="slo_url">Single Logout URL (HTTP-Redirect; leave empty to turn SLO off)</label>
       <input type="text" id="slo_url" name="slo_url" value="${escapeHtml(v.sloUrl ?? "")}" placeholder="https://sp.example.com/saml/slo" />
       <p class="muted" style="margin:-8px 0 14px;">LogoutRequests must be signed with one of the signing certificates above.</p>
       <label for="encryption_cert">SP encryption certificate (PEM)</label>
@@ -3630,10 +3683,12 @@ admin.get("/admin/security", async (c) => {
         <form method="POST" action="/admin/security/password-policy">
           <label for="minLength">Minimum length</label>
           <input type="number" id="minLength" name="minLength" min="4" max="64" value="${policy.minLength}" style="max-width:120px;" />
-          <label><input type="checkbox" name="requireUppercase" value="1" ${policy.requireUppercase ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require uppercase letter</label>
-          <label><input type="checkbox" name="requireLowercase" value="1" ${policy.requireLowercase ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require lowercase letter</label>
-          <label><input type="checkbox" name="requireNumber" value="1" ${policy.requireNumber ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require number</label>
-          <label><input type="checkbox" name="requireSymbol" value="1" ${policy.requireSymbol ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require symbol</label>
+          <div class="field-row" style="margin-top:4px;">
+            <div><label><input type="checkbox" name="requireUppercase" value="1" ${policy.requireUppercase ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require uppercase letter</label></div>
+            <div><label><input type="checkbox" name="requireLowercase" value="1" ${policy.requireLowercase ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require lowercase letter</label></div>
+            <div><label><input type="checkbox" name="requireNumber" value="1" ${policy.requireNumber ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require number</label></div>
+            <div><label><input type="checkbox" name="requireSymbol" value="1" ${policy.requireSymbol ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require symbol</label></div>
+          </div>
           <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save policy</button></div>
         </form>
       `)}
@@ -3654,15 +3709,21 @@ admin.get("/admin/security", async (c) => {
         <form method="POST" action="/admin/security/turnstile">
           <label><input type="radio" name="mode" value="off" ${turnstile.mode === "off" ? "checked" : ""} ${radio} /> Off</label>
           <label><input type="radio" name="mode" value="on" ${turnstile.mode === "on" ? "checked" : ""} ${radio} /> On for sign-in and password recovery</label>
-          <label for="turnstile_site_key">Site key</label>
-          <input type="text" id="turnstile_site_key" name="site_key" value="${escapeHtml(turnstile.siteKey)}" autocomplete="off" />
-          <label for="turnstile_secret">Secret key</label>
-          ${
-            turnstile.secretFromEnv
-              ? `<p class="muted" style="margin-top:0;">Set by the <code>TURNSTILE_SECRET_KEY</code> Worker secret, which is used instead of a saved one.</p>`
-              : `<input type="password" id="turnstile_secret" name="secret" value="" autocomplete="new-password" placeholder="${turnstile.secret ? "Saved - leave blank to keep it" : "From the Cloudflare dashboard"}" />
-          <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>`
-          }
+          <div class="field-row">
+            <div>
+              <label for="turnstile_site_key">Site key</label>
+              <input type="text" id="turnstile_site_key" name="site_key" value="${escapeHtml(turnstile.siteKey)}" autocomplete="off" />
+            </div>
+            <div>
+              <label for="turnstile_secret">Secret key</label>
+              ${
+                turnstile.secretFromEnv
+                  ? `<p class="muted" style="margin-top:0;">Set by the <code>TURNSTILE_SECRET_KEY</code> Worker secret, which is used instead of a saved one.</p>`
+                  : `<input type="password" id="turnstile_secret" name="secret" value="" autocomplete="new-password" placeholder="${turnstile.secret ? "Saved - leave blank to keep it" : "From the Cloudflare dashboard"}" />
+              <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>`
+              }
+            </div>
+          </div>
           <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
@@ -5191,11 +5252,22 @@ admin.post("/admin/integrations/ldap/settings", async (c) => {
 
 function ldapAppForm(v: { name?: string; slug?: string; userGroups?: Set<number>; exposedGroups?: Set<number>; mfaMode?: string; includeDisabled?: boolean }, groups: { id: number; label: string }[], action: string, submitLabel: string, edit = false): string {
   return `<form method="POST" action="${escapeHtml(action)}">
-    <label for="ldap_app_name">Name</label>
-    <input type="text" id="ldap_app_name" name="name" value="${escapeHtml(v.name ?? "")}" placeholder="Grafana" required />
-    ${edit ? "" : `<label for="ldap_app_slug">Slug</label>
-    <input type="text" id="ldap_app_slug" name="slug" value="${escapeHtml(v.slug ?? "")}" placeholder="grafana" pattern="[a-z0-9][a-z0-9-]{0,63}" required />
-    <p class="muted" style="margin:-8px 0 14px;">Lowercase letters, digits and dashes. Becomes <code>ou=&lt;slug&gt;</code> in the tree and <code>cn=&lt;slug&gt;</code> in the service bind DN. Cannot be changed later.</p>`}
+    ${
+      edit
+        ? `<label for="ldap_app_name">Name</label>
+    <input type="text" id="ldap_app_name" name="name" value="${escapeHtml(v.name ?? "")}" placeholder="Grafana" required />`
+        : `<div class="field-row">
+      <div>
+        <label for="ldap_app_name">Name</label>
+        <input type="text" id="ldap_app_name" name="name" value="${escapeHtml(v.name ?? "")}" placeholder="Grafana" required />
+      </div>
+      <div>
+        <label for="ldap_app_slug">Slug</label>
+        <input type="text" id="ldap_app_slug" name="slug" value="${escapeHtml(v.slug ?? "")}" placeholder="grafana" pattern="[a-z0-9][a-z0-9-]{0,63}" required />
+        <p class="muted" style="margin:-8px 0 14px;">Lowercase, digits and dashes. Becomes <code>ou=&lt;slug&gt;</code> in the tree and the service bind DN. Cannot be changed.</p>
+      </div>
+    </div>`
+    }
     <label>Bindable users</label>
     ${multiSelect("user_group_ids", groups, v.userGroups ?? new Set(), "All users - pick groups to restrict")}
     <p class="muted" style="margin:-8px 0 14px;">Members of these groups may bind and are visible. Leave empty for everyone.</p>

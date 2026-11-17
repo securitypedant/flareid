@@ -91,7 +91,12 @@ describe("Security > Signing keys (console)", () => {
     const stale = await adminCookie({ stale: true });
     const blocked = await post("/admin/security/signing-keys/RS256/rotate", stale, {}, { Referer: `${BASE}/admin/security/signing-keys` });
     expect(blocked.status).toBe(303);
-    expect(blocked.headers.get("Location")).toBe(`/admin/reauth?next=${encodeURIComponent("/admin/security/signing-keys")}`);
+    const loc = blocked.headers.get("Location")!;
+    expect(loc).toMatch(/^\/admin\/reauth\?next=/);
+    // The rotate POST is stashed behind a resume URL; the cancel target is the page.
+    const dest = new URL(`${BASE}${loc}`);
+    expect(dest.searchParams.get("next")).toMatch(/^\/admin\/reauth\/resume\?id=/);
+    expect(dest.searchParams.get("back")).toBe("/admin/security/signing-keys");
     expect(await activeKid("RS256")).toBe(before);
 
     const fresh = await adminCookie();
