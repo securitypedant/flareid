@@ -53,6 +53,10 @@
       "description": "Outbound SCIM provisioning (FlareID as a SCIM client)."
     },
     {
+      "name": "LDAP",
+      "description": "The read-only LDAP interface: app registrations and directory settings."
+    },
+    {
       "name": "Email",
       "description": "Outbound email settings and templates."
     },
@@ -1510,6 +1514,125 @@
           "target",
           "ip",
           "user_agent"
+        ]
+      },
+      "LdapApp": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "secret_prefix": {
+            "type": "string"
+          },
+          "user_groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "exposed_groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "mfa_mode": {
+            "type": "string",
+            "enum": [
+              "password",
+              "otp_if_enrolled",
+              "otp_required"
+            ]
+          },
+          "include_disabled": {
+            "type": "boolean"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "secret_prefix",
+          "user_groups",
+          "exposed_groups",
+          "mfa_mode",
+          "include_disabled",
+          "revoked",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "LdapSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "base_dn": {
+            "type": "string"
+          },
+          "netbios_name": {
+            "type": "string"
+          },
+          "unscoped_bind_app": {
+            "type": "string"
+          },
+          "posix_uid_base": {
+            "type": "number"
+          },
+          "posix_gid_base": {
+            "type": "number"
+          },
+          "posix_default_gid": {
+            "type": "number"
+          },
+          "posix_shell": {
+            "type": "string"
+          },
+          "posix_home": {
+            "type": "string"
+          },
+          "idle_timeout_minutes": {
+            "type": "number"
+          },
+          "otp_rebind_seconds": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "enabled",
+          "hostname",
+          "base_dn",
+          "netbios_name",
+          "unscoped_bind_app",
+          "posix_uid_base",
+          "posix_gid_base",
+          "posix_default_gid",
+          "posix_shell",
+          "posix_home",
+          "idle_timeout_minutes",
+          "otp_rebind_seconds"
         ]
       },
       "ImportResult": {
@@ -9087,7 +9210,7 @@
           "Monitoring"
         ],
         "summary": "Read the audit log",
-        "description": "Newest first, with the console's filters. actor: people, api, system; category: login, user, group, directory, api, api_key, oidc, oauth, saml, scim, settings, domain, schema, idp; from/to are whole UTC days (YYYY-MM-DD, inclusive).",
+        "description": "Newest first, with the console's filters. actor: people, api, system; category: login, user, group, directory, api, api_key, oidc, oauth, saml, scim, ldap, settings, domain, schema, idp; from/to are whole UTC days (YYYY-MM-DD, inclusive).",
         "security": [
           {
             "bearer": []
@@ -9186,6 +9309,537 @@
                     "offset",
                     "entries"
                   ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ldap/apps": {
+      "get": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "List LDAP apps",
+        "description": "Secrets are never returned - only the prefix for identification.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "directory:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LdapApp"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Create or update an LDAP app (upsert by slug)",
+        "description": "Idempotent: the same body re-applied updates the app. The `secret` field appears only on create; rotate to get a new one.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "clients:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Lowercase letters, digits and dashes; also the DN branch: ou=<slug>,<base>."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "user_groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Group names whose members may bind; omit/empty = all users."
+                  },
+                  "exposed_groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Group names visible to this app; omit/empty = all groups."
+                  },
+                  "mfa_mode": {
+                    "type": "string",
+                    "enum": [
+                      "password",
+                      "otp_if_enrolled",
+                      "otp_required"
+                    ],
+                    "description": "password | otp_if_enrolled (default) | otp_required"
+                  },
+                  "include_disabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "slug",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/LdapApp"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "secret": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "secret"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ldap/apps/{slug}/rotate": {
+      "post": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Rotate an app's bind secret",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "clients:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "slug",
+                    "secret"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ldap/apps/{slug}": {
+      "delete": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Revoke an LDAP app",
+        "description": "Sets revoked_at; binds and searches fail immediately. Idempotent.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "clients:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ldap/settings": {
+      "get": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Read the LDAP settings",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "directory:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Update the LDAP settings",
+        "description": "Only the fields sent change. `enabled: true` also generates the domain SID and GUID namespace on first use.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "settings:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "hostname": {
+                    "type": "string",
+                    "maxLength": 253
+                  },
+                  "base_dn": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "'' = derive dc=… from the default domain."
+                  },
+                  "netbios_name": {
+                    "type": "string",
+                    "maxLength": 15,
+                    "description": "'' = uppercased first label of the default domain."
+                  },
+                  "unscoped_bind_app": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Slug that unattributed user binds land on; '' = deny them."
+                  },
+                  "posix_uid_base": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "posix_gid_base": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "posix_default_gid": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "posix_shell": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "posix_home": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Template; {username} is substituted."
+                  },
+                  "idle_timeout_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1440
+                  },
+                  "otp_rebind_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapSettings"
                 }
               }
             }

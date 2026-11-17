@@ -590,6 +590,33 @@ RFC 7644 and is all-or-nothing. Super Admins (the users and their group
 memberships) need an `admin`-scoped key. Every inbound change is passed on to
 the outbound SCIM target when one is configured.
 
+### `GET /ldap/apps`, `POST /ldap/apps`, `POST /ldap/apps/{slug}/rotate`, `DELETE /ldap/apps/{slug}`
+
+Scopes: `directory:read` for `GET`, `clients:write` for the rest.
+
+The LDAP interface's app registrations (LDAP.md). `POST` upserts by `slug`;
+the `secret` field appears only when the app is created - rotate to mint a
+new one. Group references are by name (`user_groups`, `exposed_groups`); an
+unknown name is a `400`. `DELETE` sets `revoked_at` rather than deleting, so
+binds and searches stop immediately while the policy stays for reference.
+
+```json
+{
+  "slug": "grafana",
+  "name": "Grafana",
+  "user_groups": ["IT Ops"],
+  "mfa_mode": "otp_if_enrolled"
+}
+```
+
+### `GET /ldap/settings`, `POST /ldap/settings`
+
+Scopes: `directory:read` / `settings:write`. Only the fields sent change;
+`enabled: true` also generates the domain SID and GUID namespace on first
+use. `unscoped_bind_app` chooses which app's policy applies to user binds
+whose DN names no app (`alice@example.com`, `NETBIOS\alice`, bare usernames)
+- empty denies them.
+
 ### `POST /api-keys`
 
 Scope: `admin`.

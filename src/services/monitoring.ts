@@ -31,6 +31,7 @@ export const LOG_CATEGORIES: Record<string, { label: string; like: string }> = {
   oauth: { label: "OAuth tokens", like: "oauth.%" },
   saml: { label: "SAML", like: "saml%" },
   scim: { label: "SCIM", like: "scim.%" },
+  ldap: { label: "LDAP", like: "ldap.%" },
   settings: { label: "Settings", like: "settings.%" },
   domain: { label: "Domains", like: "domain.%" },
   schema: { label: "Schemas", like: "schema.%" },

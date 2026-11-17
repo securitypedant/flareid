@@ -82,6 +82,7 @@ export const TAGS = [
   { name: "OIDC clients", description: "OpenID Connect relying parties." },
   { name: "SAML", description: "SAML service providers." },
   { name: "SCIM", description: "Outbound SCIM provisioning (FlareID as a SCIM client)." },
+  { name: "LDAP", description: "The read-only LDAP interface: app registrations and directory settings." },
   { name: "Email", description: "Outbound email settings and templates." },
   { name: "API keys", description: "Bearer tokens for this API." },
   { name: "Branding", description: "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates." },

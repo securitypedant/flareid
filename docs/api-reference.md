@@ -17,6 +17,7 @@ API version 3.9.3.
 - [OIDC clients](#oidc-clients) - OpenID Connect relying parties.
 - [SAML](#saml) - SAML service providers.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
+- [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
 - [Email](#email) - Outbound email settings and templates.
 - [API keys](#api-keys) - Bearer tokens for this API.
 - [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
@@ -1451,6 +1452,172 @@ Response `200`:
 |---|---|---|---|
 | `ok` | boolean | yes |  |
 | `complete` | boolean | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+## LDAP
+
+The read-only LDAP interface: app registrations and directory settings.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/ldap/apps` | `directory:read` | List LDAP apps |
+| `POST` | `/api/v1/ldap/apps` | `clients:write` | Create or update an LDAP app (upsert by slug) |
+| `POST` | `/api/v1/ldap/apps/{slug}/rotate` | `clients:write` | Rotate an app's bind secret |
+| `DELETE` | `/api/v1/ldap/apps/{slug}` | `clients:write` | Revoke an LDAP app |
+| `GET` | `/api/v1/ldap/settings` | `directory:read` | Read the LDAP settings |
+| `POST` | `/api/v1/ldap/settings` | `settings:write` | Update the LDAP settings |
+
+### `GET /api/v1/ldap/apps`
+
+List LDAP apps.
+
+Secrets are never returned - only the prefix for identification.
+
+Permission: `directory:read`
+
+Response `200`:
+
+`LdapApp[]`
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ldap/apps`
+
+Create or update an LDAP app (upsert by slug).
+
+Idempotent: the same body re-applied updates the app. The `secret` field appears only on create; rotate to get a new one.
+
+Permission: `clients:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `slug` | string | yes | Lowercase letters, digits and dashes; also the DN branch: ou=<slug>,<base>. |
+| `name` | string | yes |  |
+| `user_groups` | string[] | no | Group names whose members may bind; omit/empty = all users. |
+| `exposed_groups` | string[] | no | Group names visible to this app; omit/empty = all groups. |
+| `mfa_mode` | "password" \| "otp_if_enrolled" \| "otp_required" | no | password \| otp_if_enrolled (default) \| otp_required |
+| `include_disabled` | boolean | no |  |
+
+Response `200`:
+
+`any`
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ldap/apps/{slug}/rotate`
+
+Rotate an app's bind secret.
+
+Permission: `clients:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `slug` | string | yes |  |
+| `secret` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/ldap/apps/{slug}`
+
+Revoke an LDAP app.
+
+Sets revoked_at; binds and searches fail immediately. Idempotent.
+
+Permission: `clients:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `GET /api/v1/ldap/settings`
+
+Read the LDAP settings.
+
+Permission: `directory:read`
+
+Response `200`:
+
+`LdapSettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+| `hostname` | string | yes |  |
+| `base_dn` | string | yes |  |
+| `netbios_name` | string | yes |  |
+| `unscoped_bind_app` | string | yes |  |
+| `posix_uid_base` | number | yes |  |
+| `posix_gid_base` | number | yes |  |
+| `posix_default_gid` | number | yes |  |
+| `posix_shell` | string | yes |  |
+| `posix_home` | string | yes |  |
+| `idle_timeout_minutes` | number | yes |  |
+| `otp_rebind_seconds` | number | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ldap/settings`
+
+Update the LDAP settings.
+
+Only the fields sent change. `enabled: true` also generates the domain SID and GUID namespace on first use.
+
+Permission: `settings:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | no |  |
+| `hostname` | string | no |  |
+| `base_dn` | string | no | '' = derive dc=… from the default domain. |
+| `netbios_name` | string | no | '' = uppercased first label of the default domain. |
+| `unscoped_bind_app` | string | no | Slug that unattributed user binds land on; '' = deny them. |
+| `posix_uid_base` | integer | no |  |
+| `posix_gid_base` | integer | no |  |
+| `posix_default_gid` | integer | no |  |
+| `posix_shell` | string | no |  |
+| `posix_home` | string | no | Template; {username} is substituted. |
+| `idle_timeout_minutes` | integer | no |  |
+| `otp_rebind_seconds` | integer | no |  |
+
+Response `200`:
+
+`LdapSettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+| `hostname` | string | yes |  |
+| `base_dn` | string | yes |  |
+| `netbios_name` | string | yes |  |
+| `unscoped_bind_app` | string | yes |  |
+| `posix_uid_base` | number | yes |  |
+| `posix_gid_base` | number | yes |  |
+| `posix_default_gid` | number | yes |  |
+| `posix_shell` | string | yes |  |
+| `posix_home` | string | yes |  |
+| `idle_timeout_minutes` | number | yes |  |
+| `otp_rebind_seconds` | number | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -2916,7 +3083,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Read the audit log.
 
-Newest first, with the console's filters. actor: people, api, system; category: login, user, group, directory, api, api_key, oidc, oauth, saml, scim, settings, domain, schema, idp; from/to are whole UTC days (YYYY-MM-DD, inclusive).
+Newest first, with the console's filters. actor: people, api, system; category: login, user, group, directory, api, api_key, oidc, oauth, saml, scim, ldap, settings, domain, schema, idp; from/to are whole UTC days (YYYY-MM-DD, inclusive).
 
 Permission: `audit:read`
 

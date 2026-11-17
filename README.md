@@ -47,6 +47,11 @@ happens to run on Cloudflare's platform.
   to all groups or a chosen set; deletions are queued and retried.
 - **SCIM 2.0 server** at `/scim/v2`: an HR system or upstream directory can
   provision FlareID, and changes flow on to the outbound target.
+- **LDAP interface**: a read-only, LDAPS-only directory over TCP 636 (with a
+  Global Catalog view on 3269) via Spectrum's Worker origin, for apps that
+  only speak LDAP. Per-app branches (`ou=<app>`), per-app policy, TOTP in the
+  password field, AD-style attributes (objectGUID/objectSid/memberOf) and
+  POSIX attributes for sssd. See [LDAP.md](LDAP.md).
 - **SAML 2.0**: Web Browser SSO, service-provider-initiated, HTTP-Redirect for
   requests and HTTP-POST for responses. Signed Response and Assertion,
   transient/persistent/emailAddress NameIDs, per-SP attribute mapping, IdP

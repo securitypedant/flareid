@@ -110,3 +110,23 @@ export interface SamlServiceProviderRow {
   created_at: string;
   updated_at: string;
 }
+
+/** A registered LDAP application: a service account plus its visibility policy (migrations/0030_ldap.sql, LDAP.md section 7). */
+export interface LdapAppRow {
+  id: number;
+  slug: string;
+  name: string;
+  secret_hash: string;
+  secret_prefix: string;
+  /** JSON array of group ids whose members may bind and are visible; '[]' = every active user. */
+  user_group_ids: string;
+  /** JSON array of group ids visible as group entries; '[]' = all groups. */
+  exposed_group_ids: string;
+  /** 'password' | 'otp_if_enrolled' | 'otp_required' (LDAP.md section 13). */
+  mfa_mode: string;
+  include_disabled: number;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}

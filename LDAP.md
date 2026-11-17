@@ -4,10 +4,28 @@ FlareID speaks OIDC and SAML. This document specifies an **LDAP interface**: a
 read-only LDAPv3 server, running inside the FlareID Worker, that lets legacy
 applications and devices authenticate FlareID users and look up their groups.
 
-Nothing here is implemented yet. Like SAML-implementation.md, this is the
-design written before the code, so the decisions are made in the open. Where a
-decision is marked **Decision**, implement it as written unless you find a
-concrete reason it cannot work - and if you do, record the reason here.
+> **Status (implemented).** Phase 1 landed: the BER codec (`ldap/ber.ts`), DN
+> and message layer (`dn.ts`, `protocol.ts`), filters (`filter.ts`), the app
+> data model (`0030_ldap.sql`, `apps.ts`, `settings.ts`), directory snapshot
+> (`directory.ts`), entry mapping incl. AD + POSIX (`entries.ts`, `ad.ts`),
+> binds with all name forms, lockout sharing, OTP modes and the re-bind
+> window (`bind.ts`), search/compare/paging/framing (`search.ts`,
+> `connection.ts`), the `connect()` handler, the admin pages under
+> Integrations → LDAP, the provisioning API (`/api/v1/ldap/*`), and the audit
+> family. Spectrum worker-origin traffic on `tcp/636` is verified end-to-end
+> on tmesandbox (see section 20). The migration is `0030_ldap.sql`, not the
+> `0013` this document originally numbered. Deviations: the snapshot is
+> cached per-isolate for 30s rather than loaded per request; DB push-down is
+> implemented as candidate selection inside the snapshot (the cache makes the
+> per-login cost identical); and `entryDN` is synthesized at selection time.
+>
+> Still open from the plan: the section 17.5 dev bridge, real-client soak
+> (Grafana/sssd), and the phase-2+ items in section 18.
+
+Like SAML-implementation.md, this is the design written before the code, so
+the decisions are made in the open. Where a decision is marked **Decision**,
+implement it as written unless you find a concrete reason it cannot work -
+and if you do, record the reason here.
 
 ## Contents
 
@@ -1028,11 +1046,17 @@ the suite (`npm test`, `npm run typecheck`).
 Verify these once the Spectrum Worker-origin beta is enabled, and record the
 answers here.
 
-1. **Client IP.** Does `socket.opened` resolve with `remoteAddress` set to the
-   real client IP for Spectrum-originated connections? If yes, use it for the
-   IP rate-limit bucket and the audit `ip`, and consider per-app CIDR
-   allowlists. If no, keep the shared `ldap:unknown` bucket and rely on
-   Spectrum IP Access Rules.
+**Verified 2026-11-16 on tmesandbox.com (Spectrum app `tcp/636`, Worker
+`flareid-idp` v1af4eaf6):** arbitrary non-gRPC TCP reaches `connect()`
+end-to-end - a TLS client on `ldap.tmesandbox.com:636` completed the
+handshake (zone edge certificate), received bytes and got them echoed back.
+`socket.opened` resolves `remoteAddress` to the real client IP:port (IPv6
+observed) and `localAddress` to `0.0.0.0:0`. No compatibility flag was
+needed at `compatibility_date` 2025-04-01. So:
+
+1. **Client IP. Answered: yes.** `remoteAddress` is the real client IP -
+   use it for the IP rate-limit bucket and the audit `ip`, and per-app CIDR
+   allowlists are viable as a later option.
 2. **CPU and duration limits** for a long-lived `connect()` invocation: is the
    CPU limit per invocation (so a connection doing hundreds of scrypt binds
    could hit it)? Does `limits.cpu_ms` in wrangler.jsonc apply? Is there a

@@ -97,6 +97,11 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/scim/scope": "POST /api/v1/scim/config",
   "POST /admin/scim/test": "POST /api/v1/scim/test",
   "POST /admin/scim/sync": "POST /api/v1/scim/sync",
+  "POST /admin/integrations/ldap/settings": "POST /api/v1/ldap/settings",
+  "POST /admin/ldap": "POST /api/v1/ldap/apps",
+  "POST /admin/ldap/:slug": "POST /api/v1/ldap/apps",
+  "POST /admin/ldap/:slug/rotate": "POST /api/v1/ldap/apps/{slug}/rotate",
+  "POST /admin/ldap/:slug/revoke": "DELETE /api/v1/ldap/apps/{slug}",
 };
 
 /** Console actions with no API meaning, each with why. Keep this list short. */

@@ -4,6 +4,44 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## Unreleased
+
+**Migration `0030_ldap.sql`** - `ldap_apps` and the `ldap_*` settings.
+
+### Added
+
+- **An LDAP interface.** FlareID now answers LDAPv3 over TCP - a read-only,
+  LDAPS-only view of the directory, delivered to the Worker's `connect()`
+  handler by Spectrum's Worker origin (ports 636 and 3269). The design and
+  rationale are in [LDAP.md](LDAP.md).
+  - **Per-app branches.** Every registered LDAP app gets its own subtree
+    (`ou=<slug>,<base>`), its own service bind DN
+    (`cn=<slug>,ou=services,<base>`) and its own policy: bindable groups,
+    exposed groups, disabled-user visibility and MFA mode.
+  - **Binds.** Service binds authenticate apps; user binds resolve DNs, UPNs,
+    `NETBIOS\user` and bare usernames, share the web sign-in lockout buckets
+    and dummy-hash timing, and take TOTP in the password field as
+    `<password>,<code>` per the app's MFA mode (with a short re-bind window
+    for clients that open a fresh connection per operation).
+  - **Search, compare, whoami and RFC 2696 paging** over a snapshot refreshed
+    every 30s; entries cover inetOrgPerson/posixAccount plus the AD surface
+    (sAMAccountName, objectGUID/objectSid, memberOf, userAccountControl,
+    objectCategory matching) so AD-shaped filters work against Grafana,
+    GitLab, sssd and friends.
+  - **Admin and API.** Integrations → LDAP manages settings and apps (the
+    secret is shown once, with generated client configs for Grafana, sssd,
+    GitLab, Jenkins and ldapsearch); `/api/v1/ldap/apps` and
+    `/api/v1/ldap/settings` provision the same. Binds and admin actions join
+    the audit log under the new `ldap` family; searches stay out of it and
+    are counted in Workers logs.
+
+### Security
+
+- **Authorization scopes are bounded at intake.** `/authorize` caps the
+  `scope` parameter at 512 characters before it is stored verbatim on grant
+  rows. (Effective claims were already intersected with the client's
+  `allowed_claims`; this is input hygiene, not a behavior change.)
+
 ## [3.9.3] - 2026-11-15
 
 No migrations. The confirmed low-severity audit findings in one pass -

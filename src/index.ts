@@ -1,6 +1,7 @@
 import { errorResponse } from "./lib/html.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
+import { handleLdapConnection } from "./ldap/index.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
 import { discovery } from "./routes/discovery.js";
@@ -108,6 +109,10 @@ export default {
     if (resolved instanceof Response) return resolved;
     return app.fetch(request, resolved, ctx);
   },
+
+  // Inbound TCP: Spectrum hands LDAP(S) connections here (LDAP.md).
+  connect: handleLdapConnection,
+
   // Hourly Cron Trigger (wrangler.jsonc): garbage-collect expired codes, tokens,
   // sessions, devices and old audit entries. Logged so a run is visible in
   // Workers logs; failures surface there too rather than failing silently.

@@ -46,6 +46,10 @@ import {
   SESSION_IDLE_MINUTES_RANGE,
   SESSION_MAX_HOURS_RANGE,
 } from "../lib/settings.js";
+import { setSetting } from "../lib/settings.js";
+import { getLdapAppBySlug, listLdapApps, revokeLdapApp, rotateLdapSecret, writeLdapApp, appGroupIds, LDAP_SECRET_PREFIX, type LdapAppInput } from "../ldap/apps.js";
+import { disableLdap, enableLdap, getLdapSettings } from "../ldap/settings.js";
+import type { LdapAppRow } from "../lib/types.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { allLocales } from "../lib/i18n.js";
 import { getEmailSettings, isEmailConfigured, isEmailEnabled, recipientFor } from "../lib/email.js";
@@ -377,6 +381,7 @@ const INTEGRATION_PAGES = [
   { key: "saml", label: "SAML apps" },
   { key: "api-keys", label: "API keys" },
   { key: "scim", label: "SCIM provisioning" },
+  { key: "ldap", label: "LDAP" },
   { key: "email", label: "Email" },
 ] as const;
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
@@ -2161,12 +2166,14 @@ function summaryCard(opts: { title: string; count: string; rows: string[]; empty
 }
 
 admin.get("/admin/integrations", async (c) => {
-  const [{ results: clients }, { results: sps }, apiKeys, scim, scope] = await Promise.all([
+  const [{ results: clients }, { results: sps }, apiKeys, scim, scope, ldapApps, ldapSettings] = await Promise.all([
     c.env.DB.prepare("SELECT id, name, client_id FROM oauth_clients ORDER BY name").all<Pick<OAuthClientRow, "id" | "name" | "client_id">>(),
     c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers ORDER BY name").all<Pick<SamlServiceProviderRow, "id" | "name" | "entity_id">>(),
     listApiKeys(c.env),
     getScimConfig(c.env),
     getScimScope(c.env),
+    listLdapApps(c.env),
+    getLdapSettings(c.env),
   ]);
   const activeKeys = apiKeys.filter((k) => !k.revoked_at);
   const revokedKeys = apiKeys.length - activeKeys.length;
@@ -2222,6 +2229,13 @@ admin.get("/admin/integrations", async (c) => {
             : [],
           empty: "Users and groups are not being pushed anywhere.",
           manage: "scim",
+        })}
+        ${summaryCard({
+          title: "LDAP",
+          count: `<span class="badge ${ldapSettings.enabled ? "badge-active" : "badge-disabled"}">${ldapSettings.enabled ? "Enabled" : "Disabled"}</span>`,
+          rows: ldapApps.map((a) => `<tr><td><a href="/admin/ldap/${escapeHtml(a.slug)}">${escapeHtml(a.name)}</a></td><td><code>${escapeHtml(a.slug)}</code></td>${a.revoked_at ? '<td><span class="badge badge-disabled">Revoked</span></td>' : ""}</tr>`),
+          empty: ldapSettings.enabled ? "No LDAP apps registered yet." : "The LDAP interface is disabled.",
+          manage: "ldap",
         })}
       </div>
       `,
@@ -4946,4 +4960,291 @@ admin.get("/admin/audit", async (c) => {
       [{ label: "Admin", href: "/admin" }, { label: "Log" }]
     )
   );
+});
+
+// ---------- LDAP ----------
+
+/** Groups for the app's two pickers: user groups (who may bind) and exposed groups (which group entries exist). */
+async function ldapGroupOptions(env: Env): Promise<{ id: number; label: string }[]> {
+  const { results } = await env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
+  return results.map((g) => ({ id: g.id, label: g.name }));
+}
+
+const MFA_MODES: [string, string][] = [
+  ["password", "Password only"],
+  ["otp_if_enrolled", "Password + OTP when the user has one (recommended)"],
+  ["otp_required", "Always password + OTP"],
+];
+
+/** The once-only connection details shown after create or rotate (LDAP.md section 14). */
+function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: string, settings: Awaited<ReturnType<typeof getLdapSettings>>, verb: "created" | "rotated") {
+  const base = settings.baseDn;
+  const host = settings.hostname || "ldap." + settings.base.map((r) => r.value).join(".");
+  const slug = app.slug;
+  const bindDn = `cn=${slug},ou=services,${base}`;
+  const appBase = `ou=${slug},${base}`;
+  const userBase = `ou=people,${appBase}`;
+  const groupBase = `ou=groups,${appBase}`;
+  const userFilter = "(&(objectClass=inetOrgPerson)(uid=%s))";
+  const adFilter = "(&(objectCategory=person)(sAMAccountName=%s))";
+  const kv = (k: string, v: string) => `<tr><td class="muted" style="width:180px;">${k}</td><td><code>${escapeHtml(v)}</code></td><td style="width:70px;">${copyButton(v)}</td></tr>`;
+  const snippet = (title: string, body: string) => `<details style="margin:8px 0;"><summary><strong>${escapeHtml(title)}</strong></summary><pre style="margin:8px 0 0; white-space:pre-wrap;">${escapeHtml(body)}</pre><div style="margin-top:4px;">${copyButton(body)}</div></details>`;
+  const otpNote =
+    app.mfa_mode === "password"
+      ? ""
+      : `<p class="muted">This app's password field takes a second factor as <code>&lt;password&gt;,&lt;6-digit-code&gt;</code>${app.mfa_mode === "otp_if_enrolled" ? " for users who have one enrolled" : " for every user"}.</p>`;
+  return c.html(
+    layout(
+      c,
+      `LDAP app ${verb}`,
+      `${cardSection(`
+        <h2>${escapeHtml(app.name)} ${verb === "created" ? "created" : "secret rotated"}</h2>
+        <p><strong>Copy the secret now - it is never shown again.</strong> Everything else on this page is safe to keep.</p>
+        <table><tbody>
+          ${kv("Server", `ldaps://${host}:636`)}
+          ${kv("Global Catalog", `ldaps://${host}:3269`)}
+          ${kv("Bind DN", bindDn)}
+          ${kv("Secret", secret)}
+          ${kv("Base DN", appBase)}
+          ${kv("User search base", userBase)}
+          ${kv("Group search base", groupBase)}
+          ${kv("User filter", userFilter)}
+          ${kv("User filter (AD mode)", adFilter)}
+        </tbody></table>
+        ${otpNote}
+      `)}
+      ${cardSection(`
+        <h2>Client configs</h2>
+        ${snippet("ldapsearch", `ldapsearch -x -H ldaps://${host}:636 \\\n  -D "${bindDn}" -w "${secret}" \\\n  -b "${userBase}" "(uid=alice)" dn memberOf`)}
+        ${snippet("Grafana (ldap.toml)", `[[servers]]\nhost = "${host}"\nport = 636\nuse_ssl = true\nstart_tls = false\nbind_dn = "${bindDn}"\nbind_password = "${secret}"\nsearch_base_dns = ["${userBase}"]\nsearch_filter = "(uid=%s)"\n\n[servers.attributes]\nname = "givenName"\nsurname = "sn"\nusername = "uid"\nmember_of = "memberOf"\nemail = "mail"`)}
+        ${snippet("sssd.conf", `[domain/flareid]\nid_provider = ldap\nldap_uri = ldaps://${host}:636\nldap_search_base = ${appBase}\nldap_user_search_base = ${userBase}\nldap_group_search_base = ${groupBase}\nldap_default_bind_dn = ${bindDn}\nldap_default_authtok = ${secret}\nldap_user_object_class = inetOrgPerson\nldap_user_name = uid`)}
+        ${snippet("GitLab (gitlab.rb)", `gitlab_rails['ldap_enabled'] = true\ngitlab_rails['ldap_servers'] = {\n  'main' => {\n    'label' => 'FlareID',\n    'host' => '${host}',\n    'port' => 636,\n    'encryption' => 'simple_tls',\n    'uid' => 'uid',\n    'bind_dn' => '${bindDn}',\n    'password' => '${secret}',\n    'base' => '${userBase}',\n    'verify_certificates' => true\n  }\n}`)}
+        ${snippet("Jenkins (LDAP plugin)", `Server: ldaps://${host}:636\nroot DN: ${appBase}\nUser search base: ${userBase}\nUser search filter: uid={0}\nGroup search base: ${groupBase}\nManager DN: ${bindDn}\nManager Password: ${secret}`)}
+      `)}`,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("ldap"), { label: app.name }]
+    )
+  );
+}
+
+admin.get("/admin/integrations/ldap", async (c) => {
+  const [settings, apps] = await Promise.all([getLdapSettings(c.env), listLdapApps(c.env)]);
+  const groups = await ldapGroupOptions(c.env);
+  const appRows = apps.map((a) => {
+    const { userGroups, exposedGroups } = appGroupIds(a);
+    const scope = userGroups === null ? "All users" : `${userGroups.length} group${userGroups.length === 1 ? "" : "s"}`;
+    return `<tr>
+      <td><a href="/admin/ldap/${escapeHtml(a.slug)}">${escapeHtml(a.name)}</a></td>
+      <td><code>${escapeHtml(a.slug)}</code></td>
+      <td>${escapeHtml(scope)}</td>
+      <td>${a.last_used_at ? escapeHtml(a.last_used_at.slice(0, 16).replace("T", " ")) : '<span class="muted">never</span>'}</td>
+      <td>${a.revoked_at ? '<span class="badge badge-disabled">Revoked</span>' : '<span class="badge badge-active">Active</span>'}</td>
+    </tr>`;
+  });
+  const appOptions = apps.filter((a) => !a.revoked_at).map((a) => `<option value="${escapeHtml(a.slug)}" ${settings.unscopedBindApp === a.slug ? "selected" : ""}>${escapeHtml(a.name)} (${escapeHtml(a.slug)})</option>`).join("");
+  return c.html(
+    layout(
+      c,
+      "LDAP",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<div class="error-banner">${escapeHtml(c.req.query("error")!)}</div>` : ""}
+      ${cardSection(`
+        <h2>LDAP interface</h2>
+        <p class="muted">A read-only, LDAPS-only view of this directory over TCP 636 (and the Global Catalog on 3269), for apps that only speak LDAP - Grafana, GitLab, sssd, network devices. Each app gets its own branch of the tree and its own policy.</p>
+        <form method="POST" action="/admin/integrations/ldap/settings">
+          <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${settings.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> <strong>Enable LDAP</strong></label>
+          <label for="ldap_hostname" style="margin-top:12px;">Hostname</label>
+          <input type="text" id="ldap_hostname" name="hostname" value="${escapeHtml(settings.hostname)}" placeholder="ldap.${escapeHtml(settings.base.map((r) => r.value).join("."))}" />
+          <p class="muted" style="margin:-8px 0 14px;">The DNS name the Spectrum apps listen on - shown in snippets and the root DSE.</p>
+          <label for="ldap_base_dn">Base DN</label>
+          <input type="text" id="ldap_base_dn" name="base_dn" value="${escapeHtml(settings.baseDn)}" placeholder="derived from the default domain" />
+          <label for="ldap_netbios">NetBIOS name</label>
+          <input type="text" id="ldap_netbios" name="netbios_name" value="${escapeHtml(settings.netbios)}" maxlength="15" />
+          <label for="ldap_unscoped">Unattributed user binds land on</label>
+          <select id="ldap_unscoped" name="unscoped_bind_app">
+            <option value="">(deny - binds must name an app in the DN)</option>
+            ${appOptions}
+          </select>
+          <p class="muted" style="margin:-8px 0 14px;">Bind names like <code>alice@example.com</code> carry no app; choose which app's policy they fall under, or deny them.</p>
+          <h3 style="margin-top:18px;">POSIX and sessions</h3>
+          <div class="two-col">
+            <div><label for="uid_base">uidNumber base</label><input type="number" id="uid_base" name="posix_uid_base" value="${settings.posixUidBase}" min="0" /></div>
+            <div><label for="gid_base">gidNumber base</label><input type="number" id="gid_base" name="posix_gid_base" value="${settings.posixGidBase}" min="0" /></div>
+            <div><label for="def_gid">Default gidNumber</label><input type="number" id="def_gid" name="posix_default_gid" value="${settings.posixDefaultGid}" min="0" /></div>
+            <div><label for="posix_shell">loginShell</label><input type="text" id="posix_shell" name="posix_shell" value="${escapeHtml(settings.posixShell)}" /></div>
+            <div><label for="posix_home">homeDirectory template</label><input type="text" id="posix_home" name="posix_home" value="${escapeHtml(settings.posixHome)}" /></div>
+            <div><label for="idle_to">Idle timeout (minutes)</label><input type="number" id="idle_to" name="idle_timeout_minutes" value="${settings.idleTimeoutMinutes}" min="1" max="1440" /></div>
+            <div><label for="otp_rebind">OTP re-bind window (seconds)</label><input type="number" id="otp_rebind" name="otp_rebind_seconds" value="${settings.otpRebindSeconds}" min="0" max="3600" /></div>
+          </div>
+          <div class="form-actions end"><button class="primary" type="submit">Save settings</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        ${integrationIntro("LDAP apps. A service account per app: its bind DN names the app, which is how per-app policy applies even when apps rebind on fresh connections.", { href: "/admin/ldap/new", label: "+ New LDAP app" })}
+        ${apps.length === 0 ? '<p class="muted">No LDAP apps registered yet.</p>' : `<table>
+          <thead><tr><th>Name</th><th>Slug</th><th>Bindable users</th><th>Last used</th><th>Status</th></tr></thead>
+          <tbody>${appRows.join("")}</tbody>
+        </table>`}
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "LDAP" }]
+    )
+  );
+});
+
+admin.post("/admin/integrations/ldap/settings", async (c) => {
+  const body = await c.req.parseBody();
+  const enabled = String(body.enabled ?? "") === "1";
+  if (enabled) await enableLdap(c.env);
+  else await disableLdap(c.env);
+  const put = async (key: string, value: string) => setSetting(c.env, key, value);
+  await put("ldap_hostname", String(body.hostname ?? "").trim());
+  await put("ldap_base_dn", String(body.base_dn ?? "").trim());
+  await put("ldap_netbios_name", String(body.netbios_name ?? "").trim());
+  const unscoped = String(body.unscoped_bind_app ?? "").trim().toLowerCase();
+  if (unscoped && !(await getLdapAppBySlug(c.env, unscoped))) return c.redirect(`/admin/integrations/ldap?error=${encodeURIComponent(`No LDAP app named '${unscoped}'.`)}`, 302);
+  await put("ldap_unscoped_bind_app", unscoped);
+  const num = (v: unknown, dflt: number, min = 0, max = 1_000_000) => Math.min(max, Math.max(min, Number(v) || dflt));
+  await put("ldap_posix_uid_base", String(num(body.posix_uid_base, 10000)));
+  await put("ldap_posix_gid_base", String(num(body.posix_gid_base, 20000)));
+  await put("ldap_posix_default_gid", String(num(body.posix_default_gid, 100)));
+  await put("ldap_posix_shell", String(body.posix_shell ?? "/bin/bash").trim());
+  await put("ldap_posix_home", String(body.posix_home ?? "/home/{username}").trim());
+  await put("ldap_idle_timeout_minutes", String(num(body.idle_timeout_minutes, 15, 1, 1440)));
+  await put("ldap_otp_rebind_seconds", String(num(body.otp_rebind_seconds, 120, 0, 3600)));
+  await logAudit(c.env, c.get("user"), "ldap.settings.updated", "ldap", {}, c.req.raw);
+  return c.redirect("/admin/integrations/ldap?saved=1", 302);
+});
+
+function ldapAppForm(v: { name?: string; slug?: string; userGroups?: Set<number>; exposedGroups?: Set<number>; mfaMode?: string; includeDisabled?: boolean }, groups: { id: number; label: string }[], action: string, submitLabel: string, edit = false): string {
+  return `<form method="POST" action="${escapeHtml(action)}">
+    <label for="ldap_app_name">Name</label>
+    <input type="text" id="ldap_app_name" name="name" value="${escapeHtml(v.name ?? "")}" placeholder="Grafana" required />
+    ${edit ? "" : `<label for="ldap_app_slug">Slug</label>
+    <input type="text" id="ldap_app_slug" name="slug" value="${escapeHtml(v.slug ?? "")}" placeholder="grafana" pattern="[a-z0-9][a-z0-9-]{0,63}" required />
+    <p class="muted" style="margin:-8px 0 14px;">Lowercase letters, digits and dashes. Becomes <code>ou=&lt;slug&gt;</code> in the tree and <code>cn=&lt;slug&gt;</code> in the service bind DN. Cannot be changed later.</p>`}
+    <label>Bindable users</label>
+    ${multiSelect("user_group_ids", groups, v.userGroups ?? new Set(), "All users - pick groups to restrict")}
+    <p class="muted" style="margin:-8px 0 14px;">Members of these groups may bind and are visible. Leave empty for everyone.</p>
+    <label>Exposed groups</label>
+    ${multiSelect("exposed_group_ids", groups, v.exposedGroups ?? new Set(), "All groups - pick groups to restrict")}
+    <p class="muted" style="margin:-8px 0 14px;">Which groups exist under <code>ou=groups</code> for this app. Leave empty for all.</p>
+    <label for="ldap_mfa_mode" style="margin-top:12px;">Second factor</label>
+    <select id="ldap_mfa_mode" name="mfa_mode">
+      ${MFA_MODES.map(([val, label]) => `<option value="${val}" ${(v.mfaMode ?? "otp_if_enrolled") === val ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+    </select>
+    <p class="muted" style="margin:-8px 0 14px;">OTP goes in the password field as <code>&lt;password&gt;,&lt;code&gt;</code>.</p>
+    <label style="font-weight:400;"><input type="checkbox" name="include_disabled" value="1" ${v.includeDisabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Show disabled users too</label>
+    <p class="muted" style="margin:-8px 0 14px;">They appear with <code>userAccountControl=514</code> so a sync can deactivate them, but they still can't bind.</p>
+    <div class="form-actions end">${cancelLink("/admin/integrations/ldap")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+  </form>`;
+}
+
+function ldapFormIds(body: Record<string, unknown>, key: string): number[] {
+  const raw = body[key];
+  const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  return arr.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+}
+
+admin.get("/admin/ldap/new", async (c) => {
+  const settings = await getLdapSettings(c.env);
+  if (!settings.enabled) return consoleError(c, "Enable LDAP under Integrations → LDAP first.", 400);
+  const groups = await ldapGroupOptions(c.env);
+  return c.html(
+    layout(
+      c,
+      "New LDAP app",
+      cardSection(`<h2>New LDAP app</h2><p class="muted">Registration mints a service-account secret, shown once on the next page.</p>${ldapAppForm({}, groups, "/admin/ldap", "Create LDAP app")}`),
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("ldap"), { label: "New LDAP app" }]
+    )
+  );
+});
+
+admin.post("/admin/ldap", async (c) => {
+  const body = await c.req.parseBody();
+  const input: LdapAppInput = {
+    slug: String(body.slug ?? "").toLowerCase(),
+    name: String(body.name ?? "").trim(),
+    user_group_ids: ldapFormIds(body, "user_group_ids"),
+    exposed_group_ids: ldapFormIds(body, "exposed_group_ids"),
+    mfa_mode: (["password", "otp_if_enrolled", "otp_required"] as const).find((m) => m === body.mfa_mode) ?? "otp_if_enrolled",
+    include_disabled: String(body.include_disabled ?? "") === "1",
+  };
+  try {
+    const { app, secret } = await writeLdapApp(c.env, input);
+    await logAudit(c.env, c.get("user"), "ldap.app.created", app.slug, {}, c.req.raw);
+    return ldapSecretPage(c, app, secret!, await getLdapSettings(c.env), "created");
+  } catch (e) {
+    return consoleError(c, e instanceof Error ? e.message : String(e), 400);
+  }
+});
+
+admin.get("/admin/ldap/:slug", async (c) => {
+  const app = await getLdapAppBySlug(c.env, c.req.param("slug").toLowerCase());
+  if (!app) return consoleError(c, "That LDAP app doesn't exist.", 404);
+  const [settings, groups] = await Promise.all([getLdapSettings(c.env), ldapGroupOptions(c.env)]);
+  const { userGroups, exposedGroups } = appGroupIds(app);
+  const revoked = app.revoked_at !== null;
+  return c.html(
+    layout(
+      c,
+      app.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${revoked ? `<div class="error-banner">Revoked ${escapeHtml(app.revoked_at!)} - binds and searches fail until a new app is registered.</div>` : ""}
+      ${cardSection(`
+        <h2>${escapeHtml(app.name)} <code class="muted">${escapeHtml(app.slug)}</code></h2>
+        <table><tbody>
+          <tr><td class="muted" style="width:180px;">Bind DN</td><td><code>cn=${escapeHtml(app.slug)},ou=services,${escapeHtml(settings.baseDn)}</code></td></tr>
+          <tr><td class="muted">Branch</td><td><code>ou=${escapeHtml(app.slug)},${escapeHtml(settings.baseDn)}</code></td></tr>
+          <tr><td class="muted">Secret</td><td><code>${escapeHtml(app.secret_prefix)}…</code></td></tr>
+          <tr><td class="muted">Last used</td><td>${app.last_used_at ? escapeHtml(app.last_used_at) : "never"}</td></tr>
+          <tr><td class="muted">Audit</td><td><a href="/admin/log?search=${encodeURIComponent(app.slug)}&category=ldap">ldap.* events for this app</a></td></tr>
+        </tbody></table>
+        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/rotate" onsubmit="return confirm('Rotate the secret? The current one stops working immediately.')"><button type="submit">Rotate secret</button></form>`}
+          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/revoke" onsubmit="return confirm('Revoke ${escapeHtml(app.name)}? Binds and searches stop immediately. This cannot be undone.')"><button class="danger" type="submit">Revoke app</button></form>`}
+        </div>
+      `)}
+      ${revoked ? "" : cardSection(`<h2>Policy</h2>${ldapAppForm({ name: app.name, userGroups: new Set(userGroups ?? []), exposedGroups: new Set(exposedGroups ?? []), mfaMode: app.mfa_mode, includeDisabled: Boolean(app.include_disabled) }, groups, `/admin/ldap/${app.slug}`, "Save policy", true)}`)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("ldap"), { label: app.name }]
+    )
+  );
+});
+
+admin.post("/admin/ldap/:slug", async (c) => {
+  const app = await getLdapAppBySlug(c.env, c.req.param("slug").toLowerCase());
+  if (!app) return consoleError(c, "That LDAP app doesn't exist.", 404);
+  const body = await c.req.parseBody();
+  try {
+    await writeLdapApp(c.env, {
+      slug: app.slug,
+      name: String(body.name ?? "").trim(),
+      user_group_ids: ldapFormIds(body, "user_group_ids"),
+      exposed_group_ids: ldapFormIds(body, "exposed_group_ids"),
+      mfa_mode: (["password", "otp_if_enrolled", "otp_required"] as const).find((m) => m === body.mfa_mode) ?? (app.mfa_mode as LdapAppInput["mfa_mode"]),
+      include_disabled: String(body.include_disabled ?? "") === "1",
+    });
+    await logAudit(c.env, c.get("user"), "ldap.app.updated", app.slug, {}, c.req.raw);
+    return c.redirect(`/admin/ldap/${app.slug}?saved=1`, 302);
+  } catch (e) {
+    return consoleError(c, e instanceof Error ? e.message : String(e), 400);
+  }
+});
+
+admin.post("/admin/ldap/:slug/rotate", async (c) => {
+  const app = await getLdapAppBySlug(c.env, c.req.param("slug").toLowerCase());
+  if (!app) return consoleError(c, "That LDAP app doesn't exist.", 404);
+  const secret = await rotateLdapSecret(c.env, app);
+  await logAudit(c.env, c.get("user"), "ldap.app.secret_rotated", app.slug, {}, c.req.raw);
+  return ldapSecretPage(c, app, secret, await getLdapSettings(c.env), "rotated");
+});
+
+admin.post("/admin/ldap/:slug/revoke", async (c) => {
+  const app = await getLdapAppBySlug(c.env, c.req.param("slug").toLowerCase());
+  if (!app) return consoleError(c, "That LDAP app doesn't exist.", 404);
+  await revokeLdapApp(c.env, app);
+  await logAudit(c.env, c.get("user"), "ldap.app.revoked", app.slug, {}, c.req.raw);
+  return c.redirect(`/admin/ldap/${app.slug}`, 302);
 });
