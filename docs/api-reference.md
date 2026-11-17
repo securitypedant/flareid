@@ -1390,6 +1390,8 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 | `PUT` | `/api/v1/scim/mappings` | `scim:write` | Replace the inbound attribute mappings |
 | `GET` | `/api/v1/scim/correlation` | `scim:read` | List the inbound correlation keys |
 | `PUT` | `/api/v1/scim/correlation` | `scim:write` | Replace the inbound correlation keys |
+| `GET` | `/api/v1/scim/mastering` | `scim:read` | List the fields mastered by inbound provisioning |
+| `PUT` | `/api/v1/scim/mastering` | `scim:write` | Replace the mastered field list |
 
 ### `GET /api/v1/scim/config`
 
@@ -1676,6 +1678,46 @@ Request body:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `keys` | string[] | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/scim/mastering`
+
+List the fields mastered by inbound provisioning.
+
+Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, or custom.<key> for a custom attribute.
+
+Permission: `scim:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `fields` | string[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/scim/mastering`
+
+Replace the mastered field list.
+
+The whole set, empty to unmaster everything. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, or custom.<key>.
+
+Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `fields` | string[] | yes |  |
 
 Response `200`:
 

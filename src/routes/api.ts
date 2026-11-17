@@ -39,7 +39,7 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
 import { getAppName, isSetupCompleted } from "../lib/settings.js";
-import { CORRELATION_KEYS, getCorrelationKeys, listScimMappings, replaceScimMappings, setCorrelationKeys } from "../lib/scim-mapping.js";
+import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, replaceScimMappings, setCorrelationKeys, setMasteredFields } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
@@ -859,6 +859,29 @@ defineRoute({
     return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
   }
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_correlation_changed", undefined, { keys: body.keys ?? [] }, c.req.raw);
+  return c.json({ ok: true });
+});
+
+defineRoute({
+  method: "get", path: "/api/v1/scim/mastering", tag: "SCIM", permission: "scim:read", summary: "List the fields mastered by inbound provisioning",
+  description:
+    `Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: ${MASTERING_FIELDS.join(", ")}, or custom.<key> for a custom attribute.`,
+  response: z.object({ fields: z.array(z.string()) }),
+}, async (c) => c.json({ fields: await getMasteredFields(c.env) }));
+
+defineRoute({
+  method: "put", path: "/api/v1/scim/mastering", tag: "SCIM", permission: "scim:write", summary: "Replace the mastered field list",
+  description: `The whole set, empty to unmaster everything. Valid fields: ${MASTERING_FIELDS.join(", ")}, or custom.<key>.`,
+  body: z.object({ fields: z.array(z.string()) }),
+  errors: [400],
+}, async (c) => {
+  const body = await readJson<{ fields?: string[] }>(c);
+  try {
+    await setMasteredFields(c.env, body.fields ?? []);
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_mastering_changed", undefined, { fields: body.fields ?? [] }, c.req.raw);
   return c.json({ ok: true });
 });
 

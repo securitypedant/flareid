@@ -29,7 +29,7 @@ import {
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { CORRELATION_KEYS, getCorrelationKeys, listScimMappings, replaceScimMappings, setCorrelationKeys, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
+import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -507,7 +507,7 @@ function employmentTypeSelect(current: string, name = "employment_type") {
  * references (manager) are a searchable picker that never offers the user
  * being edited, since nobody can be their own manager.
  */
-async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttributeRow[], values: Record<string, string>, excludeUserId: number | null): Promise<string> {
+async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttributeRow[], values: Record<string, string>, excludeUserId: number | null, mastered: Set<string>): Promise<string> {
   if (attributes.length === 0) return '<p class="muted">This schema defines no attributes beyond identity.</p>';
 
   // References are picked by searching the directory on the server; only the
@@ -524,9 +524,16 @@ async function userSchemaAttributesHtml(c: { env: Env }, attributes: SchemaAttri
       : []
   );
 
+  const masteredNote = ' <span class="muted" style="font-weight:400;">(mastered by provisioning)</span>';
   const cells = attributes.map((attr) => {
     const value = values[attr.name] ?? "";
-    const label = `<label for="attr_${escapeHtml(attr.name)}">${escapeHtml(attr.label)}${attr.required ? " *" : ""}</label>`;
+    const label = `<label for="attr_${escapeHtml(attr.name)}">${escapeHtml(attr.label)}${attr.required ? " *" : ""}${mastered.has(masteringKeyFor(attr)) ? masteredNote : ""}</label>`;
+    if (mastered.has(masteringKeyFor(attr))) {
+      // Read-only echo of the current value - no input posts, and the service
+      // keeps the existing value regardless.
+      const shown = attr.type === "reference" ? (value ? referenced.get(value) ?? value : "") : value;
+      return `<div>${label}<input type="text" value="${escapeHtml(shown)}" disabled /></div>`;
+    }
     if (attr.name === "employment_status") return `<div>${label}${employmentStatusSelect(value, "attr_employment_status")}</div>`;
     if (attr.name === "employment_type") return `<div>${label}${employmentTypeSelect(value, "attr_employment_type")}</div>`;
     if (attr.type === "reference") {
@@ -561,10 +568,10 @@ function dynamicGroupsFor(user: UserRow, groups: GroupRow[]): GroupRow[] {
 }
 
 
-async function domainSelect(env: Env, name: string, selectedDomain?: string) {
+async function domainSelect(env: Env, name: string, selectedDomain?: string, disabled = false) {
   const domains = await listDomains(env);
   const hasSelected = selectedDomain ? domains.some((d) => d.domain === selectedDomain) : false;
-  return `<select name="${escapeHtml(name)}">
+  return `<select name="${escapeHtml(name)}" ${disabled ? "disabled" : ""}>
     ${domains
       .map((d) => `<option value="${escapeHtml(d.domain)}" ${d.domain === selectedDomain ? "selected" : ""}>${escapeHtml(d.domain)}</option>`)
       .join("")}
@@ -1296,6 +1303,7 @@ admin.get("/admin/users/new", async (c) => {
   const schema = (await getSchema(c.env, requestedSchema)) ?? (await getSchema(c.env, Number(await defaultSchemaId(c.env, "user"))));
   const schemaAttrs = schema ? await getSchemaAttributes(c.env, schema.id) : [];
   const emptyValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, ""]));
+  const mastered = new Set(await getMasteredFields(c.env));
 
   return c.html(
     layout(
@@ -1327,7 +1335,7 @@ admin.get("/admin/users/new", async (c) => {
               </select>
             </div>
           </div>
-          ${await userSchemaAttributesHtml(c, schemaAttrs, emptyValues, null)}
+          ${await userSchemaAttributesHtml(c, schemaAttrs, emptyValues, null, mastered)}
           <h2>Groups</h2>
           <p class="muted" style="margin-top:-6px;">Static groups only - dynamic groups pick people up from their attributes.</p>
           ${multiSelect(
@@ -1430,6 +1438,8 @@ admin.get("/admin/users/:id", async (c) => {
   const previewing = schema !== null && schema.id !== currentSchemaId;
   const previewLost = previewing ? (lostBySchema.get(schema.id) ?? []) : [];
   const currentSchemaName = userSchemas.find((s) => s.id === currentSchemaId)?.name ?? "none";
+  const mastered = new Set(await getMasteredFields(c.env));
+  const masteredNote = ' <span class="muted" style="font-weight:400;">(mastered by provisioning)</span>';
 
   const staticGroups = groups.filter((g) => !parseRule(g.rule));
   const dynamicGroups = dynamicGroupsFor(user, groups);
@@ -1478,29 +1488,33 @@ admin.get("/admin/users/:id", async (c) => {
           <h2>Identity</h2>
           <div class="field-row">
             <div>
-              <label for="given_name">First name</label>
-              <input type="text" id="given_name" name="given_name" value="${escapeHtml(user.given_name)}" required />
+              <label for="given_name">First name${mastered.has("given_name") ? masteredNote : ""}</label>
+              <input type="text" id="given_name" name="given_name" value="${escapeHtml(user.given_name)}" required ${mastered.has("given_name") ? "disabled" : ""} />
             </div>
             <div>
-              <label for="family_name">Last name</label>
-              <input type="text" id="family_name" name="family_name" value="${escapeHtml(user.family_name)}" />
+              <label for="family_name">Last name${mastered.has("family_name") ? masteredNote : ""}</label>
+              <input type="text" id="family_name" name="family_name" value="${escapeHtml(user.family_name)}" ${mastered.has("family_name") ? "disabled" : ""} />
             </div>
           </div>
-          <label for="username">UPN</label>
+          <label for="username">UPN${mastered.has("upn") ? masteredNote : ""}</label>
           <div class="field-row">
-            <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:2; min-width:0;" />
-            <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain)}</div>
+            <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:2; min-width:0;" ${mastered.has("upn") ? "disabled" : ""} />
+            <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain, mastered.has("upn"))}</div>
           </div>
           <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${ts(user.created_at)}</p>
-          <h3 style="margin-top:14px;">Email addresses</h3>
+          <h3 style="margin-top:14px;">Email addresses${mastered.has("emails") ? masteredNote : ""}</h3>
           <p class="muted" style="margin-top:-4px;">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
           <div class="email-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
             <span>Address</span><span>Type</span><span>Primary</span><span></span>
           </div>
-          <div id="email-rows">${(userEmails.length ? userEmails : [undefined]).map((e) => userEmailRowHtml(e)).join("")}</div>
-          <template id="email-row-template">${userEmailRowHtml()}</template>
+          <div id="email-rows">${(userEmails.length ? userEmails : [undefined]).map((e) => userEmailRowHtml(e, mastered.has("emails"))).join("")}</div>
+          ${
+            mastered.has("emails")
+              ? ""
+              : `<template id="email-row-template">${userEmailRowHtml()}</template>
           <button type="button" class="secondary" data-append-template="email-row-template" data-append-to="email-rows">+ Add address</button>
-          <datalist id="email-type-options"><option value="work"></option><option value="home"></option><option value="other"></option></datalist>
+          <datalist id="email-type-options"><option value="work"></option><option value="home"></option><option value="other"></option></datalist>`
+          }
         `)}
 
         ${cardSection(`
@@ -1520,7 +1534,7 @@ admin.get("/admin/users/:id", async (c) => {
                   <a href="/admin/users/${id}">Cancel</a></div>`
               : ""
           }
-          ${await userSchemaAttributesHtml(c, schemaAttrs, attrValues, id)}
+          ${await userSchemaAttributesHtml(c, schemaAttrs, attrValues, id, mastered)}
         `)}
 
         ${cardSection(`
@@ -1672,8 +1686,16 @@ admin.post("/admin/users/:id/status", async (c) => {
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
-/** One editable address row (parallel email_addr/email_type/email_primary arrays); blank addresses are dropped on read. */
-function userEmailRowHtml(e?: { email: string; type: string; is_primary: number }): string {
+/** One editable address row (parallel email_addr/email_type/email_primary arrays); blank addresses are dropped on read. Read-only when emails are mastered. */
+function userEmailRowHtml(e?: { email: string; type: string; is_primary: number }, readonly = false): string {
+  if (readonly) {
+    return `<div class="email-row">
+      <input type="email" value="${escapeHtml(e?.email ?? "")}" disabled />
+      <input type="text" value="${escapeHtml(e?.type ?? "")}" disabled />
+      <label><input type="checkbox" ${e?.is_primary ? "checked" : ""} disabled style="width:auto; margin:0;" /> Primary</label>
+      <span></span>
+    </div>`;
+  }
   return `<div class="email-row">
     <input type="email" name="email_addr" value="${escapeHtml(e?.email ?? "")}" placeholder="name@example.com" />
     <input type="text" name="email_type" value="${escapeHtml(e?.type ?? "work")}" placeholder="type" list="email-type-options" />
@@ -2633,6 +2655,7 @@ admin.get("/admin/integrations/scim", async (c) => {
   const targets = await listScimTargets(c.env);
   const mappings = await listScimMappings(c.env);
   const correlationKeys = await getCorrelationKeys(c.env);
+  const masteredFields = await getMasteredFields(c.env);
   // Per-target pushed counts for the list (one grouped query each way).
   const [{ results: userCounts }, { results: groupCounts }] = await Promise.all([
     c.env.DB.prepare("SELECT target_id, COUNT(*) AS n FROM scim_user_links GROUP BY target_id").all<{ target_id: number; n: number }>(),
@@ -2696,6 +2719,15 @@ admin.get("/admin/integrations/scim", async (c) => {
         <form method="POST" action="/admin/scim/correlation">
           <label for="correlation_keys">Match keys, in order <span class="muted">(${CORRELATION_KEYS.join(", ")})</span></label>
           <input type="text" id="correlation_keys" name="correlation_keys" value="${escapeHtml(correlationKeys.join(", "))}" placeholder="emails, employee_number" />
+          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Field mastering</h2>
+        <p class="muted">Fields mastered by the provisioner are read-only everywhere else: only inbound SCIM writes change them, the user editor shows them without inputs, and the admin API refuses them &mdash; so HR-owned data like job title or department can't drift between syncs.</p>
+        <form method="POST" action="/admin/scim/mastering">
+          <label for="mastered_fields">Mastered fields <span class="muted">(${MASTERING_FIELDS.join(", ")}, or custom.&lt;key&gt;)</span></label>
+          <input type="text" id="mastered_fields" name="mastered_fields" value="${escapeHtml(masteredFields.join(", "))}" placeholder="job_title, department, manager" />
           <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
@@ -5357,6 +5389,18 @@ admin.post("/admin/scim/correlation", async (c) => {
     return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
   }
   await logAudit(c.env, c.get("user"), "settings.scim_correlation_changed", undefined, { keys: keys.map((k) => k.trim()).filter(Boolean) }, c.req.raw);
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
+});
+
+admin.post("/admin/scim/mastering", async (c) => {
+  const body = await c.req.parseBody();
+  const fields = String(body.mastered_fields ?? "").split(",");
+  try {
+    await setMasteredFields(c.env, fields);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, c.get("user"), "settings.scim_mastering_changed", undefined, { fields: fields.map((f) => f.trim()).filter(Boolean) }, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 

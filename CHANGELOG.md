@@ -45,6 +45,15 @@ provisioner's own stable id (SCIM `externalId`), unique when present.
   but clears it on PUT. Managed on the Integrations → SCIM page and over
   `GET|PUT /api/v1/scim/mappings`.
 
+- **Field mastering.** HR-owned fields can be declared mastered so only
+  inbound SCIM writes change them: the console user editor renders them
+  read-only, the self-service profile hides them, the admin API refuses a
+  write that names one (`400`), and other channels keep the existing value
+  rather than clearing it when the field is absent. Masterable fields are
+  the profile columns, `upn`, `emails`, `manager`, and `custom.<key>` for
+  custom attributes. Managed on the Integrations → SCIM page and over
+  `GET|PUT /api/v1/scim/mastering`.
+
 - **Outbound SCIM is multi-target.** FlareID can push users and groups to
   several SCIM servers at once - Cloudflare Access and Google Workspace side
   by side, or a second Access account for a different org slice - each with

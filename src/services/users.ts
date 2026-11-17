@@ -5,7 +5,8 @@ import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { domainExists } from "../lib/domains.js";
 import { recipientFor } from "../lib/email.js";
 import { hashPassword } from "../lib/password.js";
-import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes } from "../lib/schemas.js";
+import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes, userAttributeValue } from "../lib/schemas.js";
+import { getMasteredFields, masteringKeyFor } from "../lib/scim-mapping.js";
 import { drainScimDeprovisionQueue, scimDeprovisionStatements } from "../lib/scim-client.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { resolveNewAccountPassword } from "../lib/settings.js";
@@ -204,15 +205,26 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   const existing = await getUserById(ctx.env, id);
   if (!existing) throw new ServiceError(404, "Not found");
   await assertMayTouchUser(ctx, id);
-  const username = input.username.trim().toLowerCase();
-  const domain = input.domain.trim().toLowerCase();
-  if (!username || !domain) throw new ServiceError(400, "username and domain are required");
-  if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
-  if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
-  const upn = `${username}@${domain}`;
-  const givenName = input.givenName.trim();
-  const familyName = input.familyName.trim();
-  const displayName = `${givenName} ${familyName}`.trim();
+  // Mastered fields belong to the upstream provisioner: whatever the caller
+  // sent (or left off a read-only form), the existing value survives. The API
+  // layer rejects mastered fields outright.
+  const mastered = new Set(await getMasteredFields(ctx.env));
+  let username = input.username.trim().toLowerCase();
+  let domain = input.domain.trim().toLowerCase();
+  let upn: string;
+  if (mastered.has("upn")) {
+    username = existing.username;
+    domain = existing.upn.slice(existing.upn.lastIndexOf("@") + 1);
+    upn = existing.upn;
+  } else {
+    if (!username || !domain) throw new ServiceError(400, "username and domain are required");
+    if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
+    if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
+    upn = `${username}@${domain}`;
+  }
+  const givenName = mastered.has("given_name") ? existing.given_name : input.givenName.trim();
+  const familyName = mastered.has("family_name") ? existing.family_name : input.familyName.trim();
+  const displayName = mastered.has("display_name") ? existing.display_name : `${givenName} ${familyName}`.trim();
   const status = existing.status; // changed only through setUserStatus
   const groupIds = await staticOnly(ctx.env, input.groupIds);
   await assertMayAssignGroups(ctx, groupIds);
@@ -221,6 +233,11 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   const schemaId = Number(input.schemaId) || (await defaultSchemaId(ctx.env, "user"));
   const schemaAttrs = schemaId ? await getSchemaAttributes(ctx.env, schemaId) : [];
   const attrValues = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(input.attributes[a.name] ?? "").trim()]));
+  if (mastered.size) {
+    for (const a of schemaAttrs) {
+      if (mastered.has(masteringKeyFor(a))) attrValues[a.name] = userAttributeValue(existing, a);
+    }
+  }
   const { columns, custom } = conformUserAttributes(schemaAttrs, attrValues);
 
   let managerExternalId = (columns.manager_external_id as string | null) ?? null;
@@ -230,7 +247,9 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
 
   let email = existing.email;
   let emails: UserEmailInput[] | undefined;
-  if (input.emails !== undefined) {
+  if (mastered.has("emails")) {
+    // The address list belongs to the provisioner; leave it entirely alone.
+  } else if (input.emails !== undefined) {
     emails = input.emails;
     email = emails.length > 0 ? String((emails.find((e) => e.primary) ?? emails[0])!.value).trim().toLowerCase() : null;
   } else if (input.email !== undefined) {

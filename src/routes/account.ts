@@ -29,6 +29,7 @@ import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCount
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
 import { attributeInput, getSchemaAttributes, parseCustomAttributes, ruleAttributeNames, splitUserAttributes, userAttributeValue, type SchemaAttributeRow } from "../lib/schemas.js";
+import { getMasteredFields, masteringKeyFor } from "../lib/scim-mapping.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { UserRow } from "../lib/types.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
@@ -128,11 +129,12 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-/** The attributes this user may edit: their schema's user-editable ones, minus anything a rule now matches on. */
+/** The attributes this user may edit: their schema's user-editable ones, minus anything a rule now matches on or provisioning masters. */
 async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttributeRow[]> {
   if (!user.schema_id) return [];
-  const [attrs, ruleFields] = await Promise.all([getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env)]);
-  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && a.name !== "manager" && !ruleFields.has(a.name));
+  const [attrs, ruleFields, mastered] = await Promise.all([getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env), getMasteredFields(env)]);
+  const masteredSet = new Set(mastered);
+  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && a.name !== "manager" && !ruleFields.has(a.name) && !masteredSet.has(masteringKeyFor(a)));
 }
 
 account.get("/account", async (c) => {

@@ -5,6 +5,7 @@ import { getDefaultDomain } from "../lib/domains.js";
 import { parseRule, userMatchesRule } from "../lib/groups.js";
 import { listPasskeys } from "../lib/passkeys.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes, userAttributeValue } from "../lib/schemas.js";
+import { getMasteredFields, masteredFieldsInBody } from "../lib/scim-mapping.js";
 import { listActiveSessionsForUser } from "../lib/sessions.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { listUserEmailsFor, type UserEmailInput } from "../lib/user-emails.js";
@@ -106,6 +107,14 @@ async function assertAttributesInSchema(env: Env, schemaId: number | undefined, 
   if (unknown.length) throw new ServiceError(400, `Not attributes of the user's schema: ${unknown.join(", ")}. Choose a schema that defines them (schema or schema_id).`);
 }
 
+/** Mastered fields belong to the upstream provisioner: sending one over the admin API is a mistake, not a no-op. */
+async function assertNoMasteredFields(env: Env, body: { username?: unknown; domain?: unknown; given_name?: unknown; family_name?: unknown; email?: unknown; emails?: unknown; attributes?: Record<string, unknown> }): Promise<void> {
+  const mastered = new Set(await getMasteredFields(env));
+  if (!mastered.size) return;
+  const bad = masteredFieldsInBody(mastered, body);
+  if (bad.length) throw new ServiceError(400, `${bad.map((f) => `"${f}"`).join(", ")} ${bad.length === 1 ? "is" : "are"} mastered by inbound provisioning - change ${bad.length === 1 ? "it" : "them"} over SCIM instead.`);
+}
+
 const UserWrite = {
   given_name: z.string().optional(),
   family_name: z.string().optional(),
@@ -139,6 +148,7 @@ defineRoute(
     const body = await readJson<{ username: string; domain?: string; given_name: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; password?: string; status?: "active" | "disabled" }>(c);
     const schemaId = await schemaIdFor(c.env, body);
     await assertAttributesInSchema(c.env, schemaId, body.attributes);
+    await assertNoMasteredFields(c.env, body);
     const created = await createUser(apiCtx(c), {
       username: body.username,
       domain: body.domain ?? (await getDefaultDomain(c.env)),
@@ -191,6 +201,7 @@ defineRoute(
       const at = user.upn.lastIndexOf("@");
       const schemaId = (await schemaIdFor(c.env, body)) ?? user.schema_id ?? (await defaultSchemaId(c.env, "user")) ?? undefined;
       await assertAttributesInSchema(c.env, schemaId, body.attributes);
+      await assertNoMasteredFields(c.env, body);
       const current = Object.fromEntries((await getSchemaAttributes(c.env, Number(schemaId))).map((a) => [a.name, userAttributeValue(user, a)]));
       const { results: memberships } = await c.env.DB.prepare("SELECT gm.group_id FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = ? AND g.rule = ''").bind(user.id).all<{ group_id: number }>();
       const saved = await updateUserProfile(ctx, user.id, {

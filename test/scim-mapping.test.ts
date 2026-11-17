@@ -207,3 +207,89 @@ describe("inbound attribute mappings", () => {
     ]);
   });
 });
+
+describe("field mastering", () => {
+  it("GET/PUT /api/v1/scim/mastering round-trips the field list and rejects bad fields", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    expect((await apiCall("/api/v1/scim/mastering", { token: apiKey })).body.fields).toEqual([]);
+
+    const put = await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["job_title", "department", "custom.pronouns"] } });
+    expect(put.status).toBe(200);
+    expect((await apiCall("/api/v1/scim/mastering", { token: apiKey })).body.fields).toEqual(["job_title", "department", "custom.pronouns"]);
+
+    expect((await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["bogus"] } })).status).toBe(400);
+    expect((await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["custom."] } })).status).toBe(400);
+  });
+
+  it("the admin API rejects mastered fields while inbound SCIM still writes them", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const created = await scim(apiKey, "/Users", "POST", { userName: "hr1@horizon.test", name: { givenName: "H", familyName: "R" }, title: "Analyst", [ENT]: { department: "IT" }, active: true });
+    expect(created.status).toBe(201);
+
+    await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["job_title", "department", "emails", "given_name"] } });
+
+    // PATCH naming a mastered field is refused; an unmastered one is fine.
+    const patch = await apiCall("/api/v1/users/hr1", { token: apiKey, method: "PATCH", body: { given_name: "Changed" } });
+    expect(patch.status).toBe(400);
+    expect(patch.body.error?.message ?? JSON.stringify(patch.body)).toContain("mastered");
+
+    expect((await apiCall("/api/v1/users/hr1", { token: apiKey, method: "PATCH", body: { emails: [{ value: "new@horizon.test", primary: true }] } })).status).toBe(400);
+    expect((await apiCall("/api/v1/users/hr1", { token: apiKey, method: "PATCH", body: { family_name: "R2" } })).status).toBe(200);
+
+    // Inbound SCIM is the master: its writes land.
+    const updated = await scim(apiKey, `/Users/${created.body.id}`, "PUT", { userName: "hr1@horizon.test", name: { givenName: "Mastered", familyName: "R" }, title: "Senior Analyst", [ENT]: { department: "SecOps" } });
+    expect(updated.status).toBe(200);
+    expect(updated.body.title).toBe("Senior Analyst");
+    expect(updated.body[ENT].department).toBe("SecOps");
+    expect(updated.body.name.givenName).toBe("Mastered");
+  });
+
+  it("create calls naming mastered fields are also refused", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["emails", "upn"] } });
+
+    expect((await apiCall("/api/v1/users", { token: apiKey, method: "POST", body: { username: "x1", given_name: "X", emails: [{ value: "x@horizon.test" }] } })).status).toBe(400);
+    // `upn` mastered means every create names the mastered identity - so manual creates are refused outright.
+    expect((await apiCall("/api/v1/users", { token: apiKey, method: "POST", body: { username: "x1", given_name: "X" } })).status).toBe(400);
+
+    await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["emails"] } });
+    expect((await apiCall("/api/v1/users", { token: apiKey, method: "POST", body: { username: "x1", given_name: "X" } })).status).toBe(201);
+  });
+
+  it("the console user page renders mastered fields read-only and keeps them on save", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await scim(apiKey, "/Users", "POST", { userName: "hr2@horizon.test", name: { givenName: "Original", familyName: "Person" }, emails: [{ value: "hr2@horizon.test", primary: true }] });
+    await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["given_name", "emails"] } });
+
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const target = (await env.DB.prepare("SELECT id, schema_id FROM users WHERE username = 'hr2'").first<{ id: number; schema_id: number | null }>())!;
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+
+    const page = await (await SELF.fetch(`${BASE}/admin/users/${target.id}`, { headers: { Cookie: cookie } })).text();
+    expect(page).toContain("mastered by provisioning");
+
+    // A save from a mastered form (disabled fields don't post) keeps the values.
+    const post = await SELF.fetch(`${BASE}/admin/users/${target.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE, Cookie: cookie },
+      body: `username=hr2&domain=horizon.test&family_name=Renamed&schema_id=${target.schema_id ?? ""}`,
+      redirect: "manual",
+    });
+    expect(post.status).toBe(302);
+    const row = await env.DB.prepare("SELECT given_name, family_name, email FROM users WHERE id = ?").bind(target.id).first<{ given_name: string; family_name: string; email: string }>();
+    expect(row).toEqual({ given_name: "Original", family_name: "Renamed", email: "hr2@horizon.test" });
+  });
+
+  it("a mastered self-service attribute disappears from the account editor", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    // Make a custom user-editable attribute, then master it.
+    const { id: schemaId } = (await env.DB.prepare("SELECT id FROM schemas WHERE object_type = 'user' ORDER BY id LIMIT 1").first<{ id: number }>())!;
+    await env.DB.prepare("INSERT INTO schema_attributes (schema_id, name, label, type, user_editable, position) VALUES (?, 'nickname', 'Nickname', 'string', 1, 99)").bind(schemaId).run();
+    await apiCall("/api/v1/scim/mastering", { token: apiKey, method: "PUT", body: { fields: ["custom.nickname"] } });
+
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const page = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
+    expect(page).not.toContain('name="attr_nickname"');
+  });
+});

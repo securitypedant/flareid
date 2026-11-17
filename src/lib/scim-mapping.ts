@@ -1,6 +1,8 @@
 import type { Env } from "../env.js";
 import { getUserByExternalId } from "./db.js";
+import { USER_COLUMN_ATTRIBUTES } from "./schemas.js";
 import { getSetting, setSetting } from "./settings.js";
+import type { SchemaAttributeRow } from "./schemas.js";
 import type { UserRow } from "./types.js";
 import { getUserByAnyEmail, type UserEmailInput } from "./user-emails.js";
 
@@ -540,4 +542,67 @@ export async function correlateUser(env: Env, input: CorrelationInput): Promise<
     if (user) return { user, key };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Field mastering
+// ---------------------------------------------------------------------------
+
+/**
+ * Mastered fields belong to the upstream provisioner: only inbound SCIM
+ * writes may change them. The console shows them read-only, and the admin
+ * API rejects them outright. The schema attribute with the same name feeds
+ * the field, so `department` masters the column AND the attribute form of
+ * it, while `custom.<key>` masters a custom attribute.
+ */
+export const MASTERING_FIELDS = [
+  "upn", "emails", "given_name", "family_name", "display_name", "job_title",
+  "department", "employee_number", "hire_date", "employment_status",
+  "employment_type", "location", "manager",
+] as const;
+const CUSTOM_MASTERED = /^custom\.[A-Za-z][\w-]*$/;
+
+const MASTERING_SETTING = "scim_mastering";
+
+export async function getMasteredFields(env: Env): Promise<string[]> {
+  const raw = await getSetting(env, MASTERING_SETTING);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String).filter((f) => (MASTERING_FIELDS as readonly string[]).includes(f) || CUSTOM_MASTERED.test(f)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setMasteredFields(env: Env, fields: string[]): Promise<void> {
+  const clean = [...new Set(fields.map((f) => f.trim()).filter(Boolean))];
+  for (const f of clean) {
+    if (!(MASTERING_FIELDS as readonly string[]).includes(f) && !CUSTOM_MASTERED.test(f))
+      throw new ScimMappingError(`"${f}" is not a field that can be mastered - use a user field or custom.<key>.`);
+  }
+  await setSetting(env, MASTERING_SETTING, JSON.stringify(clean));
+}
+
+/** The mastering key for a schema attribute: column-mapped attrs master by name, customs by custom.<name>. */
+export function masteringKeyFor(attr: Pick<SchemaAttributeRow, "name">): string {
+  return attr.name === "manager" || USER_COLUMN_ATTRIBUTES.has(attr.name) ? attr.name : `custom.${attr.name}`;
+}
+
+/**
+ * The mastered fields an API body explicitly sends - those are rejected
+ * rather than preserved. `attributes` keys are checked against their
+ * mastering key, the named body fields against theirs.
+ */
+export function masteredFieldsInBody(mastered: Set<string>, body: { username?: unknown; domain?: unknown; given_name?: unknown; family_name?: unknown; display_name?: unknown; email?: unknown; emails?: unknown; attributes?: Record<string, unknown> }): string[] {
+  const out: string[] = [];
+  if (mastered.has("upn") && (body.username !== undefined || body.domain !== undefined)) out.push("upn");
+  if (mastered.has("emails") && (body.emails !== undefined || body.email !== undefined)) out.push("emails");
+  for (const f of ["given_name", "family_name", "display_name"] as const) {
+    if (mastered.has(f) && body[f] !== undefined) out.push(f);
+  }
+  for (const name of Object.keys(body.attributes ?? {})) {
+    if (mastered.has(name) || mastered.has(`custom.${name}`)) out.push(name);
+  }
+  return [...new Set(out)];
 }

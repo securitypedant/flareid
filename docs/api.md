@@ -653,6 +653,27 @@ incoming list), `employee_number`, and `source_id` (the incoming
 mapping target, and resolved in `manager` references alongside the FlareID
 UUID, UPNs and contact addresses.
 
+### `GET /scim/mastering`, `PUT /scim/mastering`
+
+Scope: `scim:read` / `scim:write`.
+
+Field mastering declares which user fields the upstream provisioner owns.
+Mastered fields are read-only outside inbound SCIM: the console user editor
+renders them without inputs, the self-service profile hides them, and the
+admin API refuses a `POST`/`PATCH` that names one (`400`). Other write
+channels keep the existing value rather than dropping it when the field is
+simply absent. Inbound SCIM writes always land.
+
+```json
+{ "fields": ["job_title", "department", "manager", "emails", "custom.pronouns"] }
+```
+
+Valid fields are `upn`, `emails`, `given_name`, `family_name`,
+`display_name`, `job_title`, `department`, `employee_number`, `hire_date`,
+`employment_status`, `employment_type`, `location`, `manager`, and
+`custom.<key>` for a custom attribute. `PUT` replaces the whole list; an
+empty list unmasters everything.
+
 ### SCIM 2.0 server (`/scim/v2`)
 
 FlareID also *accepts* provisioning: an HR system or upstream IdP can manage
