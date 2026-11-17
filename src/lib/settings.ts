@@ -142,6 +142,49 @@ export async function setScimScope(env: Env, scope: ScimScope): Promise<void> {
   ]);
 }
 
+/**
+ * How hard the outbound SCIM client is allowed to push. Different receivers
+ * have different limits - Cloudflare Access's endpoint is Durable-Object
+ * backed and rejects the big, fast pushes a naive sync produces, so every
+ * dimension is a setting, tuned per target system.
+ */
+export interface ScimTuning {
+  /** Minimum milliseconds between outbound requests. 0 = back to back. */
+  paceMs: number;
+  /** Member references per group PATCH body. */
+  membersPerRequest: number;
+  /** Users pushed per sync invocation (the sync is re-called until complete). */
+  syncBatchSize: number;
+}
+
+const SCIM_TUNING_DEFAULTS: ScimTuning = { paceMs: 200, membersPerRequest: 50, syncBatchSize: 50 };
+
+const clampInt = (raw: string | null, min: number, max: number, fallback: number): number => {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+};
+
+export async function getScimTuning(env: Env): Promise<ScimTuning> {
+  const [pace, members, batch] = await Promise.all([
+    getSetting(env, "scim_pace_ms"),
+    getSetting(env, "scim_members_per_request"),
+    getSetting(env, "scim_sync_batch"),
+  ]);
+  return {
+    paceMs: clampInt(pace, 0, 10_000, SCIM_TUNING_DEFAULTS.paceMs),
+    membersPerRequest: clampInt(members, 1, 500, SCIM_TUNING_DEFAULTS.membersPerRequest),
+    syncBatchSize: clampInt(batch, 10, 500, SCIM_TUNING_DEFAULTS.syncBatchSize),
+  };
+}
+
+export async function setScimTuning(env: Env, tuning: ScimTuning): Promise<void> {
+  await Promise.all([
+    setSetting(env, "scim_pace_ms", String(tuning.paceMs)),
+    setSetting(env, "scim_members_per_request", String(tuning.membersPerRequest)),
+    setSetting(env, "scim_sync_batch", String(tuning.syncBatchSize)),
+  ]);
+}
+
 export type NewUserPasswordMode = "default" | "random";
 
 export async function getNewUserPasswordMode(env: Env): Promise<NewUserPasswordMode> {

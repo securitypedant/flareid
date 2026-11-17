@@ -7,6 +7,7 @@ import { listPasskeys } from "../lib/passkeys.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes, userAttributeValue } from "../lib/schemas.js";
 import { listActiveSessionsForUser } from "../lib/sessions.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
+import { listUserEmailsFor, type UserEmailInput } from "../lib/user-emails.js";
 import { apiCtx, ServiceError } from "../services/context.js";
 import {
   connectedApps,
@@ -56,6 +57,8 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
   const { results: pageUsers } = await env.DB.prepare(`SELECT * FROM users u ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...binds, opts.limit, opts.offset).all<UserRow>();
   const dynamicById = new Map(pageUsers.map((u) => [u.id, ruleGroups.filter((g) => { const r = parseRule(g.rule); return r !== null && userMatchesRule(u, r); }).map((g) => g.name)]));
 
+  const emailsById = await listUserEmailsFor(env, results.map((u) => Number(u.id)));
+
   return results.map(({ group_names, mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey, custom_attributes, id, ...user }) => ({
     ...user,
     mfa_enabled: mfa_enabled === 1,
@@ -63,6 +66,7 @@ export async function selectUsers(env: Env, opts: { username?: string; limit: nu
     security_questions_enabled: security_questions_enabled === 1,
     second_factors: enrolledFactors({ mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey }),
     attributes: parseCustomAttributes(custom_attributes),
+    emails: (emailsById.get(Number(id)) ?? []).map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 })),
     groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
   }));
 }
@@ -106,6 +110,10 @@ const UserWrite = {
   given_name: z.string().optional(),
   family_name: z.string().optional(),
   email: z.string().nullable().optional().openapi({ description: "Where email for the account goes, when not the UPN; null or empty clears it." }),
+  emails: z
+    .array(z.object({ value: z.string(), type: z.string().optional(), primary: z.boolean().optional() }))
+    .optional()
+    .openapi({ description: "The complete contact-address list (work/home/aliases), replacing what is there; the marked or first entry is the primary that `email` claims and mail goes to. Takes precedence over `email`." }),
   schema_id: z.number().int().optional(),
   schema: z.string().optional().openapi({ description: "The user schema, by name (alternative to schema_id)." }),
   attributes: StringMap.optional().openapi({ description: "Schema attribute values by name. On PATCH, merged into the current values." }),
@@ -128,7 +136,7 @@ defineRoute(
     response: z.object({ ok: z.literal(true), upn: z.string(), username: z.string(), password: z.string().optional() }),
   },
   async (c) => {
-    const body = await readJson<{ username: string; domain?: string; given_name: string; family_name?: string; email?: string | null; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; password?: string; status?: "active" | "disabled" }>(c);
+    const body = await readJson<{ username: string; domain?: string; given_name: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; password?: string; status?: "active" | "disabled" }>(c);
     const schemaId = await schemaIdFor(c.env, body);
     await assertAttributesInSchema(c.env, schemaId, body.attributes);
     const created = await createUser(apiCtx(c), {
@@ -142,6 +150,7 @@ defineRoute(
       password: body.password,
       status: body.status,
       email: body.email ?? undefined,
+      emails: body.emails,
     });
     // Returned once, and only when generated - a caller that chose one has it.
     return c.json({ ok: true, upn: created.upn, username: created.upn.split("@")[0], ...(created.chosen ? {} : { password: created.password }) }, 201);
@@ -172,7 +181,7 @@ defineRoute(
   async (c) => {
     const user = await userByUsername(c);
     if (!user) return noUser(c);
-    const body = await readJson<{ username?: string; domain?: string; given_name?: string; family_name?: string; email?: string | null; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; status?: "active" | "disabled" }>(c);
+    const body = await readJson<{ username?: string; domain?: string; given_name?: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; status?: "active" | "disabled" }>(c);
     const ctx = apiCtx(c);
     const { status, ...profileFields } = body;
     let username = user.username;
@@ -193,6 +202,7 @@ defineRoute(
         attributes: { ...current, ...(body.attributes ?? {}) },
         groupIds: body.groups !== undefined ? await staticGroupIds(c.env, body.groups) : memberships.map((m) => m.group_id),
         email: body.email,
+        emails: body.emails,
       });
       username = saved.upn.slice(0, saved.upn.lastIndexOf("@"));
     }

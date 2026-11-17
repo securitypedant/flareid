@@ -38,7 +38,7 @@ import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
-import { getAppName, getScimConfig, isSetupCompleted, setScimConfig } from "../lib/settings.js";
+import { getAppName, getScimConfig, isSetupCompleted, setScimConfig, setScimTuning } from "../lib/settings.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
@@ -643,11 +643,16 @@ defineRoute({
 // ---------------------------------------------------------------------------
 
 defineRoute({
-  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the SCIM endpoint, secret and scope",
-  description: "A changed scope re-evaluates everything already pushed, after the response.",
-  body: z.object({ endpoint: z.string().optional(), secret: z.string().optional(), scope: z.object({ mode: z.enum(["all", "selected"]).optional(), group_ids: z.array(z.number()).optional() }).optional() }),
+  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the SCIM endpoint, secret, scope and tuning",
+  description: "A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
+  body: z.object({
+    endpoint: z.string().optional(),
+    secret: z.string().optional(),
+    scope: z.object({ mode: z.enum(["all", "selected"]).optional(), group_ids: z.array(z.number()).optional() }).optional(),
+    tuning: z.object({ pace_ms: z.number().int().min(0).max(10_000), members_per_request: z.number().int().min(1).max(500), sync_batch: z.number().int().min(10).max(500) }).optional(),
+  }),
 }, async (c) => {
-  const body = await readJson<{ endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] } }>(c);
+  const body = await readJson<{ endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] }; tuning?: { pace_ms?: number; members_per_request?: number; sync_batch?: number } }>(c);
 
   if (body.endpoint !== undefined || body.secret !== undefined) {
     const endpoint = String(body.endpoint ?? (await getScimConfig(c.env)).endpoint).trim();
@@ -666,6 +671,13 @@ defineRoute({
       mode: body.scope.mode === "selected" ? "selected" : "all",
       groupIds: Array.isArray(body.scope.group_ids) ? body.scope.group_ids.map(Number) : [],
     }, (p) => c.executionCtx.waitUntil(p));
+  }
+  if (body.tuning) {
+    await setScimTuning(c.env, {
+      paceMs: body.tuning.pace_ms!,
+      membersPerRequest: body.tuning.members_per_request!,
+      syncBatchSize: body.tuning.sync_batch!,
+    });
   }
 
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_config_changed", undefined, undefined, c.req.raw);

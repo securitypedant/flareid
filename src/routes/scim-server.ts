@@ -7,6 +7,7 @@ import { logAudit } from "../lib/audit.js";
 import { getUserByExternalId } from "../lib/db.js";
 import { listDomains, getDefaultDomain } from "../lib/domains.js";
 import { isEmailAddress } from "../lib/email.js";
+import { listUserEmails, setUserEmails, getUserByAnyEmail, assertEmailsUsable, UserEmailError, type UserEmailInput } from "../lib/user-emails.js";
 import { parseRule, resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, userMatchesRule } from "../lib/groups.js";
 import { defaultSchemaId } from "../lib/schemas.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
@@ -143,6 +144,7 @@ async function userResource(env: Env, u: UserRow) {
   const { results: groups } = await env.DB.prepare("SELECT g.id, g.name FROM groups g JOIN group_members gm ON gm.group_id = g.id WHERE gm.user_id = ?")
     .bind(u.id)
     .all<{ id: number; name: string }>();
+  const emails = await listUserEmails(env, u.id);
   return {
     schemas: [USER, ENTERPRISE],
     id: u.external_id,
@@ -151,7 +153,9 @@ async function userResource(env: Env, u: UserRow) {
     displayName: u.display_name,
     title: u.job_title || undefined,
     active: u.status === "active",
-    emails: [{ value: u.email || u.upn, primary: true, type: "work" }],
+    emails: emails.length > 0
+      ? emails.map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 }))
+      : [{ value: u.email || u.upn, primary: true, type: "work" }],
     groups: groups.map((g) => ({ value: String(g.id), display: g.name, $ref: `${base(env)}/Groups/${g.id}` })),
     [ENTERPRISE]: {
       department: u.department || undefined,
@@ -246,12 +250,13 @@ interface ScimUserBody {
   displayName?: string;
   title?: string;
   active?: boolean;
-  emails?: { value?: string; primary?: boolean }[];
+  emails?: { value?: string; primary?: boolean; type?: string }[];
   [ENTERPRISE]?: { department?: string; employeeNumber?: string; manager?: { value?: string } | string };
+  [key: string]: unknown;
 }
 
-/** Columns a SCIM user body sets. Only what is present is changed (PUT callers send everything anyway). */
-async function columnsFrom(env: Env, body: ScimUserBody): Promise<Record<string, string | null>> {
+/** Columns a SCIM user body sets, plus its address list. Only what is present is changed (PUT callers send everything anyway). */
+async function columnsFrom(env: Env, body: ScimUserBody): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined }> {
   const cols: Record<string, string | null> = {};
   if (body.name?.givenName !== undefined) cols.given_name = String(body.name.givenName);
   if (body.name?.familyName !== undefined) cols.family_name = String(body.name.familyName);
@@ -261,14 +266,6 @@ async function columnsFrom(env: Env, body: ScimUserBody): Promise<Record<string,
     const active = typeof body.active === "string" ? (body.active as string).trim().toLowerCase() === "true" : body.active === true;
     cols.status = active ? "active" : "disabled";
   }
-  if (body.emails) {
-    const primary = body.emails.find((e) => e.primary) ?? body.emails[0];
-    if (primary?.value) {
-      const addr = String(primary.value).trim().toLowerCase();
-      if (!isEmailAddress(addr)) throw new ScimError(400, `"${primary.value}" is not a valid email address.`, "invalidValue");
-      cols.email = addr;
-    }
-  }
   const ent = body[ENTERPRISE];
   if (ent?.department !== undefined) cols.department = String(ent.department);
   if (ent?.employeeNumber !== undefined) cols.employee_number = String(ent.employeeNumber);
@@ -276,20 +273,41 @@ async function columnsFrom(env: Env, body: ScimUserBody): Promise<Record<string,
     const ref = typeof ent.manager === "string" ? ent.manager : ent.manager?.value;
     cols.manager_external_id = ref ? ((await getUserByExternalId(env, ref))?.external_id ?? null) : null;
   }
-  return cols;
+  // The whole list lands in user_emails; the primary mirrors into users.email.
+  // Format is refused here, before anything has been written (ownership is
+  // enforced inside setUserEmails, where the target user is known).
+  const emails = body.emails
+    ? body.emails
+        .filter((e) => e && typeof e.value === "string" && e.value.trim())
+        .map((e) => ({ value: String(e.value), type: e.type ?? "work", primary: e.primary === true }))
+    : undefined;
+  for (const e of emails ?? []) {
+    if (!isEmailAddress(e.value.trim())) throw new ScimError(400, `"${e.value}" is not a valid email address.`, "invalidValue");
+  }
+  return { cols, emails };
 }
 
-async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>) {
+async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined) {
   const keys = Object.keys(cols);
-  if (keys.length === 0) return;
-  await env.DB.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
-    .bind(...keys.map((k) => cols[k]), new Date().toISOString(), userId)
-    .run();
+  if (keys.length > 0) {
+    await env.DB.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
+      .bind(...keys.map((k) => cols[k]), new Date().toISOString(), userId)
+      .run();
+  }
+  let emailsChanged = false;
+  if (emails !== undefined) {
+    try {
+      emailsChanged = await setUserEmails(env, userId, emails);
+    } catch (err) {
+      if (err instanceof UserEmailError) throw new ScimError(409, err.message, "uniqueness");
+      throw err;
+    }
+  }
   // Deactivation over SCIM takes effect now, the same as in the console.
   if (cols.status === "disabled") {
     await revokeAllSessionsForUser(env, userId);
     await revokeTokensForUser(env, userId);
-  } else if ("email" in cols) {
+  } else if (emailsChanged || "email" in cols) {
     // A link already sent to the previous address must not outlive the correction.
     await revokeAccountTokens(env, userId);
   }
@@ -307,7 +325,17 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
 
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
-  const cols = await columnsFrom(c.env, body);
+  const { cols, emails } = await columnsFrom(c.env, body);
+  // An address another account already holds refuses the create outright -
+  // checked here so nothing is left behind.
+  if (emails?.length) {
+    try {
+      await assertEmailsUsable(c.env, null, emails);
+    } catch (err) {
+      if (err instanceof UserEmailError) throw new ScimError(409, err.message, "uniqueness");
+      throw err;
+    }
+  }
   // Refuse before anything is written: the check needs the row the request
   // would leave behind - the insert defaults plus the SCIM columns.
   const after = {
@@ -326,7 +354,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   )
     .bind(upn, local, local, externalId, await defaultSchemaId(c.env, "user"), now, now)
     .first<{ id: number }>();
-  await applyColumns(c.env, inserted!.id, cols);
+  await applyColumns(c.env, inserted!.id, cols, emails);
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
   downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
@@ -354,9 +382,9 @@ async function assertNoAdminRoleGrant(c: Context<{ Bindings: Env }>, user: UserR
 scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
   const body = await c.req.json<ScimUserBody>();
-  const cols = await columnsFrom(c.env, body);
-  await assertNoAdminRoleGrant(c, user, cols);
-  await applyColumns(c.env, user.id, cols);
+  const { cols, emails } = await columnsFrom(c.env, body);
+  await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
+  await applyColumns(c.env, user.id, cols, emails);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -393,9 +421,9 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   const user = await guardedUser(c);
   const body = await c.req.json<{ schemas?: string[]; Operations?: { op?: string; path?: string; value?: unknown }[] }>();
   if (!body.schemas?.includes(PATCH_OP) || !Array.isArray(body.Operations)) throw new ScimError(400, "Expected a PatchOp message.", "invalidSyntax");
-  const cols = await columnsFrom(c.env, patchToBody(body.Operations));
-  await assertNoAdminRoleGrant(c, user, cols);
-  await applyColumns(c.env, user.id, cols);
+  const { cols, emails } = await columnsFrom(c.env, patchToBody(body.Operations));
+  await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
+  await applyColumns(c.env, user.id, cols, emails);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);

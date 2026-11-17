@@ -96,7 +96,7 @@ describe("protocol claims", () => {
   it("discovery advertises the endpoints and values the OP supports", async () => {
     const doc = (await (await SELF.fetch(`${BASE}/.well-known/openid-configuration`)).json()) as Record<string, unknown>;
     expect(doc.end_session_endpoint).toBe(`${BASE}/oidc/logout`);
-    expect(doc.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
+    expect(doc.grant_types_supported).toEqual(["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code"]);
     expect(doc.prompt_values_supported).toEqual(["none", "login", "consent"]);
     expect(doc.token_endpoint_auth_methods_supported).toContain("none");
     expect(doc.claims_supported).toEqual(expect.arrayContaining(["auth_time", "acr", "sid", "preferred_username"]));

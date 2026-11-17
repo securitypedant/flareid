@@ -3,6 +3,7 @@ import type { Env } from "../env.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 import { getUserById } from "../lib/db.js";
+import { verifyOwnJwt } from "../lib/jwt.js";
 
 export const introspect = new Hono<{ Bindings: Env }>();
 
@@ -63,6 +64,22 @@ introspect.post("/introspect", async (c) => {
       scope: refreshTokenRow.scope,
       token_type: "refresh_token",
       ...(refreshTokenRow.expires_at ? { exp: Math.floor(new Date(refreshTokenRow.expires_at).getTime() / 1000) } : {}),
+    });
+  }
+
+  // Service tokens (client_credentials) are JWTs with no server-side record:
+  // signature + expiry is the answer. Only the client the token names may
+  // introspect it - same ownership rule as the opaque tokens above.
+  const jwt = await verifyOwnJwt(c.env, token);
+  if (jwt && jwt.token_use === "service" && (jwt.client_id === client.client_id || jwt.sub === client.client_id)) {
+    return c.json({
+      active: true,
+      sub: jwt.sub,
+      client_id: client.client_id,
+      scope: typeof jwt.scope === "string" ? jwt.scope : "",
+      token_type: "Bearer",
+      exp: jwt.exp,
+      ...(jwt.aud ? { aud: jwt.aud } : {}),
     });
   }
 

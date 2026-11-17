@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 3.10.0.
+API version 4.0.0.
 
 ## Contents
 
@@ -130,6 +130,7 @@ Request body:
 | `given_name` | string | yes |  |
 | `family_name` | string | no |  |
 | `email` | string \| null | no | Where email for the account goes, when not the UPN; null or empty clears it. |
+| `emails` | object[] | no | The complete contact-address list (work/home/aliases), replacing what is there; the marked or first entry is the primary that `email` claims and mail goes to. Takes precedence over `email`. |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The user schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Schema attribute values by name. On PATCH, merged into the current values. |
@@ -191,6 +192,7 @@ Response `200`:
 | `upn` | string | yes |  |
 | `username` | string | yes |  |
 | `email` | string \| null | yes |  |
+| `emails` | object[] | yes | Every contact address on the account; the primary is what `email` and mail deliveries use. |
 | `display_name` | string | yes |  |
 | `given_name` | string | yes |  |
 | `family_name` | string | yes |  |
@@ -239,6 +241,7 @@ Request body:
 | `given_name` | string | no |  |
 | `family_name` | string | no |  |
 | `email` | string \| null | no | Where email for the account goes, when not the UPN; null or empty clears it. |
+| `emails` | object[] | no | The complete contact-address list (work/home/aliases), replacing what is there; the marked or first entry is the primary that `email` claims and mail goes to. Takes precedence over `email`. |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The user schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Schema attribute values by name. On PATCH, merged into the current values. |
@@ -254,6 +257,7 @@ Response `200`:
 | `upn` | string | yes |  |
 | `username` | string | yes |  |
 | `email` | string \| null | yes |  |
+| `emails` | object[] | yes | Every contact address on the account; the primary is what `email` and mail deliveries use. |
 | `display_name` | string | yes |  |
 | `given_name` | string | yes |  |
 | `family_name` | string | yes |  |
@@ -1374,7 +1378,7 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 | Method | Path | Permission | Summary |
 |---|---|---|---|
 | `GET` | `/api/v1/scim/config` | `scim:read` | Read the SCIM configuration |
-| `POST` | `/api/v1/scim/config` | `scim:write` | Set the SCIM endpoint, secret and scope |
+| `POST` | `/api/v1/scim/config` | `scim:write` | Set the SCIM endpoint, secret, scope and tuning |
 | `POST` | `/api/v1/scim/test` | `scim:write` | Test the SCIM connection |
 | `POST` | `/api/v1/scim/sync` | `scim:write` | Push the next batch of users, then the groups |
 
@@ -1398,9 +1402,9 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 ### `POST /api/v1/scim/config`
 
-Set the SCIM endpoint, secret and scope.
+Set the SCIM endpoint, secret, scope and tuning.
 
-A changed scope re-evaluates everything already pushed, after the response.
+A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.
 
 Permission: `scim:write`
 
@@ -1411,6 +1415,7 @@ Request body:
 | `endpoint` | string | no |  |
 | `secret` | string | no |  |
 | `scope` | object { mode, group_ids } | no |  |
+| `tuning` | object { pace_ms, members_per_request, sync_batch } | no |  |
 
 Response `200`:
 

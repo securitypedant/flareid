@@ -4,12 +4,47 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## Unreleased
+## [4.0.0] - 2026-11-17
 
-No migrations. The remaining run-2 audit findings, plus the first pass of
-observability work.
+**Migration `0032_user_emails.sql`** - `user_emails`, the per-account contact
+address list; existing `users.email` values are backfilled as work primaries.
+**Migration `0033_device_flow.sql`** - `device_codes` for the device
+authorization grant.
 
 ### Added
+
+- **OAuth `client_credentials` (service-account tokens).** Confidential
+  clients can exchange their credentials directly at `/token` for a signed
+  access token carrying `openid`/`email`/`profile`/`groups` claims about the
+  client itself - machine-to-machine calls no longer need an API key or a
+  signed-in user. Discovery advertises the grant, and `/introspect` reads the
+  service JWTs too.
+- **Device Authorization Grant (RFC 8628).** `POST /device_authorization`
+  hands a device code and a short user code; the person approves at
+  `/device` after signing in, and the device polls `/token` with
+  `urn:ietf:params:oauth:grant-type:device_code` (honouring `interval`,
+  `slow_down` and `authorization_pending`) until it is approved, denied or
+  expires. Codes are single-use, hashed at rest, and swept by the hourly
+  cleanup.
+- **Multiple contact addresses per account.** `user_emails` holds the full
+  list (work/home/anything) that SCIM `emails` carries; the primary is
+  mirrored to `users.email` so every existing read path - LDAP `mail`, the
+  `email` claim, invitations and reset links, email codes - keeps working.
+  An address can only belong to one account, and people can sign in or
+  recover with any listed address, not just the UPN. The user page gains an
+  addresses editor, the API accepts and returns `emails` on user resources,
+  and the raw JSON card on the user page shows the whole record minus
+  credential material.
+- **Outbound SCIM pacing and request sizing.** Group membership changes go
+  as chunked `members` PATCH operations - never one giant PUT full of
+  members - and full-sync PUT/POST bodies carry identity only, with the
+  member set appended in pieces. Every remote call is paced. The receiver's
+  limits are tunable under Integrations → SCIM (or `tuning` on
+  `POST /api/v1/scim/config`): milliseconds between requests, member
+  references per PATCH, and users per sync batch - for receivers bounded by
+  per-request document limits.
+
+### Fixed
 
 - **A Terraform example** (`examples/terraform-access/`) that wires the
   Cloudflare Access integration in one apply: it generates the client
@@ -67,6 +102,11 @@ observability work.
 
 ### Fixed
 
+- **SCIM `emails` writes validate before anything is stored.** A malformed
+  address answers `400 invalidValue`, and an address held by another account
+  answers `409 uniqueness` (checked before the user row is created on POST,
+  so a conflict can't strand a half-written user). Previously a bad write
+  could surface as a 500.
 - The email-template form carries the accent colour too, so the page has one
   Save button; the preview script reads it off the same form.
 - Multi-card columns in a `two-col` grid (the brand edit page) keep each

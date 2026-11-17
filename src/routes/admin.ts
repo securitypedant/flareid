@@ -20,6 +20,7 @@ import { attr, attrGrid, barChart, barLineChart, breadcrumbs, cancelLink, cardSe
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { listUserEmails, setUserEmails } from "../lib/user-emails.js";
 import {
   getDefaultPassword,
   getPasswordPolicy,
@@ -28,7 +29,7 @@ import {
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { getScimConfig, getScimScope, setScimConfig } from "../lib/settings.js";
+import { getScimConfig, getScimScope, getScimTuning, setScimConfig, setScimTuning } from "../lib/settings.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -1430,6 +1431,25 @@ admin.get("/admin/users/:id", async (c) => {
   const staticGroups = groups.filter((g) => !parseRule(g.rule));
   const dynamicGroups = dynamicGroupsFor(user, groups);
 
+  // The record exactly as the API and provisioning syncs see it: the row plus
+  // its parsed attributes, addresses and memberships - never the credential
+  // material (hashes, salts, TOTP secrets).
+  const { password_hash: _ph, password_salt: _ps, password_iterations: _pi, totp_secret: _ts, totp_last_counter: _tc, ...publicRow } = user;
+  const userEmails = await listUserEmails(c.env, id);
+  const rawUserJson = JSON.stringify(
+    {
+      ...publicRow,
+      custom_attributes: JSON.parse(user.custom_attributes || "{}"),
+      emails: userEmails.map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 })),
+      groups: {
+        static: groups.filter((g) => memberGroupIds.has(g.id) && !parseRule(g.rule)).map((g) => g.name),
+        dynamic: dynamicGroups.map((g) => g.name),
+      },
+    },
+    null,
+    2
+  );
+
   const schemaOptions = userSchemas
     .map((s) => {
       const lost = lostBySchema.get(s.id) ?? [];
@@ -1465,6 +1485,15 @@ admin.get("/admin/users/:id", async (c) => {
             <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain)}</div>
           </div>
           <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${escapeHtml(new Date(user.created_at).toLocaleString())}</p>
+          <h3 style="margin-top:14px;">Email addresses</h3>
+          <p class="muted" style="margin-top:-4px;">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
+          <div class="email-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
+            <span>Address</span><span>Type</span><span>Primary</span><span></span>
+          </div>
+          <div id="email-rows">${(userEmails.length ? userEmails : [undefined]).map((e) => userEmailRowHtml(e)).join("")}</div>
+          <template id="email-row-template">${userEmailRowHtml()}</template>
+          <button type="button" class="secondary" data-append-template="email-row-template" data-append-to="email-rows">+ Add address</button>
+          <datalist id="email-type-options"><option value="work"></option><option value="home"></option><option value="other"></option></datalist>
         `)}
 
         ${cardSection(`
@@ -1615,6 +1644,12 @@ admin.get("/admin/users/:id", async (c) => {
         </form>
       `)
       }
+
+      ${cardSection(`
+        <h2>Raw record</h2>
+        <p class="muted">The user object exactly as the API and provisioning syncs see it - credential material (hashes, salts, TOTP secrets) excluded.</p>
+        <pre class="import-log" style="max-height:420px; overflow:auto;">${escapeHtml(rawUserJson)}</pre>
+      `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name }],
       undefined,
@@ -1630,10 +1665,23 @@ admin.post("/admin/users/:id/status", async (c) => {
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
+/** One editable address row (parallel email_addr/email_type/email_primary arrays); blank addresses are dropped on read. */
+function userEmailRowHtml(e?: { email: string; type: string; is_primary: number }): string {
+  return `<div class="email-row">
+    <input type="email" name="email_addr" value="${escapeHtml(e?.email ?? "")}" placeholder="name@example.com" />
+    <input type="text" name="email_type" value="${escapeHtml(e?.type ?? "work")}" placeholder="type" list="email-type-options" />
+    <label><input type="hidden" name="email_primary" value="${e?.is_primary ? 1 : 0}" /><input type="checkbox" ${e?.is_primary ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> Primary</label>
+    <button type="button" class="secondary" data-remove-closest=".email-row" aria-label="Remove address">&times;</button>
+  </div>`;
+}
+
 admin.post("/admin/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.parseBody({ all: true });
   const postedGroupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const addrs = list(body.email_addr), types = list(body.email_type), primaries = list(body.email_primary);
+  const emails = addrs.map((value, i) => ({ value, type: types[i] ?? "work", primary: primaries[i] === "1" })).filter((e) => e.value.trim() !== "");
   // The form carries every value of the chosen schema (same-named values were
   // carried into it), so this is a full replace - PATCH /api/v1/users merges
   // into the current values and calls the same function.
@@ -1645,6 +1693,7 @@ admin.post("/admin/users/:id", async (c) => {
     schemaId: Number(body.schema_id) || undefined,
     attributes: Object.fromEntries(Object.entries(body).filter(([k]) => k.startsWith("attr_")).map(([k, v]) => [k.slice(5), String(v ?? "")])),
     groupIds: postedGroupIds,
+    emails,
   });
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
@@ -2548,6 +2597,7 @@ admin.get("/admin/integrations/api-keys", async (c) => {
 admin.get("/admin/integrations/scim", async (c) => {
   const config = await getScimConfig(c.env);
   const scope = await getScimScope(c.env);
+  const tuning = await getScimTuning(c.env);
   // The last SCIM events (syncs, failures, scope changes), newest last, as the log's starting content.
   const { results: scimEvents } = await c.env.DB.prepare(
     "SELECT at, actor_upn, action, target, details FROM audit_log WHERE action LIKE 'scim.%' ORDER BY id DESC LIMIT 15"
@@ -2605,6 +2655,25 @@ admin.get("/admin/integrations/scim", async (c) => {
               )}
             </div>
             <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save scope</button></div>
+          </form>
+        `)}
+        ${cardSection(`
+          <h2>Sync tuning</h2>
+          <p class="muted">How hard to push against this SCIM server. Receivers backed by a single object (Cloudflare Access's endpoint is) reject large bodies and dense requests - lower both if syncs come back with errors.</p>
+          <form method="POST" action="/admin/scim/tuning">
+            <div class="field-row">
+              <div>
+                <label for="pace_ms">Pause between requests (ms)</label>
+                <input type="number" id="pace_ms" name="pace_ms" min="0" max="10000" step="50" value="${tuning.paceMs}" />
+              </div>
+              <div>
+                <label for="members_per_request">Members per group request</label>
+                <input type="number" id="members_per_request" name="members_per_request" min="1" max="500" value="${tuning.membersPerRequest}" />
+              </div>
+            </div>
+            <label for="sync_batch">Users per sync batch</label>
+            <input type="number" id="sync_batch" name="sync_batch" min="10" max="500" value="${tuning.syncBatchSize}" style="max-width:220px;" />
+            <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save tuning</button></div>
           </form>
         `)}
         ${cardSection(`
@@ -5015,6 +5084,23 @@ admin.post("/admin/scim/scope", async (c) => {
   const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
   // Re-evaluates everything already pushed against the new scope (services/scim-sync.ts).
   await applyScimScope(consoleCtx(c), { mode, groupIds }, (p) => c.executionCtx.waitUntil(p));
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
+});
+
+admin.post("/admin/scim/tuning", async (c) => {
+  const body = await c.req.parseBody();
+  const int = (v: unknown) => {
+    const n = Number(v);
+    return Number.isInteger(n) ? n : NaN;
+  };
+  const paceMs = int(body.pace_ms);
+  const membersPerRequest = int(body.members_per_request);
+  const syncBatchSize = int(body.sync_batch);
+  if (!(paceMs >= 0 && paceMs <= 10_000) || !(membersPerRequest >= 1 && membersPerRequest <= 500) || !(syncBatchSize >= 10 && syncBatchSize <= 500)) {
+    return c.redirect("/admin/integrations/scim?error=Tuning values out of range.", 302);
+  }
+  await setScimTuning(c.env, { paceMs, membersPerRequest, syncBatchSize });
+  await logAudit(c.env, c.get("user"), "settings.scim_tuning_changed", undefined, { paceMs, membersPerRequest, syncBatchSize }, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 

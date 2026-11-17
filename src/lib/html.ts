@@ -219,6 +219,9 @@ const STYLES = `
   .attr-row { display: grid; grid-template-columns: 1.2fr 1.4fr 1fr 100px 130px 44px; gap: 8px; align-items: center; margin-bottom: 8px; }
   .attr-row input, .attr-row select { margin-bottom: 0; }
   .attr-row label { margin: 0; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .email-row { display: grid; grid-template-columns: 1.6fr 110px 90px 44px; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .email-row input, .email-row select { margin-bottom: 0; }
+  .email-row label { margin: 0; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .header-meta { font-size: 0.875rem; font-weight: 400; color: var(--fi-muted); margin-left: 10px; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
   /* Equal-height pairs - direct children only. A column that wraps several

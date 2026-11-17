@@ -12,6 +12,7 @@ import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttrib
 import { parseRule, userMatchesRule, type GroupRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups, drainScimDeprovisionQueue } from "./scim-client.js";
+import { setUserEmails, UserEmailError } from "./user-emails.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 /**
@@ -632,10 +633,17 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       }
 
       if (user.email !== undefined) {
-        const email = cleanString(user.email).toLowerCase() || null;
-        const changed = await env.DB.prepare("UPDATE users SET email = ? WHERE id = ? AND email IS NOT ?").bind(email, userId, email).run();
-        // A link sent to the previous address is void once the address changes.
-        if (changed.meta.changes > 0) await revokeAccountTokens(env, userId);
+        const email = cleanString(user.email).toLowerCase();
+        // The address table is the record; it mirrors the primary into users.email.
+        try {
+          const primaryChanged = await setUserEmails(env, userId, email ? [{ value: email }] : []);
+          // A link sent to the previous address is void once the address changes.
+          if (primaryChanged) await revokeAccountTokens(env, userId);
+        } catch (e) {
+          // An address claimed by another account is a row error, not an abort.
+          if (e instanceof UserEmailError) result.errors.push({ username, message: e.message });
+          else throw e;
+        }
       }
 
       // --- Membership ---

@@ -35,6 +35,7 @@ export const UserSchema = z
     upn: z.string(),
     username: z.string(),
     email: z.string().nullable(),
+    emails: z.array(z.object({ value: z.string(), type: z.string(), primary: z.boolean() })).openapi({ description: "Every contact address on the account; the primary is what `email` and mail deliveries use." }),
     display_name: z.string(),
     given_name: z.string(),
     family_name: z.string(),

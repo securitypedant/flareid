@@ -112,6 +112,49 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
 33. A naming and trademark review. "FlareID" is Cloudflare-adjacent, and the
     README needs to keep saying plainly that this is not an official Cloudflare
     product.
+34. **Identity mediation for inbound provisioning** (v4.0.0): multiple email
+    addresses per user (`user_emails`), a mapping engine (`scim_mappings` -
+    expressions deriving UPN/displayName/attributes), correlation rules
+    (ordered match keys, update-instead-of-create), and field mastering
+    (HR-owned fields read-only in the console and API).
+35. **Inbound federation**: sign in *via* an upstream IdP (OIDC RP + SAML SP)
+    with JIT provisioning - FlareID as the hub behind an existing IdP.
+36. **Access requests and certification campaigns**: request/approve flows for
+    group membership, periodic access reviews.
+37. **Machine grants**: `client_credentials` service tokens (signed JWTs,
+    verified against `/jwks.json`) and the RFC 8628 device authorization
+    grant for keyboard-less clients.
+38. **Cloudflare One integrations**: pull the user risk score
+    (`GET /accounts/{id}/zt_risk_scoring/{user_id}`, Zero Trust PII Read) into
+    an auth-policy condition and the user page; push FlareID-side risk signals
+    via SCIM groups (and Gateway email lists) that Access/Gateway policies
+    consume; offer FlareID as a custom device-posture provider
+    (`cf.tlsClientAuth` device-cert condition is the sibling item 8 from the
+    protocol work); verify the Access JWT for the admin plane.
+39. **Shared Signals Framework**: a transmitter for CAEP `session-revoked` and
+    `credential-change` (universal logout to Okta/Entra/Google receivers), and
+    the receiver scaffolding to consume Cloudflare's risk-score stream - which
+    today is gated to the Okta-specific IdP integration.
+40. **Reusable list sync**: push FlareID data into Cloudflare One lists -
+    (a) group membership as email lists (org structure into Gateway DNS/HTTP
+    policies, which cannot read SCIM groups), (b) FlareID-computed risk
+    watchlist and deprovisioned users as email lists (tighter inspection /
+    block for accounts IdP controls have ended), (c) managed domains as a
+    trusted-domain list (Email Security), and optionally (d) source IPs that
+    repeatedly fail authentication as an IP list - the edge then drops that
+    traffic before it reaches the IdP (thresholded and short-lived: CGNAT
+    makes a stale IP block list punitive to bystanders).
+
+## Parked
+
+- **TACACS+** - the RADIUS-shaped network-device protocol that actually fits:
+  it runs over TCP/49, so the Spectrum ingress pattern from LDAP applies, and
+  its ASCII/PAP authentication verifies against our scrypt hashes. Parked
+  until a concrete network-gear demand appears; the plumbing is understood.
+- **LDAP phase 3: StartTLS on 389** - needs WASM TLS inside the Worker; only
+  recovers Meraki/Odoo-class clients.
+- **RADIUS EAP-TTLS / RadSec** - no UDP ingress at the edge; the TCP path only
+  serves RadSec-capable NASes, which almost nothing speaks.
 
 ## Explicitly out of scope
 

@@ -91,6 +91,56 @@ export async function signIdToken(env: Env, clientId: string, claims: IdTokenCla
   return timed(env, "oidc.sign", jwt.sign(key));
 }
 
+/**
+ * A self-contained JWT access token for a machine caller
+ * (grant_type=client_credentials). Unlike user access tokens these are never
+ * stored: signature + expiry against the published keys is the validation,
+ * which is also what /introspect falls back to. The short TTL stands in for
+ * revocation - there is no server-side record to delete.
+ */
+export async function signServiceToken(env: Env, clientId: string, scope: string, audience: string, ttlSeconds: number): Promise<string> {
+  const { kid, key } = await activeSigningKey(env, "RS256");
+  const jwt = new SignJWT({
+    client_id: clientId,
+    token_use: "service",
+    ...(scope ? { scope } : {}),
+  })
+    .setProtectedHeader({ alg: "RS256", kid })
+    .setIssuer(env.ISSUER_URL)
+    .setSubject(clientId)
+    .setAudience(audience)
+    .setIssuedAt()
+    .setJti(crypto.randomUUID())
+    .setExpirationTime(`${ttlSeconds}s`);
+
+  return timed(env, "oidc.sign", jwt.sign(key));
+}
+
+/**
+ * Verifies a JWT this IdP minted for itself - the service tokens above and
+ * anything else under our issuer. Signature and expiry must check out.
+ */
+export async function verifyOwnJwt(env: Env, token: string): Promise<JWTPayload | null> {
+  let header: { kid?: string; alg?: string };
+  try {
+    header = decodeProtectedHeader(token);
+  } catch {
+    return null;
+  }
+  for (const jwk of await publishedKeys(env)) {
+    if (header.kid && jwk.kid !== header.kid) continue;
+    if (jwk.alg !== header.alg) continue;
+    try {
+      const key = await importJWK(jwk as Parameters<typeof importJWK>[0], String(jwk.alg));
+      const { payload } = await jwtVerify(token, key, { issuer: env.ISSUER_URL, algorithms: [String(jwk.alg)] });
+      return payload;
+    } catch {
+      // try the next published key
+    }
+  }
+  return null;
+}
+
 export async function atHash(accessToken: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(accessToken)));
   let bin = "";

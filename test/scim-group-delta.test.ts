@@ -6,7 +6,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import worker from "../src/index.js";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { groupPatchBodies, syncAll, syncGroups } from "../src/lib/scim-client.js";
-import { setScimConfig } from "../src/lib/settings.js";
+import { setScimConfig, setScimTuning } from "../src/lib/settings.js";
 
 beforeEach(resetDatabase);
 afterEach(() => vi.restoreAllMocks());
@@ -18,7 +18,7 @@ interface Sent {
   bytes: number;
 }
 
-/** A stand-in SCIM server recording every write; `patchStatus` answers group PATCHes. */
+/** A stand-in SCIM server recording every write; `patchStatus` refuses group PATCHes that carry a remove op (the delta shape a fussy server rejects). */
 function fakeScim(opts: { patchStatus?: number } = {}) {
   const sent: Sent[] = [];
   let n = 0;
@@ -33,7 +33,7 @@ function fakeScim(opts: { patchStatus?: number } = {}) {
     if (method !== "GET") sent.push({ method, path, body: raw ? JSON.parse(raw) : null, bytes: raw.length });
     if (method === "GET") return Response.json({ Resources: [], totalResults: 0 });
     if (method === "POST") return Response.json({ id: `${path.includes("/Groups") ? "g" : "u"}-${++n}` }, { status: 201 });
-    if (method === "PATCH" && path.startsWith("/Groups/") && opts.patchStatus) return new Response("refused", { status: opts.patchStatus });
+    if (method === "PATCH" && path.startsWith("/Groups/") && opts.patchStatus && raw.includes('"remove"')) return new Response("refused", { status: opts.patchStatus });
     return Response.json({}, { status: 200 });
   });
   return { sent, groupWrites: () => sent.filter((s) => s.path.startsWith("/Groups")), reset: () => (sent.length = 0), setDelay: (ms: number) => (delayMs = ms) };
@@ -62,6 +62,8 @@ async function directory() {
     expect(r.status).toBe(200);
   }
   await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24) });
+  // No pacing in tests, and batch sizes kept the sync loops small.
+  await setScimTuning(env, { paceMs: 0, membersPerRequest: 50, syncBatchSize: 200 });
   const scim = fakeScim();
   // A full sync: user batches until the groups step.
   for (let step = await syncAll(env, { restart: true }); !step.complete; step = await syncAll(env)) {
@@ -80,7 +82,11 @@ describe("SCIM group pushes", () => {
     const { apiKey, scim, a, b, userScimId } = await directory();
     const first = scim.groupWrites();
     const postA = first.find((w) => w.method === "POST" && w.body.displayName === "Big A")!;
-    expect(postA.body.members).toHaveLength(SIZE);
+    // The create carries identity only - no single body is allowed to dwarf
+    // the receiver's limits; members arrive as PATCH adds of 50 at a time.
+    expect(postA.body.members).toHaveLength(0);
+    const addsA = first.filter((w) => w.method === "PATCH" && w.path.endsWith(a.scim_id));
+    expect(addsA.map((w) => w.body.Operations[0].value.length)).toEqual([50, 50, 20]);
     expect(await stored(a.id)).toHaveLength(SIZE);
 
     scim.reset();
@@ -94,7 +100,7 @@ describe("SCIM group pushes", () => {
     expect(toA.body).toEqual({ schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], Operations: [{ op: "remove", path: `members[value eq "${p0}"]` }] });
     expect(toB.body.Operations).toEqual([{ op: "add", path: "members", value: [{ value: p0 }] }]);
     for (const w of writes) expect(w.bytes).toBeLessThan(300);
-    expect(postA.bytes).toBeGreaterThan(SIZE * 40);
+    expect(postA.bytes).toBeLessThan(300);
     // The stored state follows.
     expect(await stored(a.id)).not.toContain("p0");
     expect(await stored(b.id)).toContain("p0");
@@ -132,11 +138,16 @@ describe("SCIM group pushes", () => {
     await call(`/api/v1/groups/${a.id}`, apiKey, "PATCH", { name: "Big A renamed" });
     expect(scim.groupWrites()).toEqual([{ method: "PATCH", path: `/Groups/${a.scim_id}`, bytes: expect.any(Number), body: { schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], Operations: [{ op: "replace", path: "displayName", value: "Big A renamed" }] } }]);
 
-    // Drift the stored state; a full sync puts it right with PUTs.
+    // Drift the stored state; a full sync puts it right with a full PUT
+    // followed by the member-set PATCHes.
     await env.DB.prepare("DELETE FROM scim_group_members WHERE group_id = ?").bind(a.id).run();
     scim.reset();
     await syncGroups(env);
-    expect(scim.groupWrites().every((w) => w.method === "PUT")).toBe(true);
+    const writes = scim.groupWrites().filter((w) => w.path === `/Groups/${a.scim_id}`);
+    expect(writes[0]!.method).toBe("PUT");
+    expect(writes[0]!.body.members).toHaveLength(0);
+    const added = writes.filter((w) => w.method === "PATCH").reduce((n, w) => n + w.body.Operations[0].value.length, 0);
+    expect(added).toBe(SIZE);
     expect(await stored(a.id)).toHaveLength(SIZE);
   });
 
@@ -145,15 +156,18 @@ describe("SCIM group pushes", () => {
     vi.restoreAllMocks();
     const refused = fakeScim({ patchStatus: 400 });
     await call(`/api/v1/groups/${a.id}/members/p1`, apiKey, "DELETE");
-    expect(refused.groupWrites().map((w) => w.method)).toEqual(["PATCH", "PUT"]);
-    expect(refused.groupWrites()[1]!.body.members).toHaveLength(SIZE - 1);
+    // PATCH refused → full PUT (empty members) → member PATCHes.
+    expect(refused.groupWrites().map((w) => w.method)).toEqual(["PATCH", "PUT", "PATCH", "PATCH", "PATCH"]);
+    expect(refused.groupWrites()[1]!.body.members).toHaveLength(0);
+    const readded = refused.groupWrites().filter((w) => w.method === "PATCH" && w.body.Operations[0].op === "add").reduce((n, w) => n + w.body.Operations[0].value.length, 0);
+    expect(readded).toBe(SIZE - 1);
     expect(await stored(a.id)).toHaveLength(SIZE - 1);
 
     vi.restoreAllMocks();
     const gone = fakeScim({ patchStatus: 404 });
     await call(`/api/v1/groups/${a.id}/members/p2`, apiKey, "DELETE");
-    expect(gone.groupWrites().map((w) => w.method)).toEqual(["PATCH", "POST"]);
-    expect(gone.groupWrites()[1]!.body.members).toHaveLength(SIZE - 2);
+    expect(gone.groupWrites().map((w) => w.method)).toEqual(["PATCH", "POST", "PATCH", "PATCH", "PATCH"]);
+    expect(gone.groupWrites()[1]!.body.members).toHaveLength(0);
     const relinked = (await env.DB.prepare("SELECT scim_id FROM groups WHERE id = ?").bind(a.id).first<{ scim_id: string }>())!.scim_id;
     expect(relinked).not.toBe(a.scim_id);
     expect(await env.DB.prepare("SELECT scim_id FROM scim_group_state WHERE group_id = ?").bind(a.id).first()).toEqual({ scim_id: relinked });
@@ -168,7 +182,9 @@ describe("SCIM group pushes", () => {
     // Two of Small's three leave: more than half the group.
     await call("/api/v1/directory/import", apiKey, "POST", { version: 1, users: ["p0", "p1"].map((username) => ({ username, status: "active", groups: ["Big A"] })) });
     const writes = scim.groupWrites();
-    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([`PUT /Groups/${small.scim_id}`]);
+    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([`PUT /Groups/${small.scim_id}`, `PATCH /Groups/${small.scim_id}`]);
+    expect(writes[0]!.body.members).toHaveLength(0);
+    expect(writes[1]!.body.Operations).toEqual([{ op: "add", path: "members", value: [{ value: expect.any(String) }] }]);
     expect(await stored(small.id)).toEqual(["p2"]);
   });
 
@@ -207,10 +223,10 @@ describe("SCIM group pushes", () => {
     expect(await stored(b.id)).not.toContain(`p${SIZE}`);
   });
 
-  it("batches PATCH operations at 1000 member references per request", () => {
+  it("batches PATCH operations at the configured member references per request", () => {
     const add = Array.from({ length: 2500 }, (_, i) => `a${i}`);
     const remove = Array.from({ length: 700 }, (_, i) => `r${i}`);
-    const bodies = groupPatchBodies(add, remove, "New name").map((b) => JSON.parse(b) as { Operations: { op: string; path: string; value?: unknown[] }[] });
+    const bodies = groupPatchBodies(add, remove, "New name", 1000).map((b) => JSON.parse(b) as { Operations: { op: string; path: string; value?: unknown[] }[] });
     expect(bodies).toHaveLength(4);
     const refs = bodies.map((b) => b.Operations.reduce((n, op) => n + (op.path === "members" ? op.value!.length : op.op === "remove" ? 1 : 0), 0));
     expect(refs).toEqual([1000, 1000, 1000, 200]);

@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import type { OAuthClientRow, UserRow } from "./types.js";
 import { dynamicGroupNamesForUser } from "./groups.js";
+import { getUserByAnyEmail } from "./user-emails.js";
 
 export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
   return env.DB.prepare("SELECT * FROM users WHERE upn = ?")
@@ -15,7 +16,9 @@ export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
  */
 export async function getUserByLoginIdentifier(env: Env, identifier: string): Promise<UserRow | null> {
   const normalized = identifier.trim().toLowerCase();
-  if (normalized.includes("@")) return getUserByUpn(env, normalized);
+  // A UPN is also an address; any listed contact address names the account
+  // too, so sign-in and recovery work with an alias.
+  if (normalized.includes("@")) return (await getUserByUpn(env, normalized)) ?? getUserByAnyEmail(env, normalized);
 
   return env.DB.prepare("SELECT * FROM users WHERE username = ?")
     .bind(normalized)

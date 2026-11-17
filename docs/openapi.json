@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "3.10.0",
+    "version": "4.0.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -129,6 +129,29 @@
               "null"
             ]
           },
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "primary": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "value",
+                "type",
+                "primary"
+              ]
+            },
+            "description": "Every contact address on the account; the primary is what `email` and mail deliveries use."
+          },
           "display_name": {
             "type": "string"
           },
@@ -241,6 +264,7 @@
           "upn",
           "username",
           "email",
+          "emails",
           "display_name",
           "given_name",
           "family_name",
@@ -1902,6 +1926,27 @@
                     ],
                     "description": "Where email for the account goes, when not the UPN; null or empty clears it."
                   },
+                  "emails": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "primary": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "value"
+                      ]
+                    },
+                    "description": "The complete contact-address list (work/home/aliases), replacing what is there; the marked or first entry is the primary that `email` claims and mail goes to. Takes precedence over `email`."
+                  },
                   "schema_id": {
                     "type": "integer"
                   },
@@ -2252,6 +2297,27 @@
                       "null"
                     ],
                     "description": "Where email for the account goes, when not the UPN; null or empty clears it."
+                  },
+                  "emails": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "primary": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "value"
+                      ]
+                    },
+                    "description": "The complete contact-address list (work/home/aliases), replacing what is there; the marked or first entry is the primary that `email` claims and mail goes to. Takes precedence over `email`."
                   },
                   "schema_id": {
                     "type": "integer"
@@ -5128,8 +5194,8 @@
         "tags": [
           "SCIM"
         ],
-        "summary": "Set the SCIM endpoint, secret and scope",
-        "description": "A changed scope re-evaluates everything already pushed, after the response.",
+        "summary": "Set the SCIM endpoint, secret, scope and tuning",
+        "description": "A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
         "security": [
           {
             "bearer": []
@@ -5166,6 +5232,31 @@
                         }
                       }
                     }
+                  },
+                  "tuning": {
+                    "type": "object",
+                    "properties": {
+                      "pace_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      "members_per_request": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500
+                      },
+                      "sync_batch": {
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 500
+                      }
+                    },
+                    "required": [
+                      "pace_ms",
+                      "members_per_request",
+                      "sync_batch"
+                    ]
                   }
                 }
               }

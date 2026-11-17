@@ -3,19 +3,23 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
 import { sha256Hex, randomToken } from "../lib/tokens.js";
-import { atHash, signIdToken } from "../lib/jwt.js";
+import { atHash, signIdToken, signServiceToken } from "../lib/jwt.js";
 import { acrFor, effectiveClaimGroups, parseRequestedClaims } from "../lib/oidc.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
+import type { DeviceCodeRow } from "./device.js";
 import { canSignIn } from "../lib/admin-roles.js";
 import { logAudit } from "../lib/audit.js";
 
 export const token = new Hono<{ Bindings: Env }>();
 
 const ACCESS_TOKEN_TTL_SECONDS = 600;
+/** Service (client_credentials) tokens are JWTs with no server record; their TTL is the whole revocation story. */
+const SERVICE_TOKEN_TTL_SECONDS = 3600;
 /** Each refresh token is good for 30 days from issue; using it rotates it, so an active client never hits this. */
 const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 async function base64UrlSha256(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -146,6 +150,75 @@ token.post("/token", async (c) => {
       // rotated before the link existed carry NULL; heal from the family head.
       codeHash: row.code_hash ?? (await familyCodeHash(c.env, row.family_id ?? row.token_hash)) ?? undefined,
       claims: row.claims,
+    });
+  }
+
+  // Machine-to-machine: a confidential client trades its secret for a signed
+  // JWT it presents to downstream services (verified against /jwks.json).
+  if (grantType === "client_credentials") {
+    // authenticateClient above admits public clients for the other grants; a
+    // client_id alone must never mint service credentials.
+    if (client.client_type !== "confidential") {
+      return c.json({ error: "unauthorized_client", error_description: "The client_credentials grant needs a confidential client." }, 400);
+    }
+    const scope = String(body.scope ?? "").slice(0, 512);
+    const audience = String(body.audience ?? client.client_id).slice(0, 512);
+    const accessToken = await signServiceToken(c.env, client.client_id, scope, audience, SERVICE_TOKEN_TTL_SECONDS);
+    await logAudit(c.env, null, "oauth.client_credentials", client.name, { client_id: client.client_id }, c.req.raw);
+    return c.json({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: SERVICE_TOKEN_TTL_SECONDS,
+      ...(scope ? { scope } : {}),
+    });
+  }
+
+  // RFC 8628: a device polls with its device_code until the person approves,
+  // denies, or the code expires.
+  if (grantType === DEVICE_CODE_GRANT) {
+    const deviceCode = String(body.device_code ?? "");
+    if (!deviceCode) return c.json({ error: "invalid_grant" }, 400);
+    const hash = await sha256Hex(deviceCode);
+    const row = await c.env.DB.prepare("SELECT * FROM device_codes WHERE device_code_hash = ? AND client_id = ?")
+      .bind(hash, client.client_id)
+      .first<DeviceCodeRow>();
+    if (!row) return c.json({ error: "invalid_grant" }, 400);
+
+    const now = Date.now();
+    if (new Date(row.expires_at).getTime() <= now || row.status === "denied") {
+      await c.env.DB.prepare("DELETE FROM device_codes WHERE device_code_hash = ?").bind(hash).run();
+      return c.json({ error: row.status === "denied" ? "access_denied" : "expired_token" }, 400);
+    }
+
+    if (row.status !== "approved") {
+      // RFC 8628 3.5: polling inside the interval earns a slow_down - and the
+      // interval grows 5s so a stubborn poller keeps backing off.
+      const lastPoll = row.last_poll_at ? new Date(row.last_poll_at).getTime() : 0;
+      if (now - lastPoll < row.poll_interval * 1000) {
+        await c.env.DB.prepare("UPDATE device_codes SET poll_interval = poll_interval + 5, last_poll_at = ? WHERE device_code_hash = ?")
+          .bind(new Date(now).toISOString(), hash)
+          .run();
+        return c.json({ error: "slow_down" }, 400);
+      }
+      await c.env.DB.prepare("UPDATE device_codes SET last_poll_at = ? WHERE device_code_hash = ?")
+        .bind(new Date(now).toISOString(), hash)
+        .run();
+      return c.json({ error: "authorization_pending" }, 400);
+    }
+
+    // Approved codes are single-use: of two concurrent redemptions only the
+    // delete that lands issues tokens.
+    const claimed = await c.env.DB.prepare("DELETE FROM device_codes WHERE device_code_hash = ? AND status = 'approved'").bind(hash).run();
+    if (Number(claimed.meta.changes) !== 1) return c.json({ error: "invalid_grant" }, 400);
+
+    const user = row.user_id === null ? null : await getUserById(c.env, row.user_id);
+    if (!user || user.status !== "active" || !(await canSignIn(c.env, user.id))) return c.json({ error: "invalid_grant" }, 400);
+
+    const amr: string[] = JSON.parse(row.amr || '["pwd"]');
+    await logAudit(c.env, user, "oauth.device_token", client.name, { client_id: client.client_id }, c.req.raw);
+    return issueTokenResponse(c.env, client, user.id, row.scope, amr, {
+      authTime: row.auth_time ?? Math.floor(now / 1000),
+      sid: row.sid,
     });
   }
 

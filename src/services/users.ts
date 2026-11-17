@@ -3,7 +3,7 @@ import { sendInvitation, sendPasswordReset } from "../lib/account-email.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
 import { deleteBackupCodes } from "../lib/backup-codes.js";
 import { domainExists } from "../lib/domains.js";
-import { isEmailAddress, recipientFor } from "../lib/email.js";
+import { recipientFor } from "../lib/email.js";
 import { hashPassword } from "../lib/password.js";
 import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes } from "../lib/schemas.js";
 import { drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
@@ -12,6 +12,7 @@ import { resolveNewAccountPassword } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
+import { assertEmailsUsable, setUserEmails, UserEmailError, type UserEmailInput } from "../lib/user-emails.js";
 import type { UserRow } from "../lib/types.js";
 import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayAssignGroups, assertMayTouchUser, assertNoAdminRoleGrant } from "./guards.js";
@@ -53,6 +54,15 @@ export interface NewUser {
   status?: "active" | "disabled";
   /** Contact address for email, when not the UPN. */
   email?: string;
+  /** The full address list (work/home/aliases); `email` alone becomes a single work primary. */
+  emails?: UserEmailInput[];
+}
+
+/** `emails` wins when both are sent; `email` alone is a single work primary. */
+function emailInputs(input: { email?: string | null; emails?: UserEmailInput[] }): UserEmailInput[] {
+  if (input.emails) return input.emails;
+  const email = String(input.email ?? "").trim().toLowerCase();
+  return email ? [{ value: email }] : [];
 }
 
 /**
@@ -78,8 +88,13 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   await assertMayAssignGroups(ctx, groupIds);
 
   if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ? OR upn = ?").bind(username, upn).first()) throw new ServiceError(409, TAKEN(username));
-  const email = String(input.email ?? "").trim().toLowerCase() || null;
-  if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
+  const emails = emailInputs(input);
+  try {
+    await assertEmailsUsable(ctx.env, null, emails);
+  } catch (e) {
+    if (e instanceof UserEmailError) throw new ServiceError(400, e.message);
+    throw e;
+  }
   if (input.password) {
     const policyError = await newPasswordError(ctx.env, input.password);
     if (policyError) throw new ServiceError(400, policyError);
@@ -96,7 +111,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
     password_salt: "",
     password_iterations: 0,
     totp_secret: null,
-    email,
+    email: null,
     totp_last_counter: null,
     mfa_enabled: 0,
     email_otp_enabled: 0,
@@ -153,7 +168,8 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
     .run();
 
   const userId = Number(result.meta.last_row_id);
-  if (email) await ctx.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email, userId).run();
+  // The address table is the record: it writes users.email itself.
+  await setUserEmails(ctx.env, userId, emails);
   if (groupIds.length > 0) {
     await ctx.env.DB.batch(groupIds.map((gid) => ctx.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId)));
   }
@@ -178,6 +194,8 @@ export interface UserProfile {
   groupIds: number[];
   /** Contact address for email; undefined leaves it alone, null/"" clears it (mail then goes to the UPN). */
   email?: string | null;
+  /** The complete replacement address list; takes precedence over `email`. */
+  emails?: UserEmailInput[];
 }
 
 /** Replaces a user's identity, attributes (conformed to the schema) and static groups. Status is setUserStatus's. */
@@ -210,9 +228,21 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   if (await ctx.env.DB.prepare("SELECT id FROM users WHERE (username = ? OR upn = ?) AND id != ?").bind(username, upn, id).first()) throw new ServiceError(409, TAKEN(username));
 
   let email = existing.email;
-  if (input.email !== undefined) {
+  let emails: UserEmailInput[] | undefined;
+  if (input.emails !== undefined) {
+    emails = input.emails;
+    email = emails.length > 0 ? String((emails.find((e) => e.primary) ?? emails[0])!.value).trim().toLowerCase() : null;
+  } else if (input.email !== undefined) {
     email = String(input.email ?? "").trim().toLowerCase() || null;
-    if (email && !isEmailAddress(email)) throw new ServiceError(400, "email is not a valid email address.");
+    emails = email ? [{ value: email }] : [];
+  }
+  if (emails !== undefined) {
+    try {
+      await assertEmailsUsable(ctx.env, id, emails);
+    } catch (e) {
+      if (e instanceof UserEmailError) throw new ServiceError(400, e.message);
+      throw e;
+    }
   }
 
   await assertNoAdminRoleGrant(ctx, existing, {
@@ -263,6 +293,9 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
       id
     )
     .run();
+
+  // The address table is the record; undefined leaves it untouched.
+  if (emails !== undefined) await setUserEmails(ctx.env, id, emails);
 
   const { results: previous } = await ctx.env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?").bind(id).all<{ group_id: number }>();
   await ctx.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id).run();

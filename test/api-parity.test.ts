@@ -96,6 +96,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/branding/brands/:id/logo/delete": "DELETE /api/v1/branding/brands/{id}/logo",
   "POST /admin/scim": "POST /api/v1/scim/config",
   "POST /admin/scim/scope": "POST /api/v1/scim/config",
+  "POST /admin/scim/tuning": "POST /api/v1/scim/config",
   "POST /admin/scim/test": "POST /api/v1/scim/test",
   "POST /admin/scim/sync": "POST /api/v1/scim/sync",
   "POST /admin/integrations/ldap/settings": "POST /api/v1/ldap/settings",

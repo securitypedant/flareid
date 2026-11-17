@@ -1,7 +1,7 @@
 import { resolveManyGroupMemberUserIds } from "./groups.js";
 import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
-import { getScimConfig, getScimScope, validateScimEndpoint, type ScimScope } from "./settings.js";
+import { getScimConfig, getScimScope, getScimTuning, validateScimEndpoint, type ScimScope } from "./settings.js";
 import { timed } from "./metrics.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -33,11 +33,36 @@ async function scimError(res: Response): Promise<string> {
   return (await res.text()).slice(0, 300);
 }
 
+/**
+ * Every outbound call goes through here, so this is where the pace is kept:
+ * receivers backed by a single object (Cloudflare Access's endpoint is) fall
+ * over when requests arrive back to back. The gap and the chunk sizes live in
+ * settings so they can be tuned per target system (getScimTuning).
+ *
+ * The tuning read and the "next allowed" mark are cached per isolate: a sync
+ * of any size would otherwise add a settings read to every request, and the
+ * mark only has to discipline bursts anyway.
+ */
+let paceCache: { at: number; paceMs: number } | null = null;
+let nextRequestAt = 0;
+
+async function pace(env: Env): Promise<void> {
+  if (!paceCache || Date.now() - paceCache.at > 10_000) {
+    paceCache = { at: Date.now(), paceMs: (await getScimTuning(env)).paceMs };
+  }
+  if (!paceCache.paceMs) return;
+  const wait = nextRequestAt - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  nextRequestAt = Date.now() + paceCache.paceMs;
+}
+
 async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Response> {
   const { endpoint, secret } = await getScimConfig(env);
   if (!endpoint || !secret) throw new Error("SCIM is not configured (Admin -> SCIM)");
   const problem = validateScimEndpoint(endpoint);
   if (problem) throw new Error(problem);
+
+  await pace(env);
 
   // Redirects are followed by hand: the Bearer credential is attached again
   // only while the target stays on the configured origin - fetch's default
@@ -217,8 +242,8 @@ export interface ScimMember {
 }
 
 const PATCH_OP_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
-/** Member references per PATCH request: keeps each body small for a big change. */
-const PATCH_MEMBERS_PER_REQUEST = 1000;
+/** Default member references per PATCH body; the live value is the scim_members_per_request setting. */
+const DEFAULT_MEMBERS_PER_REQUEST = 50;
 
 function groupToScim(group: GroupRow, members: ScimMember[]) {
   return {
@@ -229,18 +254,18 @@ function groupToScim(group: GroupRow, members: ScimMember[]) {
   };
 }
 
-/** Bodies for a membership change, at most PATCH_MEMBERS_PER_REQUEST member references each. */
-export function groupPatchBodies(add: string[], remove: string[], rename: string | null): string[] {
+/** Bodies for a membership change, at most `perRequest` member references each. */
+export function groupPatchBodies(add: string[], remove: string[], rename: string | null, perRequest = DEFAULT_MEMBERS_PER_REQUEST): string[] {
   const bodies: string[] = [];
   let a = 0;
   let r = 0;
   do {
     const ops: Record<string, unknown>[] = [];
     if (rename !== null && bodies.length === 0) ops.push({ op: "replace", path: "displayName", value: rename });
-    const adds = add.slice(a, a + PATCH_MEMBERS_PER_REQUEST);
+    const adds = add.slice(a, a + perRequest);
     a += adds.length;
     if (adds.length) ops.push({ op: "add", path: "members", value: adds.map((value) => ({ value })) });
-    const removes = remove.slice(r, r + PATCH_MEMBERS_PER_REQUEST - adds.length);
+    const removes = remove.slice(r, r + perRequest - adds.length);
     r += removes.length;
     // The value-filter form (RFC 7644 3.5.2.2), which every SCIM server
     // accepts for removing one member.
@@ -342,8 +367,9 @@ async function patchGroup(env: Env, group: GroupRow, add: ScimMember[], gone: { 
   // dangling member. If it was already gone the remove is a no-op, and a
   // server that refuses it outright falls back to the full PUT below.
   const remove = gone.map((g) => g.scimId);
+  const perRequest = (await getScimTuning(env)).membersPerRequest;
 
-  for (const body of groupPatchBodies(add.map((m) => m.scimId), remove, rename)) {
+  for (const body of groupPatchBodies(add.map((m) => m.scimId), remove, rename, perRequest)) {
     const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PATCH", body });
     if (res.ok) continue;
     if (res.status === 404) return recreateGroup(env, group, null);
@@ -358,16 +384,38 @@ async function patchGroup(env: Env, group: GroupRow, add: ScimMember[], gone: { 
   return { ok: true, status: 200 };
 }
 
+/**
+ * A full push, split so no single body can dwarf the receiver's limits: the
+ * PUT carries identity only (externalId + displayName), the members arrive in
+ * membersPerRequest-sized PATCH adds. A mid-way failure clears the pushed
+ * state so the next run redoes the whole thing - member-add on an existing
+ * reference is a no-op per RFC 7644, so re-adding is safe.
+ */
 async function putGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
-  const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PUT", body: JSON.stringify(groupToScim(group, members)) });
-  if (res.ok) {
-    await recordFullPush(env, group, group.scim_id!, members);
-    return { ok: true, status: res.status };
+  const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PUT", body: JSON.stringify(groupToScim(group, [])) });
+  if (!res.ok) {
+    // Self-heal, same as pushUser: recreate if the remote resource is gone.
+    if (res.status === 404) return recreateGroup(env, group, members);
+    await env.DB.batch(clearGroupPushState(env, group.id));
+    return { ok: false, status: res.status, error: await scimError(res) };
   }
-  // Self-heal, same as pushUser: recreate if the remote resource is gone.
-  if (res.status === 404) return recreateGroup(env, group, members);
-  await env.DB.batch(clearGroupPushState(env, group.id));
-  return { ok: false, status: res.status, error: await scimError(res) };
+  const loaded = await addMembers(env, group, members);
+  if (loaded) {
+    await env.DB.batch(clearGroupPushState(env, group.id));
+    return { ok: false, status: loaded.status, error: loaded.error };
+  }
+  await recordFullPush(env, group, group.scim_id!, members);
+  return { ok: true, status: res.status };
+}
+
+/** PATCHes members into a remote group, in tuning-sized chunks; null on success. */
+async function addMembers(env: Env, group: GroupRow, members: ScimMember[]): Promise<{ status?: number; error: string } | null> {
+  const perRequest = (await getScimTuning(env)).membersPerRequest;
+  for (const body of groupPatchBodies(members.map((m) => m.scimId), [], null, perRequest)) {
+    const res = await scimFetch(env, `/Groups/${group.scim_id}`, { method: "PATCH", body });
+    if (!res.ok) return { status: res.status, error: await scimError(res) };
+  }
+  return null;
 }
 
 /** The remote group is gone: unlink it and create it again (with `members`, or the group's current members). */
@@ -379,7 +427,9 @@ async function recreateGroup(env: Env, group: GroupRow, members: ScimMember[] | 
 }
 
 async function createScimGroup(env: Env, group: GroupRow, members: ScimMember[]): Promise<ScimResult> {
-  const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, members)) });
+  // The member list is never embedded in the create either - same reason as
+  // putGroup: a big group's body is what the DO-bound receivers refuse.
+  const res = await scimFetch(env, "/Groups", { method: "POST", body: JSON.stringify(groupToScim(group, [])) });
   if (!res.ok) {
     if (res.status === 409) {
       const id = await resolveRemoteId(env, "/Groups", String(group.id));
@@ -388,7 +438,16 @@ async function createScimGroup(env: Env, group: GroupRow, members: ScimMember[])
     return { ok: false, status: res.status, error: await scimError(res) };
   }
   const created = await res.json<{ id: string }>();
-  await linkGroupScimId(env, group, created.id, members);
+  // Link with an empty member list first: the members still have to land, and
+  // if they don't the recorded state must not claim they did.
+  if (!(await linkGroupScimId(env, group, created.id, []))) return { ok: true, status: res.status };
+  const linkedGroup = { ...group, scim_id: created.id };
+  const loaded = await addMembers(env, linkedGroup, members);
+  if (loaded) {
+    await env.DB.batch(clearGroupPushState(env, group.id));
+    return { ok: false, status: loaded.status, error: loaded.error };
+  }
+  await recordFullPush(env, linkedGroup, created.id, members);
   return { ok: true, status: res.status };
 }
 
@@ -423,8 +482,7 @@ export async function testScimConnection(env: Env): Promise<ScimResult> {
 }
 
 /** Pushes every user, then every group (with resolved member scim_ids). Best-effort; returns a summary. */
-/** Users pushed per invocation: a full sync of a large directory continues across invocations (the hourly cron). */
-const SYNC_BATCH = 200;
+/** Users pushed per invocation is the scim_sync_batch setting: a full sync of a large directory continues across invocations (the hourly cron). */
 const SYNC_CURSOR_KEY = "scim_sync_cursor";
 
 /**
@@ -507,7 +565,8 @@ async function syncAllLocked(env: Env, opts: { restart?: boolean }): Promise<Syn
     return { phase: "groups", users: 0, userErrors: 0, groups, groupErrors, complete: true, remainingUsers: 0, errors };
   }
 
-  const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(Number(stored) || 0, SYNC_BATCH).all<UserRow>();
+  const { syncBatchSize } = await getScimTuning(env);
+  const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE id > ? ORDER BY id LIMIT ?").bind(Number(stored) || 0, syncBatchSize).all<UserRow>();
   let userErrors = 0;
   for (const user of users) {
     const result = await pushUser(env, user);
