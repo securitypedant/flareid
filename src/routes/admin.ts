@@ -781,7 +781,7 @@ admin.get("/admin", async (c) => {
         }
         <div class="chart-legend">
           <span><span class="chart-swatch" style="background:var(--fi-accent);"></span>${successTotal} successful</span>
-          <span><span class="chart-swatch" style="background:var(--fi-red);"></span>${failedTotal} failed or rejected (right axis)</span>
+          <span><span class="chart-swatch" style="background:var(--fi-err-line);"></span>${failedTotal} failed or rejected (right axis)</span>
         </div>
       `)}
 

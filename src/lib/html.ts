@@ -35,6 +35,9 @@ const STYLES = `
     --fi-green-soft: #f0fdf4;
     --fi-red: #b91c1c;
     --fi-red-soft: #fef2f2;
+    /* A chart line has to read against the orange accent at 2px: --fi-red alone
+       is too close in hue, so charted failures get their own rose. */
+    --fi-err-line: #e11d48;
     --fi-amber: #92400e;
     --fi-amber-soft: #fffbeb;
     --fi-radius: 10px;
@@ -62,6 +65,7 @@ const STYLES = `
     --fi-green-soft: #12291c;
     --fi-red: #f87171;
     --fi-red-soft: #2c1517;
+    --fi-err-line: #fb7185;
     --fi-amber: #fbbf24;
     --fi-amber-soft: #2a2110;
     color-scheme: dark;
@@ -71,7 +75,7 @@ const STYLES = `
       --fi-accent-soft: #3a2614; --fi-ink: #e8edf4; --fi-body: #c3ccd8; --fi-muted: #8b97a8;
       --fi-line: #2a3342; --fi-line-soft: #222a37; --fi-canvas: #0f141c; --fi-surface: #171d27;
       --fi-surface-2: #1b2230; --fi-line-strong: #3a4558; --fi-faint: #6b7889; --fi-green: #4ade80;
-      --fi-green-soft: #12291c; --fi-red: #f87171; --fi-red-soft: #2c1517; --fi-amber: #fbbf24;
+      --fi-green-soft: #12291c; --fi-red: #f87171; --fi-red-soft: #2c1517; --fi-err-line: #fb7185; --fi-amber: #fbbf24;
       --fi-amber-soft: #2a2110; color-scheme: dark;
     }
   }
@@ -107,9 +111,12 @@ const STYLES = `
 
   .chart .line { stroke-width: 2; }
   .chart .dot { stroke: none; }
-  .chart .s-p50 { stroke: var(--fi-accent); fill: var(--fi-accent); }
-  .chart .s-p95 { stroke: var(--fi-faint); fill: var(--fi-faint); }
-  .chart .s-err { stroke: var(--fi-red); fill: var(--fi-red); }
+  .chart .line.s-p50 { stroke: var(--fi-accent); }
+  .chart .dot.s-p50 { fill: var(--fi-accent); }
+  .chart .line.s-p95 { stroke: var(--fi-faint); }
+  .chart .dot.s-p95 { fill: var(--fi-faint); }
+  .chart .line.s-err { stroke: var(--fi-err-line); stroke-width: 2.5; }
+  .chart .dot.s-err, .chart text.s-err { fill: var(--fi-err-line); }
   .chart .bar.err { fill: var(--fi-red); }
   .range-tabs { display: inline-flex; border: 1px solid var(--fi-line); border-radius: 8px; overflow: hidden; }
   .range-tabs a { padding: 6px 12px; font-size: 0.8125rem; color: var(--fi-body); text-decoration: none; }
@@ -971,7 +978,7 @@ export function barLineChart(
     .join("");
   const poly =
     `<polyline class="line ${line.className}" fill="none" points="${line.values.map((v, i) => `${cx(i).toFixed(1)},${yLine(v).toFixed(1)}`).join(" ")}" />` +
-    line.values.map((v, i) => `<circle class="dot ${line.className}" cx="${cx(i).toFixed(1)}" cy="${yLine(v).toFixed(1)}" r="2"><title>${escapeHtml(bars[i]?.label ?? "")} ${escapeHtml(line.name)}: ${v}</title></circle>`).join("");
+    line.values.map((v, i) => `<circle class="dot ${line.className}" cx="${cx(i).toFixed(1)}" cy="${yLine(v).toFixed(1)}" r="2.5"><title>${escapeHtml(bars[i]?.label ?? "")} ${escapeHtml(line.name)}: ${v}</title></circle>`).join("");
   const step = Math.ceil(bars.length / 8) || 1;
   const labels = bars.map((p, i) => (i % step === 0 ? `<text x="${cx(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(p.label)}</text>` : "")).join("");
 
