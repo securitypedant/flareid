@@ -30,6 +30,15 @@ npx vitest run test/ldap.test.ts   # LDAP only
 npx vitest run                     # full suite (~4 min)
 ```
 
+## Releasing
+
+- Version lives in **two** places: `package.json` and `src/version.ts`
+  (`VERSION`, rendered in the authenticated nav bar). Bump both — a test
+  (`test/ui-feedback.test.ts`) keeps them equal. Releases are tagged
+  (`v3.10.0`); changelog sections are `## [x.y.z] - YYYY-MM-DD`.
+- Deploy only *after* the version bump is committed, or the live nav bar
+  shows the previous version.
+
 ## Gotchas
 
 - `workers.dev` (`flareid-idp.tmesandbox.workers.dev`) sits behind
