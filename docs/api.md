@@ -631,6 +631,28 @@ extension attributes), `+` concatenation, literals, and the functions
 `lower upper trim concat join coalesce first split eq ne if`. An expression
 yielding nothing leaves the field alone on `PATCH` but clears it on `PUT`.
 
+### `GET /scim/correlation`, `PUT /scim/correlation`
+
+Scope: `scim:read` / `scim:write`.
+
+The ordered correlation keys for inbound creates. When a provisioner POSTs a
+user whose `userName` is new, the keys are tried in order: the first key
+matching exactly one existing user adopts that account (the write applies to
+it, answered `200` instead of `201`); a key matching several users answers
+`409` as ambiguous. An empty list keeps the default behaviour - every
+duplicate is refused.
+
+```json
+{ "keys": ["emails", "employee_number", "source_id", "upn"] }
+```
+
+Valid keys are `upn` (the incoming `userName`), `emails` (any address on the
+incoming list), `employee_number`, and `source_id` (the incoming
+`externalId`, stored on the account). A provisioner's `externalId` is kept in
+`source_id`, echoed back as `externalId` in user resources, usable as a
+mapping target, and resolved in `manager` references alongside the FlareID
+UUID, UPNs and contact addresses.
+
 ### SCIM 2.0 server (`/scim/v2`)
 
 FlareID also *accepts* provisioning: an HR system or upstream IdP can manage
@@ -642,8 +664,10 @@ RFC 7644 and is all-or-nothing. Super Admins (the users and their group
 memberships) need an `admin`-scoped key. Inbound writes pass through the
 attribute mappings above - on `PATCH` each expression evaluates against the
 patch merged onto the current resource, so it can combine the changed
-attribute with untouched ones. Every inbound change is passed on to the
-outbound SCIM target when one is configured.
+attribute with untouched ones. Inbound creates also pass through the
+correlation keys above: a match adopts the existing account instead of
+conflicting. Every inbound change is passed on to the outbound SCIM target
+when one is configured.
 
 ### `GET /ldap/apps`, `POST /ldap/apps`, `POST /ldap/apps/{slug}/rotate`, `DELETE /ldap/apps/{slug}`
 

@@ -1,6 +1,8 @@
 import type { Env } from "../env.js";
 import { getUserByExternalId } from "./db.js";
-import type { UserEmailInput } from "./user-emails.js";
+import { getSetting, setSetting } from "./settings.js";
+import type { UserRow } from "./types.js";
+import { getUserByAnyEmail, type UserEmailInput } from "./user-emails.js";
 
 /**
  * Inbound attribute mapping. When an upstream provisioner (an HR system, or
@@ -303,7 +305,7 @@ export function evalExpression(expr: ScimExpr, doc: unknown): unknown {
 /** FlareID user fields an expression may feed. `custom.<key>` writes custom_attributes. */
 const SCALAR_TARGETS = new Set([
   "display_name", "given_name", "family_name", "job_title", "department",
-  "employee_number", "hire_date", "employment_status", "employment_type", "location",
+  "employee_number", "hire_date", "employment_status", "employment_type", "location", "source_id",
 ]);
 const SPECIAL_TARGETS = new Set(["upn", "active", "manager", "emails"]);
 const CUSTOM_TARGET = /^custom\.[A-Za-z][\w-]*$/;
@@ -314,7 +316,7 @@ export function isValidMappingTarget(resource: string, target: string): boolean 
 }
 
 /** The fixed list shown in the console picker, before any custom.* entries. */
-export const USER_MAPPING_TARGETS = ["upn", "display_name", "given_name", "family_name", "job_title", "department", "employee_number", "hire_date", "employment_status", "employment_type", "location", "active", "manager", "emails"];
+export const USER_MAPPING_TARGETS = ["upn", "display_name", "given_name", "family_name", "job_title", "department", "employee_number", "hire_date", "employment_status", "employment_type", "location", "source_id", "active", "manager", "emails"];
 
 export async function listScimMappings(env: Env, resource = "user", enabledOnly = false): Promise<ScimMapping[]> {
   const { results } = await env.DB.prepare(
@@ -406,7 +408,7 @@ export async function applyUserMappings(env: Env, doc: unknown, opts: { partial:
       if (absent || s === "") {
         if (!opts.partial) out.cols.manager_external_id = null;
       } else {
-        out.cols.manager_external_id = (await getUserByExternalId(env, s))?.external_id ?? null;
+        out.cols.manager_external_id = (await resolveManagerRef(env, s)) ?? null;
       }
     } else if (m.target === "emails") {
       if (absent) {
@@ -441,4 +443,101 @@ export function mergeScimBody(base: unknown, patch: unknown): unknown {
     return merged;
   }
   return patch === undefined ? base : patch;
+}
+
+// ---------------------------------------------------------------------------
+// Correlation and reference resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Manager references arrive in whatever id space the provisioner uses. Try
+ * the FlareID UUID first, then the provisioner's own id (source_id), then a
+ * login UPN, then any contact address. Returns the manager's external_id.
+ */
+export async function resolveManagerRef(env: Env, ref: string): Promise<string | null> {
+  const user =
+    (await getUserByExternalId(env, ref)) ??
+    (await env.DB.prepare("SELECT * FROM users WHERE source_id = ?").bind(ref).first<UserRow>()) ??
+    (await env.DB.prepare("SELECT * FROM users WHERE upn = ?").bind(ref.trim().toLowerCase()).first<UserRow>()) ??
+    (await getUserByAnyEmail(env, ref.trim().toLowerCase()));
+  return user?.external_id ?? null;
+}
+
+/**
+ * Ordered match keys for correlating an inbound create with an existing
+ * account - the upstream's userName isn't always a fresh one (rehires,
+ * re-pointed feeds, migrations between provisioners). The first key with any
+ * match decides: one match adopts the account, several is a conflict.
+ */
+export const CORRELATION_KEYS = ["upn", "employee_number", "emails", "source_id"] as const;
+export type CorrelationKey = (typeof CORRELATION_KEYS)[number];
+
+const CORRELATION_SETTING = "scim_correlation";
+
+export async function getCorrelationKeys(env: Env): Promise<CorrelationKey[]> {
+  const raw = await getSetting(env, CORRELATION_SETTING);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((k): k is CorrelationKey => (CORRELATION_KEYS as readonly string[]).includes(String(k)));
+  } catch {
+    return [];
+  }
+}
+
+/** Replaces the ordered key list; unknown keys are rejected, not dropped. */
+export async function setCorrelationKeys(env: Env, keys: string[]): Promise<void> {
+  const clean = keys.map((k) => k.trim()).filter(Boolean);
+  for (const k of clean) {
+    if (!(CORRELATION_KEYS as readonly string[]).includes(k)) throw new ScimMappingError(`"${k}" is not a correlation key - use ${CORRELATION_KEYS.join(", ")}.`);
+  }
+  await setSetting(env, CORRELATION_SETTING, JSON.stringify([...new Set(clean)]));
+}
+
+export interface CorrelationInput {
+  upn: string;
+  cols: Record<string, string | null>;
+  emails: UserEmailInput[] | undefined;
+}
+
+/**
+ * Tries the configured keys in order against the values the inbound write
+ * carries. Returns the matched user, or null when nothing matched. A key
+ * matching several accounts throws ScimMappingError - the caller turns it
+ * into a 409, since guessing would merge two people.
+ */
+export async function correlateUser(env: Env, input: CorrelationInput): Promise<{ user: UserRow; key: CorrelationKey } | null> {
+  for (const key of await getCorrelationKeys(env)) {
+    const ids = new Set<number>();
+    if (key === "upn") {
+      const row = await env.DB.prepare("SELECT id FROM users WHERE upn = ?").bind(input.upn).first<{ id: number }>();
+      if (row) ids.add(row.id);
+    } else if (key === "employee_number") {
+      const v = input.cols.employee_number?.trim();
+      if (v) {
+        const { results } = await env.DB.prepare("SELECT id FROM users WHERE employee_number = ? LIMIT 3").bind(v).all<{ id: number }>();
+        for (const r of results) ids.add(r.id);
+      }
+    } else if (key === "emails") {
+      const addrs = (input.emails ?? []).map((e) => e.value.trim().toLowerCase()).filter(Boolean);
+      if (addrs.length) {
+        const { results } = await env.DB.prepare(`SELECT DISTINCT user_id AS id FROM user_emails WHERE email IN (${addrs.map(() => "?").join(",")}) LIMIT 3`)
+          .bind(...addrs).all<{ id: number }>();
+        for (const r of results) ids.add(r.id);
+      }
+    } else if (key === "source_id") {
+      const v = input.cols.source_id?.trim();
+      if (v) {
+        const row = await env.DB.prepare("SELECT id FROM users WHERE source_id = ?").bind(v).first<{ id: number }>();
+        if (row) ids.add(row.id);
+      }
+    }
+    if (ids.size === 0) continue;
+    if (ids.size > 1) throw new ScimMappingError(`The ${key} value matches ${ids.size} existing users - correlation is ambiguous.`);
+    const id = [...ids][0]!;
+    const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+    if (user) return { user, key };
+  }
+  return null;
 }

@@ -29,7 +29,7 @@ import {
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { listScimMappings, replaceScimMappings, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
+import { CORRELATION_KEYS, getCorrelationKeys, listScimMappings, replaceScimMappings, setCorrelationKeys, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -2632,6 +2632,7 @@ function scimMappingRowHtml(m?: { target: string; expression: string; enabled: b
 admin.get("/admin/integrations/scim", async (c) => {
   const targets = await listScimTargets(c.env);
   const mappings = await listScimMappings(c.env);
+  const correlationKeys = await getCorrelationKeys(c.env);
   // Per-target pushed counts for the list (one grouped query each way).
   const [{ results: userCounts }, { results: groupCounts }] = await Promise.all([
     c.env.DB.prepare("SELECT target_id, COUNT(*) AS n FROM scim_user_links GROUP BY target_id").all<{ target_id: number; n: number }>(),
@@ -2687,6 +2688,15 @@ admin.get("/admin/integrations/scim", async (c) => {
             <button type="button" class="secondary" data-append-template="mapping-row-template" data-append-to="mapping-rows">+ Add mapping</button>
             <button class="primary" type="submit">Save mappings</button>
           </div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Correlation</h2>
+        <p class="muted">When an inbound create names a userName nobody holds, these keys are tried in order to adopt an existing account instead &mdash; a rehire, or a feed re-pointed at FlareID. The first key with a match decides; one match adopts, several is a conflict. Leave empty to refuse every duplicate as usual.</p>
+        <form method="POST" action="/admin/scim/correlation">
+          <label for="correlation_keys">Match keys, in order <span class="muted">(${CORRELATION_KEYS.join(", ")})</span></label>
+          <input type="text" id="correlation_keys" name="correlation_keys" value="${escapeHtml(correlationKeys.join(", "))}" placeholder="emails, employee_number" />
+          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5335,6 +5345,18 @@ admin.post("/admin/scim/mappings", async (c) => {
     return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
   }
   await logAudit(c.env, c.get("user"), "settings.scim_mappings_changed", undefined, { count: targets.length }, c.req.raw);
+  return c.redirect("/admin/integrations/scim?saved=1", 302);
+});
+
+admin.post("/admin/scim/correlation", async (c) => {
+  const body = await c.req.parseBody();
+  const keys = String(body.correlation_keys ?? "").split(",");
+  try {
+    await setCorrelationKeys(c.env, keys);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, c.get("user"), "settings.scim_correlation_changed", undefined, { keys: keys.map((k) => k.trim()).filter(Boolean) }, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 

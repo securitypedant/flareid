@@ -26,6 +26,8 @@ export interface UserRow {
   updated_at: string;
   /** Legacy single-target remote SCIM resource id - writes moved to scim_user_links; kept for migration history. */
   scim_id: string | null;
+  /** The provisioner's own stable id (SCIM externalId) - correlation and manager refs resolve through it. */
+  source_id: string | null;
   /** Stable UUID, used as the OIDC "id" claim / SCIM externalId, and as the manager reference (instead of email). */
   external_id: string;
   job_title: string;

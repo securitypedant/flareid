@@ -13,8 +13,23 @@ seed the first target, and `scim_group_state`, `scim_group_members` and
 `scim_deprovision_queue` are rebuilt keyed by target.
 **Migration `0035_scim_mappings.sql`** - `scim_mappings`, the inbound
 attribute-mapping rules for the SCIM server API.
+**Migration `0036_user_source_id.sql`** - `users.source_id`, the
+provisioner's own stable id (SCIM `externalId`), unique when present.
 
 ### Added
+
+- **Correlation rules for inbound creates.** An upstream POST whose
+  `userName` is new no longer has to be a conflict: ordered match keys
+  (`upn`, `emails`, `employee_number`, `source_id`) are tried in turn, the
+  first key matching one account adopts it and the write applies there, and
+  a key matching several accounts answers 409 rather than merging two
+  people. Rehires and feeds re-pointed at FlareID attach to the account they
+  mean. Managed on the SCIM page and over `GET|PUT
+  /api/v1/scim/correlation`; empty keeps the refuse-everything default.
+  Inbound `externalId` is now stored on the account (`source_id`), echoed in
+  user resources, usable as a mapping target, and resolved in `manager`
+  references - a manager can be named by FlareID UUID, source id, UPN, or
+  contact address.
 
 - **Inbound attribute mapping for SCIM provisioning.** Upstream provisioners
   whose dialect doesn't match FlareID's fields can be translated instead of

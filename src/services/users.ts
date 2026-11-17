@@ -121,6 +121,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
     created_at: "",
     updated_at: "",
     scim_id: null,
+    source_id: null,
     external_id: "",
     job_title: String(columns.job_title ?? ""),
     department: String(columns.department ?? ""),

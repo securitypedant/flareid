@@ -39,7 +39,7 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
 import { getAppName, isSetupCompleted } from "../lib/settings.js";
-import { listScimMappings, replaceScimMappings } from "../lib/scim-mapping.js";
+import { CORRELATION_KEYS, getCorrelationKeys, listScimMappings, replaceScimMappings, setCorrelationKeys } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
@@ -837,6 +837,28 @@ defineRoute({
     return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
   }
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_mappings_changed", undefined, { count: (body.mappings ?? []).length }, c.req.raw);
+  return c.json({ ok: true });
+});
+
+defineRoute({
+  method: "get", path: "/api/v1/scim/correlation", tag: "SCIM", permission: "scim:read", summary: "List the inbound correlation keys",
+  description: `Ordered match keys tried when an inbound create's userName is new - the first key matching one existing user adopts the account instead of conflicting. Valid keys: ${CORRELATION_KEYS.join(", ")}.`,
+  response: z.object({ keys: z.array(z.string()) }),
+}, async (c) => c.json({ keys: await getCorrelationKeys(c.env) }));
+
+defineRoute({
+  method: "put", path: "/api/v1/scim/correlation", tag: "SCIM", permission: "scim:write", summary: "Replace the inbound correlation keys",
+  description: `The ordered list, empty to refuse every duplicate. Valid keys: ${CORRELATION_KEYS.join(", ")}.`,
+  body: z.object({ keys: z.array(z.string()) }),
+  errors: [400],
+}, async (c) => {
+  const body = await readJson<{ keys?: string[] }>(c);
+  try {
+    await setCorrelationKeys(c.env, body.keys ?? []);
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_correlation_changed", undefined, { keys: body.keys ?? [] }, c.req.raw);
   return c.json({ ok: true });
 });
 

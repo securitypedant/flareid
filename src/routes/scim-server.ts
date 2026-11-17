@@ -14,7 +14,7 @@ import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } f
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
-import { applyUserMappings, mergeScimBody, ScimMappingError } from "../lib/scim-mapping.js";
+import { applyUserMappings, correlateUser, mergeScimBody, resolveManagerRef, ScimMappingError } from "../lib/scim-mapping.js";
 import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushChangedDynamicGroups, pushGroupCurrent, pushUser, pushUsersById, scimDeprovisionStatements, type ScimResult } from "../lib/scim-client.js";
 
 /**
@@ -150,6 +150,7 @@ async function userResource(env: Env, u: UserRow) {
     schemas: [USER, ENTERPRISE],
     id: u.external_id,
     userName: u.upn,
+    ...(u.source_id ? { externalId: u.source_id } : {}),
     name: { givenName: u.given_name, familyName: u.family_name, formatted: u.display_name },
     displayName: u.display_name,
     title: u.job_title || undefined,
@@ -247,6 +248,7 @@ scimServer.get("/scim/v2/Users/:id", requireScope("directory:read"), async (c) =
 
 interface ScimUserBody {
   userName?: string;
+  externalId?: string;
   name?: { givenName?: string; familyName?: string; formatted?: string };
   displayName?: string;
   title?: string;
@@ -266,6 +268,7 @@ interface ScimUserBody {
  */
 async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown; partial?: boolean }): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined; custom: Record<string, string | null> | undefined; userName: string | undefined }> {
   const cols: Record<string, string | null> = {};
+  if (body.externalId !== undefined) cols.source_id = String(body.externalId) || null;
   if (body.name?.givenName !== undefined) cols.given_name = String(body.name.givenName);
   if (body.name?.familyName !== undefined) cols.family_name = String(body.name.familyName);
   if (body.displayName !== undefined || body.name?.formatted !== undefined) cols.display_name = String(body.displayName ?? body.name?.formatted);
@@ -279,7 +282,7 @@ async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown;
   if (ent?.employeeNumber !== undefined) cols.employee_number = String(ent.employeeNumber);
   if (ent?.manager !== undefined) {
     const ref = typeof ent.manager === "string" ? ent.manager : ent.manager?.value;
-    cols.manager_external_id = ref ? ((await getUserByExternalId(env, ref))?.external_id ?? null) : null;
+    cols.manager_external_id = ref ? await resolveManagerRef(env, ref) : null;
   }
   // The whole list lands in user_emails; the primary mirrors into users.email.
   // Format is refused here, before anything has been written (ownership is
@@ -351,6 +354,24 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(local!)) throw new ScimError(400, `"${local}" is not a valid username.`, "invalidValue");
   if (!(await listDomains(c.env)).some((d) => d.domain === domainPart)) throw new ScimError(400, `The domain "${domainPart}" is not configured in FlareID.`, "invalidValue");
   const upn = `${local}@${domainPart}`;
+  // Correlation: the configured keys can adopt an existing account instead of
+  // conflicting - a rehired person, a feed re-pointed at this IdP. The first
+  // configured key with a match decides; several matches on one key is a 409.
+  try {
+    const matched = await correlateUser(c.env, { upn, cols, emails });
+    if (matched) {
+      if (await holdsAdminRole(c.env, matched.user.id)) requireAdminFor(c, "Changing an account that holds an admin role");
+      await assertNoAdminRoleGrant(c, matched.user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
+      await applyColumns(c.env, matched.user.id, cols, emails, custom);
+      await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_correlated", matched.user.upn, { key: matched.key }, c.req.raw);
+      const fresh = (await getUserByExternalId(c.env, matched.user.external_id))!;
+      downstream(c, () => pushUserAndRules(c.env, matched.user, fresh), "update", fresh.upn);
+      return c.json(await userResource(c.env, fresh), 200, { Location: `${base(c.env)}/Users/${fresh.external_id}` });
+    }
+  } catch (e) {
+    if (e instanceof ScimMappingError) throw new ScimError(409, e.message, "uniqueness");
+    throw e;
+  }
   if (await c.env.DB.prepare("SELECT 1 FROM users WHERE upn = ? OR username = ?").bind(upn, local).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
 
   const now = new Date().toISOString();
@@ -370,7 +391,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   const after = {
     upn, username: local, display_name: local, given_name: "", family_name: "", external_id: externalId,
     job_title: "", department: "", employee_number: "", hire_date: "", employment_status: "", employment_type: "",
-    location: "", status: "disabled", manager_external_id: null, custom_attributes: "{}", ...cols,
+    location: "", status: "disabled", manager_external_id: null, source_id: null, custom_attributes: "{}", ...cols,
   } as UserRow;
   if (custom) {
     const attrs = { ...(JSON.parse(after.custom_attributes) as Record<string, unknown>) };

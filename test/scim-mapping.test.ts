@@ -137,6 +137,58 @@ describe("inbound attribute mappings", () => {
     expect(created.body.displayName).toBe("Given Name");
   });
 
+  it("stores externalId as source_id and resolves managers through it", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const mgr = await scim(apiKey, "/Users", "POST", { userName: "boss@horizon.test", externalId: "hr-100", displayName: "Boss", active: true });
+    expect(mgr.body.externalId).toBe("hr-100");
+
+    const sub = await scim(apiKey, "/Users", "POST", {
+      userName: "sub@horizon.test",
+      [ENT]: { manager: { value: "hr-100" } },
+    });
+    expect(sub.body[ENT].manager.value).toBe(mgr.body.id);
+    expect(sub.body[ENT].manager.displayName).toBe("Boss");
+  });
+
+  it("correlation adopts an existing account instead of 409ing", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    // No keys configured: duplicates still conflict.
+    const first = await scim(apiKey, "/Users", "POST", { userName: "rehired@horizon.test", emails: [{ value: "re@home.test", primary: true }], [ENT]: { employeeNumber: "E-7" }, active: true });
+    expect((await scim(apiKey, "/Users", "POST", { userName: "rehired@horizon.test" })).status).toBe(409);
+
+    await apiCall("/api/v1/scim/correlation", { token: apiKey, method: "PUT", body: { keys: ["emails", "upn"] } });
+    expect((await apiCall("/api/v1/scim/correlation", { token: apiKey })).body.keys).toEqual(["emails", "upn"]);
+
+    // A create under a different userName but with the same address adopts.
+    const adopted = await scim(apiKey, "/Users", "POST", { userName: "rehired2@horizon.test", emails: [{ value: "re@home.test", primary: true }], displayName: "Re Hired", active: true });
+    expect(adopted.status).toBe(200);
+    expect(adopted.body.id).toBe(first.body.id);
+    expect(adopted.body.userName).toBe("rehired@horizon.test");
+    expect(adopted.body.displayName).toBe("Re Hired");
+
+    // And upn correlation turns a same-userName create into an update.
+    const again = await scim(apiKey, "/Users", "POST", { userName: "rehired@horizon.test", title: "Rehired Title" });
+    expect(again.status).toBe(200);
+    expect(again.body.title).toBe("Rehired Title");
+
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE employee_number = 'E-7'").first<{ n: number }>())!;
+    expect(n).toBe(1);
+  });
+
+  it("correlation refuses an ambiguous match and bad keys", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    // Two users sharing an employee number, created before correlation is on.
+    expect((await scim(apiKey, "/Users", "POST", { userName: "a@horizon.test", [ENT]: { employeeNumber: "DUP" } })).status).toBe(201);
+    expect((await scim(apiKey, "/Users", "POST", { userName: "b@horizon.test", [ENT]: { employeeNumber: "DUP" } })).status).toBe(201);
+    await apiCall("/api/v1/scim/correlation", { token: apiKey, method: "PUT", body: { keys: ["employee_number"] } });
+
+    const res = await scim(apiKey, "/Users", "POST", { userName: "c@horizon.test", [ENT]: { employeeNumber: "DUP" } });
+    expect(res.status).toBe(409);
+    expect(res.body.detail).toContain("ambiguous");
+
+    expect((await apiCall("/api/v1/scim/correlation", { token: apiKey, method: "PUT", body: { keys: ["bogus"] } })).status).toBe(400);
+  });
+
   it("the console form saves the same set the API reads", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;

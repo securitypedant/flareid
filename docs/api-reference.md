@@ -1388,6 +1388,8 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 | `POST` | `/api/v1/scim/sync` | `scim:write` | Push the next batch of users, then the groups |
 | `GET` | `/api/v1/scim/mappings` | `scim:read` | List inbound attribute mappings |
 | `PUT` | `/api/v1/scim/mappings` | `scim:write` | Replace the inbound attribute mappings |
+| `GET` | `/api/v1/scim/correlation` | `scim:read` | List the inbound correlation keys |
+| `PUT` | `/api/v1/scim/correlation` | `scim:write` | Replace the inbound correlation keys |
 
 ### `GET /api/v1/scim/config`
 
@@ -1634,6 +1636,46 @@ Request body:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `mappings` | object[] | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/scim/correlation`
+
+List the inbound correlation keys.
+
+Ordered match keys tried when an inbound create's userName is new - the first key matching one existing user adopts the account instead of conflicting. Valid keys: upn, employee_number, emails, source_id.
+
+Permission: `scim:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `keys` | string[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/scim/correlation`
+
+Replace the inbound correlation keys.
+
+The ordered list, empty to refuse every duplicate. Valid keys: upn, employee_number, emails, source_id.
+
+Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `keys` | string[] | yes |  |
 
 Response `200`:
 
