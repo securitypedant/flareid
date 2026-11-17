@@ -134,8 +134,8 @@ defineRoute(
     const input: LdapAppInput = {
       slug,
       name: String(body.name ?? ""),
-      ...(body.user_groups !== undefined ? { user_group_ids: await groupIdsByName(c.env, body.user_groups) } : existing ? {} : { user_group_ids: [] }),
-      ...(body.exposed_groups !== undefined ? { exposed_group_ids: await groupIdsByName(c.env, body.exposed_groups) } : existing ? {} : { exposed_group_ids: [] }),
+      ...(body.user_groups !== undefined ? { user_group_ids: await groupIdsByName(c.env, body.user_groups) } : {}),
+      ...(body.exposed_groups !== undefined ? { exposed_group_ids: await groupIdsByName(c.env, body.exposed_groups) } : {}),
       ...(body.mfa_mode !== undefined ? { mfa_mode: body.mfa_mode } : {}),
       ...(body.include_disabled !== undefined ? { include_disabled: body.include_disabled } : {}),
     };

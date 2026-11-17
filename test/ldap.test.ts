@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { apiCall, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { totp } from "./helpers-totp.js";
 import { handleLdapConnection, resetSnapshotCache } from "../src/ldap/connection.js";
-import { enableLdap } from "../src/ldap/settings.js";
+import { enableLdap, disableLdap } from "../src/ldap/settings.js";
 import { writeLdapApp } from "../src/ldap/apps.js";
 import { BerReader, appC, booleanValue, concat, enumValue, integer, octetString, seq, tlv } from "../src/ldap/ber.js";
 import { appC as appTag, ctx, ctxC } from "../src/ldap/ber.js";
@@ -546,5 +546,148 @@ describe("ldap password modify (RFC 3062)", { timeout: 60000 }, () => {
     await c.send(pwmodReq(5, { old: "correct-horse-9", next: "x" }));
     expect((await c.recv()).code).toBe(53);
     await c.close();
+  });
+});
+
+describe("ldap session revalidation", { timeout: 60000 }, () => {
+  const cmp = (id: number, dn: string, attr: string, value: string) => ldapMessage(id, tlv(appC(14), concat(octetString(dn), seq(octetString(attr), octetString(value)))));
+
+  it("drops to anonymous on a failed bind instead of keeping the prior principal", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    expect((await c.recv()).code).toBe(0);
+    // A failed rebind must not retain the service principal (RFC 4511 4.2.1).
+    await c.send(bindReq(2, `cn=nope,ou=services,${BASE_DN}`, "flareid_ldap_wrong"));
+    expect((await c.recv()).code).toBe(49);
+    const { done } = await c.search(3, BASE_DN, 2, presentFilter("objectClass"));
+    expect(done.code).toBe(50); // anonymous: no subtree access
+    await c.close();
+  });
+
+  it("disconnects a service-bound connection when its app is revoked", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    expect((await c.recv()).code).toBe(0);
+    await env.DB.prepare("UPDATE ldap_apps SET revoked_at = ? WHERE slug = ?").bind(new Date().toISOString(), SLUG).run();
+    resetSnapshotCache();
+    await c.send(whoamiReq(2));
+    const res = await c.recv();
+    expect(res.tag).toBe(0x78); // noticeOfDisconnection
+    expect(res.code).toBe(53);
+    await c.close();
+  });
+
+  it("refuses ops from a user-bound connection once the account is disabled", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(0);
+    await env.DB.prepare("UPDATE users SET status = 'disabled' WHERE username = 'alice'").run();
+    resetSnapshotCache();
+    const { done } = await c.search(3, `ou=people,ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"));
+    expect(done.code).toBe(50);
+    // Now anonymous - whoami reports an empty authzid.
+    await c.send(whoamiReq(4));
+    const res = await c.recv();
+    expect(res.code).toBe(0);
+    expect(res.responseValue).toBe("");
+    // And rebinding as the disabled user fails outright.
+    await c.send(bindReq(5, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(49);
+    await c.close();
+  });
+
+  it("disconnects in-flight connections when LDAP is disabled", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    expect((await c.recv()).code).toBe(0);
+    await disableLdap(env);
+    resetSnapshotCache();
+    await c.send(whoamiReq(2));
+    const res = await c.recv();
+    expect(res.tag).toBe(0x78); // noticeOfDisconnection
+    expect(res.code).toBe(52);
+    await c.close();
+  });
+
+  it("scopes user-bound compare to their own entry and own groups", async () => {
+    const { apiKey } = await setupLdap();
+    await apiCall("/api/v1/groups", { token: apiKey, body: { name: "Ops" } });
+    resetSnapshotCache();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(0);
+    const bobDn = `uid=bob,ou=people,ou=${SLUG},${BASE_DN}`;
+    const engDn = `cn=eng,ou=groups,ou=${SLUG},${BASE_DN}`;
+    const opsDn = `cn=ops,ou=groups,ou=${SLUG},${BASE_DN}`;
+    // Another user's entry is invisible.
+    await c.send(cmp(3, bobDn, "uid", "bob"));
+    expect((await c.recv()).code).toBe(32);
+    // So is a group alice does not belong to.
+    await c.send(cmp(4, opsDn, "cn", "ops"));
+    expect((await c.recv()).code).toBe(32);
+    // Her own entry and own group compare normally, with member reduced to herself.
+    await c.send(cmp(5, ALICE_DN, "uid", "alice"));
+    expect((await c.recv()).code).toBe(6);
+    await c.send(cmp(6, engDn, "member", ALICE_DN));
+    expect((await c.recv()).code).toBe(6);
+    await c.send(cmp(7, engDn, "member", bobDn));
+    expect((await c.recv()).code).toBe(5);
+    await c.close();
+  });
+
+  it("shows a user-bound search only the groups they belong to", async () => {
+    const { apiKey } = await setupLdap();
+    await apiCall("/api/v1/groups", { token: apiKey, body: { name: "Ops" } });
+    resetSnapshotCache();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(0);
+    const { entries } = await c.search(3, `ou=groups,ou=${SLUG},${BASE_DN}`, 2, presentFilter("objectClass"), ["cn"]);
+    const dns = entries.map((e) => e.dn!.toLowerCase());
+    expect(dns).toEqual([`cn=eng,ou=groups,ou=${SLUG},${BASE_DN}`.toLowerCase()]);
+    await c.close();
+  });
+
+  it("verifies oldPasswd against the live password, not the bind-time hash", async () => {
+    const PWMOD = "1.3.6.1.4.1.4203.1.11.1";
+    const pwmod = (id: number, old: string, next: string) =>
+      ldapMessage(id, tlv(appC(23), concat(tlv(ctx(0), new TextEncoder().encode(PWMOD)), tlv(ctx(1), seq(tlv(ctx(1), new TextEncoder().encode(old)), tlv(ctx(2), new TextEncoder().encode(next)))))));
+    const { apiKey } = await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(0);
+    // An external rotation must invalidate the bind-time credential.
+    await apiCall("/api/v1/users/alice/reset-password", { token: apiKey, body: { password: "evicted-horse-3" } });
+    await c.send(pwmod(3, "correct-horse-9", "attacker-choice-7"));
+    expect((await c.recv()).code).toBe(49);
+    await c.send(pwmod(4, "evicted-horse-3", "attacker-choice-7"));
+    expect((await c.recv()).code).toBe(0);
+    await c.close();
+  });
+
+  it("keeps omitted policy fields on a partial app update", async () => {
+    const { apiKey } = await setupLdap();
+    const grp = await env.DB.prepare("SELECT id FROM groups WHERE name = 'Eng'").first<{ id: number }>();
+    const { app } = await writeLdapApp(env, { slug: "partial", name: "Partial", mfa_mode: "otp_required", include_disabled: true, user_group_ids: [grp!.id], exposed_group_ids: [grp!.id] });
+    // Update with only name - omitted policy fields must not reset to create defaults.
+    const { app: updated } = await writeLdapApp(env, { slug: "partial", name: "Renamed" });
+    expect(updated.id).toBe(app.id);
+    expect(updated.name).toBe("Renamed");
+    expect(updated.mfa_mode).toBe("otp_required");
+    expect(updated.include_disabled).toBe(1);
+    expect(updated.user_group_ids).toBe(`[${grp!.id}]`);
+    expect(updated.exposed_group_ids).toBe(`[${grp!.id}]`);
   });
 });

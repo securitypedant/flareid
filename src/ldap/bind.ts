@@ -164,7 +164,7 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   return { ok: true, bound: { kind: "user", user, app }, app };
 }
 
-async function inAppGroups(env: Env, user: UserRow, app: LdapAppRow): Promise<boolean> {
+export async function inAppGroups(env: Env, user: UserRow, app: LdapAppRow): Promise<boolean> {
   let ids: number[];
   try {
     ids = JSON.parse(app.user_group_ids || "[]");

@@ -5180,6 +5180,7 @@ admin.post("/admin/ldap", async (c) => {
     include_disabled: String(body.include_disabled ?? "") === "1",
   };
   try {
+    if (await getLdapAppBySlug(c.env, input.slug)) return consoleError(c, `An app named '${input.slug}' already exists.`, 400);
     const { app, secret } = await writeLdapApp(c.env, input);
     await logAudit(c.env, c.get("user"), "ldap.app.created", app.slug, {}, c.req.raw);
     return ldapSecretPage(c, app, secret!, await getLdapSettings(c.env), "created");

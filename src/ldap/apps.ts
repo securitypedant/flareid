@@ -36,18 +36,20 @@ export interface LdapAppInput {
   include_disabled?: boolean;
 }
 
-/** Create (or, when `upsertSlug` matches, update) an app. Returns the row and, on create, the one-time secret. */
-export async function writeLdapApp(env: Env, input: LdapAppInput, opts: { upsert?: boolean } = {}): Promise<{ app: LdapAppRow; secret: string | null }> {
+/** Create an app, or update it when the slug already exists. Returns the row and, on create, the one-time secret. */
+export async function writeLdapApp(env: Env, input: LdapAppInput): Promise<{ app: LdapAppRow; secret: string | null }> {
   const slug = input.slug.toLowerCase();
   if (!isLdapSlug(slug)) throw new RangeError(`'${slug}' is not a usable app name (letters, digits, dashes; not services/people/groups).`);
   if (!input.name.trim()) throw new RangeError("The app needs a name.");
   const existing = await getLdapAppBySlug(env, slug);
   const now = new Date().toISOString();
-  const userGroupIds = JSON.stringify(input.user_group_ids ?? []);
-  const exposedGroupIds = JSON.stringify(input.exposed_group_ids ?? []);
-  const mfaMode = input.mfa_mode ?? "otp_if_enrolled";
-  const includeDisabled = input.include_disabled ? 1 : 0;
-  if (existing && !opts.upsert) {
+  // On update an omitted field keeps its stored value - omission is 'keep',
+  // not 'reset to create default'. Defaults apply to INSERT only.
+  const userGroupIds = input.user_group_ids !== undefined ? JSON.stringify(input.user_group_ids) : (existing?.user_group_ids ?? "[]");
+  const exposedGroupIds = input.exposed_group_ids !== undefined ? JSON.stringify(input.exposed_group_ids) : (existing?.exposed_group_ids ?? "[]");
+  const mfaMode = input.mfa_mode ?? (existing?.mfa_mode as LdapAppInput["mfa_mode"] | undefined) ?? "otp_if_enrolled";
+  const includeDisabled = input.include_disabled !== undefined ? (input.include_disabled ? 1 : 0) : (existing?.include_disabled ?? 0);
+  if (existing) {
     await env.DB.prepare("UPDATE ldap_apps SET name = ?, user_group_ids = ?, exposed_group_ids = ?, mfa_mode = ?, include_disabled = ?, updated_at = ? WHERE id = ?")
       .bind(input.name.trim(), userGroupIds, exposedGroupIds, mfaMode, includeDisabled, now, existing.id)
       .run();

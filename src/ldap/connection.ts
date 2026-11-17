@@ -7,7 +7,7 @@ import { newPasswordError } from "../lib/breached-passwords.js";
 import { clearLoginAttempts, loginRateKey, recordLoginAttempt } from "../lib/rate-limit.js";
 import { revokeTokensForUser } from "../lib/sessions.js";
 import { BerError, BerReader, concat, seq, ctx, tlv } from "./ber.js";
-import { ldapBind, AD_BAD_CREDENTIALS, type BindCtx } from "./bind.js";
+import { ldapBind, inAppGroups, AD_BAD_CREDENTIALS, type BindCtx } from "./bind.js";
 import { loadSnapshot, viewForApp, type DirectorySnapshot } from "./directory.js";
 import {
   decodeMessage,
@@ -119,14 +119,12 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
   const log = (event: string, fields: Record<string, unknown> = {}) => deps.log?.(event, { ip, ...fields });
   const send = (bytes: Uint8Array) => writer.write(bytes);
 
-  const settings: LdapSettings | null = await getLdapSettings(env).catch(() => null);
+  let settings: LdapSettings | null = await getLdapSettings(env).catch(() => null);
   if (!settings || !settings.enabled || settings.base.length === 0) {
     await send(noticeOfDisconnection(RC.unavailable, "LDAP is not enabled"));
     writer.releaseLock();
     return;
   }
-
-  const idleMs = Math.max(1, settings.idleTimeoutMinutes) * 60_000;
   // Unbound connections are implicitly anonymous: they may read the root DSE
   // and subschema, which is how clients discover us.
   let bound: Bound = { kind: "anonymous" };
@@ -151,6 +149,7 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
   log("ldap.session.open", {});
   try {
     while (ops < MAX_OPS) {
+      const idleMs = Math.max(1, settings.idleTimeoutMinutes) * 60_000;
       const idleLeft = idleMs - (Date.now() - lastActivity);
       if (idleLeft <= 0) {
         await send(noticeOfDisconnection(RC.unavailable, "idle timeout"));
@@ -183,7 +182,46 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
       if (op.kind === "unbind") break;
       if (op.kind === "abandon") continue;
 
+      // LDAP.md section 14 req 11: settings are re-read per op, so disabling
+      // LDAP disconnects in-flight connections on their next operation and
+      // base-DN / unscoped-bind / idle changes take effect without reconnect.
+      const fresh = await getLdapSettings(env).catch(() => null);
+      if (fresh) settings = fresh;
+      if (!settings.enabled || settings.base.length === 0) {
+        await send(noticeOfDisconnection(RC.unavailable, "LDAP is not enabled"));
+        break;
+      }
+
+      // LDAP.md section 9 re-validation: bound state is a bind-time snapshot,
+      // so re-check the principal on every op (binds re-validate on the way in).
+      if (op.kind !== "bind" && bound.kind !== "anonymous") {
+        const boundAppId = bound.kind === "service" ? bound.app.id : bound.app?.id;
+        const boundApp = boundAppId ? await env.DB.prepare("SELECT * FROM ldap_apps WHERE id = ?").bind(boundAppId).first<LdapAppRow>() : null;
+        if (boundAppId && (!boundApp || boundApp.revoked_at)) {
+          await send(noticeOfDisconnection(RC.unwillingToPerform, "app revoked"));
+          break;
+        }
+        if (boundApp) app = boundApp; // provenance picks up policy edits too
+        if (bound.kind === "service") {
+          bound = { kind: "service", app: boundApp! };
+        } else {
+          const live = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(bound.user.id).first<UserRow>();
+          const usable = live !== null && live.status === "active" && !live.password_hash.startsWith("!");
+          const member = usable && boundApp ? await inAppGroups(env, live, boundApp) : usable;
+          if (!usable || !member) {
+            bound = { kind: "anonymous" };
+            await refuseOp(send, msg.id, op, RC.insufficientAccessRights, "account no longer usable");
+            continue;
+          }
+          bound = { kind: "user", user: live, app: boundApp ?? bound.app };
+        }
+      }
+
       if (op.kind === "bind") {
+        // RFC 4511 4.2.1 / LDAP.md section 9 'Bind resets state': any bind
+        // attempt discards the previous authentication - a failed bind leaves
+        // the connection anonymous. `app` stays sticky (connection provenance).
+        bound = { kind: "anonymous" };
         if (op.version !== 3) {
           await send(message(msg.id, bindResponse(RC.protocolError, "LDAPv3 only")));
           continue;
@@ -276,6 +314,17 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Answer an op with an LDAPResult refusal using that op's response tag. */
+async function refuseOp(send: (bytes: Uint8Array) => Promise<unknown>, id: number, op: Operation, code: number, diagnostic: string): Promise<void> {
+  if (op.kind === "search") await send(message(id, searchDone(code, "", diagnostic)));
+  else if (op.kind === "compare") await send(message(id, compareResponse(code, "", diagnostic)));
+  else if (op.kind === "extended") await send(message(id, extendedResponse(code, diagnostic, op.name)));
+  else if (op.kind === "write") {
+    const tag = op.op === "modify" ? OP.modifyResponse : op.op === "add" ? OP.addResponse : op.op === "del" ? OP.delResponse : OP.modifyDnResponse;
+    await send(refusal(id, tag, code, diagnostic));
+  } else await send(noticeOfDisconnection(code, diagnostic));
+}
 
 async function searchCtx(env: Env, settings: LdapSettings, bound: Bound, stickyApp: LdapAppRow | null): Promise<SearchCtx | null> {
   const app = bound.kind === "service" ? bound.app : bound.kind === "user" ? (bound.app ?? stickyApp) : stickyApp;

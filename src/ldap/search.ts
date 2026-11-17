@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import type { LdapAppRow, UserRow } from "../lib/types.js";
+import type { GroupRow, LdapAppRow, UserRow } from "../lib/types.js";
 import { BerError } from "./ber.js";
 import { dnEquals, dnWithin, formatDn, parseDn, type Rdn } from "./dn.js";
 import { parseFilter, evaluateFilter, type EvalEntry, type Filter } from "./filter.js";
@@ -123,8 +123,11 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
   const limit = op.sizeLimit === 0 ? SERVER_SIZE_LIMIT : Math.min(op.sizeLimit, SERVER_SIZE_LIMIT);
   const deadline = op.timeLimit > 0 ? Date.now() + Math.min(op.timeLimit, 30) * 1000 : Infinity;
 
-  // A user-bound connection sees only their own entry and their own groups.
+  // A user-bound connection sees only their own entry and the groups they
+  // actually belong to (LDAP.md section 10) - group visibility is matched per
+  // entry against the user's group DNs, not just 'has any group'.
   const userBound = ctx.bound.kind === "user" ? ctx.bound.user : null;
+  const ownGroupDns = userBound ? ownGroupDnSet(ctx, userBound, baseDn) : null;
 
   let code: number = RC.success;
   let diagnostic = "";
@@ -134,7 +137,7 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
     const entry = await cand.build();
     if (userBound) {
       const isSelf = entry.dn.toLowerCase() === USER_RDN(userBound.username, app.slug, baseDn).toLowerCase();
-      const isOwnGroup = (ctx.view.userGroups.get(userBound.id) ?? []).length > 0 && entry.dn.toLowerCase().includes(",ou=groups,");
+      const isOwnGroup = ownGroupDns!.has(entry.dn.toLowerCase());
       if (!isSelf && !isOwnGroup) continue;
       if (isOwnGroup) reduceGroupToSelf(entry, userBound, app, settings);
     }
@@ -154,6 +157,16 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
   }
 
   return { code, matchedDn: "", diagnostic, entries: matched, total: matched.length, typesOnly: op.typesOnly };
+}
+
+/** DNs of the group entries a user-bound connection may see (LDAP.md section 10). */
+function ownGroupDnSet(ctx: SearchCtx, user: UserRow, baseDn: string): Set<string> {
+  return new Set(
+    (ctx.view.userGroups.get(user.id) ?? [])
+      .map((gid) => ctx.view.groups.find((g) => g.id === gid))
+      .filter((g): g is GroupRow => g !== undefined)
+      .map((g) => GROUP_RDN(g.name, ctx.app!.slug, baseDn).toLowerCase())
+  );
 }
 
 /** A user-bound search sees a group they belong to with only themselves as member. */
@@ -246,6 +259,16 @@ export async function executeCompare(ctx: SearchCtx, op: Extract<Operation, { ki
     }
   });
   if (!target) return { code: RC.noSuchObject, matchedDn: "" };
+  // Same authorisation as an equality filter (LDAP.md sections 10 + 11): a
+  // user-bound compare may target only the bound user's own entry and the
+  // groups they belong to - everything else is invisible.
+  const userBound = ctx.bound.kind === "user" ? ctx.bound.user : null;
+  if (userBound) {
+    const baseDn = ctx.settings.baseDn;
+    const isOwnGroup = ownGroupDnSet(ctx, userBound, baseDn).has(target.dn.toLowerCase());
+    if (target.dn.toLowerCase() !== USER_RDN(userBound.username, ctx.app.slug, baseDn).toLowerCase() && !isOwnGroup) return { code: RC.noSuchObject, matchedDn: "" };
+    if (isOwnGroup) reduceGroupToSelf(target, userBound, ctx.app, ctx.settings);
+  }
   const values = target.attrs.get(op.attribute.toLowerCase());
   if (values === undefined) return { code: RC.undefinedAttributeType, matchedDn: "" };
   const text = new TextDecoder().decode(op.value);
