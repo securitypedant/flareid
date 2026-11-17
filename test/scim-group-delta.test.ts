@@ -22,7 +22,9 @@ interface Sent {
 function fakeScim(opts: { patchStatus?: number } = {}) {
   const sent: Sent[] = [];
   let n = 0;
+  let delayMs = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
     const url = String(input instanceof Request ? input.url : input);
     if (!url.startsWith("https://scim.test/")) return new Response("unexpected", { status: 500 });
     const method = (init?.method ?? "GET").toUpperCase();
@@ -34,7 +36,7 @@ function fakeScim(opts: { patchStatus?: number } = {}) {
     if (method === "PATCH" && path.startsWith("/Groups/") && opts.patchStatus) return new Response("refused", { status: opts.patchStatus });
     return Response.json({}, { status: 200 });
   });
-  return { sent, groupWrites: () => sent.filter((s) => s.path.startsWith("/Groups")), reset: () => (sent.length = 0) };
+  return { sent, groupWrites: () => sent.filter((s) => s.path.startsWith("/Groups")), reset: () => (sent.length = 0), setDelay: (ms: number) => (delayMs = ms) };
 }
 
 async function call(path: string, token: string, method: string, body?: unknown) {
@@ -168,6 +170,28 @@ describe("SCIM group pushes", () => {
     const writes = scim.groupWrites();
     expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([`PUT /Groups/${small.scim_id}`]);
     expect(await stored(small.id)).toEqual(["p2"]);
+  });
+
+  it("answers the write before a slow remote finishes - pushes are post-response work", async () => {
+    const { apiKey, scim } = await directory();
+    scim.reset();
+    scim.setDelay(300);
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request(`${BASE}/api/v1/users/p0`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ given_name: "Renamed" }),
+      }),
+      env,
+      ctx
+    );
+    expect(res.status).toBe(200);
+    // The remote call is still sleeping, but the write has already answered.
+    expect(scim.sent).toHaveLength(0);
+    // Flushing the context shows the push ran after the response.
+    await waitOnExecutionContext(ctx);
+    expect(scim.sent.some((s) => s.path.startsWith("/Users"))).toBe(true);
   });
 
   it("forgets a deleted group's state, and a deleted user's rows", async () => {

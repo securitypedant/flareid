@@ -22,6 +22,16 @@ observability work.
   (`msg: "http.request"`, family, method, status, ms) to Workers Logs, so
   `wrangler tail` and Logpush see machine-readable traffic.
 
+### Fixed
+
+- **Directory writes no longer wait on the SCIM remote.** Creating, editing,
+  or deleting a user or group used to await the outbound provisioning pushes
+  - one call for the object, then one per affected group - so a slow or
+  overloaded SCIM endpoint could hold a save open for tens of seconds. The
+  pushes are post-response work now (`executionCtx.waitUntil`), the same
+  pattern the inbound SCIM server already used, and anything missed is still
+  reconciled by the hourly sync.
+
 ### Security
 
 - **Remaining run-2 audit findings closed.**

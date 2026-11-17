@@ -13,7 +13,7 @@ import { newPasswordError } from "../lib/breached-passwords.js";
 import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import type { UserRow } from "../lib/types.js";
-import { audit, ServiceError, type ServiceCtx } from "./context.js";
+import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayAssignGroups, assertMayTouchUser, assertNoAdminRoleGrant } from "./guards.js";
 import { scimConfigured, syncGroupBestEffort, syncUserBestEffort } from "./scim-sync.js";
 
@@ -159,8 +159,10 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   }
 
   await audit(ctx, "user.created", upn);
-  await syncUserBestEffort(ctx, userId, "push");
-  for (const gid of groupIds) await syncGroupBestEffort(ctx, gid);
+  await afterResponse(ctx, async (later) => {
+    await syncUserBestEffort(later, userId, "push");
+    for (const gid of groupIds) await syncGroupBestEffort(later, gid);
+  });
   return { id: userId, upn, password, chosen: Boolean(input.password) };
 }
 
@@ -269,12 +271,14 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   }
 
   await audit(ctx, "user.updated", upn);
-  await syncUserBestEffort(ctx, id, status === "active" ? "push" : "deactivate");
-  // Groups they left, groups they joined, and every dynamic group - an
-  // attribute edit can move them in or out of any rule.
-  const { results: dynamicRows } = await ctx.env.DB.prepare("SELECT id FROM groups WHERE rule != ''").all<{ id: number }>();
-  const affected = new Set([...previous.map((p) => p.group_id), ...groupIds, ...dynamicRows.map((g) => g.id)]);
-  for (const gid of affected) await syncGroupBestEffort(ctx, gid);
+  await afterResponse(ctx, async (later) => {
+    await syncUserBestEffort(later, id, status === "active" ? "push" : "deactivate");
+    // Groups they left, groups they joined, and every dynamic group - an
+    // attribute edit can move them in or out of any rule.
+    const { results: dynamicRows } = await ctx.env.DB.prepare("SELECT id FROM groups WHERE rule != ''").all<{ id: number }>();
+    const affected = new Set([...previous.map((p) => p.group_id), ...groupIds, ...dynamicRows.map((g) => g.id)]);
+    for (const gid of affected) await syncGroupBestEffort(later, gid);
+  });
   return { upn };
 }
 
@@ -294,7 +298,7 @@ export async function setUserStatus(ctx: ServiceCtx, id: number, status: "active
     await revokeTokensForUser(ctx.env, id);
   }
   await audit(ctx, status === "active" ? "user.activated" : "user.deactivated", user.upn);
-  await syncUserBestEffort(ctx, id, status === "active" ? "push" : "deactivate");
+  await afterResponse(ctx, (later) => syncUserBestEffort(later, id, status === "active" ? "push" : "deactivate"));
 }
 
 /** Sets a chosen password (policy-checked) or generates one. A reset is a compromise response: every session and token ends. */
@@ -384,11 +388,13 @@ export async function deleteUser(ctx: ServiceCtx, id: number): Promise<UserRow> 
   // left the user deleted downstream but alive here.
   await ctx.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(ctx.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(ctx.env, id)]);
 
-  if (await scimConfigured(ctx.env)) {
-    // A failure stays queued and is retried by every sync and the hourly cron.
-    const result = await drainScimDeprovisionQueue(ctx.env);
-    if (result.failed) await audit(ctx, "scim.user_sync_failed", user.upn, { action: "delete", queued: result.remaining });
-  }
+  await afterResponse(ctx, async (later) => {
+    if (await scimConfigured(later.env)) {
+      // A failure stays queued and is retried by every sync and the hourly cron.
+      const result = await drainScimDeprovisionQueue(later.env);
+      if (result.failed) await audit(later, "scim.user_sync_failed", user.upn, { action: "delete", queued: result.remaining });
+    }
+  });
   await audit(ctx, "user.deleted", user.upn);
   return user;
 }

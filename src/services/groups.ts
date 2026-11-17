@@ -4,7 +4,7 @@ import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { userEditableAttributeNames } from "../lib/schemas.js";
 import { drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision } from "../lib/scim-client.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
-import { audit, ServiceError, type ServiceCtx } from "./context.js";
+import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayNameGroup, assertMayTouchGroup } from "./guards.js";
 import { scimConfigured, syncGroupBestEffort } from "./scim-sync.js";
 
@@ -60,7 +60,7 @@ export async function createGroup(ctx: ServiceCtx, input: GroupInput, memberIds:
     await ctx.env.DB.batch(memberIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
   }
   await audit(ctx, "group.created", input.name, input.rule ? { rule: input.rule } : undefined);
-  await syncGroupBestEffort(ctx, id);
+  await afterResponse(ctx, (later) => syncGroupBestEffort(later, id));
   return id;
 }
 
@@ -105,13 +105,15 @@ export async function updateGroup(ctx: ServiceCtx, id: number, input: GroupInput
   ]);
 
   await audit(ctx, "group.updated", input.name, input.rule ? { rule: input.rule } : undefined);
-  await syncGroupBestEffort(ctx, id);
-  // Members this edit removed are re-pushed: leaving a SCIM-scoped group can take them out of scope.
-  if (await scimConfigured(ctx.env)) {
-    const kept = new Set(members);
-    const r = await pushUsersById(ctx.env, before.map((b) => b.user_id).filter((uid) => !kept.has(uid)));
-    if (!r.ok) await audit(ctx, "scim.user_sync_failed", input.name, { action: "membership_removed", error: r.error });
-  }
+  await afterResponse(ctx, async (later) => {
+    await syncGroupBestEffort(later, id);
+    // Members this edit removed are re-pushed: leaving a SCIM-scoped group can take them out of scope.
+    if (await scimConfigured(later.env)) {
+      const kept = new Set(members);
+      const r = await pushUsersById(later.env, before.map((b) => b.user_id).filter((uid) => !kept.has(uid)));
+      if (!r.ok) await audit(later, "scim.user_sync_failed", input.name, { action: "membership_removed", error: r.error });
+    }
+  });
 }
 
 /** Dynamic -> static: the rule's current matches become assigned members. */
@@ -130,7 +132,7 @@ export async function freezeGroup(ctx: ServiceCtx, id: number): Promise<number> 
     ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) SELECT ?, value FROM json_each(?)").bind(id, JSON.stringify(ids)),
   ]);
   await audit(ctx, "group.converted_to_static", group.name, { members: ids.length, rule: group.rule });
-  await syncGroupBestEffort(ctx, id);
+  await afterResponse(ctx, (later) => syncGroupBestEffort(later, id));
   return ids.length;
 }
 
@@ -145,11 +147,13 @@ export async function deleteGroup(ctx: ServiceCtx, id: number): Promise<GroupRow
     ...(group.scim_id ? [queueScimDeprovision(ctx.env, "group", group.scim_id, group.name)] : []),
     ctx.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
   ]);
-  if (await scimConfigured(ctx.env)) {
-    const drained = await drainScimDeprovisionQueue(ctx.env);
-    const pushed = await pushUsersById(ctx.env, members.map((m) => m.user_id));
-    if (drained.failed || !pushed.ok) await audit(ctx, "scim.group_sync_failed", group.name, { action: "delete", queued: drained.remaining, error: pushed.error });
-  }
+  await afterResponse(ctx, async (later) => {
+    if (await scimConfigured(later.env)) {
+      const drained = await drainScimDeprovisionQueue(later.env);
+      const pushed = await pushUsersById(later.env, members.map((m) => m.user_id));
+      if (drained.failed || !pushed.ok) await audit(later, "scim.group_sync_failed", group.name, { action: "delete", queued: drained.remaining, error: pushed.error });
+    }
+  });
   await audit(ctx, "group.deleted", group.name);
   return group;
 }
@@ -164,8 +168,10 @@ export async function addGroupMembers(ctx: ServiceCtx, id: number, userIds: numb
   const results = await ctx.env.DB.batch(userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
   const added = results.reduce((n, r) => n + Number(r.meta.changes ?? 0), 0);
   await audit(ctx, "group.members_added", group.name, { count: added });
-  await syncGroupBestEffort(ctx, id);
-  if (await scimConfigured(ctx.env)) await pushUsersById(ctx.env, userIds);
+  await afterResponse(ctx, async (later) => {
+    await syncGroupBestEffort(later, id);
+    if (await scimConfigured(later.env)) await pushUsersById(later.env, userIds);
+  });
   return added;
 }
 
@@ -177,8 +183,10 @@ export async function removeGroupMember(ctx: ServiceCtx, id: number, uid: number
   const user = await ctx.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
   await ctx.env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(id, uid).run();
   await audit(ctx, "group.member_removed", group.name, { user: user?.upn });
-  await syncGroupBestEffort(ctx, id);
-  if (await scimConfigured(ctx.env)) await pushUsersById(ctx.env, [uid]);
+  await afterResponse(ctx, async (later) => {
+    await syncGroupBestEffort(later, id);
+    if (await scimConfigured(later.env)) await pushUsersById(later.env, [uid]);
+  });
 }
 
 /**
