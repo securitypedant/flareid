@@ -48,7 +48,7 @@ import {
 } from "../lib/settings.js";
 import { setSetting } from "../lib/settings.js";
 import { getLdapAppBySlug, listLdapApps, revokeLdapApp, rotateLdapSecret, writeLdapApp, appGroupIds, LDAP_SECRET_PREFIX, type LdapAppInput } from "../ldap/apps.js";
-import { disableLdap, enableLdap, getLdapSettings } from "../ldap/settings.js";
+import { disableLdap, domainToBaseDn, enableLdap, getLdapSettings } from "../ldap/settings.js";
 import type { LdapAppRow } from "../lib/types.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
 import { allLocales } from "../lib/i18n.js";
@@ -5027,8 +5027,12 @@ function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: 
 }
 
 admin.get("/admin/integrations/ldap", async (c) => {
-  const [settings, apps] = await Promise.all([getLdapSettings(c.env), listLdapApps(c.env)]);
+  const [settings, apps, domains, storedBaseDnRaw] = await Promise.all([getLdapSettings(c.env), listLdapApps(c.env), listDomains(c.env), getSetting(c.env, "ldap_base_dn")]);
+  const storedBaseDn = storedBaseDnRaw ?? "";
   const groups = await ldapGroupOptions(c.env);
+  const domainDns = domains.map((d) => ({ dn: domainToBaseDn(d.domain), domain: d.domain, isDefault: Boolean(d.is_default) }));
+  const defaultDn = domainDns.find((d) => d.isDefault)?.dn ?? "";
+  const baseDnIsCustom = storedBaseDn !== "" && !domainDns.some((d) => d.dn === storedBaseDn);
   const appRows = apps.map((a) => {
     const { userGroups, exposedGroups } = appGroupIds(a);
     const scope = userGroups === null ? "All users" : `${userGroups.length} group${userGroups.length === 1 ? "" : "s"}`;
@@ -5057,7 +5061,12 @@ admin.get("/admin/integrations/ldap", async (c) => {
           <input type="text" id="ldap_hostname" name="hostname" value="${escapeHtml(settings.hostname)}" placeholder="ldap.${escapeHtml(settings.base.map((r) => r.value).join("."))}" />
           <p class="muted" style="margin:-8px 0 14px;">The DNS name the Spectrum apps listen on - shown in snippets and the root DSE.</p>
           <label for="ldap_base_dn">Base DN</label>
-          <input type="text" id="ldap_base_dn" name="base_dn" value="${escapeHtml(settings.baseDn)}" placeholder="derived from the default domain" />
+          <select id="ldap_base_dn" name="base_dn">
+            <option value="" ${storedBaseDn === "" ? "selected" : ""}>Derive from the default domain${defaultDn ? ` (${escapeHtml(defaultDn)})` : ""}</option>
+            ${domainDns.map((d) => `<option value="${escapeHtml(d.dn)}" ${storedBaseDn === d.dn ? "selected" : ""}>${escapeHtml(d.dn)}${d.isDefault ? " (default domain)" : ""}</option>`).join("")}
+            ${baseDnIsCustom ? `<option value="${escapeHtml(storedBaseDn)}" selected>${escapeHtml(storedBaseDn)} (custom)</option>` : ""}
+          </select>
+          <p class="muted" style="margin:-8px 0 14px;">The naming context every branch hangs under. Changing it moves every existing bind DN - reconfigure clients when you change it.</p>
           <label for="ldap_netbios">NetBIOS name</label>
           <input type="text" id="ldap_netbios" name="netbios_name" value="${escapeHtml(settings.netbios)}" maxlength="15" />
           <label for="ldap_unscoped">Unattributed user binds land on</label>
