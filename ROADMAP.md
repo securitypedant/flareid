@@ -103,8 +103,9 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     member checklist will not survive ten thousand users - and documented,
     tested ceilings.~~ (done in v3.4.0-v3.6.0)
 30. Branding: logo upload, per-domain branding, custom CSS.
-31. An accessibility and internationalisation pass on the login, MFA and
-    consent pages.
+~~31. An accessibility and internationalisation pass on the login, MFA and
+    consent pages.~~ (done - en/fr/de/es with locale negotiation, plural rules,
+    a flag picker, and a11y structure asserted by test/i18n.test.ts)
 32. Versioned releases, semver, a changelog, and a published Terraform snippet
     for the Access integration.
 33. A naming and trademark review. "FlareID" is Cloudflare-adjacent, and the

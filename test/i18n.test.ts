@@ -75,7 +75,7 @@ describe("i18n helpers", () => {
     expect(matchLocale("de_DE")).toBe("de");
     expect(matchLocale("ja")).toBeNull();
     expect(matchLocale('fr"><script>')).toBeNull();
-    expect(pickLocale(["ja", "es", "de-AT"], "en")).toBe("de");
+    expect(pickLocale(["ja", "pt-BR", "de-AT"], "en")).toBe("de");
     expect(pickLocale(["ja"], "fr")).toBe("fr");
     expect(uiLocalesPreference("ja de-CH fr")).toBe("de");
   });
@@ -146,8 +146,8 @@ describe("sign-in pages", () => {
     expect(inputTag(html, "upn")).toContain('autocomplete="username"');
     expect(inputTag(html, "password")).toContain('autocomplete="current-password"');
     expect(html).toContain('<nav class="auth-lang" aria-label="Language">');
-    expect(html).toMatch(/<a href="\/login\/language\?lang=fr&amp;flow_id=[^"]+" lang="fr" hreflang="fr">Français<\/a>/);
-    expect(html).toContain('lang="en" hreflang="en" aria-current="true">English</a>');
+    expect(html).toMatch(/<a href="\/login\/language\?lang=fr&amp;flow_id=[^"]+" lang="fr" hreflang="fr">.*?Français<\/span><\/a>/);
+    expect(html).toMatch(/lang="en" hreflang="en" aria-current="true">.*?English<\/span><\/a>/);
     // The passkey control is a real, labelled button; its failure message is announced.
     expect(html).toMatch(/<button class="secondary" type="button" data-passkey-login[^>]*data-failed="Passkey sign-in was cancelled or failed\."/);
     expect(html).toContain('id="passkey-login-status" role="status" aria-live="polite"');

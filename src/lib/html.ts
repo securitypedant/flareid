@@ -109,6 +109,7 @@ const STYLES = `
   .chart .dot { stroke: none; }
   .chart .s-p50 { stroke: var(--fi-accent); fill: var(--fi-accent); }
   .chart .s-p95 { stroke: var(--fi-faint); fill: var(--fi-faint); }
+  .chart .s-err { stroke: var(--fi-red); fill: var(--fi-red); }
   .chart .bar.err { fill: var(--fi-red); }
   .range-tabs { display: inline-flex; border: 1px solid var(--fi-line); border-radius: 8px; overflow: hidden; }
   .range-tabs a { padding: 6px 12px; font-size: 0.8125rem; color: var(--fi-body); text-decoration: none; }
@@ -926,10 +927,56 @@ export function barChart(points: ChartPoint[], opts: { height?: number; width?: 
     )
     .join("");
 
-  return `<svg class="chart" style="max-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bar chart">
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bar chart">
     ${gridlines}${bars}${labels}
     <line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" />
   </svg>`;
+}
+
+/**
+ * Bars on a left-hand axis with a line overlaid on its own right-hand axis -
+ * for pairing a big count (sign-ins) with a much smaller one (failures) that
+ * would be invisible on the shared scale.
+ */
+export function barLineChart(
+  bars: ChartPoint[],
+  line: { name: string; className: string; values: number[] },
+  opts: { height?: number; width?: number } = {}
+): string {
+  const width = opts.width ?? 640;
+  const height = opts.height ?? 180;
+  const pad = { top: 14, right: 36, bottom: 26, left: 34 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const maxBar = niceCeiling(Math.max(...bars.map((p) => p.value), 0));
+  const maxLine = niceCeiling(Math.max(...line.values, 0));
+  const band = plotW / Math.max(1, bars.length);
+  const barW = Math.min(28, band * 0.7);
+  const cx = (i: number) => pad.left + i * band + band / 2;
+  const yLine = (v: number) => pad.top + plotH - (maxLine ? (v / maxLine) * plotH : 0);
+
+  const grid = [0, 0.5, 1]
+    .map((t) => {
+      const y = pad.top + plotH - t * plotH;
+      return `<line class="gridline" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" />
+              <text x="${pad.left - 6}" y="${y + 3}" text-anchor="end">${Math.round(maxBar * t)}</text>
+              <text class="line-axis ${line.className}" x="${width - pad.right + 6}" y="${y + 3}" text-anchor="start">${Math.round(maxLine * t)}</text>`;
+    })
+    .join("");
+  const rects = bars
+    .map((p, i) => {
+      const h = maxBar ? (p.value / maxBar) * plotH : 0;
+      return `<rect class="bar" x="${cx(i) - barW / 2}" y="${pad.top + plotH - h}" width="${barW}" height="${Math.max(0, h)}" rx="2"><title>${escapeHtml(p.label)}: ${p.value}</title></rect>`;
+    })
+    .join("");
+  const poly =
+    `<polyline class="line ${line.className}" fill="none" points="${line.values.map((v, i) => `${cx(i).toFixed(1)},${yLine(v).toFixed(1)}`).join(" ")}" />` +
+    line.values.map((v, i) => `<circle class="dot ${line.className}" cx="${cx(i).toFixed(1)}" cy="${yLine(v).toFixed(1)}" r="2"><title>${escapeHtml(bars[i]?.label ?? "")} ${escapeHtml(line.name)}: ${v}</title></circle>`).join("");
+  const step = Math.ceil(bars.length / 8) || 1;
+  const labels = bars.map((p, i) => (i % step === 0 ? `<text x="${cx(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(p.label)}</text>` : "")).join("");
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bar and line chart">${grid}${rects}${poly}${labels}
+    <line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
 }
 
 /** A server-rendered multi-series line chart (same conventions as barChart). */
@@ -952,7 +999,7 @@ export function lineChart(labels: string[], series: { name: string; className: s
     .join("");
   const step = Math.ceil(labels.length / 8) || 1;
   const xl = labels.map((l, i) => (i % step === 0 ? `<text x="${x(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(l)}</text>` : "")).join("");
-  return `<svg class="chart" style="max-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="Line chart">${grid}${lines}${xl}<line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Line chart">${grid}${lines}${xl}<line class="axis" x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" /></svg>`;
 }
 
 /** Ranked horizontal bars, for "top N" breakdowns. */
@@ -962,7 +1009,7 @@ export function rankedBars(points: ChartPoint[]): string {
   return points
     .map(
       (p) => `<div style="margin-bottom:10px;">
-        <div style="display:flex; justify-content:space-between; font-size:0.6875rem; margin-bottom:3px;">
+        <div style="display:flex; justify-content:space-between; font-size:0.8125rem; margin-bottom:3px;">
           <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(p.label)}</span>
           <span class="muted" style="flex-shrink:0; margin-left:12px;">${p.value}</span>
         </div>

@@ -1,12 +1,12 @@
 import { z } from "@hono/zod-openapi";
-import { listApiKeys, parseScopes } from "../lib/api-keys.js";
+import { isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.js";
 import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimConfig, getScimScope } from "../lib/settings.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { apiCtx } from "../services/context.js";
-import { removeDomain, revokeKey } from "../services/platform.js";
+import { removeDomain, revokeKey, updateKey } from "../services/platform.js";
 import { badRequest, defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import { ClientSchema, IdParam, ServiceProviderSchema } from "./schemas.js";
 
@@ -205,6 +205,29 @@ defineRoute(
       revoked_at: k.revoked_at,
     }));
     return c.json({ api_keys: keys });
+  }
+);
+
+defineRoute(
+  {
+    method: "patch", path: "/api/v1/api-keys/{id}", tag: "API keys", permission: "api_keys:write",
+    summary: "Rename an API key or change its permissions",
+    description: "Takes effect on the key's next request. The token itself never changes - rotate by revoking and minting a new one. Revoked keys are read-only.",
+    params: IdParam,
+    body: z.object({ name: z.string(), scopes: z.array(z.string()) }),
+    errors: [400, 404, 409],
+  },
+  async (c) => {
+    const body = await readJson<{ name?: string; scopes?: string[] }>(c);
+    const name = String(body.name ?? "").trim();
+    if (!name) return c.json(badRequest("name is required."), 400);
+    if (!Array.isArray(body.scopes)) return c.json(badRequest("scopes is required."), 400);
+    const requested = body.scopes.map(String);
+    const invalid = requested.filter((s) => !isApiScope(s));
+    if (invalid.length > 0) return c.json(badRequest(`Unknown scope(s): ${invalid.join(", ")}.`), 400);
+    if (requested.length === 0) return c.json(badRequest("scopes cannot be empty."), 400);
+    await updateKey(apiCtx(c), Number(param(c, "id")), { name, scopes: requested });
+    return c.json({ ok: true });
   }
 );
 

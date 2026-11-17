@@ -1763,6 +1763,7 @@ Bearer tokens for this API.
 |---|---|---|---|
 | `GET` | `/api/v1/api-keys` | `api_keys:read` | List API keys |
 | `POST` | `/api/v1/api-keys` | `admin` | Mint an API key |
+| `PATCH` | `/api/v1/api-keys/{id}` | `api_keys:write` | Rename an API key or change its permissions |
 | `DELETE` | `/api/v1/api-keys/{id}` | `api_keys:write` | Revoke an API key |
 
 ### `GET /api/v1/api-keys`
@@ -1808,6 +1809,35 @@ Response `200`:
 | `token` | string | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/api-keys/{id}`
+
+Rename an API key or change its permissions.
+
+Takes effect on the key's next request. The token itself never changes - rotate by revoking and minting a new one. Revoked keys are read-only.
+
+Permission: `api_keys:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `scopes` | string[] | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
 ### `DELETE /api/v1/api-keys/{id}`
 

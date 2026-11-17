@@ -1,4 +1,4 @@
-import { revokeApiKey } from "../lib/api-keys.js";
+import { revokeApiKey, updateApiKey } from "../lib/api-keys.js";
 import { deleteDomain } from "../lib/domains.js";
 import { rotateSigningKey, SIGNING_ALGS, type SigningAlg } from "../lib/signing-keys.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
@@ -16,6 +16,15 @@ export async function revokeKey(ctx: ServiceCtx, id: number): Promise<void> {
   if (!key) throw new ServiceError(404, "Not found");
   await revokeApiKey(ctx.env, id);
   await audit(ctx, "api_key.revoked", key.name);
+}
+
+/** Updates a live key's name and permission set; revoked keys are read-only history. */
+export async function updateKey(ctx: ServiceCtx, id: number, opts: { name: string; scopes: string[] }): Promise<void> {
+  const key = await ctx.env.DB.prepare("SELECT name, scopes, revoked_at FROM api_keys WHERE id = ?").bind(id).first<{ name: string; scopes: string; revoked_at: string | null }>();
+  if (!key) throw new ServiceError(404, "Not found");
+  if (key.revoked_at) throw new ServiceError(409, "That key is revoked.");
+  await updateApiKey(ctx.env, id, opts);
+  await audit(ctx, "api_key.updated", opts.name, { scopes: opts.scopes });
 }
 
 /** A new active signing key for `alg`; the old one stays published for RETIRED_PUBLISH_HOURS. */

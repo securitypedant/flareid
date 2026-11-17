@@ -37,6 +37,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/email": "PUT /api/v1/email",
   "POST /admin/email/test": "POST /api/v1/email/test",
   "POST /admin/api-keys": "POST /api/v1/api-keys",
+  "POST /admin/api-keys/:id/edit": "PATCH /api/v1/api-keys/{id}",
   "POST /admin/api-keys/:id/revoke": "DELETE /api/v1/api-keys/{id}",
   "POST /admin/clients": "POST /api/v1/clients",
   "POST /admin/clients/:id": "PATCH /api/v1/clients/{client_id}",

@@ -8,6 +8,7 @@
 import en from "./en.json";
 import fr from "./fr.json";
 import de from "./de.json";
+import es from "./es.json";
 
 export interface LocaleFile {
   _meta: {
@@ -29,7 +30,7 @@ export interface LocaleFile {
 }
 
 /** Keyed by locale code; the order is the language picker's. */
-export const LOCALES: Record<string, LocaleFile> = { en, fr, de };
+export const LOCALES: Record<string, LocaleFile> = { en, fr, de, es };
 
 /** The source locale: every key exists here, and it is the fallback for any key a translation lacks. */
 export const SOURCE_LOCALE = en;

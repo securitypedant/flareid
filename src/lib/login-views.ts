@@ -116,8 +116,20 @@ function gradientStyles(gradient: LoginGradient): string {
     .auth-alt { text-align: center; margin: 14px 0 0; font-size: 0.875rem; }
     .consent-list { margin: 0 0 18px; padding-inline-start: 20px; line-height: 1.7; }
     .auth-foot { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--fi-line); text-align: center; }
-    .auth-lang ul { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; font-size: 0.8125rem; }
-    .auth-lang a[aria-current] { color: var(--fi-ink); font-weight: 600; }
+    .auth-lang { margin-top: 10px; }
+    .lang-menu { position: relative; display: inline-block; font-size: 0.8125rem; }
+    .lang-menu summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 6px; color: var(--fi-muted); }
+    .lang-menu summary::-webkit-details-marker { display: none; }
+    .lang-menu summary:hover { color: var(--fi-ink); background: var(--fi-surface-2); }
+    .lang-menu[open] summary { color: var(--fi-ink); }
+    .lang-caret { width: 8px; height: 5px; transition: transform 0.15s; }
+    .lang-menu[open] .lang-caret { transform: rotate(180deg); }
+    .lang-menu ul { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); margin: 0; padding: 4px; list-style: none; background: var(--fi-surface); border: 1px solid var(--fi-line); border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14); min-width: 150px; z-index: 20; }
+    .lang-menu ul a { display: flex; align-items: center; gap: 9px; padding: 6px 10px; border-radius: 6px; color: var(--fi-body); text-decoration: none; white-space: nowrap; }
+    .lang-menu ul a:hover { background: var(--fi-surface-2); }
+    .lang-menu ul a[aria-current] { color: var(--fi-ink); font-weight: 600; }
+    .lang-flag { display: inline-flex; flex-shrink: 0; }
+    .lang-flag svg { display: block; width: 18px; height: 12px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18); }
     .center-wrap input::placeholder { color: var(--fi-muted); }
     .center-wrap input[aria-invalid="true"] { border-color: var(--fi-red); }
     /* A visible focus ring on everything focusable (WCAG 2.2 2.4.7, 2.4.11). */
@@ -244,16 +256,43 @@ function authFoot(appearance: LoginAppearance, languageHref?: (code: Locale) => 
   return `<footer class="auth-foot"><span class="muted">${escapeHtml(t(appearance.locale, "common.protectedBy", { appName: appearance.appName }))}</span>${languageHref ? languagePicker(appearance.locale, languageHref) : ""}</footer>`;
 }
 
-/** Links to the page in each language, each named in its own language (and marked so: lang/hreflang). */
+/**
+ * Tiny inline flags for the language menu. Emoji flags are the obvious choice
+ * but Windows renders them as two-letter country codes, so they are SVG.
+ * Anything without a flag drawn yet gets the globe.
+ */
+const FLAGS: Record<string, string> = {
+  en: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="12" fill="#012169"/><path d="M0 0L18 12M18 0L0 12" stroke="#fff" stroke-width="2.6"/><path d="M0 0L18 12M18 0L0 12" stroke="#C8102E" stroke-width="1.3"/><path d="M9 0V12M0 6H18" stroke="#fff" stroke-width="4"/><path d="M9 0V12M0 6H18" stroke="#C8102E" stroke-width="2.4"/></svg>',
+  fr: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="6" height="12" fill="#0055A4"/><rect x="6" width="6" height="12" fill="#fff"/><rect x="12" width="6" height="12" fill="#EF4135"/></svg>',
+  de: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="4" fill="#151515"/><rect y="4" width="18" height="4" fill="#DD0000"/><rect y="8" width="18" height="4" fill="#FFCE00"/></svg>',
+  es: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="3" fill="#AA151B"/><rect y="3" width="18" height="6" fill="#F1BF00"/><rect y="9" width="18" height="3" fill="#AA151B"/></svg>',
+};
+const GLOBE_FLAG =
+  '<svg viewBox="0 0 18 12" aria-hidden="true"><circle cx="9" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.4 6h9.2M9 1.4c1.8 1.3 1.8 7.9 0 9.2M9 1.4c-1.8 1.3-1.8 7.9 0 9.2" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
+
+const flag = (code: string) => `<span class="lang-flag">${FLAGS[code] ?? GLOBE_FLAG}</span>`;
+
+/**
+ * The language menu: a <details> dropdown, so it works with JavaScript off,
+ * each option a real link named in its own language (and marked so:
+ * lang/hreflang). The script only closes it on outside click / Escape.
+ */
 export function languagePicker(current: Locale, href: (code: Locale) => string): string {
   const locales = allLocales();
   if (locales.length < 2) return "";
+  const active = locales.find((l) => l.code === current) ?? locales[0]!;
   const items = locales.map(
     (l) =>
-      `<li><a href="${escapeHtml(href(l.code))}" lang="${escapeHtml(l.code)}" hreflang="${escapeHtml(l.code)}"${l.code === current ? ' aria-current="true"' : ""}>${escapeHtml(l.nativeName)}</a></li>`
+      `<li><a href="${escapeHtml(href(l.code))}" lang="${escapeHtml(l.code)}" hreflang="${escapeHtml(l.code)}"${l.code === current ? ' aria-current="true"' : ""}>${flag(l.code)}<span>${escapeHtml(l.nativeName)}</span></a></li>`
   );
-  return `<nav class="auth-lang" aria-label="${escapeHtml(t(current, "common.language"))}"><ul>${items.join("")}</ul></nav>`;
+  return `<nav class="auth-lang" aria-label="${escapeHtml(t(current, "common.language"))}"><details class="lang-menu"><summary>${flag(active.code)}<span>${escapeHtml(active.nativeName)}</span><svg class="lang-caret" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><ul>${items.join("")}</ul></details></nav>${scriptTag(LANG_MENU_SCRIPT)}`;
 }
+
+const LANG_MENU_SCRIPT = `(function(){
+  var m=document.querySelector(".lang-menu");if(!m)return;
+  document.addEventListener("click",function(e){if(m.open&&!m.contains(e.target))m.open=false;});
+  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&m.open){m.open=false;var s=m.querySelector("summary");if(s)s.focus();}});
+})();`;
 
 /** The passkey button and its status line (a live region, so a failure is announced). */
 function passkeyButton(locale: Locale, label: string, cls: string, extraAttrs: string): string {

@@ -16,7 +16,7 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -57,7 +57,7 @@ import { deleteUserStatements, listActiveSessionsForUser } from "../lib/sessions
 import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
-import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, type ApiScope } from "../lib/api-keys.js";
+import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, type ApiKeyRow, type ApiScope } from "../lib/api-keys.js";
 import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/saml/messages.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
@@ -125,7 +125,7 @@ import {
   switchEmail,
 } from "../services/settings.js";
 import { createPolicy, createRole, deletePolicy, deleteRole, normalizePolicy, normalizeRole, updatePolicy, updateRole } from "../services/access.js";
-import { removeDomain, revokeKey, rotateKey } from "../services/platform.js";
+import { removeDomain, revokeKey, rotateKey, updateKey } from "../services/platform.js";
 import { emailLogoUrl, getAccent, getTemplate, renderEmail, TEMPLATE_INFO, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { APP_NAME_MAX, BRAND_NAME_MAX, CUSTOM_CSS_MAX_BYTES, LOGO_MAX_BYTES, SUBTITLE_MAX, defaultBrand, defaultCustomCss, getBrandRow, listBrandRows, mergeBrand, type BrandRow } from "../lib/brands.js";
 import { assignDomainBrand, createBrand, deleteBrand, removeLogo, saveDefaultCustomCss, updateBrand, uploadLogo, type BrandInput } from "../services/branding.js";
@@ -635,13 +635,13 @@ admin.get("/admin/performance", async (c) => {
         <div class="stat-card"><div class="card"><h2>${worstP95} ms</h2><p>Worst p95 in a bucket</p></div></div>
       </div>
       ${cardSection(`<div class="row between" style="margin-bottom:12px;"><h2 style="margin:0;">Requests</h2><span class="muted">per ${range.bucket >= 60 ? `${range.bucket / 60} h` : `${range.bucket} min`}</span></div>
-        ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.requests })), { width: 1000 })}`)}
+        ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.requests })), { width: 1280 })}`)}
       <div class="two-col">
         ${cardSection(`<h2>Latency</h2><p class="muted">Worker time per request, ms.</p>
-          ${lineChart(labels, [{ name: "p50", className: "s-p50", values: series.points.map((p) => p.p50) }, { name: "p95", className: "s-p95", values: series.points.map((p) => p.p95) }], { width: 560, unit: "" })}
+          ${lineChart(labels, [{ name: "p50", className: "s-p50", values: series.points.map((p) => p.p50) }, { name: "p95", className: "s-p95", values: series.points.map((p) => p.p95) }], { width: 640, unit: "" })}
           <div class="chart-legend"><span><span class="chart-swatch" style="background:var(--fi-accent);"></span>p50</span><span><span class="chart-swatch" style="background:var(--fi-faint);"></span>p95</span></div>`)}
         ${cardSection(`<h2>Server errors</h2><p class="muted">Responses with status 500 and above.</p>
-          ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { width: 560, barClass: "err" })}`)}
+          ${barChart(series.points.map((p, i) => ({ label: labels[i]!, value: p.errors })), { width: 640, barClass: "err" })}`)}
       </div>
       ${cardSection(`<div class="row between" style="margin-bottom:8px;"><h2 style="margin:0;">Live</h2><span class="muted" id="live-meta">starting…</span></div>
         <div id="live-chart" style="display:flex;gap:1px;align-items:flex-end;height:64px;"></div>
@@ -698,11 +698,12 @@ admin.get("/admin", async (c) => {
   // own monitor role. Directory counts are safe for every admin.
   const access = c.get("access");
   const monitor = Boolean(access && (access.isSuper || grants(access.perms, "performance:read") || grants(access.perms, "audit:read")));
-  const [stats, perf] = await Promise.all([overviewStats(c.env), readPerformance(c.env, 24)]);
+  const [stats, perf, perfHour] = await Promise.all([overviewStats(c.env), readPerformance(c.env, 24), readPerformance(c.env, 1)]);
   const successSeries = stats.last_30d.sign_ins_by_day.map(({ day, success }) => ({
     label: day.slice(8, 10) === "01" ? day.slice(5, 10) : day.slice(8, 10),
     value: success,
   }));
+  const failedSeries = stats.last_30d.sign_ins_by_day.map((d) => d.failed);
   const { users, groups, oidc_clients: oidcClients, saml_apps: samlApps, active_api_keys: apiKeys, active_users: activeUsers, active_sessions: activeSessions, mfa_enrolled: mfaEnrolled, live_refresh_grants: refreshLive, scim_deletions_queued: scimQueue } = stats.counts;
   const { sign_ins: ok24, failed_sign_ins: bad24, rate_limited_sign_ins: limited24, failed_step_ups: stepUpBad24, api_calls: api24, rejected_api_keys: apiBad24, scim_sync_failures: scimFail24 } = stats.last_24h;
   const { sign_ins: successTotal, failed_sign_ins: failedTotal, outcomes, top_actions: topActions, top_users: topUsers } = stats.last_30d;
@@ -749,9 +750,16 @@ admin.get("/admin", async (c) => {
               ? (() => {
                   const busiest = perf.families.reduce<{ family: string; requests: number } | null>((w, f) => (w === null || f.requests > w.requests ? f : w), null);
                   const slowest = perf.families.reduce<{ family: string; p95: number } | null>((w, f) => (w === null || f.p95 > w.p95 ? f : w), null);
+                  // The p50 of the family the median request lands in - an approximation of the
+                  // whole-traffic median without a second query that tracks percentiles globally.
+                  let seen = 0;
+                  const median = [...perf.families].sort((a, b) => a.p50 - b.p50).find((f) => (seen += f.requests) >= perf.total / 2)?.p50 ?? 0;
                   return attrGrid([
                     attr("Requests (24h)", perf.total.toLocaleString("en")),
+                    attr("Requests (1h)", perfHour.configured && perfHour.ok ? perfHour.total.toLocaleString("en") : null),
                     attr("Server errors (5xx)", perf.errors),
+                    attr("Median Worker time", `${median} ms`),
+                    attr("Active endpoints", perf.families.length),
                     ...(busiest ? [attr("Busiest endpoint", `${busiest.family} · ${busiest.requests.toLocaleString("en")}`)] : []),
                     ...(slowest ? [attr("Slowest endpoint (p95)", `${slowest.family} · ${slowest.p95} ms`)] : []),
                   ]);
@@ -769,11 +777,11 @@ admin.get("/admin", async (c) => {
         ${
           successTotal + failedTotal === 0
             ? '<p class="muted">No sign-in activity recorded yet. This fills in as people use the directory.</p>'
-            : barChart(successSeries, { width: 1000 })
+            : barLineChart(successSeries, { name: "failed", className: "s-err", values: failedSeries }, { width: 1280 })
         }
         <div class="chart-legend">
           <span><span class="chart-swatch" style="background:var(--fi-accent);"></span>${successTotal} successful</span>
-          <span><span class="chart-swatch" style="background:#cbd5e1;"></span>${failedTotal} failed or rejected</span>
+          <span><span class="chart-swatch" style="background:var(--fi-red);"></span>${failedTotal} failed or rejected (right axis)</span>
         </div>
       `)}
 
@@ -2010,7 +2018,7 @@ admin.get("/admin/groups", async (c) => {
   return c.html(
     layout(
       c,
-      "Groups",
+      `Groups (${total.toLocaleString("en")})`,
       `
       ${cardSection(`
         <form method="GET" class="list-toolbar">
@@ -2518,7 +2526,7 @@ admin.get("/admin/integrations/api-keys", async (c) => {
                             ${
                               k.revoked_at
                                 ? ""
-                                : ` &middot; <form method="POST" action="/admin/api-keys/${k.id}/revoke" style="display:inline" ${confirmAttrs(
+                                : ` &middot; <a href="/admin/api-keys/${k.id}/edit">Edit</a> &middot; <form method="POST" action="/admin/api-keys/${k.id}/revoke" style="display:inline" ${confirmAttrs(
                                     `Anything using "${k.name}" stops working immediately. This cannot be undone.`,
                                     { title: "Revoke this API key?", action: "Revoke", danger: true }
                                   )}><button class="link-button" type="submit">Revoke</button></form>`
@@ -2740,6 +2748,49 @@ admin.post("/admin/api-keys", async (c) => {
   );
 });
 
+admin.get("/admin/api-keys/:id/edit", async (c) => {
+  const key = await c.env.DB.prepare("SELECT * FROM api_keys WHERE id = ?").bind(Number(c.req.param("id"))).first<ApiKeyRow>();
+  if (!key) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  if (key.revoked_at) return consoleError(c, "That key is revoked - its permissions are history now.", 409);
+  return c.html(
+    layout(
+      c,
+      `Edit API key: ${key.name}`,
+      cardSection(`
+        <form method="POST" action="/admin/api-keys/${key.id}/edit">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required value="${escapeHtml(key.name)}" />
+          <p class="muted" style="margin:4px 0 14px;">What is using it. This is what appears in the audit log against everything the key does.</p>
+
+          <label>Permissions</label>
+          ${permissionMatrix(new Set(parseScopes(key.scopes)), { roles: await listRoles(c.env) })}
+          <p class="muted" style="margin-top:8px;">Changing permissions takes effect on the key's next request - the token itself stays the same.</p>
+
+          <div class="form-actions" style="margin-top:16px;">
+            <button class="primary" type="submit">Save</button>
+            ${cancelLink("/admin/integrations/api-keys", "Cancel")}
+          </div>
+        </form>
+      `),
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("api-keys"), { label: key.name }]
+    )
+  );
+});
+
+admin.post("/admin/api-keys/:id/edit", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const name = String(body.name ?? "").trim();
+  if (!name) return consoleError(c, "Enter a name.", 400);
+  const requested = readPermissionMatrix(body);
+  // Same rule as creation: a key can only carry permissions the editor holds.
+  const mine = c.get("access");
+  const beyond = requested.filter((p) => (p === "*" ? !mine.isSuper : !grants(mine.perms, p)));
+  if (beyond.length) return consoleError(c, `You cannot give a key permissions you do not hold: ${beyond.join(", ")}.`, 403);
+  if (requested.length === 0) return consoleError(c, "Choose at least one permission for the key.", 400);
+  await updateKey(consoleCtx(c), Number(c.req.param("id")), { name, scopes: requested });
+  return c.redirect("/admin/integrations/api-keys?saved=1", 302);
+});
+
 admin.post("/admin/api-keys/:id/revoke", async (c) => {
   await revokeKey(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/integrations/api-keys?saved=1", 302);
@@ -2749,20 +2800,35 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
 function clientSettingsFields(client?: OAuthClientRow): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
   const logoutUris: string[] = client ? JSON.parse(client.post_logout_redirect_uris || "[]") : [];
+  const redirectUris: string[] = client ? JSON.parse(client.redirect_uris || "[]") : [];
   const trusted = client ? client.trusted === 1 : true;
   const alg = client?.id_token_signed_response_alg ?? "RS256";
   return `
-    <label for="id_token_signed_response_alg">ID token signing algorithm</label>
-    <select id="id_token_signed_response_alg" name="id_token_signed_response_alg">
-      ${ID_TOKEN_ALGS.map((a) => `<option value="${a}" ${a === alg ? "selected" : ""}>${a}${a === "RS256" ? " (default)" : ""}</option>`).join("")}
-    </select>
-    <p class="muted" style="margin-top:-8px;">How this app's id_tokens are signed. RS256 works with every OIDC library; choose ES256 only if the app supports it. Keys are under Security &rarr; Signing keys.</p>
-    <label for="post_logout_redirect_uris">Post-logout redirect URIs (one per line)</label>
-    <textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" rows="2" placeholder="https://app.example.com/signed-out">${escapeHtml(logoutUris.join("\n"))}</textarea>
-    <p class="muted" style="margin-top:-8px;">Where RP-initiated logout (<code>/oidc/logout</code>) may send the browser afterwards. Anything else is refused.</p>
-    <label for="frontchannel_logout_uri">Front-channel logout URI</label>
-    <input type="text" id="frontchannel_logout_uri" name="frontchannel_logout_uri" value="${escapeHtml(client?.frontchannel_logout_uri ?? "")}" placeholder="https://app.example.com/logout/frontchannel" />
-    <p class="muted" style="margin-top:-8px;">Loaded in a hidden frame (with <code>iss</code> and <code>sid</code>) when the user signs out of FlareID, so the app can end its own session. https only.</p>
+    <div class="field-row">
+      <div>
+        <label for="redirect_uris">Redirect URIs (one per line)</label>
+        <textarea id="redirect_uris" name="redirect_uris" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback">${escapeHtml(redirectUris.join("\n"))}</textarea>
+      </div>
+      <div>
+        <label for="post_logout_redirect_uris">Post-logout redirect URIs (one per line)</label>
+        <textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" rows="3" placeholder="https://app.example.com/signed-out">${escapeHtml(logoutUris.join("\n"))}</textarea>
+        <p class="muted" style="margin-top:2px;">Where RP-initiated logout (<code>/oidc/logout</code>) may send the browser afterwards.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <div>
+        <label for="id_token_signed_response_alg">ID token signing algorithm</label>
+        <select id="id_token_signed_response_alg" name="id_token_signed_response_alg">
+          ${ID_TOKEN_ALGS.map((a) => `<option value="${a}" ${a === alg ? "selected" : ""}>${a}${a === "RS256" ? " (default)" : ""}</option>`).join("")}
+        </select>
+        <p class="muted" style="margin-top:2px;">RS256 works with every OIDC library; choose ES256 only if the app supports it.</p>
+      </div>
+      <div>
+        <label for="frontchannel_logout_uri">Front-channel logout URI</label>
+        <input type="text" id="frontchannel_logout_uri" name="frontchannel_logout_uri" value="${escapeHtml(client?.frontchannel_logout_uri ?? "")}" placeholder="https://app.example.com/logout/frontchannel" />
+        <p class="muted" style="margin-top:2px;">Loaded in a hidden frame on sign-out so the app can end its session. https only.</p>
+      </div>
+    </div>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
@@ -2798,8 +2864,6 @@ admin.get("/admin/clients/new", async (c) => {
         <form method="POST" action="/admin/clients">
           <label for="name">Name</label>
           <input type="text" id="name" name="name" placeholder="Cloudflare Access" required />
-          <label for="redirect_uris">Redirect URIs (one per line)</label>
-          <textarea id="redirect_uris" name="redirect_uris" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback"></textarea>
           <label>Client type</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="confidential" checked style="width:auto; display:inline; margin-right:6px;" /> Confidential &mdash; a server that can keep a secret (Cloudflare Access, a web backend)</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="public" style="width:auto; display:inline; margin-right:6px;" /> Public &mdash; a single-page or native app: no secret, PKCE required, loopback redirects on any port</label>
@@ -2886,9 +2950,7 @@ admin.get("/admin/clients/:id", async (c) => {
         <form method="POST" action="/admin/clients/${id}">
           <label for="name">Name</label>
           <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
-          <label for="redirect_uris">Redirect URIs (one per line)</label>
-          <textarea id="redirect_uris" name="redirect_uris" rows="3">${escapeHtml(JSON.parse(client.redirect_uris).join("\n"))}</textarea>
-          <p class="muted" style="margin-top:-8px;">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
+          <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
           ${clientSettingsFields(client)}
           <div class="form-actions end">${cancelLink(`/admin/clients/${id}`)}<button class="primary" type="submit">Save</button></div>
         </form>

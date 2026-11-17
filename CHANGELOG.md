@@ -40,6 +40,20 @@ observability work.
 - **Dashboard "IdP performance" card** also shows the busiest endpoint and
   the slowest endpoint p95, and non-link stat cards no longer get the
   hover highlight that implied they were clickable.
+- **Spanish sign-in pages.** `es` joins `en`, `fr` and `de`, negotiated the
+  same way (`?lang=`, cookie, `ui_locales`, Accept-Language or the instance
+  default). The language links in the auth footer are now a compact dropdown
+  with flags, which scales as more locales arrive.
+- **API keys are editable.** An existing key's name and permission set can be
+  changed from its console edit page or `PATCH /api/v1/api-keys/{id}` -
+  changes apply on the key's next request and the token itself never
+  changes. The same holder-permission clamp as creation applies.
+- **Failed sign-ins on the dashboard chart** are drawn as a red line on a
+  right-hand axis instead of being invisible next to successful sign-ins.
+- Charts fill their cards at any window width, ranked-bar labels are the
+  same size as other body text, and the OIDC client form pairs its two
+  URI lists and its two logout/algorithm fields in `field-row`s.
+- The Groups list shows the filtered count in its heading, like Users.
 
 ### Fixed
 

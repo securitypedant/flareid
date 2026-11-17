@@ -133,6 +133,11 @@ export function listApiKeys(env: Env): Promise<ApiKeyRow[]> {
     .then((r) => r.results);
 }
 
+/** Renames a key and/or replaces its permission set. The secret itself never changes - rotation is delete + recreate by design. */
+export async function updateApiKey(env: Env, id: number, opts: { name: string; scopes: ApiScope[] }): Promise<void> {
+  await env.DB.prepare("UPDATE api_keys SET name = ?, scopes = ? WHERE id = ? AND revoked_at IS NULL").bind(opts.name, JSON.stringify(opts.scopes), id).run();
+}
+
 export async function revokeApiKey(env: Env, id: number): Promise<void> {
   await env.DB.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
     .bind(new Date().toISOString(), id)
