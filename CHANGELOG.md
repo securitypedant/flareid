@@ -4,9 +4,10 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## Unreleased
+## [3.10.0] - 2026-11-16
 
 **Migration `0030_ldap.sql`** - `ldap_apps` and the `ldap_*` settings.
+**Migration `0031_ldap_secret_reveal.sql`** - `ldap_apps.secret_enc`.
 
 ### Added
 
@@ -27,16 +28,42 @@ may break things.
     every 30s; entries cover inetOrgPerson/posixAccount plus the AD surface
     (sAMAccountName, objectGUID/objectSid, memberOf, userAccountControl,
     objectCategory matching) so AD-shaped filters work against Grafana,
-    GitLab, sssd and friends.
+    GitLab, sssd and friends. Ranged retrieval (`member;range=L-H`) and the
+    RFC 2891 server-side sort control are supported for AD-style clients.
+  - **Password Modify (RFC 3062).** User-bound connections can rotate their
+    own password with `oldPasswd` verified against the live credential;
+    a change runs the same compromise response as the account page
+    (sessions revoked, tokens revoked, passkeys dropped).
   - **Admin and API.** Integrations → LDAP manages settings and apps (the
     secret is shown once, with generated client configs for Grafana, sssd,
     GitLab, Jenkins and ldapsearch); `/api/v1/ldap/apps` and
     `/api/v1/ldap/settings` provision the same. Binds and admin actions join
     the audit log under the new `ldap` family; searches stay out of it and
-    are counted in Workers logs.
+    are counted in Workers logs. App secrets are stored KEK-sealed, so the
+    console's Reveal and `POST /api/v1/ldap/apps/{slug}/reveal` can show the
+    current secret without a rotation; reveals are audited.
 
 ### Security
 
+- **LDAP bound state is re-validated per operation.** Settings are re-read
+  on every op, so disabling LDAP disconnects in-flight connections on their
+  next operation; service binds are disconnected when their app is revoked;
+  user binds are re-checked for status and app group membership, and a
+  disabled or de-grouped user drops to anonymous. Password Modify verifies
+  `oldPasswd` against the live hash, not the bind-time snapshot.
+- **A failed LDAP bind discards the previous authentication** (RFC 4511
+  4.2.1) instead of retaining the prior principal.
+- **User-bound scoping is per-entry.** A bound user sees only their own
+  entry and the group entries they belong to (with `member` reduced to
+  themselves), and compare gets the same authorisation as search - foreign
+  entries return `noSuchObject` rather than answering as an oracle.
+- **Partial LDAP app updates keep omitted policy fields.** `POST
+  /api/v1/ldap/apps` on an existing slug no longer resets group
+  restrictions, MFA mode or disabled-user policy to create defaults.
+- **Passkey ceremonies work when a user scope is present.**
+  `allowCredentials[].id` is now converted from base64url to BufferSource
+  before `navigator.credentials.get`; the omission broke every user-scoped
+  assertion (MFA step and step-up re-authentication).
 - **Authorization scopes are bounded at intake.** `/authorize` caps the
   `scope` parameter at 512 characters before it is stored verbatim on grant
   rows. (Effective claims were already intersected with the client's
