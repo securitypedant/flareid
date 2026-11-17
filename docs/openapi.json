@@ -804,6 +804,10 @@
             "type": "string",
             "description": "The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none."
           },
+          "console_timezone": {
+            "type": "string",
+            "description": "The timezone console pages display dates in. Empty for each browser's own zone; otherwise \"UTC\" or an IANA name like Europe/London."
+          },
           "css_url": {
             "type": [
               "string",
@@ -826,6 +830,7 @@
           "email_accent",
           "logo_url",
           "custom_css",
+          "console_timezone",
           "css_url",
           "preview_url"
         ]
@@ -5730,6 +5735,9 @@
                     "type": "string"
                   },
                   "custom_css": {
+                    "type": "string"
+                  },
+                  "console_timezone": {
                     "type": "string"
                   }
                 }

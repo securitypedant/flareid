@@ -95,7 +95,7 @@ describe("device authorization grant (RFC 8628)", () => {
     const tokens = await poll(clientId, deviceCode);
     expect(tokens.status).toBe(200);
     expect(tokens.body.access_token).toBeTruthy();
-    const idClaims = decodeJwt(tokens.body.id_token!);
+    const idClaims = decodeJwt(String(tokens.body.id_token));
     expect(idClaims.aud).toBe(clientId);
     expect(idClaims.email).toBe(upn);
 

@@ -20,6 +20,8 @@ declare module "hono" {
     appName: string;
     /** The brand's uploaded logo for the top bar (brands.ts): the default brand's, or on My account the person's; null for FlareID's icon. */
     logoUrl: string | null;
+    /** Console timezone override (settings.ts): "" for each browser's own zone, else "UTC" or an IANA zone - carried on the top bar's data-tz for TS_SCRIPT. */
+    consoleTz: string;
   }
 }
 

@@ -71,7 +71,7 @@ describe("SCIM full sync in steps", () => {
   it("runs user batches, then the groups, and reports each step for the sync log", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "Crew" }], users: [{ username: "a1", status: "active", groups: ["Crew"] }, { username: "a2", status: "active" }] } });
-    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] } } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] }, tuning: { pace_ms: 0, members_per_request: 500, sync_batch: 500 } } });
     let n = 0;
     const { vi } = await import("vitest");
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -118,7 +118,7 @@ describe("import SCIM push", () => {
   it("pushes only the groups an import could have changed", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "A" }, { name: "B" }, { name: "C" }], users: [{ username: "u1", status: "active", groups: ["A"] }, { username: "u2", status: "active", groups: ["B"] }] } });
-    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] } } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] }, tuning: { pace_ms: 0, members_per_request: 500, sync_batch: 500 } } });
     const { vi } = await import("vitest");
     const groupWrites: string[] = [];
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -134,12 +134,18 @@ describe("import SCIM push", () => {
     const { syncAll } = await import("../src/lib/scim-client.js");
     while (!(await syncAll(env)).complete) { /* next step */ }
     groupWrites.length = 0;
-    // u1 moves from A to C: A and C change, B does not.
-    const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });
-    spy.mockRestore();
-    expect(res.status).toBe(200);
     const byScimId = new Map((await env.DB.prepare("SELECT name, scim_id FROM groups").all<{ name: string; scim_id: string }>()).results.map((g) => [g.scim_id, g.name]));
-    const names = groupWrites.map((url) => byScimId.get(url.split("/Groups/")[1] ?? ""));
+    // u1 moves from A to C: A and C change, B does not. The push runs after the
+    // import's response, so give it a moment to land its writes.
+    const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });
+    expect(res.status).toBe(200);
+    let names: (string | undefined)[] = [];
+    for (let i = 0; i < 50; i++) {
+      names = groupWrites.map((url) => byScimId.get(url.split("/Groups/")[1] ?? ""));
+      if (names.includes("A") && names.includes("C")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    spy.mockRestore();
     expect(names).toContain("A");
     expect(names).toContain("C");
     expect(names).not.toContain("B");

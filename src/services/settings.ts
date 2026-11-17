@@ -24,6 +24,7 @@ import {
   setTurnstileConfig,
   type TurnstileMode,
   setAuditRetentionDays,
+  setConsoleTimezone,
   setCursorTrail,
   setDefaultLanguage,
   getDefaultPassword,
@@ -307,6 +308,16 @@ export async function saveDefaultLanguage(ctx: ServiceCtx, code: string): Promis
   if (!isSupportedLocale(code)) throw new ServiceError(400, `Unknown language "${code}". Available: ${SUPPORTED_LOCALES.join(", ")}.`);
   await setDefaultLanguage(ctx.env, code);
   await audit(ctx, "settings.default_language_changed", code);
+}
+
+/** Console date display: empty for each browser's zone, "UTC", or an IANA zone. 400 for a name Intl rejects. */
+export async function saveConsoleTimezone(ctx: ServiceCtx, tz: string): Promise<void> {
+  try {
+    await setConsoleTimezone(ctx.env, tz);
+  } catch (e) {
+    throw new ServiceError(400, e instanceof RangeError ? e.message : "Invalid timezone.");
+  }
+  await audit(ctx, "settings.console_timezone_changed", tz.trim() || "browser");
 }
 
 export async function saveCursorTrail(ctx: ServiceCtx, trail: CursorTrail): Promise<CursorTrail> {

@@ -2,7 +2,7 @@ import { resolveManyGroupMemberUserIds } from "./groups.js";
 import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.js";
 import { getScimConfig, getScimScope, getScimTuning, validateScimEndpoint, type ScimScope } from "./settings.js";
-import { timed } from "./metrics.js";
+import { timed, recordEvent } from "./metrics.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
@@ -67,26 +67,37 @@ async function scimFetch(env: Env, path: string, init: RequestInit): Promise<Res
   // Redirects are followed by hand: the Bearer credential is attached again
   // only while the target stays on the configured origin - fetch's default
   // 'follow' would forward it cross-origin.
+  const done = (res: Response): Response => {
+    // The remote's status is an event, not a span: outbound answers never
+    // become FlareID responses, so the 5xx charts would never see them.
+    recordEvent(env, "scim.outbound", String(res.status));
+    return res;
+  };
   let url = `${endpoint}${path}`;
-  for (let hops = 0; ; hops++) {
-    const res = await timed(env, "scim.outbound", fetch(url, {
-      ...init,
-      redirect: "manual",
-      // A stalled remote must not head-of-line block the whole sync.
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        "Content-Type": "application/scim+json",
-        Accept: "application/scim+json",
-        ...init.headers,
-      },
-    }));
-    if (res.status < 300 || res.status >= 400 || hops >= 3) return res;
-    const location = res.headers.get("location");
-    if (!location) return res;
-    const next = new URL(location, url);
-    if (next.origin !== new URL(url).origin) return res;
-    url = next.toString();
+  try {
+    for (let hops = 0; ; hops++) {
+      const res = await timed(env, "scim.outbound", fetch(url, {
+        ...init,
+        redirect: "manual",
+        // A stalled remote must not head-of-line block the whole sync.
+        signal: AbortSignal.timeout(10_000),
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/scim+json",
+          Accept: "application/scim+json",
+          ...init.headers,
+        },
+      }));
+      if (res.status < 300 || res.status >= 400 || hops >= 3) return done(res);
+      const location = res.headers.get("location");
+      if (!location) return done(res);
+      const next = new URL(location, url);
+      if (next.origin !== new URL(url).origin) return done(res);
+      url = next.toString();
+    }
+  } catch (e) {
+    recordEvent(env, "scim.outbound", "network error");
+    throw e;
   }
 }
 

@@ -24,7 +24,7 @@ import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, scriptTag, successBanner } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
@@ -75,7 +75,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"))
+    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"))
   );
 }
 
@@ -192,7 +192,7 @@ account.get("/account", async (c) => {
           attr("Manager", user.manager_external_id),
           attr("Account status", user.status),
           attr("Administrator", user.is_admin ? "Yes" : "No"),
-          attr("Created", new Date(user.created_at).toLocaleString()),
+          attrHtml("Created", ts(user.created_at)),
         ])}
       `)}
 
@@ -269,7 +269,7 @@ account.get("/account", async (c) => {
         ${
           passkeys.length
             ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
-                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(new Date(p.created_at).toLocaleDateString())}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
+                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${ts(p.created_at, { dateOnly: true })}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
                   <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}><button class="link-button" type="submit">Remove</button></form></td></tr>`).join("")}
               </tbody></table>`
             : '<p class="muted">No passkeys yet.</p>'
@@ -299,7 +299,7 @@ account.get("/account", async (c) => {
             ${sessions
               .map(
                 (s) => `<tr>
-                  <td>${escapeHtml(new Date(s.created_at).toLocaleString())}</td>
+                  <td>${ts(s.created_at)}</td>
                   <td>${escapeHtml(relativeTime(s.last_seen_at))}</td>
                   <td class="muted">${escapeHtml(s.ip ?? "unknown")}</td>
                   <td>
@@ -328,7 +328,7 @@ account.get("/account", async (c) => {
                   ${devices
                     .map(
                       (d) => `<tr>
-                        <td>${escapeHtml(new Date(d.created_at).toLocaleString())}</td>
+                        <td>${ts(d.created_at)}</td>
                         <td>${escapeHtml(relativeTime(d.last_used_at))}</td>
                         <td class="muted">${escapeHtml(d.ip ?? "unknown")}</td>
                         <td><form method="POST" action="/account/devices/${escapeHtml(d.id)}/revoke" ${confirmAttrs("This device will be asked for a verification code the next time it signs in.", { title: "Remove this remembered device?", action: "Remove device" })}><button class="link-button" type="submit">Remove</button></form></td>

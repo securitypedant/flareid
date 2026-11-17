@@ -882,6 +882,14 @@ export function attr(label: string, value: string | number | null | undefined): 
   </div>`;
 }
 
+/** attr() for a value that is already rendered markup (e.g. ts()). */
+export function attrHtml(label: string, html: string): string {
+  return `<div class="attr">
+    <div class="attr-label">${escapeHtml(label)}</div>
+    <div class="attr-value">${html}</div>
+  </div>`;
+}
+
 export function attrGrid(items: string[]): string {
   return `<div class="attr-grid">${items.join("")}</div>`;
 }
@@ -1179,9 +1187,29 @@ const THEME_TOGGLE_SCRIPT = `(function(){
   label();
 })();`;
 
+/**
+ * Rewrites every <time class="ts"> to the browser's locale. The console
+ * timezone override rides along on the top bar's data-tz attribute; an
+ * invalid or unset value falls back to the browser's own zone. The ISO
+ * instant stays in the title so the exact UTC moment is always a hover away.
+ */
+const TS_SCRIPT = `(function(){
+  var bar=document.querySelector('.topbar'),tz=bar?(bar.getAttribute('data-tz')||''):'';
+  if(tz){try{new Intl.DateTimeFormat('en',{timeZone:tz});}catch(e){tz='';}}
+  var dt={dateStyle:'medium',timeStyle:'short'},dd={dateStyle:'medium'};
+  if(tz){dt.timeZone=tz;dd.timeZone=tz;dt.timeZoneName='short';}
+  var fmt=new Intl.DateTimeFormat(undefined,dt),dfmt=new Intl.DateTimeFormat(undefined,dd);
+  var els=document.querySelectorAll('time.ts');
+  for(var i=0;i<els.length;i++){
+    var d=new Date(els[i].getAttribute('datetime'));
+    if(isNaN(d.getTime()))continue;
+    els[i].textContent=(els[i].hasAttribute('data-date-only')?dfmt:fmt).format(d);
+  }
+})();`;
+
 /** The top bar. `logoUrl` is the brand's uploaded logo (brands.ts); FlareID's icon without one. */
-export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null): string {
-  return `<header class="topbar">
+export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, tz = ""): string {
+  return `<header class="topbar"${tz ? ` data-tz="${escapeHtml(tz)}"` : ""}>
     <div class="brand-row">
     <a href="/" class="brand">
       <img src="${escapeHtml(logoUrl || "/FlareID_Icon.png")}" alt="" class="brand-logo${logoUrl ? " brand-logo-custom" : ""}" data-hide-on-error />
@@ -1305,6 +1333,7 @@ export function page(
   ${scriptTag(CONFIRM_SCRIPT)}
   ${scriptTag(UI_SCRIPT)}
   ${navHtml ? scriptTag(THEME_TOGGLE_SCRIPT) : ""}
+  ${navHtml ? scriptTag(TS_SCRIPT) : ""}
 </body>
 </html>`;
 }
@@ -1312,4 +1341,19 @@ export function page(
 /** Wraps admin/account page bodies in the standard "card" container. */
 export function cardSection(innerHtml: string): string {
   return `<div class="card">${innerHtml}</div>`;
+}
+
+/**
+ * A timestamp rendered in the *browser's* locale (and the admin-configured
+ * console timezone when one is set, see settings.ts). The ISO instant is
+ * emitted in datetime; TS_SCRIPT rewrites the text client-side. The visible
+ * fallback is the UTC instant so a no-JS page still shows a correct time.
+ */
+export function ts(iso: string | null | undefined, opts: { dateOnly?: boolean } = {}): string {
+  if (!iso) return '<span class="muted">&mdash;</span>';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '<span class="muted">&mdash;</span>';
+  const stamp = d.toISOString();
+  const fallback = `${stamp.slice(0, 10)} ${stamp.slice(11, 16)} UTC`;
+  return `<time class="ts" datetime="${stamp}"${opts.dateOnly ? " data-date-only" : ""} title="${stamp}">${escapeHtml(opts.dateOnly ? stamp.slice(0, 10) : fallback)}</time>`;
 }

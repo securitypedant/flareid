@@ -160,6 +160,8 @@ export interface ScimTuning {
 const SCIM_TUNING_DEFAULTS: ScimTuning = { paceMs: 200, membersPerRequest: 50, syncBatchSize: 50 };
 
 const clampInt = (raw: string | null, min: number, max: number, fallback: number): number => {
+  // Number(null) is 0, which can sit inside the range - missing is missing.
+  if (raw === null || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
 };
@@ -446,6 +448,29 @@ export async function getDefaultLanguage(env: Env): Promise<Locale> {
 export async function setDefaultLanguage(env: Env, code: string): Promise<void> {
   if (!isSupportedLocale(code)) throw new RangeError(`Unknown language "${code}". Available: ${SUPPORTED_LOCALES.join(", ")}.`);
   await setSetting(env, "default_language", code);
+}
+
+/**
+ * Timezone the console displays dates in. Empty (the default) means each
+ * visitor's own browser timezone; "UTC" or an IANA zone name pins every
+ * console page to that zone. The browser still supplies the locale - this
+ * only fixes the zone.
+ */
+export async function getConsoleTimezone(env: Env): Promise<string> {
+  return (await getSetting(env, "console_timezone")) ?? "";
+}
+
+/** Throws a RangeError for a name Intl refuses - typos included. */
+export async function setConsoleTimezone(env: Env, tz: string): Promise<void> {
+  const value = tz.trim();
+  if (value && value !== "UTC") {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: value });
+    } catch {
+      throw new RangeError(`Unknown timezone "${value}". Use an IANA name like Europe/London or America/New_York, "UTC", or leave empty for each browser's own zone.`);
+    }
+  }
+  await setSetting(env, "console_timezone", value);
 }
 
 /** Everything the sign-in, MFA and sign-in error pages need to look like the brand in force (brands.ts). */

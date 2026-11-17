@@ -1908,6 +1908,7 @@ Response `200`:
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `console_timezone` | string | yes | The timezone console pages display dates in. Empty for each browser's own zone; otherwise "UTC" or an IANA name like Europe/London. |
 | `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
 | `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 
@@ -1932,6 +1933,7 @@ Request body:
 | `default_language` | string | no |  |
 | `email_accent` | string | no |  |
 | `custom_css` | string | no |  |
+| `console_timezone` | string | no |  |
 
 Response `200`:
 
@@ -1948,6 +1950,7 @@ Response `200`:
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `console_timezone` | string | yes | The timezone console pages display dates in. Empty for each browser's own zone; otherwise "UTC" or an IANA name like Europe/London. |
 | `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
 | `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 
@@ -1982,6 +1985,7 @@ Response `200`:
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `console_timezone` | string | yes | The timezone console pages display dates in. Empty for each browser's own zone; otherwise "UTC" or an IANA name like Europe/London. |
 | `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
 | `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 
@@ -2010,6 +2014,7 @@ Response `200`:
 | `email_accent` | string | yes |  |
 | `logo_url` | string \| null | yes | Path of the uploaded logo (`/brand/logo/<id>-<hash>.png\|jpg`, cached as immutable), or null for FlareID's own mark. |
 | `custom_css` | string | yes | The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none. |
+| `console_timezone` | string | yes | The timezone console pages display dates in. Empty for each browser's own zone; otherwise "UTC" or an IANA name like Europe/London. |
 | `css_url` | string \| null | yes | Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null. |
 | `preview_url` | string | yes | The sign-in page in this brand, for a signed-in administrator with branding:read. |
 

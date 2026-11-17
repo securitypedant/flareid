@@ -20,6 +20,7 @@ import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
 import { scimServer } from "./routes/scim-server.js";
 import { defaultBrand } from "./lib/brands.js";
+import { getConsoleTimezone } from "./lib/settings.js";
 import { brandAssets } from "./routes/brand-assets.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { purgeRetiredKeys } from "./lib/signing-keys.js";
@@ -67,9 +68,10 @@ app.route("/", brandAssets);
 // c.get("appName") and c.get("logoUrl"). Pages for a known person (My
 // account) and the auth-flow pages resolve that person's brand instead.
 app.use("*", async (c, next) => {
-  const brand = await defaultBrand(c.env);
+  const [brand, consoleTz] = await Promise.all([defaultBrand(c.env), getConsoleTimezone(c.env)]);
   c.set("appName", brand.appName);
   c.set("logoUrl", brand.logoUrl);
+  c.set("consoleTz", consoleTz);
   await next();
 });
 

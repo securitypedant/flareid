@@ -9,6 +9,7 @@ import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import {
   getAppName,
   getAuditRetentionDays,
+  getConsoleTimezone,
   getCursorTrail,
   getDefaultLanguage,
   getDefaultPassword,
@@ -34,6 +35,7 @@ import {
   saveBreachedPasswordCheck,
   saveTurnstile,
   saveAuditRetention,
+  saveConsoleTimezone,
   saveCursorTrail,
   saveDefaultLanguage,
   saveDefaultPassword,
@@ -163,13 +165,14 @@ const BrandingSchema = z
     email_accent: z.string(),
     logo_url: z.string().nullable().openapi({ description: "Path of the uploaded logo (`/brand/logo/<id>-<hash>.png|jpg`, cached as immutable), or null for FlareID's own mark." }),
     custom_css: z.string().openapi({ description: "The custom stylesheet for the sign-in, second-step, consent, recovery and setup pages (never the admin console). Empty for none." }),
+    console_timezone: z.string().openapi({ description: "The timezone console pages display dates in. Empty for each browser's own zone; otherwise \"UTC\" or an IANA name like Europe/London." }),
     css_url: z.string().nullable().openapi({ description: "Where that stylesheet is served (`/brand/css/default-<hash>.css`), or null." }),
     preview_url: z.string().openapi({ description: "The sign-in page in this brand, for a signed-in administrator with branding:read." }),
   })
   .openapi("Branding");
 
 async function brandingJson(env: Env) {
-  const [brand, trail, css, language] = await Promise.all([defaultBrand(env), getCursorTrail(env), defaultCustomCss(env), getDefaultLanguage(env)]);
+  const [brand, trail, css, language, tz] = await Promise.all([defaultBrand(env), getCursorTrail(env), defaultCustomCss(env), getDefaultLanguage(env), getConsoleTimezone(env)]);
   return {
     app_name: brand.appName,
     login_subtitle: brand.subtitle,
@@ -180,6 +183,7 @@ async function brandingJson(env: Env) {
     email_accent: brand.accent,
     logo_url: brand.logoUrl,
     custom_css: css,
+    console_timezone: tz,
     css_url: brand.cssUrl,
     preview_url: "/login?brand_preview=default",
   };
@@ -204,11 +208,12 @@ defineRoute(
       default_language: z.string().optional(),
       email_accent: z.string().optional(),
       custom_css: z.string().optional(),
+      console_timezone: z.string().optional(),
     }),
     response: BrandingSchema,
   },
   async (c) => {
-    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; default_language?: string; email_accent?: string; custom_css?: string }>(c);
+    const body = await readJson<{ app_name?: string; login_subtitle?: string; login_gradient?: { from: string; to: string }; cursor_trail?: { enabled?: boolean; characters?: string }; default_language?: string; email_accent?: string; custom_css?: string; console_timezone?: string }>(c);
     // Everything validated before anything is saved.
     if (body.app_name !== undefined && !body.app_name.trim()) return c.json(badRequest("app_name cannot be empty."), 400);
     if (body.login_gradient && (!isHexColor(body.login_gradient.from) || !isHexColor(body.login_gradient.to))) return c.json(badRequest("login_gradient.from and .to must both be #rrggbb hex colours."), 400);
@@ -224,6 +229,7 @@ defineRoute(
       await saveCursorTrail(ctx, { enabled: body.cursor_trail.enabled ?? current.enabled, characters: body.cursor_trail.characters ?? current.characters });
     }
     if (body.default_language !== undefined) await saveDefaultLanguage(ctx, body.default_language);
+    if (body.console_timezone !== undefined) await saveConsoleTimezone(ctx, body.console_timezone);
     if (body.email_accent !== undefined) await saveEmailAccent(ctx, body.email_accent);
     if (body.custom_css !== undefined) await saveDefaultCustomCss(ctx, body.custom_css);
     return c.json(await brandingJson(c.env));

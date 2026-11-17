@@ -117,6 +117,16 @@ the one shown when the browser asks for none FlareID has. It is the same for
 every brand. People can pick another from the sign-in page's footer. See
 [i18n.md](i18n.md) for the full order and for adding a language.
 
+## Dates
+
+Console pages (Admin and My account) render dates and times in each visitor's
+browser language and timezone. Branding → Settings → **Dates** pins the zone
+for everyone - `UTC` or an IANA name like `Europe/London` - so, for example,
+everyone reading the audit log sees the same wall clock. Empty (the default)
+means each browser's own zone; the zone name is shown next to times when
+pinned, and the exact UTC instant is always in the timestamp's tooltip. The
+API field is `console_timezone` on `GET`/`PATCH /api/v1/branding`.
+
 ## Preview
 
 Each brand's page has **Preview the sign-in page**:

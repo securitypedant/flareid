@@ -16,7 +16,7 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -40,6 +40,7 @@ import {
 import {
   passwordPolicySummary,
   CURSOR_TRAIL_MAX_CHARACTERS,
+  getConsoleTimezone,
   getCursorTrail,
   getDefaultLanguage,
   getSessionPolicy,
@@ -108,6 +109,7 @@ import {
   setSecurityQuestionEnabled,
   saveAppName,
   saveAuditRetention,
+  saveConsoleTimezone,
   saveCursorTrail,
   saveDefaultLanguage,
   saveDefaultPassword,
@@ -345,7 +347,7 @@ const CRUMB_SECTIONS: Record<string, string> = {
 };
 
 function layout(
-  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) & ((k: "logoUrl") => string | null) },
+  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) & ((k: "logoUrl") => string | null) & ((k: "consoleTz") => string) },
   title: string,
   body: string,
   crumbs?: Breadcrumb[],
@@ -380,7 +382,7 @@ function layout(
     </div>`,
     appName,
     true,
-    nav(appName, true, c.get("logoUrl"))
+    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"))
   );
 }
 
@@ -663,15 +665,15 @@ admin.get("/admin/performance", async (c) => {
       }
       ${
         series.configured
-          ? cardSection(`<h2>Security events</h2><p class="muted">Audited actions counted as they happen, last ${range.label.toLowerCase()}.</p>
+          ? cardSection(`<h2>Events</h2><p class="muted">Audited actions and outbound call outcomes counted as they happen, last ${range.label.toLowerCase()}. Outbound statuses (e.g. <code>scim.outbound &middot; 502</code>) are the target system's answers - they never become FlareID responses, so they cannot appear in the 5xx charts.</p>
         ${
           events === null
             ? `<p class="muted">Could not read the flareid_spans dataset - check CF_ANALYTICS_TOKEN and that the deploy included the METRICS_SPANS binding.</p>`
             : events.length
-              ? `<table><thead><tr><th>Action</th><th>Count</th></tr></thead><tbody>
-          ${events.slice(0, 15).map((e) => `<tr><td><code>${escapeHtml(e.name)}</code></td><td>${e.count.toLocaleString("en")}</td></tr>`).join("")}
+              ? `<table><thead><tr><th>Action</th><th>Detail</th><th>Count</th></tr></thead><tbody>
+          ${events.slice(0, 15).map((e) => `<tr><td><code>${escapeHtml(e.name)}</code></td><td>${e.detail ? `<code>${escapeHtml(e.detail)}</code>` : '<span class="muted">&mdash;</span>'}</td><td>${e.count.toLocaleString("en")}</td></tr>`).join("")}
         </tbody></table>`
-              : `<p class="muted">No events recorded yet - sign-ins, token grants, LDAP binds and admin changes land here as they happen.</p>`
+              : `<p class="muted">No events recorded yet - sign-ins, token grants, LDAP binds, SCIM push results and admin changes land here as they happen.</p>`
         }`)
           : ""
       }
@@ -1484,7 +1486,7 @@ admin.get("/admin/users/:id", async (c) => {
             <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:2; min-width:0;" />
             <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain)}</div>
           </div>
-          <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${escapeHtml(new Date(user.created_at).toLocaleString())}</p>
+          <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${ts(user.created_at)}</p>
           <h3 style="margin-top:14px;">Email addresses</h3>
           <p class="muted" style="margin-top:-4px;">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
           <div class="email-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
@@ -1605,7 +1607,7 @@ admin.get("/admin/users/:id", async (c) => {
                   ${sessions
                     .map(
                       (s) =>
-                        `<tr><td>${escapeHtml(new Date(s.created_at).toLocaleString())}</td><td>${escapeHtml(new Date(s.last_seen_at).toLocaleString())}</td><td class="muted">${escapeHtml(s.ip ?? "unknown")}</td></tr>`
+                        `<tr><td>${ts(s.created_at)}</td><td>${ts(s.last_seen_at)}</td><td class="muted">${escapeHtml(s.ip ?? "unknown")}</td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -2381,7 +2383,7 @@ admin.get("/admin/integrations", async (c) => {
           count: `${activeKeys.length} active${revokedKeys ? ` &middot; ${revokedKeys} revoked` : ""}`,
           rows: activeKeys.map(
             (k) =>
-              `<tr><td>${escapeHtml(k.name)}</td><td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td><td class="muted">${k.last_used_at ? `used ${escapeHtml(k.last_used_at.slice(0, 16).replace("T", " "))}` : "never used"}</td></tr>`
+              `<tr><td>${escapeHtml(k.name)}</td><td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td><td class="muted">${k.last_used_at ? `used ${ts(k.last_used_at)}` : "never used"}</td></tr>`
           ),
           empty: "No active API keys.",
           manage: "api-keys",
@@ -2569,7 +2571,7 @@ admin.get("/admin/integrations/api-keys", async (c) => {
                           <td>${escapeHtml(k.name)}${k.revoked_at ? " <span class=\"muted\">(revoked)</span>" : ""}</td>
                           <td><code>${escapeHtml(k.prefix)}&hellip;</code></td>
                           <td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td>
-                          <td>${k.last_used_at ? escapeHtml(k.last_used_at.slice(0, 19).replace("T", " ")) : '<span class="muted">never</span>'}</td>
+                          <td>${k.last_used_at ? ts(k.last_used_at) : '<span class="muted">never</span>'}</td>
                           <td style="white-space:nowrap;">
                             <a href="/admin/audit?${new URLSearchParams({ actor: "api", search: `api-key:${k.name}` }).toString()}">Activity</a>
                             ${
@@ -3089,10 +3091,10 @@ function samlIdpBlock(env: Env) {
   const expiry = env.SAML_SIGNING_CERT ? certNotAfter(env.SAML_SIGNING_CERT) : null;
   const expiryNote = expiry
     ? expiry.getTime() < Date.now()
-      ? ` - <strong style="color:var(--fi-red);">expired ${escapeHtml(expiry.toISOString().slice(0, 10))}</strong>`
+      ? ` - <strong style="color:var(--fi-red);">expired ${ts(expiry.toISOString(), { dateOnly: true })}</strong>`
       : expiry.getTime() - Date.now() < 30 * 24 * 60 * 60 * 1000
-        ? ` - <strong style="color:var(--fi-amber);">expires ${escapeHtml(expiry.toISOString().slice(0, 10))}</strong>`
-        : ` - expires ${escapeHtml(expiry.toISOString().slice(0, 10))}`
+        ? ` - <strong style="color:var(--fi-amber);">expires ${ts(expiry.toISOString(), { dateOnly: true })}</strong>`
+        : ` - expires ${ts(expiry.toISOString(), { dateOnly: true })}`
     : "";
   return `
     <div class="info-panel">
@@ -3994,7 +3996,7 @@ async function uploadedBytes(c: Context<{ Bindings: Env }>): Promise<Uint8Array>
 }
 
 admin.get("/admin/branding", async (c) => {
-  const [brand, cursorTrail, css, defaultLanguage] = await Promise.all([defaultBrand(c.env), getCursorTrail(c.env), defaultCustomCss(c.env), getDefaultLanguage(c.env)]);
+  const [brand, cursorTrail, css, defaultLanguage, consoleTz] = await Promise.all([defaultBrand(c.env), getCursorTrail(c.env), defaultCustomCss(c.env), getDefaultLanguage(c.env), getConsoleTimezone(c.env)]);
   const q = c.req.query();
 
   return c.html(
@@ -4063,6 +4065,29 @@ admin.get("/admin/branding", async (c) => {
         </form>
       `)}
       ${cardSection(`
+        <h2>Dates</h2>
+        <p class="muted">Console pages show dates and times in each visitor's browser language and timezone. Set a zone here to pin them - for example so everyone reading the audit log sees the same wall clock.</p>
+        <form method="POST" action="/admin/branding/timezone">
+          <label for="console_timezone">Console timezone</label>
+          <input type="text" id="console_timezone" name="console_timezone" list="tz-suggestions" value="${escapeHtml(consoleTz)}" placeholder="Empty: each browser's own timezone" />
+          <datalist id="tz-suggestions">
+            <option value="UTC"></option>
+            <option value="Europe/London"></option>
+            <option value="Europe/Berlin"></option>
+            <option value="America/New_York"></option>
+            <option value="America/Chicago"></option>
+            <option value="America/Denver"></option>
+            <option value="America/Los_Angeles"></option>
+            <option value="America/Sao_Paulo"></option>
+            <option value="Asia/Tokyo"></option>
+            <option value="Asia/Singapore"></option>
+            <option value="Australia/Sydney"></option>
+          </datalist>
+          <p class="muted" style="margin-top:-8px;">An IANA zone name (e.g. <code>Europe/London</code>), <code>UTC</code>, or empty for the browser default. The zone name shows next to times when pinned.</p>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
         <h2>Email templates</h2>
         <p class="muted">The wording of the invitation, password reset and sign-in code emails, and the accent colour they share.</p>
         <a href="/admin/branding/email-templates"><button class="secondary" type="button">Edit email templates</button></a>
@@ -4099,6 +4124,16 @@ admin.post("/admin/branding/login-gradient", async (c) => {
   const to = String(body.to ?? "").trim();
   // Anything but two #rrggbb values is ignored, as the colour pickers never send one.
   if (isHexColor(from) && isHexColor(to)) await saveLoginGradient(consoleCtx(c), from, to);
+  return c.redirect("/admin/branding?saved=1", 302);
+});
+
+admin.post("/admin/branding/timezone", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await saveConsoleTimezone(consoleCtx(c), String(body.console_timezone ?? ""));
+  } catch (e) {
+    return c.redirect(brandingBack("/admin/branding", e), 302);
+  }
   return c.redirect("/admin/branding?saved=1", 302);
 });
 
@@ -4993,7 +5028,7 @@ admin.get("/admin/security/signing-keys", async (c) => {
   const keys = await listSigningKeys(c.env);
   const usage = await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg, COUNT(*) AS n FROM oauth_clients GROUP BY id_token_signed_response_alg").all<{ alg: string; n: number }>();
   const clientsUsing = (alg: string) => usage.results.find((r) => r.alg === alg)?.n ?? 0;
-  const when = (iso: string) => `<span title="${escapeHtml(iso)}">${escapeHtml(new Date(iso).toLocaleString("en-GB", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }))} UTC</span>`;
+  const when = (iso: string) => ts(iso);
   const publishedUntil = (k: (typeof keys)[number]) => {
     if (k.status === "active") return '<span class="muted">While active</span>';
     const until = new Date(Date.parse(k.retired_at!) + RETIRED_PUBLISH_HOURS * 3600 * 1000);
@@ -5199,7 +5234,7 @@ admin.get("/admin/audit", async (c) => {
                 );
 
                 return `<tr class="audit-row" data-toggle-next="open">
-                  <td class="muted">${escapeHtml(new Date(e.at).toLocaleString())}</td>
+                  <td class="muted">${ts(e.at)}</td>
                   <td>${escapeHtml(e.actor_upn ?? "system")}</td>
                   <td><code>${escapeHtml(e.action)}</code></td>
                   <td>${escapeHtml(e.target ?? "")}</td>
@@ -5306,7 +5341,7 @@ admin.get("/admin/integrations/ldap", async (c) => {
       <td><a href="/admin/ldap/${escapeHtml(a.slug)}">${escapeHtml(a.name)}</a></td>
       <td><code>${escapeHtml(a.slug)}</code></td>
       <td>${escapeHtml(scope)}</td>
-      <td>${a.last_used_at ? escapeHtml(a.last_used_at.slice(0, 16).replace("T", " ")) : '<span class="muted">never</span>'}</td>
+      <td>${a.last_used_at ? ts(a.last_used_at) : '<span class="muted">never</span>'}</td>
       <td>${a.revoked_at ? '<span class="badge badge-disabled">Revoked</span>' : '<span class="badge badge-active">Active</span>'}</td>
     </tr>`;
   });
@@ -5485,7 +5520,7 @@ admin.get("/admin/ldap/:slug", async (c) => {
           <tr><td class="muted" style="width:180px;">Bind DN</td><td><code>cn=${escapeHtml(app.slug)},ou=services,${escapeHtml(settings.baseDn)}</code></td></tr>
           <tr><td class="muted">Branch</td><td><code>ou=${escapeHtml(app.slug)},${escapeHtml(settings.baseDn)}</code></td></tr>
           <tr><td class="muted">Secret</td><td><code>${escapeHtml(app.secret_prefix)}…</code></td></tr>
-          <tr><td class="muted">Last used</td><td>${app.last_used_at ? escapeHtml(app.last_used_at) : "never"}</td></tr>
+          <tr><td class="muted">Last used</td><td>${app.last_used_at ? ts(app.last_used_at) : "never"}</td></tr>
           <tr><td class="muted">Audit</td><td><a href="/admin/log?search=${encodeURIComponent(app.slug)}&category=ldap">ldap.* events for this app</a></td></tr>
         </tbody></table>
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
