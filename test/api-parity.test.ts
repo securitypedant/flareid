@@ -101,6 +101,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/ldap": "POST /api/v1/ldap/apps",
   "POST /admin/ldap/:slug": "POST /api/v1/ldap/apps",
   "POST /admin/ldap/:slug/rotate": "POST /api/v1/ldap/apps/{slug}/rotate",
+  "POST /admin/ldap/:slug/reveal": "POST /api/v1/ldap/apps/{slug}/reveal",
   "POST /admin/ldap/:slug/revoke": "DELETE /api/v1/ldap/apps/{slug}",
 };
 

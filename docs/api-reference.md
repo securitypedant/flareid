@@ -1464,6 +1464,7 @@ The read-only LDAP interface: app registrations and directory settings.
 | `GET` | `/api/v1/ldap/apps` | `directory:read` | List LDAP apps |
 | `POST` | `/api/v1/ldap/apps` | `clients:write` | Create or update an LDAP app (upsert by slug) |
 | `POST` | `/api/v1/ldap/apps/{slug}/rotate` | `clients:write` | Rotate an app's bind secret |
+| `POST` | `/api/v1/ldap/apps/{slug}/reveal` | `clients:write` | Reveal an app's current bind secret |
 | `DELETE` | `/api/v1/ldap/apps/{slug}` | `clients:write` | Revoke an LDAP app |
 | `GET` | `/api/v1/ldap/settings` | `directory:read` | Read the LDAP settings |
 | `POST` | `/api/v1/ldap/settings` | `settings:write` | Update the LDAP settings |
@@ -1525,6 +1526,28 @@ Response `200`:
 | `secret` | string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/ldap/apps/{slug}/reveal`
+
+Reveal an app's current bind secret.
+
+Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.
+
+Permission: `clients:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
 ### `DELETE /api/v1/ldap/apps/{slug}`
 

@@ -56,6 +56,7 @@ export const OP = {
 export const OID = {
   pagedResults: "1.2.840.113556.1.4.319",
   serverSort: "1.2.840.113556.1.4.473",
+  sortResult: "1.2.840.113556.1.4.474",
   manageDsaIt: "2.16.840.1.113730.3.4.2",
   whoami: "1.3.6.1.4.1.4203.1.11.3",
   startTls: "1.3.6.1.4.1.1466.20037",
@@ -243,6 +244,11 @@ export function searchEntry(dn: string, attrs: Uint8Array[]): Uint8Array {
 /** The paged-results response control carrying the cookie for the next call. */
 export function pagedResponseControl(cookie: Uint8Array, estimatedTotal = 0): Uint8Array {
   return controlBytes(OID.pagedResults, seq(integer(estimatedTotal), octetString(cookie)));
+}
+
+/** Server-side sort result control (RFC 2891): ENUMERATED code + optional [0] attributeType that failed. */
+export function sortResultControl(code: number, attributeType?: string): Uint8Array {
+  return controlBytes(OID.sortResult, seq(enumValue(code), ...(attributeType ? [tlv(ctx(0), new TextEncoder().encode(attributeType))] : [])));
 }
 
 /** Notice of Disconnection: unsolicited ExtendedResponse, messageID 0. */

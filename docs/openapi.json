@@ -9622,6 +9622,95 @@
         }
       }
     },
+    "/api/v1/ldap/apps/{slug}/reveal": {
+      "post": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Reveal an app's current bind secret",
+        "description": "Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "clients:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ldap/apps/{slug}": {
       "delete": {
         "tags": [

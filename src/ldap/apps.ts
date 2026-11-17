@@ -1,12 +1,14 @@
 import type { Env } from "../env.js";
 import type { LdapAppRow } from "../lib/types.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
+import { sealText, unsealText } from "../lib/sealed.js";
 
 /**
  * LDAP apps (LDAP.md section 7): a registered client with a service account
  * and a policy. Like api_keys, the service account is not a user - "a key is
- * not a person" - and its secret is generated, shown once, and stored as
- * SHA-256.
+ * not a person" - and its secret is generated. Binds verify against the
+ * SHA-256 hash; a KEK-sealed copy (secret_enc) lets the console reveal it
+ * without a rotation.
  */
 
 export const LDAP_SECRET_PREFIX = "flareid_ldap_";
@@ -53,13 +55,14 @@ export async function writeLdapApp(env: Env, input: LdapAppInput, opts: { upsert
   }
   const secret = LDAP_SECRET_PREFIX + randomToken(24);
   await env.DB.prepare(
-    "INSERT INTO ldap_apps (slug, name, secret_hash, secret_prefix, user_group_ids, exposed_group_ids, mfa_mode, include_disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO ldap_apps (slug, name, secret_hash, secret_prefix, secret_enc, user_group_ids, exposed_group_ids, mfa_mode, include_disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   )
     .bind(
       slug,
       input.name.trim(),
       await sha256Hex(secret),
       secret.slice(0, LDAP_SECRET_PREFIX.length + 8),
+      await sealText(env, secret),
       userGroupIds,
       exposedGroupIds,
       mfaMode,
@@ -73,10 +76,16 @@ export async function writeLdapApp(env: Env, input: LdapAppInput, opts: { upsert
 
 export async function rotateLdapSecret(env: Env, app: LdapAppRow): Promise<string> {
   const secret = LDAP_SECRET_PREFIX + randomToken(24);
-  await env.DB.prepare("UPDATE ldap_apps SET secret_hash = ?, secret_prefix = ?, updated_at = ? WHERE id = ?")
-    .bind(await sha256Hex(secret), secret.slice(0, LDAP_SECRET_PREFIX.length + 8), new Date().toISOString(), app.id)
+  await env.DB.prepare("UPDATE ldap_apps SET secret_hash = ?, secret_prefix = ?, secret_enc = ?, updated_at = ? WHERE id = ?")
+    .bind(await sha256Hex(secret), secret.slice(0, LDAP_SECRET_PREFIX.length + 8), await sealText(env, secret), new Date().toISOString(), app.id)
     .run();
   return secret;
+}
+
+/** The current secret, for the console's Reveal action. NULL when the app predates sealing - one rotate enables it. */
+export async function revealLdapSecret(env: Env, app: LdapAppRow): Promise<string | null> {
+  if (!app.secret_enc) return null;
+  return unsealText(env, app.secret_enc);
 }
 
 export async function revokeLdapApp(env: Env, app: LdapAppRow): Promise<void> {

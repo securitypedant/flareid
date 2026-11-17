@@ -19,8 +19,25 @@ applications and devices authenticate FlareID users and look up their groups.
 > implemented as candidate selection inside the snapshot (the cache makes the
 > per-login cost identical); and `entryDN` is synthesized at selection time.
 >
-> Still open from the plan: the section 17.5 dev bridge, real-client soak
-> (Grafana/sssd), and the phase-2+ items in section 18.
+> Still open from the plan: the section 17.5 dev bridge and real-client soak
+> (Grafana/sssd).
+>
+> Phase 2 and the cheap phase-3 items also landed: POSIX attributes and the
+> sssd snippet shipped with phase 1; OTP-in-password with the re-bind window
+> shipped with the bind layer; ranged retrieval (`member;range=L-H`), the RFC
+> 2891 server-side sort control (request 1.2.840.113556.1.4.473, response
+> ...474), and the RFC 3062 Password Modify extended operation are in
+> `search.ts`/`connection.ts`. Password Modify is user-bound self-service
+> only (no admin reset over LDAP) and runs the account page's compromise
+> response on success: sessions revoked, tokens revoked, passkeys dropped.
+> Verified live with Apache Directory Studio M17: service bind, schema
+> fetch, branch browse, RFC 2696 paging.
+>
+> Parked deliberately: **StartTLS on 389**. Every client that matters for
+> the target profile (Grafana, GitLab, Jenkins, sssd, Studio) does LDAPS on
+> 636; only appliance-class clients (Meraki, Odoo, printers) require
+> plaintext+StartTLS, and it needs a WASM TLS stack inside the Worker -
+> the single biggest lift in this document for the least common client.
 
 Like SAML-implementation.md, this is the design written before the code, so
 the decisions are made in the open. Where a decision is marked **Decision**,
@@ -1018,11 +1035,14 @@ the suite (`npm test`, `npm run typecheck`).
 - Real-client compatibility run (section 17.4)
 
 **Phase 3: optional, only on demand**
+- ~~Server-side sort control~~ shipped (RFC 2891, request/response controls)
+- ~~Password Modify extended operation~~ shipped (RFC 3062, user-bound
+  self-service; FlareID's password policy and the account-page compromise
+  response both apply)
 - StartTLS on 389 via a WASM TLS stack (for example rustls) inside the Worker,
-  behind a Spectrum app with `tls: "off"`. This recovers Meraki and Odoo. The
-  same component would serve RADIUS EAP-TTLS later.
-- Server-side sort control
-- Password Modify extended operation (FlareID's password policy applies)
+  behind a Spectrum app with `tls: "off"`. **Parked** - see the status note:
+  LDAPS-only covers the target client set; this recovers only appliance-class
+  clients (Meraki, Odoo). The same component would serve RADIUS EAP-TTLS later.
 
 ---
 

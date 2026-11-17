@@ -50,6 +50,7 @@ export const PASSKEY_LOGIN_SCRIPT = `(function(){
     btn.disabled=true; if(status) status.textContent="";
     fetch(optionsUrl+"?"+param+"="+encodeURIComponent(flow),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(o){
       var attempt=o.attempt; o=o.options; o.challenge=b64uToBuf(o.challenge);
+      (o.allowCredentials||[]).forEach(function(c){c.id=b64uToBuf(c.id);});
       return navigator.credentials.get({publicKey:o}).then(function(cred){
         var r=cred.response;
         var resp={id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},

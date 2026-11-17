@@ -177,6 +177,8 @@ function deepestAncestor(rdns: Rdn[], settings: LdapSettings): string {
 
 const OPERATIONAL = new Set(["entryuuid", "entrydn", "createtimestamp", "modifytimestamp", "subschemasubentry", "hassubordinates"]);
 
+const RANGE_RE = /^range=(\d+)-(\d+|\*)$/;
+
 function select(entry: EvalEntry, op: SearchOp): EvalEntry {
   if (op.attributes.includes("1.1")) return { dn: entry.dn, attrs: new Map() };
   const wanted = op.attributes.filter((a) => a !== "1.1");
@@ -185,24 +187,42 @@ function select(entry: EvalEntry, op: SearchOp): EvalEntry {
   for (const [name, values] of entry.attrs) {
     if (!isReturnable(name)) continue;
     const isOp = OPERATIONAL.has(name);
-    const include =
-      all ||
-      wanted.some((w) => {
-        const base = w.toLowerCase().split(";")[0]!;
-        if (w === "*") return !isOp;
-        if (w === "+") return isOp;
-        return base === name && !w.includes(";range="); // ;range= handled in phase 2
-      });
+    let include = all;
+    let range: { lo: number; hi: number | null } | null = null;
+    for (const w of wanted) {
+      const lower = w.toLowerCase();
+      if (w === "*") { if (!isOp) include = true; continue; }
+      if (w === "+") { if (isOp) include = true; continue; }
+      const [base, ...opts] = lower.split(";");
+      if (base !== name) continue;
+      const ropt = opts.find((o) => o.startsWith("range="));
+      if (ropt) {
+        const m = RANGE_RE.exec(ropt);
+        if (m && !range) range = { lo: Number(m[1]), hi: m[2] === "*" ? null : Number(m[2]) };
+        include = true;
+        continue;
+      }
+      if (opts.length === 0) include = true;
+      // Unknown options (;binary, ;lang-*) don't match: not returned.
+    }
     if (!include) continue;
+    // AD-style ranged retrieval: `member;range=L-H` returns values[L..H]
+    // under the same tagged name; `-*` marks the returned end reaching the
+    // last value. Out-of-range requests come back empty under `L-*`.
+    if (range && !op.typesOnly) {
+      const end = range.hi === null ? values.length - 1 : Math.min(range.hi, values.length - 1);
+      if (range.lo >= values.length) {
+        out.set(`${name};range=${range.lo}-*`, []);
+      } else {
+        const tag = end >= values.length - 1 ? `${name};range=${range.lo}-*` : `${name};range=${range.lo}-${end}`;
+        out.set(tag, values.slice(range.lo, end + 1));
+      }
+      continue;
+    }
     out.set(name, op.typesOnly ? [] : values);
   }
   // entryDN is synthesized on request rather than stored per entry.
   if (wanted.includes("+") || wanted.some((w) => w.toLowerCase().split(";")[0] === "entrydn")) out.set("entrydn", [entry.dn]);
-  // `*` also returns objectClass implicitly; `+` alone returns operational only.
-  if (wanted.includes("+") && !wanted.includes("*")) {
-    const ops = new Map([...out].filter(([k]) => OPERATIONAL.has(k)));
-    return { dn: entry.dn, attrs: ops };
-  }
   return { dn: entry.dn, attrs: out };
 }
 

@@ -118,6 +118,8 @@ export interface LdapAppRow {
   name: string;
   secret_hash: string;
   secret_prefix: string;
+  /** AES-256-GCM sealed secret for console reveal; NULL for apps created before reveal existed. */
+  secret_enc: string | null;
   /** JSON array of group ids whose members may bind and are visible; '[]' = every active user. */
   user_group_ids: string;
   /** JSON array of group ids visible as group entries; '[]' = all groups. */

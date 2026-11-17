@@ -5,7 +5,7 @@ import { auditActor } from "../lib/api-auth.js";
 import { getDefaultDomain } from "../lib/domains.js";
 import { setSetting } from "../lib/settings.js";
 import type { LdapAppRow } from "../lib/types.js";
-import { getLdapAppBySlug, isLdapSlug, listLdapApps, revokeLdapApp, rotateLdapSecret, writeLdapApp, appGroupIds, type LdapAppInput } from "../ldap/apps.js";
+import { getLdapAppBySlug, isLdapSlug, listLdapApps, revokeLdapApp, revealLdapSecret, rotateLdapSecret, writeLdapApp, appGroupIds, type LdapAppInput } from "../ldap/apps.js";
 import { disableLdap, domainToBaseDn, enableLdap, getLdapSettings } from "../ldap/settings.js";
 import { badRequest, defineRoute, notFound, param, readJson } from "./openapi.js";
 import { ServiceError } from "../services/context.js";
@@ -152,6 +152,18 @@ defineRoute(
     if (!app) throw new ServiceError(404, "No such LDAP app.");
     const secret = await rotateLdapSecret(c.env, app);
     await logAudit(c.env, auditActor(c.get("apiActor")), "ldap.app.secret_rotated", app.slug, {}, c.req.raw);
+    return c.json({ slug: app.slug, secret });
+  }
+);
+
+defineRoute(
+  { method: "post", path: "/api/v1/ldap/apps/{slug}/reveal", tag: "LDAP", permission: "clients:write", summary: "Reveal an app's current bind secret", description: "Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.", errors: [404, 409] },
+  async (c) => {
+    const app = await getLdapAppBySlug(c.env, param(c, "slug").toLowerCase());
+    if (!app) throw new ServiceError(404, "No such LDAP app.");
+    const secret = await revealLdapSecret(c.env, app);
+    if (!secret) throw new ServiceError(409, "This app's secret predates reveal - rotate it once to enable.");
+    await logAudit(c.env, auditActor(c.get("apiActor")), "ldap.app.secret_revealed", app.slug, {}, c.req.raw);
     return c.json({ slug: app.slug, secret });
   }
 );

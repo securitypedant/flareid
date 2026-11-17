@@ -433,3 +433,118 @@ describe("ldap misc ops", { timeout: 60000 }, () => {
     await c.close();
   });
 });
+
+describe("ldap ranged retrieval and sorting", { timeout: 60000 }, () => {
+  it("serves member;range=L-H windows on a group", async () => {
+    const { apiKey } = await setupLdap();
+    // a second member so the ranges actually slice
+    await apiCall("/api/v1/users", { token: apiKey, body: { username: "carol", given_name: "Carol", groups: ["Eng"] } });
+    await apiCall("/api/v1/users/carol", { token: apiKey, method: "PATCH", body: { status: "active" } });
+    resetSnapshotCache();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    const groupDn = `cn=eng,ou=groups,ou=${SLUG},${BASE_DN}`;
+
+    const all = await c.search(2, groupDn, 0, presentFilter("objectClass"), ["member"]);
+    const members = all.entries[0]!.attrs!.get("member")!;
+    expect(members.length).toBe(2);
+
+    const first = await c.search(3, groupDn, 0, presentFilter("objectClass"), ["member;range=0-0"]);
+    expect(first.entries[0]!.attrs!.get("member;range=0-0")).toEqual([members[0]]);
+
+    const rest = await c.search(4, groupDn, 0, presentFilter("objectClass"), ["member;range=1-*"]);
+    expect(rest.entries[0]!.attrs!.get("member;range=1-*")).toEqual([members[1]]);
+
+    const past = await c.search(5, groupDn, 0, presentFilter("objectClass"), ["member;range=9-*"]);
+    expect(past.entries[0]!.attrs!.get("member;range=9-*")).toEqual([]);
+    await c.close();
+  });
+
+  it("sorts entries via the RFC 2891 server-side sort control", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    const SORT = "1.2.840.113556.1.4.473";
+    const SORTRES = "1.2.840.113556.1.4.474";
+    const base = `ou=people,ou=${SLUG},${BASE_DN}`;
+
+    const asc = await c.search(2, base, 2, presentFilter("uid"), ["uid"], [control(SORT, seq(seq(octetString("uid"))))]);
+    const uids = asc.entries.map((e) => e.attrs!.get("uid")![0]);
+    expect(uids).toEqual([...uids].sort());
+    expect(asc.done.controls!.some((x) => x.oid === SORTRES)).toBe(true);
+
+    // [1] reverseOrder IMPLICIT BOOLEAN
+    const desc = await c.search(3, base, 2, presentFilter("uid"), ["uid"], [control(SORT, seq(seq(octetString("uid"), tlv(ctx(1), new Uint8Array([0xff])))))]);
+    expect(desc.entries.map((e) => e.attrs!.get("uid")![0])).toEqual([...uids].reverse());
+    await c.close();
+  });
+});
+
+describe("ldap password modify (RFC 3062)", { timeout: 60000 }, () => {
+  const PWMOD = "1.3.6.1.4.1.4203.1.11.1";
+  const pwmodReq = (id: number, fields: { user?: string; old?: string; next?: string }) =>
+    ldapMessage(
+      id,
+      tlv(
+        appC(23),
+        concat(
+          tlv(ctx(0), new TextEncoder().encode(PWMOD)),
+          tlv(
+            ctx(1),
+            seq(
+              ...(fields.user !== undefined ? [tlv(ctx(0), new TextEncoder().encode(fields.user))] : []),
+              ...(fields.old !== undefined ? [tlv(ctx(1), new TextEncoder().encode(fields.old))] : []),
+              ...(fields.next !== undefined ? [tlv(ctx(2), new TextEncoder().encode(fields.next))] : [])
+            )
+          )
+        )
+      )
+    );
+
+  it("refuses anonymous and service-bound connections", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(pwmodReq(1, { old: "x", next: "new-password-9" }));
+    expect((await c.recv()).code).toBe(50);
+    await c.send(bindReq(2, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(pwmodReq(3, { old: "x", next: "new-password-9" }));
+    expect((await c.recv()).code).toBe(50);
+    await c.close();
+  });
+
+  it("changes the bound user's password and lets them rebind with it", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(0);
+    await c.send(pwmodReq(3, { user: ALICE_DN, old: "correct-horse-9", next: "rotated-horse-1" }));
+    expect((await c.recv()).code).toBe(0);
+    // old password is dead, new one binds
+    await c.send(bindReq(4, ALICE_DN, "correct-horse-9"));
+    expect((await c.recv()).code).toBe(49);
+    await c.send(bindReq(5, ALICE_DN, "rotated-horse-1"));
+    expect((await c.recv()).code).toBe(0);
+    await c.close();
+  });
+
+  it("rejects a wrong old password, a foreign userIdentity, and a weak new one", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    await c.recv();
+    await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+    await c.recv();
+    await c.send(pwmodReq(3, { old: "not-the-password", next: "rotated-horse-1" }));
+    expect((await c.recv()).code).toBe(49);
+    await c.send(pwmodReq(4, { user: `uid=bob,ou=people,ou=${SLUG},${BASE_DN}`, old: "correct-horse-9", next: "rotated-horse-1" }));
+    expect((await c.recv()).code).toBe(50);
+    await c.send(pwmodReq(5, { old: "correct-horse-9", next: "x" }));
+    expect((await c.recv()).code).toBe(53);
+    await c.close();
+  });
+});

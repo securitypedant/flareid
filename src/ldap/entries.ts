@@ -171,6 +171,7 @@ export function rootDse(settings: LdapSettings): LdapEntry {
   put(attrs, "subschemaSubentry", "cn=Subschema");
   put(attrs, "supportedLDAPVersion", "3");
   put(attrs, "supportedControl", "1.2.840.113556.1.4.319");
+  put(attrs, "supportedControl", "1.2.840.113556.1.4.473");
   put(attrs, "supportedExtension", "1.3.6.1.4.1.4203.1.11.3");
   put(attrs, "supportedFeatures", "1.3.6.1.4.1.4203.1.5.1");
   put(attrs, "vendorName", "FlareID");

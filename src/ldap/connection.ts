@@ -1,8 +1,12 @@
 import type { Env } from "../env.js";
 import type { LdapAppRow, UserRow } from "../lib/types.js";
 import { logAuditRaw } from "../lib/audit.js";
-import { sha256Hex } from "../lib/tokens.js";
-import { BerError, BerReader, concat } from "./ber.js";
+import { sha256Hex, randomToken } from "../lib/tokens.js";
+import { hashPassword, verifyPassword } from "../lib/password.js";
+import { newPasswordError } from "../lib/breached-passwords.js";
+import { clearLoginAttempts, loginRateKey, recordLoginAttempt } from "../lib/rate-limit.js";
+import { revokeTokensForUser } from "../lib/sessions.js";
+import { BerError, BerReader, concat, seq, ctx, tlv } from "./ber.js";
 import { ldapBind, AD_BAD_CREDENTIALS, type BindCtx } from "./bind.js";
 import { loadSnapshot, viewForApp, type DirectorySnapshot } from "./directory.js";
 import {
@@ -17,6 +21,7 @@ import {
   noticeOfDisconnection,
   partialAttribute,
   pagedResponseControl,
+  sortResultControl,
   refusal,
   OP,
   OID,
@@ -26,7 +31,8 @@ import {
 } from "./protocol.js";
 import { executeCompare, executeSearch, type SearchCtx } from "./search.js";
 import { getLdapSettings, type LdapSettings } from "./settings.js";
-import { escapeDnValue } from "./dn.js";
+import { dnEquals, escapeDnValue, parseDn } from "./dn.js";
+import { USER_RDN } from "./entries.js";
 
 /**
  * The connection dispatcher (LDAP.md sections 6 and 10). Transport-agnostic:
@@ -227,6 +233,10 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
         continue;
       }
       if (op.kind === "extended") {
+        if (op.name === OID.passwordModify) {
+          await handlePasswordModify({ send, deps, settings, bound, app, msgId: msg.id, value: op.value, track, audit });
+          continue;
+        }
         if (op.name === OID.whoami) {
           const authz =
             bound.kind === "anonymous"
@@ -288,6 +298,61 @@ function pagedRequest(controls: Control[]): { size: number; cookie: Uint8Array |
   }
 }
 
+interface SortKey {
+  attr: string;
+  reverse: boolean;
+}
+
+/** Parse the server-side sort request control (RFC 2891): SEQUENCE OF SEQUENCE { attr, [0] rule, [1] reverse }. */
+function sortRequest(controls: Control[]): SortKey[] | null | "bad" {
+  const c = controls.find((x) => x.type === OID.serverSort);
+  if (!c) return null;
+  if (!c.value) return "bad";
+  try {
+    const outer = new BerReader(c.value).readConstructed(0x30);
+    const keys: SortKey[] = [];
+    while (!outer.atEnd()) {
+      const k = outer.readConstructed(0x30);
+      const attr = k.readString().toLowerCase();
+      let reverse = false;
+      while (!k.atEnd()) {
+        const f = k.readElement();
+        if (f.tag === 0x81) reverse = f.content[0] !== 0; // [1] IMPLICIT BOOLEAN
+        // [0] orderingRule: accepted and ignored - we have one ordering per syntax.
+      }
+      keys.push({ attr, reverse });
+    }
+    return keys.length ? keys : "bad";
+  } catch {
+    return "bad";
+  }
+}
+
+const hexOf = (v: string | Uint8Array) => (typeof v === "string" ? v : Array.from(v, (b) => b.toString(16).padStart(2, "0")).join(""));
+
+/** First-value comparison per key; absent attributes sort last (RFC 2891). */
+function entryComparator(keys: SortKey[]) {
+  return (a: { attrs: Map<string, (string | Uint8Array)[]> }, b: { attrs: Map<string, (string | Uint8Array)[]> }): number => {
+    for (const { attr, reverse } of keys) {
+      const va = a.attrs.get(attr)?.[0];
+      const vb = b.attrs.get(attr)?.[0];
+      let cmp: number;
+      if (va === undefined && vb === undefined) continue;
+      else if (va === undefined) cmp = 1;
+      else if (vb === undefined) cmp = -1;
+      else {
+        const sa = hexOf(va);
+        const sb = hexOf(vb);
+        const na = /^\d+$/.test(sa) ? Number(sa) : null;
+        const nb = /^\d+$/.test(sb) ? Number(sb) : null;
+        cmp = na !== null && nb !== null ? na - nb : sa.toLowerCase() < sb.toLowerCase() ? -1 : sa.toLowerCase() > sb.toLowerCase() ? 1 : 0;
+      }
+      if (cmp !== 0) return reverse ? -cmp : cmp;
+    }
+    return 0;
+  };
+}
+
 async function handleSearch(writer: WritableStreamDefaultWriter<Uint8Array>, deps: LdapConnDeps, settings: LdapSettings, bound: Bound, stickyApp: LdapAppRow | null, msgId: number, op: Extract<Operation, { kind: "search" }>, controls: Control[], track: (kind: string, code?: number) => void): Promise<void> {
   const send = (bytes: Uint8Array) => writer.write(bytes);
   const ctx = await searchCtx(deps.env, settings, bound, stickyApp);
@@ -297,6 +362,13 @@ async function handleSearch(writer: WritableStreamDefaultWriter<Uint8Array>, dep
   }
   const out = await executeSearch(ctx, op);
   const paged = pagedRequest(controls);
+  const sort = sortRequest(controls);
+  if (sort === "bad") {
+    await send(message(msgId, searchDone(RC.unwillingToPerform, "malformed server-side sort control"), [sortResultControl(RC.unwillingToPerform)]));
+    track("search", RC.unwillingToPerform);
+    return;
+  }
+  if (sort && out.code === RC.success) out.entries.sort(entryComparator(sort));
 
   let entries = out.entries;
   let cookie: Uint8Array | null = null;
@@ -324,7 +396,102 @@ async function handleSearch(writer: WritableStreamDefaultWriter<Uint8Array>, dep
     const attrs = [...e.attrs.entries()].map(([name, values]) => partialAttribute(name, out.typesOnly ? [] : values));
     await send(message(msgId, searchEntry(e.dn, attrs)));
   }
-  const controlsOut = paged && cookie ? [pagedResponseControl(cookie)] : [];
+  const controlsOut = [...(paged && cookie ? [pagedResponseControl(cookie)] : []), ...(sort ? [sortResultControl(RC.success)] : [])];
   await send(message(msgId, searchDone(out.code, out.diagnostic, out.matchedDn), controlsOut));
   track("search", out.code);
+}
+
+/**
+ * RFC 3062 Password Modify (LDAP.md section 13, phase 3 pull-forward). Only a
+ * user-bound connection may change a password, and only its own - there is no
+ * admin reset over LDAP. The old password is always required; a missing new
+ * password generates one and returns it as genPasswd. On success we run the
+ * same compromise response as the account-page change: revoke sessions,
+ * revoke tokens, drop passkeys.
+ */
+async function handlePasswordModify(args: {
+  send: (bytes: Uint8Array) => Promise<void>;
+  deps: LdapConnDeps;
+  settings: LdapSettings;
+  bound: Bound;
+  app: LdapAppRow | null;
+  msgId: number;
+  value: Uint8Array | null;
+  track: (kind: string, code?: number) => void;
+  audit: (actor: Parameters<typeof logAuditRaw>[1], action: string, target: string | undefined, details: Record<string, unknown> | undefined, slug: string | null) => void;
+}): Promise<void> {
+  const { send, deps, settings, bound, app, msgId, value, track, audit } = args;
+  const fail = async (code: number, diagnostic: string, reason?: string) => {
+    if (reason) void audit({ id: null, upn: bound.kind === "user" ? bound.user.upn : "ldap:unbound" }, "ldap.password_modify.failed", app?.slug ?? undefined, { reason }, app?.slug ?? null);
+    await send(message(msgId, extendedResponse(code, diagnostic, OID.passwordModify)));
+    track("passwdmodify", code);
+  };
+
+  if (bound.kind !== "user") return fail(RC.insufficientAccessRights, "password modify requires a user bind");
+  const user = bound.user;
+  const userApp = app ?? bound.app;
+  if (!userApp) return fail(RC.insufficientAccessRights, "no app context");
+
+  // requestValue ::= SEQUENCE { userIdentity [0], oldPasswd [1], newPasswd [2] } (all optional, IMPLICIT OCTET STRING)
+  let userIdentity: string | null = null;
+  let oldPw: string | null = null;
+  let newPw: string | null = null;
+  try {
+    const r = new BerReader(value ?? new Uint8Array(0)).readConstructed(0x30);
+    while (!r.atEnd()) {
+      const f = r.readElement();
+      if (f.tag === 0x80) userIdentity = td.decode(f.content);
+      else if (f.tag === 0x81) oldPw = td.decode(f.content);
+      else if (f.tag === 0x82) newPw = td.decode(f.content);
+    }
+  } catch {
+    return fail(RC.protocolError, "malformed password modify request");
+  }
+
+  // userIdentity, when present, must name the bound user: their entry DN,
+  // username, or UPN. Anything else is an attempt at someone else's account.
+  if (userIdentity) {
+    const canonical = USER_RDN(user.username, userApp.slug, settings.baseDn);
+    let ok = userIdentity.toLowerCase() === user.username.toLowerCase() || userIdentity.toLowerCase() === (user.upn ?? "").toLowerCase();
+    if (!ok && userIdentity.includes("=")) {
+      try {
+        ok = dnEquals(parseDn(userIdentity), parseDn(canonical));
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok) return fail(RC.insufficientAccessRights, "cannot modify another user's password", "identity_mismatch");
+  }
+
+  if (oldPw === null) return fail(RC.unwillingToPerform, "old password required", "old_password_missing");
+
+  // Share the web sign-in lockout budget: guessing old passwords over LDAP
+  // must not get a second allowance.
+  if (await recordLoginAttempt(deps.env, loginRateKey(user.username, user), deps.ip)) return fail(RC.unwillingToPerform, "too many attempts", "rate_limited");
+  const oldOk = await verifyPassword(oldPw, { password_hash: user.password_hash, password_salt: user.password_salt, password_iterations: user.password_iterations });
+  if (!oldOk) return fail(RC.invalidCredentials, AD_BAD_CREDENTIALS, "old_password");
+
+  let generated: string | null = null;
+  if (newPw === null) {
+    generated = randomToken(18);
+    newPw = generated;
+  } else {
+    const policyError = await newPasswordError(deps.env, newPw);
+    if (policyError) return fail(RC.unwillingToPerform, policyError, "policy");
+  }
+
+  const { hash, salt, iterations } = await hashPassword(newPw, deps.env);
+  const now = new Date().toISOString();
+  await deps.env.DB.batch([
+    deps.env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ? WHERE id = ?").bind(hash, salt, iterations, now, user.id),
+    deps.env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(now, user.id),
+    deps.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(user.id),
+  ]);
+  await revokeTokensForUser(deps.env, user.id);
+  await clearLoginAttempts(deps.env, loginRateKey(user.username, user), deps.ip);
+  void audit(user, "ldap.password_modify", userApp.slug, { generated: generated !== null }, userApp.slug);
+
+  const responseValue = generated !== null ? seq(tlv(ctx(0), te.encode(generated))) : undefined;
+  await send(message(msgId, extendedResponse(RC.success, "", undefined, responseValue)));
+  track("passwdmodify", RC.success);
 }

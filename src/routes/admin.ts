@@ -47,7 +47,7 @@ import {
   SESSION_MAX_HOURS_RANGE,
 } from "../lib/settings.js";
 import { setSetting } from "../lib/settings.js";
-import { getLdapAppBySlug, listLdapApps, revokeLdapApp, rotateLdapSecret, writeLdapApp, appGroupIds, LDAP_SECRET_PREFIX, type LdapAppInput } from "../ldap/apps.js";
+import { getLdapAppBySlug, listLdapApps, revokeLdapApp, revealLdapSecret, rotateLdapSecret, writeLdapApp, appGroupIds, LDAP_SECRET_PREFIX, type LdapAppInput } from "../ldap/apps.js";
 import { disableLdap, domainToBaseDn, enableLdap, getLdapSettings } from "../ldap/settings.js";
 import type { LdapAppRow } from "../lib/types.js";
 import { importDirectory, ImportValidationError, type DirectoryBundle } from "../lib/directory-import.js";
@@ -4977,7 +4977,7 @@ const MFA_MODES: [string, string][] = [
 ];
 
 /** The once-only connection details shown after create or rotate (LDAP.md section 14). */
-function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: string, settings: Awaited<ReturnType<typeof getLdapSettings>>, verb: "created" | "rotated") {
+function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: string, settings: Awaited<ReturnType<typeof getLdapSettings>>, verb: "created" | "rotated" | "revealed") {
   const base = settings.baseDn;
   const host = settings.hostname || "ldap." + settings.base.map((r) => r.value).join(".");
   const slug = app.slug;
@@ -4998,8 +4998,8 @@ function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: 
       c,
       `LDAP app ${verb}`,
       `${cardSection(`
-        <h2>${escapeHtml(app.name)} ${verb === "created" ? "created" : "secret rotated"}</h2>
-        <p><strong>Copy the secret now - it is never shown again.</strong> Everything else on this page is safe to keep.</p>
+        <h2>${escapeHtml(app.name)} ${verb === "created" ? "created" : verb === "rotated" ? "secret rotated" : "secret revealed"}</h2>
+        <p><strong>${verb === "revealed" ? "This is the app's current bind secret - keep it private." : "Copy the secret now - it is never shown again."}</strong> Everything else on this page is safe to keep.</p>
         <table><tbody>
           ${kv("Server", `ldaps://${host}:636`)}
           ${kv("Global Catalog", `ldaps://${host}:3269`)}
@@ -5211,6 +5211,7 @@ admin.get("/admin/ldap/:slug", async (c) => {
           <tr><td class="muted">Audit</td><td><a href="/admin/log?search=${encodeURIComponent(app.slug)}&category=ldap">ldap.* events for this app</a></td></tr>
         </tbody></table>
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+          ${revoked || !app.secret_enc ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/reveal"><button type="submit">Reveal secret</button></form>`}
           ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/rotate" onsubmit="return confirm('Rotate the secret? The current one stops working immediately.')"><button type="submit">Rotate secret</button></form>`}
           ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/revoke" onsubmit="return confirm('Revoke ${escapeHtml(app.name)}? Binds and searches stop immediately. This cannot be undone.')"><button class="danger" type="submit">Revoke app</button></form>`}
         </div>
@@ -5240,6 +5241,15 @@ admin.post("/admin/ldap/:slug", async (c) => {
   } catch (e) {
     return consoleError(c, e instanceof Error ? e.message : String(e), 400);
   }
+});
+
+admin.post("/admin/ldap/:slug/reveal", async (c) => {
+  const app = await getLdapAppBySlug(c.env, c.req.param("slug").toLowerCase());
+  if (!app) return consoleError(c, "That LDAP app doesn't exist.", 404);
+  const secret = await revealLdapSecret(c.env, app);
+  if (!secret) return consoleError(c, "This app's secret predates reveal - rotate it once to enable reveal.", 400);
+  await logAudit(c.env, c.get("user"), "ldap.app.secret_revealed", app.slug, {}, c.req.raw);
+  return ldapSecretPage(c, app, secret, await getLdapSettings(c.env), "revealed");
 });
 
 admin.post("/admin/ldap/:slug/rotate", async (c) => {
