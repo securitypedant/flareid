@@ -108,7 +108,9 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   const clientId = url.searchParams.get("client_id");
   const redirectUri = url.searchParams.get("redirect_uri");
   const responseType = url.searchParams.get("response_type");
-  const scope = url.searchParams.get("scope") ?? "openid";
+  // Stored verbatim on the grant rows, so bound it; anything beyond known
+  // scopes releases nothing (effectiveClaimGroups intersects allowed_claims).
+  const scope = (url.searchParams.get("scope") ?? "openid").slice(0, 512);
   const state = url.searchParams.get("state") ?? "";
   const nonce = url.searchParams.get("nonce") ?? undefined;
   const codeChallenge = url.searchParams.get("code_challenge") ?? undefined;

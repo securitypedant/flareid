@@ -29,7 +29,7 @@
     "APP_NAME": "FlareID",
     // Account id for the performance dashboard on the admin overview, read
     // back from Analytics Engine with the CF_ANALYTICS_TOKEN secret. Optional.
-    "CF_ACCOUNT_ID": "",
+    "CF_ACCOUNT_ID": "f36003e36a2151b8607ef11a5665e16a",
     // The issuer this IdP identifies itself as, in OIDC discovery, every
     // id_token and the SAML metadata. Relying parties must match it exactly.
     // Empty: worked out at runtime (src/lib/issuer.ts) - the origin first-run
