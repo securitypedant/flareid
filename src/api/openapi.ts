@@ -76,6 +76,7 @@ export const TAGS = [
   { name: "Status", description: "Instance status and first-run setup." },
   { name: "Users", description: "People in the directory." },
   { name: "Groups", description: "Static and dynamic (rule-based) groups." },
+  { name: "Access", description: "Access requests and certification campaigns over group membership." },
   { name: "Directory", description: "Bulk import and reset." },
   { name: "Domains", description: "UPN domains." },
   { name: "Schemas", description: "User and group attribute schemas." },

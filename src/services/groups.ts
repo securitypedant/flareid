@@ -34,6 +34,8 @@ export interface GroupInput {
   schemaId: number | null;
   /** Values for the group schema's attributes; only those are kept. */
   custom: Record<string, string>;
+  /** Whether people may ask for membership on My account (static groups only). */
+  requestable: boolean;
 }
 
 function checkName(input: GroupInput, existingName: string | null): void {
@@ -52,8 +54,8 @@ export async function createGroup(ctx: ServiceCtx, input: GroupInput, memberIds:
   if (await ctx.env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(input.name).first()) {
     throw new ServiceError(409, `A group named "${input.name}" already exists.`);
   }
-  const result = await ctx.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes) VALUES (?, ?, ?, ?, ?)")
-    .bind(input.name, input.description || null, input.rule, input.schemaId, JSON.stringify(input.custom))
+  const result = await ctx.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes, requestable) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(input.name, input.description || null, input.rule, input.schemaId, JSON.stringify(input.custom), input.requestable && !input.rule ? 1 : 0)
     .run();
   const id = Number(result.meta.last_row_id);
   if (memberIds.length > 0) {
@@ -91,12 +93,13 @@ export async function updateGroup(ctx: ServiceCtx, id: number, input: GroupInput
   const members = input.rule ? [] : (memberIds ?? before.map((b) => b.user_id));
 
   await ctx.env.DB.batch([
-    ctx.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ? WHERE id = ?").bind(
+    ctx.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ?, requestable = ? WHERE id = ?").bind(
       input.name,
       input.description || null,
       input.rule,
       input.schemaId,
       JSON.stringify(input.custom),
+      input.requestable && !input.rule ? 1 : 0,
       id
     ),
     // A dynamic group holds no explicit rows; a static one holds exactly this set.

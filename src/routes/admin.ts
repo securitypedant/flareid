@@ -32,6 +32,7 @@ import { logAudit } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
+import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -449,6 +450,11 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
     .map(([key, href, label]) => {
       const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
       // A section's pages are listed only while you are in that section.
+      if (key === "groups" && active === "groups") {
+        return link + [["groups", "/admin/groups", "Groups"], ["access", "/admin/access", "Access"]]
+          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "groups") === k ? " active" : ""}">${l}</a>`)
+          .join("");
+      }
       if (key === "overview" && active === "overview") {
         return link + [["dashboard", "/admin", "Dashboard"], ["performance", "/admin/performance", "Performance"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "dashboard") === k ? " active" : ""}">${l}</a>`)
@@ -2011,6 +2017,10 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
                  <p class="muted" style="margin-top:-8px;">Current members are listed below, where they can be removed.</p>`
               : remoteMultiSelect("user_ids", "/admin/users/lookup", [], "Search people...")
           }
+          <label style="display:flex; align-items:flex-start; gap:8px; font-weight:500; margin-top:14px;">
+            <input type="checkbox" name="requestable" value="1" ${group?.requestable ? "checked" : ""} style="width:auto; margin:3px 0 0;" />
+            <span>People can request membership<br/><span class="muted" style="font-weight:400;">The group shows up under My account &rarr; Access requests, and an admin approves or denies each ask.</span></span>
+          </label>
         </div>
 
       `)}
@@ -2060,7 +2070,8 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
   const schemaAttrs = schemaId ? await getSchemaAttributes(c.env, schemaId) : [];
   // Conform: only the schema's attributes are kept.
   const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
-  return { name, description, rule, userIds, addUserIds, schemaId, custom };
+  const requestable = !dynamic && String(body.requestable ?? "") === "1";
+  return { name, description, rule, userIds, addUserIds, schemaId, custom, requestable };
 }
 
 admin.get("/admin/groups", async (c) => {
@@ -2254,6 +2265,255 @@ admin.post("/admin/groups/:id", async (c) => {
 admin.post("/admin/groups/:id/delete", async (c) => {
   await deleteGroup(consoleCtx(c), Number(c.req.param("id")));
   return c.redirect("/admin/groups", 302);
+});
+
+// ---------- Access requests & reviews ----------
+
+const REQUEST_STATUS_LABELS: Record<string, string> = { pending: "Pending", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" };
+const requestBadge = (status: string) =>
+  status === "pending"
+    ? '<span class="badge badge-pending">Pending</span>'
+    : status === "approved"
+      ? '<span class="badge badge-active">Approved</span>'
+      : `<span class="badge badge-disabled">${REQUEST_STATUS_LABELS[status] ?? escapeHtml(status)}</span>`;
+
+const ACCESS_CRUMBS: Breadcrumb[] = [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: "Access", href: "/admin/access" }];
+
+admin.get("/admin/access", async (c) => {
+  const statusFilter = c.req.query("status") ?? "pending";
+  const [requests, campaigns] = await Promise.all([listAccessRequests(c.env, statusFilter === "all" ? undefined : statusFilter), listCampaigns(c.env)]);
+  const { n: pendingCount } = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE status = 'pending'").first<{ n: number }>()) ?? { n: 0 };
+  return c.html(
+    layout(
+      c,
+      "Access",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <div class="card-head">
+          <h2>Requests${pendingCount ? ` <span class="badge badge-pending">${pendingCount}</span>` : ""}</h2>
+          <form method="GET">
+            <select name="status" data-autosubmit style="margin-bottom:0; width:auto;">
+              ${[["pending", "Pending"], ["all", "All"], ["approved", "Approved"], ["denied", "Denied"], ["cancelled", "Withdrawn"]]
+                .map(([v, l]) => `<option value="${v}" ${v === statusFilter ? "selected" : ""}>${l}</option>`)
+                .join("")}
+            </select>
+          </form>
+        </div>
+        <p class="muted">People ask for a group from My account when the group allows requests. Approving adds them like editing the group does.</p>
+        ${
+          requests.length === 0
+            ? `<p class="muted">No ${statusFilter === "pending" ? "requests waiting for a decision" : statusFilter === "all" ? "requests yet" : `${statusFilter} requests`}.</p>`
+            : `<table>
+                <thead><tr><th>Person</th><th>Group</th><th>Reason</th><th>Asked</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  ${requests
+                    .map(
+                      (r) => `<tr>
+                        <td><a href="/admin/users/${r.user_id}">${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
+                        <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a></td>
+                        <td class="muted">${escapeHtml(r.reason || "—")}</td>
+                        <td class="muted">${ts(r.created_at)}</td>
+                        <td>${requestBadge(r.status)}${r.status !== "pending" && r.decided_at ? `<br/><span class="muted" style="font-size:12px;">${ts(r.decided_at)}${r.note ? ` · ${escapeHtml(r.note)}` : ""}</span>` : ""}</td>
+                        <td style="white-space:nowrap;">
+                          ${
+                            r.status === "pending"
+                              ? `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
+                                  <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
+                                  <button class="secondary" type="submit" name="decision" value="approved" style="margin:0;">Approve</button>
+                                  <button class="secondary" type="submit" name="decision" value="denied" style="margin:0;">Deny</button>
+                                </form>`
+                              : ""
+                          }
+                        </td>
+                      </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      ${cardSection(`
+        <div class="card-head">
+          <h2>Reviews</h2>
+          <a href="/admin/access/reviews/new"><button class="primary" type="button">+ New review</button></a>
+        </div>
+        <p class="muted">A review certifies the assigned members of chosen groups: every membership is kept or revoked, one by one. Members a rule assigns aren't reviewable - change the rule instead.</p>
+        ${
+          campaigns.length === 0
+            ? '<p class="muted">No reviews yet.</p>'
+            : `<table>
+                <thead><tr><th>Review</th><th>Groups</th><th>Progress</th><th>Status</th><th>Started</th></tr></thead>
+                <tbody>
+                  ${campaigns
+                    .map(
+                      (camp) => `<tr>
+                        <td><a href="/admin/access/reviews/${camp.id}">${escapeHtml(camp.name)}</a></td>
+                        <td class="muted">${JSON.parse(camp.group_ids).length}</td>
+                        <td>${camp.items - camp.pending} / ${camp.items}</td>
+                        <td><span class="badge ${camp.status === "open" ? "badge-pending" : "badge-disabled"}">${camp.status === "open" ? "Open" : "Closed"}</span></td>
+                        <td class="muted">${ts(camp.created_at)}</td>
+                      </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      `,
+      ACCESS_CRUMBS
+    )
+  );
+});
+
+admin.get("/admin/access/reviews/new", async (c) => {
+  const { results: groups } = await c.env.DB.prepare(
+    `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count
+     FROM groups g WHERE g.rule = '' OR g.rule IS NULL ORDER BY g.name`
+  ).all<GroupRow & { member_count: number }>();
+  return c.html(
+    layout(
+      c,
+      "New review",
+      `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      <form method="POST" action="/admin/access/reviews">
+        ${cardSection(`
+          <p class="sub">A review snapshots the chosen groups' assigned members and asks an admin to keep or revoke each one.</p>
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required placeholder="Quarterly contractors review" />
+          <label>Groups to review</label>
+          ${
+            groups.length === 0
+              ? '<p class="muted">No static groups to review.</p>'
+              : `<div style="max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:10px 14px;">
+                  ${groups
+                    .map(
+                      (g) => `<label style="display:flex; align-items:center; gap:8px; font-weight:500; margin:6px 0;">
+                        <input type="checkbox" name="group_ids" value="${g.id}" style="width:auto; margin:0;" />
+                        ${escapeHtml(g.name)} <span class="muted" style="font-weight:400;">· ${g.member_count} member${g.member_count === 1 ? "" : "s"}</span>
+                      </label>`
+                    )
+                    .join("")}
+                </div>`
+          }
+        `)}
+        <div class="form-actions end" style="margin-bottom:18px;">
+          ${cancelLink("/admin/access")}
+          <button class="primary" type="submit">Start review</button>
+        </div>
+      </form>
+      `,
+      [...ACCESS_CRUMBS, { label: "New review" }]
+    )
+  );
+});
+
+admin.get("/admin/access/reviews/:id", async (c) => {
+  const campaign = await getCampaign(c.env, Number(c.req.param("id")));
+  if (!campaign) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const items = await campaignItems(c.env, campaign.id);
+  const pending = items.filter((i) => i.decision === "pending").length;
+  const decisionBadge = (d: string) =>
+    d === "pending" ? '<span class="badge badge-pending">Pending</span>' : d === "certify" ? '<span class="badge badge-active">Kept</span>' : '<span class="badge badge-disabled">Revoked</span>';
+  return c.html(
+    layout(
+      c,
+      campaign.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <div class="row between" style="margin:0 0 8px 0; align-items:flex-start;">
+          <p class="muted" style="margin:0;">${items.length - pending} of ${items.length} memberships decided${pending ? `, ${pending} to go` : ""}.</p>
+          <span class="badge ${campaign.status === "open" ? "badge-pending" : "badge-disabled"}">${campaign.status === "open" ? "Open" : "Closed"}</span>
+        </div>
+        ${
+          campaign.status === "open"
+            ? `<form method="POST" action="/admin/access/reviews/${campaign.id}/close" style="margin:0 0 6px 0;" ${confirmAttrs(
+                `Closing ends the review: ${pending} membership${pending === 1 ? "" : "s"} still pending stay as they are and count as unreviewed.`,
+                { title: `Close "${campaign.name}"?`, action: "Close review" }
+              )}>
+                <button class="secondary" type="submit">Close review</button>
+              </form>`
+            : ""
+        }
+        <table>
+          <thead><tr><th>Person</th><th>Group</th><th>Decision</th><th></th></tr></thead>
+          <tbody>
+            ${items
+              .map(
+                (i) => `<tr>
+                  <td><a href="/admin/users/${i.user_id}">${escapeHtml(i.upn)}</a><br/><span class="muted">${escapeHtml(i.display_name)}</span></td>
+                  <td><a href="/admin/groups/${i.group_id}">${escapeHtml(i.group_name)}</a></td>
+                  <td>${decisionBadge(i.decision)}${i.decided_at ? `<br/><span class="muted" style="font-size:12px;">${ts(i.decided_at)}</span>` : ""}</td>
+                  <td style="white-space:nowrap;">
+                    ${
+                      i.decision === "pending" && campaign.status === "open"
+                        ? `<form method="POST" action="/admin/access/reviews/${campaign.id}/items/${i.id}" style="display:flex; gap:6px; margin:0;">
+                            <button class="secondary" type="submit" name="decision" value="certify" style="margin:0;">Keep</button>
+                            <button class="danger" type="submit" name="decision" value="revoke" style="margin:0;" ${confirmAttrs(
+                              `Removes ${i.upn} from "${i.group_name}" immediately.`,
+                              { title: `Revoke ${i.display_name}'s membership?`, action: "Revoke", danger: true }
+                            )}>Revoke</button>
+                          </form>`
+                        : ""
+                    }
+                  </td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `)}
+      `,
+      [...ACCESS_CRUMBS, { label: campaign.name }]
+    )
+  );
+});
+
+admin.post("/admin/access/requests/:id", async (c) => {
+  const body = await c.req.parseBody();
+  const decision = String(body.decision ?? "") === "approved" ? "approved" : "denied";
+  try {
+    await decideAccessRequest(consoleCtx(c), Number(c.req.param("id")), decision, String(body.note ?? ""));
+  } catch (e) {
+    return c.redirect(`/admin/access?status=pending&error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  return c.redirect("/admin/access?status=pending&saved=1", 302);
+});
+
+admin.post("/admin/access/reviews", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const ids = (Array.isArray(body.group_ids) ? body.group_ids : body.group_ids === undefined ? [] : [body.group_ids]).map(Number);
+  try {
+    const campaign = await createCampaign(consoleCtx(c), String(body.name ?? ""), ids);
+    return c.redirect(`/admin/access/reviews/${campaign.id}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/access/reviews/new?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/access/reviews/:id/close", async (c) => {
+  const id = Number(c.req.param("id"));
+  try {
+    await closeCampaign(consoleCtx(c), id);
+  } catch (e) {
+    return c.redirect(`/admin/access?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  return c.redirect(`/admin/access/reviews/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/access/reviews/:id/items/:itemId", async (c) => {
+  const id = Number(c.req.param("id"));
+  const decision = String((await c.req.parseBody()).decision ?? "") === "revoke" ? "revoke" : "certify";
+  try {
+    await decideCertItem(consoleCtx(c), id, Number(c.req.param("itemId")), decision);
+  } catch (e) {
+    return c.redirect(`/admin/access/reviews/${id}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  return c.redirect(`/admin/access/reviews/${id}?saved=1`, 302);
 });
 
 /** Test / Sync buttons on the Integrations page - data-scim="test|sync". */

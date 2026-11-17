@@ -19,8 +19,26 @@ provisioner's own stable id (SCIM `externalId`), unique when present.
 upstream identity provider) and `federated_identities`, the links binding an
 upstream subject to a local account; the new `federation` permission area is
 granted to every role already managing SAML or clients.
+**Migration `0038_access_governance.sql`** - `groups.requestable` plus
+`access_requests`, `cert_campaigns` and `cert_items`, the tables behind
+access requests and membership reviews.
 
 ### Added
+
+- **Access requests and certification campaigns.** A static group can be
+  marked requestable (a checkbox in the group editor, `requestable` in the
+  API): it then appears on My account, where anyone can ask for membership
+  with a reason, and a groups admin approves or denies from the new Groups →
+  Access queue - an approval writes the membership exactly like editing the
+  group does, so SCIM pushes and the admin-role-group guards ride along.
+  Reviews certify assigned membership periodically: a campaign snapshots the
+  chosen groups' explicit members and asks an admin to keep or revoke each
+  one, closing with the undecided left as they were. Dynamic groups are
+  neither requestable nor reviewable - their membership follows a rule, not
+  a grant, so change the rule instead. API: `GET|POST
+  /api/v1/access/requests/{id}`, `GET` the queue, and `GET|POST
+  /api/v1/access/campaigns` plus `/{id}`, `/{id}/close` and
+  `/{id}/items/{item_id}`.
 
 - **Inbound federation.** People can sign in *through* an upstream identity
   provider - FlareID as the OIDC relying party and SAML service provider,

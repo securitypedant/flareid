@@ -82,6 +82,7 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/users/import", "import"],
   ["/admin/groups/import", "import"],
   ["/admin/users", "users"],
+  ["/admin/access", "groups"],
   ["/admin/groups", "groups"],
   ["/admin/domains", "domains"],
   ["/admin/schemas", "schemas"],

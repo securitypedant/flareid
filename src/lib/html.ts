@@ -304,6 +304,7 @@ const STYLES = `
   .badge-active { background: var(--fi-green-soft); color: var(--fi-green); border-color: #bbf7d0; }
   .badge-disabled { background: var(--fi-red-soft); color: var(--fi-red); border-color: #fecaca; }
   .badge-revoked { background: var(--fi-red-soft); color: var(--fi-red); border-color: #fecaca; }
+  .badge-pending { background: var(--fi-accent-soft); color: var(--fi-amber); border-color: #fed7aa; }
   .badge-admin { background: var(--fi-accent-soft); color: var(--fi-amber); border-color: #fed7aa; }
   .pill {
     display: inline-block; background: var(--fi-line-soft); color: var(--fi-body); border: 1px solid var(--fi-line);

@@ -43,6 +43,8 @@ import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from ".
 import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
+import { cancelAccessRequest, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
+import { consoleCtx } from "../services/context.js";
 
 export const account = new Hono<{ Bindings: Env }>();
 
@@ -101,6 +103,8 @@ const SAVED_MESSAGES: Record<string, string> = {
   "kba-enabled": "Security questions are set: you can answer them when you sign in.",
   "kba-changed": "Your security questions have been changed.",
   "kba-removed": "Your security questions have been removed.",
+  "access-requested": "Your request is in - an administrator will take a look.",
+  "access-cancelled": "Your request has been withdrawn.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -152,6 +156,7 @@ account.get("/account", async (c) => {
   const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
   const factors = enrolled.filter((_, i) => usable[i]);
   const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
+  const [requestable, myRequests] = await Promise.all([requestableGroups(c.env, user.id), myAccessRequests(c.env, user.id)]);
   const kbaCard = (await securityQuestionsAvailable(c.env))
     ? c.get("access").isAdmin
       ? adminSecurityQuestionsCard(user, c.req.query("kba_error") ?? "")
@@ -217,6 +222,59 @@ account.get("/account", async (c) => {
         <h2>Groups</h2>
         ${groups.length > 0 ? groups.map((g) => `<span class="pill">${escapeHtml(g)}</span>`).join("") : '<p class="muted">No group memberships</p>'}
       `)}
+
+      ${
+        requestable.length || myRequests.length
+          ? cardSection(`
+        <h2>Access requests</h2>
+        ${
+          requestable.length
+            ? `<p class="muted">Ask to join a group - an administrator approves or denies each request.</p>
+               <form method="POST" action="/account/access/request">
+                 <div class="field-row">
+                   <div>
+                     <label for="access_group_id">Group</label>
+                     <select id="access_group_id" name="group_id" required>
+                       ${requestable.map((g) => `<option value="${g.id}">${escapeHtml(g.name)}${g.description ? ` — ${escapeHtml(g.description)}` : ""}</option>`).join("")}
+                     </select>
+                   </div>
+                   <div>
+                     <label for="access_reason">Reason (optional)</label>
+                     <input type="text" id="access_reason" name="reason" maxlength="500" placeholder="Why you need it" />
+                   </div>
+                 </div>
+                 <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Request access</button></div>
+               </form>`
+            : ""
+        }
+        ${
+          myRequests.length
+            ? `<table style="${requestable.length ? "margin-top:16px;" : ""}">
+                 <thead><tr><th>Group</th><th>Asked</th><th>Status</th><th></th></tr></thead>
+                 <tbody>
+                   ${myRequests
+                     .map(
+                       (r) => `<tr>
+                         <td>${escapeHtml(r.group_name)}${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
+                         <td class="muted">${ts(r.created_at)}</td>
+                         <td><span class="badge ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
+                           r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
+                         }</td>
+                         <td>${
+                           r.status === "pending"
+                             ? `<form method="POST" action="/account/access/requests/${r.id}/cancel"><button class="link-button" type="submit">Withdraw</button></form>`
+                             : ""
+                         }</td>
+                       </tr>`
+                     )
+                     .join("")}
+                 </tbody>
+               </table>`
+            : ""
+        }
+      `)
+          : ""
+      }
 
       <h2 class="section-title">Security</h2>
       <p class="muted" id="second-factors">${
@@ -523,6 +581,25 @@ account.post("/account/profile", async (c) => {
     if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).then(() => undefined));
   }
   return c.redirect("/account?saved=profile", 302);
+});
+
+account.post("/account/access/request", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await requestAccess(consoleCtx(c), Number(body.group_id), String(body.reason ?? ""));
+  } catch (e) {
+    return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
+  }
+  return c.redirect("/account?saved=access-requested", 302);
+});
+
+account.post("/account/access/requests/:id/cancel", async (c) => {
+  try {
+    await cancelAccessRequest(consoleCtx(c), Number(c.req.param("id")));
+  } catch (e) {
+    return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
+  }
+  return c.redirect("/account?saved=access-cancelled", 302);
 });
 
 account.post("/account/devices/:id/revoke", async (c) => {

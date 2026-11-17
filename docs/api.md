@@ -767,6 +767,47 @@ link, by UPN/email adoption, or by JIT. The JIT account's domain is
 default domain; usernames get a numeric suffix on collision. `DELETE` drops
 the provider and its identity links - the local accounts stay.
 
+### `GET /access/requests`, `POST /access/requests/{id}`
+
+Scope: `groups:read` (reads) / `groups:write` (decisions).
+
+The queue behind My account's "Request access" card. People ask for a static
+group that allows requests (`requestable` on the group); `GET` defaults to
+the pending ones and `status` filters (`pending`, `approved`, `denied`,
+`cancelled`, `all`). `POST .../{id}` decides one still waiting:
+
+```json
+{ "decision": "approved", "note": "welcome aboard" }
+```
+
+An approval writes the membership exactly like `POST /groups/{id}/members`
+does - the SCIM push and the admin-role-group guard ride along, so approving
+into a role-granting group needs `*` just like the members endpoint.
+
+### `GET|POST /access/campaigns`, `GET /access/campaigns/{id}`, `POST /access/campaigns/{id}/close`, `POST /access/campaigns/{id}/items/{item_id}`
+
+Scope: `groups:read` (reads) / `groups:write` (writes).
+
+Certification campaigns: a periodic review of who should keep a group. `POST
+/access/campaigns` starts one over a set of group ids:
+
+```json
+{ "name": "Q1 contractors review", "group_ids": [12, 15] }
+```
+
+Every assigned membership of the named static groups becomes a review item,
+snapshotted at creation - a member added later is not under review, and a
+dynamic group in scope contributes nothing (its membership follows a rule,
+so change the rule instead). `GET .../{id}` returns the campaign plus its
+items; each pending item is decided with:
+
+```json
+{ "decision": "certify" }
+```
+
+`"revoke"` removes the member immediately. `POST .../{id}/close` ends the
+review; items still pending keep their membership and count as unreviewed.
+
 ### `POST /api-keys`
 
 Scope: `admin`.

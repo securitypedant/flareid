@@ -67,6 +67,8 @@ export interface GroupRow {
   rule: string;
   schema_id: number | null;
   custom_attributes: string; // JSON object of schema attribute values
+  /** Whether people may ask for membership on My account (static groups only). */
+  requestable: number;
 }
 
 export interface OAuthClientRow {

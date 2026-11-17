@@ -124,8 +124,11 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     IdP cert with audience/recipient/issuer/window checks, address-adoption
     or JIT account creation, "Continue with" buttons riding the sealed
     login flow, Integrations → Federation + /api/v1/federation/idps)
-36. **Access requests and certification campaigns**: request/approve flows for
-    group membership, periodic access reviews.
+~~36. **Access requests and certification campaigns**: request/approve flows
+    for group membership, periodic access reviews.~~ (done - requestable
+    static groups on My account, the Groups → Access queue deciding them
+    through the same membership write an edit makes, campaigns snapshotting
+    assigned members for keep-or-revoke review, and /api/v1/access/*)
 37. **Machine grants**: `client_credentials` service tokens (signed JWTs,
     verified against `/jwks.json`) and the RFC 8628 device authorization
     grant for keyboard-less clients.

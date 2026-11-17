@@ -6,6 +6,7 @@ import { GroupSchema, IdParam, Paging, PasswordPolicySchema, SchemaAttributeInpu
 // shares the user query with the list below).
 import { selectUsers } from "../api/users.js";
 import "../api/groups.js";
+import "../api/access.js";
 import "../api/applications.js";
 import "../api/settings.js";
 import "../api/monitoring.js";

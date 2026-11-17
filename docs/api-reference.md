@@ -11,6 +11,7 @@ API version 4.0.0.
 - [Status](#status) - Instance status and first-run setup.
 - [Users](#users) - People in the directory.
 - [Groups](#groups) - Static and dynamic (rule-based) groups.
+- [Access](#access) - Access requests and certification campaigns over group membership.
 - [Directory](#directory) - Bulk import and reset.
 - [Domains](#domains) - UPN domains.
 - [Schemas](#schemas) - User and group attribute schemas.
@@ -527,6 +528,7 @@ Request body:
 | `rule` | GroupRule | no | A dynamic group's membership rule: every condition must hold. |
 | `members` | string[] | no | Usernames, for a static group. |
 | `description` | string | no |  |
+| `requestable` | boolean | no | Whether people may ask for membership on My account; only a static group can be. |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The group schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Group schema attribute values; on PATCH, merged into the current ones. |
@@ -595,6 +597,7 @@ Request body:
 | `name` | string | no |  |
 | `rule` | GroupRule | no | A dynamic group's membership rule: every condition must hold. |
 | `description` | string | no |  |
+| `requestable` | boolean | no | Whether people may ask for membership on My account; only a static group can be. |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The group schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Group schema attribute values; on PATCH, merged into the current ones. |
@@ -614,6 +617,7 @@ Response `200`:
 | `attributes` | map of string | yes |  |
 | `member_count` | number | yes |  |
 | `explicit_member_count` | number | yes |  |
+| `requestable` | boolean | yes | Whether people may ask for membership on My account (static groups only). |
 
 Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
@@ -707,6 +711,173 @@ Response `200`:
 | `ok` | true | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+## Access
+
+Access requests and certification campaigns over group membership.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/access/requests` | `groups:read` | List access requests |
+| `POST` | `/api/v1/access/requests/{id}` | `groups:write` | Approve or deny an access request |
+| `GET` | `/api/v1/access/campaigns` | `groups:read` | List certification campaigns |
+| `POST` | `/api/v1/access/campaigns` | `groups:write` | Start a certification campaign |
+| `GET` | `/api/v1/access/campaigns/{id}` | `groups:read` | Get a campaign and its review items |
+| `POST` | `/api/v1/access/campaigns/{id}/close` | `groups:write` | Close a campaign |
+| `POST` | `/api/v1/access/campaigns/{id}/items/{item_id}` | `groups:write` | Certify or revoke a membership under review |
+
+### `GET /api/v1/access/requests`
+
+List access requests.
+
+Defaults to requests still waiting; `status` filters, `all` lists every request.
+
+Permission: `groups:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `status` | query | no | "pending" \\| "approved" \\| "denied" \\| "cancelled" \\| "all" |
+| `limit` | query | no | Default 100, at most 500. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `requests` | AccessRequest[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/access/requests/{id}`
+
+Approve or deny an access request.
+
+An approval adds the requester to the group exactly like a membership edit does. Touching an admin role group needs `*`.
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `decision` | "approved" \| "denied" | yes |  |
+| `note` | string | no |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `request` | AccessRequest | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
+
+### `GET /api/v1/access/campaigns`
+
+List certification campaigns.
+
+Permission: `groups:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `campaigns` | AccessCampaign[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/access/campaigns`
+
+Start a certification campaign.
+
+Every assigned membership of the named groups becomes a review item, snapshotted at creation. Dynamic groups in scope contribute nothing.
+
+Permission: `groups:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `group_ids` | integer[] | yes |  |
+
+Response `201`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `campaign` | AccessCampaign | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `GET /api/v1/access/campaigns/{id}`
+
+Get a campaign and its review items.
+
+Permission: `groups:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `campaign` | AccessCampaign | yes |  |
+| `items` | AccessCertItem[] | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/access/campaigns/{id}/close`
+
+Close a campaign.
+
+Items still pending keep their membership and count as unreviewed.
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/access/campaigns/{id}/items/{item_id}`
+
+Certify or revoke a membership under review.
+
+`revoke` removes the member from the group immediately. Touching an admin role group needs `*`.
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric campaign id. |
+| `item_id` | path | yes | Numeric review item id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `decision` | "certify" \| "revoke" | yes |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `item` | AccessCertItem | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
 ## Directory
 
