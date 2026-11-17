@@ -619,19 +619,31 @@ admin.get("/admin/performance", async (c) => {
         <div id="live-chart" style="display:flex;gap:1px;align-items:flex-end;height:64px;"></div>
         <p class="muted" style="margin:8px 0 0;">Requests per minute, last 30 minutes - refreshes every 10s. <span id="live-spans"></span></p>${scriptTag(PERFORMANCE_LIVE_SCRIPT)}`)}
       ${
-        spans && spans.length
+        series.configured
           ? cardSection(`<h2>Where the time goes</h2><p class="muted">Instrumented operations inside requests (lib/metrics.ts spans), last ${range.label.toLowerCase()}.</p>
-        <table><thead><tr><th>Operation</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>p95 ms</th></tr></thead><tbody>
+        ${
+          spans === null
+            ? `<p class="muted">Could not read the flareid_spans dataset - check CF_ANALYTICS_TOKEN and that the deploy included the METRICS_SPANS binding.</p>`
+            : spans.length
+              ? `<table><thead><tr><th>Operation</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>p95 ms</th></tr></thead><tbody>
           ${spans.map((s) => `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${s.calls.toLocaleString("en")}</td><td>${s.totalMs.toLocaleString("en")}</td><td>${s.avgMs}</td><td>${s.p95}</td></tr>`).join("")}
-        </tbody></table>`)
+        </tbody></table>`
+              : `<p class="muted">No spans recorded yet - they appear here a minute or two after traffic flows through instrumented operations.</p>`
+        }`)
           : ""
       }
       ${
-        events && events.length
+        series.configured
           ? cardSection(`<h2>Security events</h2><p class="muted">Audited actions counted as they happen, last ${range.label.toLowerCase()}.</p>
-        <table><thead><tr><th>Action</th><th>Count</th></tr></thead><tbody>
+        ${
+          events === null
+            ? `<p class="muted">Could not read the flareid_spans dataset - check CF_ANALYTICS_TOKEN and that the deploy included the METRICS_SPANS binding.</p>`
+            : events.length
+              ? `<table><thead><tr><th>Action</th><th>Count</th></tr></thead><tbody>
           ${events.slice(0, 15).map((e) => `<tr><td><code>${escapeHtml(e.name)}</code></td><td>${e.count.toLocaleString("en")}</td></tr>`).join("")}
-        </tbody></table>`)
+        </tbody></table>`
+              : `<p class="muted">No events recorded yet - sign-ins, token grants, LDAP binds and admin changes land here as they happen.</p>`
+        }`)
           : ""
       }
       ${cardSection(`<h2>By endpoint</h2>
