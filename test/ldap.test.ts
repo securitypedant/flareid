@@ -158,7 +158,7 @@ function client(ip = "203.0.113.9") {
 let appSecret = "";
 const SLUG = "grafana";
 
-async function setupLdap(opts: { mfaMode?: string } = {}) {
+async function setupLdap(opts: { mfaMode?: "password" | "otp_if_enrolled" | "otp_required" } = {}) {
   const { apiKey } = await bootstrapInstance();
   await enableLdap(env);
   const { app, secret } = await writeLdapApp(env, { slug: SLUG, name: "Grafana", mfa_mode: opts.mfaMode ?? "password" });

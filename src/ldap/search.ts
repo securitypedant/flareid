@@ -60,12 +60,14 @@ export async function executeSearch(ctx: SearchCtx, op: SearchOp): Promise<Searc
     return { code: RC.invalidDNSyntax, matchedDn: "", diagnostic: "invalid base DN", entries: [], total: 0, typesOnly: op.typesOnly };
   }
 
-  // Anonymous connections read the root DSE and the subschema, nothing else.
+  // The root DSE and the subschema are readable in every bind state - clients
+  // (e.g. Directory Studio) fetch both after binding to discover the schema.
+  if (baseRdns.length === 0 && op.scope !== 1) return { code: RC.success, matchedDn: "", diagnostic: "", entries: [select(rootDse(settings), op)], total: 1, typesOnly: op.typesOnly };
+  if (baseRdns.length === 1 && baseRdns[0]!.type === "cn" && baseRdns[0]!.value.toLowerCase() === "subschema") {
+    return { code: RC.success, matchedDn: "", diagnostic: "", entries: [select(subschemaEntry(), op)], total: 1, typesOnly: op.typesOnly };
+  }
+  // Anonymous connections read nothing else.
   if (ctx.bound.kind === "anonymous") {
-    if (baseRdns.length === 0 && op.scope !== 1) return { code: RC.success, matchedDn: "", diagnostic: "", entries: [select(rootDse(settings), op)], total: 1, typesOnly: op.typesOnly };
-    if (baseRdns.length === 1 && baseRdns[0]!.type === "cn" && baseRdns[0]!.value.toLowerCase() === "subschema") {
-      return { code: RC.success, matchedDn: "", diagnostic: "", entries: [select(subschemaEntry(), op)], total: 1, typesOnly: op.typesOnly };
-    }
     return { code: RC.insufficientAccessRights, matchedDn: "", diagnostic: "anonymous searches read the root DSE only", entries: [], total: 0, typesOnly: op.typesOnly };
   }
   if (!ctx.app) return { code: RC.insufficientAccessRights, matchedDn: "", diagnostic: "no app context", entries: [], total: 0, typesOnly: op.typesOnly };
