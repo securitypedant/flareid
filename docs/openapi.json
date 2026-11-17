@@ -5109,8 +5109,8 @@
         "tags": [
           "SCIM"
         ],
-        "summary": "Read the SCIM configuration",
-        "description": "Whether a secret is set, never the secret.",
+        "summary": "Read the first SCIM target's configuration",
+        "description": "The legacy single-target view: the first target in the list. Whether a secret is set, never the secret. `/api/v1/scim/targets` lists them all.",
         "security": [
           {
             "bearer": []
@@ -5199,8 +5199,8 @@
         "tags": [
           "SCIM"
         ],
-        "summary": "Set the SCIM endpoint, secret, scope and tuning",
-        "description": "A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
+        "summary": "Set the first SCIM target's endpoint, secret, scope and tuning",
+        "description": "The legacy single-target view: updates the first target (creating one named Default when none exists). `POST /api/v1/scim/targets` and `/api/v1/scim/targets/{id}` manage them all. A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
         "security": [
           {
             "bearer": []
@@ -5301,6 +5301,648 @@
           },
           "403": {
             "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scim/targets": {
+      "get": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "List outbound SCIM targets",
+        "description": "One row per downstream SCIM server, each with its own endpoint, credential (write-only), scope and tuning.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "targets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "number"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "endpoint": {
+                            "type": "string"
+                          },
+                          "secret_set": {
+                            "type": "boolean"
+                          },
+                          "scope": {
+                            "type": "object",
+                            "properties": {
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "all",
+                                  "selected"
+                                ]
+                              },
+                              "group_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            "required": [
+                              "mode",
+                              "group_ids"
+                            ]
+                          },
+                          "tuning": {
+                            "type": "object",
+                            "properties": {
+                              "pace_ms": {
+                                "type": "number"
+                              },
+                              "members_per_request": {
+                                "type": "number"
+                              },
+                              "sync_batch": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "pace_ms",
+                              "members_per_request",
+                              "sync_batch"
+                            ]
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "endpoint",
+                          "secret_set",
+                          "scope",
+                          "tuning",
+                          "enabled"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "targets"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "Add an outbound SCIM target",
+        "description": "One target per downstream SCIM server. `name` is unique; `secret` is write-only.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "all",
+                          "selected"
+                        ]
+                      },
+                      "group_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  "tuning": {
+                    "type": "object",
+                    "properties": {
+                      "pace_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      "members_per_request": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500
+                      },
+                      "sync_batch": {
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 500
+                      }
+                    },
+                    "required": [
+                      "pace_ms",
+                      "members_per_request",
+                      "sync_batch"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "endpoint"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scim/targets/{id}": {
+      "get": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "Read one SCIM target",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "endpoint": {
+                      "type": "string"
+                    },
+                    "secret_set": {
+                      "type": "boolean"
+                    },
+                    "scope": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "all",
+                            "selected"
+                          ]
+                        },
+                        "group_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "group_ids"
+                      ]
+                    },
+                    "tuning": {
+                      "type": "object",
+                      "properties": {
+                        "pace_ms": {
+                          "type": "number"
+                        },
+                        "members_per_request": {
+                          "type": "number"
+                        },
+                        "sync_batch": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "pace_ms",
+                        "members_per_request",
+                        "sync_batch"
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "endpoint",
+                    "secret_set",
+                    "scope",
+                    "tuning",
+                    "enabled"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "Change a SCIM target",
+        "description": "Fields not supplied keep their values; a blank secret keeps the stored credential. A changed scope re-evaluates everything already pushed, after the response.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "all",
+                          "selected"
+                        ]
+                      },
+                      "group_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  "tuning": {
+                    "type": "object",
+                    "properties": {
+                      "pace_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      "members_per_request": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500
+                      },
+                      "sync_batch": {
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 500
+                      }
+                    },
+                    "required": [
+                      "pace_ms",
+                      "members_per_request",
+                      "sync_batch"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "SCIM"
+        ],
+        "summary": "Remove a SCIM target",
+        "description": "Links, push state and queued deprovisions go with it; the objects already created downstream are left there.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "scim:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12033,13 +12675,29 @@
         "tags": [
           "SCIM"
         ],
-        "summary": "Test the SCIM connection",
+        "summary": "Test a SCIM connection",
+        "description": "`target_id` picks the target; without it the first enabled one.",
         "security": [
           {
             "bearer": []
           }
         ],
         "x-permission": "scim:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_id": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -12105,13 +12763,28 @@
           "SCIM"
         ],
         "summary": "Push the next batch of users, then the groups",
-        "description": "Call again until `complete` is true.",
+        "description": "Call again until `complete` is true. `target_id` picks the target; without it the first enabled one.",
         "security": [
           {
             "bearer": []
           }
         ],
         "x-permission": "scim:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_id": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",

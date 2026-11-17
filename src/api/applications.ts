@@ -2,7 +2,7 @@ import { z } from "@hono/zod-openapi";
 import { isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.js";
 import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
-import { getScimConfig, getScimScope } from "../lib/settings.js";
+import { getScimTarget, listScimTargets, type ScimTarget } from "../lib/scim-targets.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { apiCtx } from "../services/context.js";
@@ -258,18 +258,60 @@ defineRoute(
 // SCIM
 // ---------------------------------------------------------------------------
 
+/** One target as the API sees it: the secret is write-only, reported only as set/unset. */
+function targetJson(t: ScimTarget) {
+  return {
+    id: t.id,
+    name: t.name,
+    endpoint: t.endpoint,
+    secret_set: Boolean(t.secret),
+    scope: { mode: t.scope.mode, group_ids: t.scope.groupIds },
+    tuning: { pace_ms: t.paceMs, members_per_request: t.membersPerRequest, sync_batch: t.syncBatchSize },
+    enabled: t.enabled,
+  };
+}
+
+const ScimTargetSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  endpoint: z.string(),
+  secret_set: z.boolean(),
+  scope: z.object({ mode: z.enum(["all", "selected"]), group_ids: z.array(z.number()) }),
+  tuning: z.object({ pace_ms: z.number(), members_per_request: z.number(), sync_batch: z.number() }),
+  enabled: z.boolean(),
+});
+
+/** The first target, for the legacy single-target /scim/config view. */
+async function defaultTarget(env: ApiContext["env"]): Promise<ScimTarget | null> {
+  return (await listScimTargets(env)).sort((a, b) => a.id - b.id)[0] ?? null;
+}
+
 defineRoute(
   {
     method: "get",
     path: "/api/v1/scim/config",
     tag: "SCIM",
     permission: "scim:read",
-    summary: "Read the SCIM configuration",
-    description: "Whether a secret is set, never the secret.",
+    summary: "Read the first SCIM target's configuration",
+    description: "The legacy single-target view: the first target in the list. Whether a secret is set, never the secret. `/api/v1/scim/targets` lists them all.",
     response: z.object({ endpoint: z.string(), secret_set: z.boolean(), scope: z.object({ mode: z.enum(["all", "selected"]), group_ids: z.array(z.number()) }) }),
   },
   async (c) => {
-    const [config, scope] = await Promise.all([getScimConfig(c.env), getScimScope(c.env)]);
-    return c.json({ endpoint: config.endpoint, secret_set: Boolean(config.secret), scope: { mode: scope.mode, group_ids: scope.groupIds } });
+    const t = await defaultTarget(c.env);
+    return c.json({ endpoint: t?.endpoint ?? "", secret_set: Boolean(t?.secret), scope: { mode: t?.scope.mode ?? "all", group_ids: t?.scope.groupIds ?? [] } });
+  }
+);
+
+defineRoute({
+  method: "get", path: "/api/v1/scim/targets", tag: "SCIM", permission: "scim:read", summary: "List outbound SCIM targets",
+  description: "One row per downstream SCIM server, each with its own endpoint, credential (write-only), scope and tuning.",
+  response: z.object({ targets: z.array(ScimTargetSchema) }),
+}, async (c) => c.json({ targets: (await listScimTargets(c.env)).map(targetJson) }));
+
+defineRoute(
+  { method: "get", path: "/api/v1/scim/targets/{id}", tag: "SCIM", permission: "scim:read", summary: "Read one SCIM target", params: IdParam, errors: [404], response: ScimTargetSchema },
+  async (c) => {
+    const t = await getScimTarget(c.env, Number(c.req.param("id")));
+    return t ? c.json(targetJson(t)) : notFound(c, "No such SCIM target.");
   }
 );

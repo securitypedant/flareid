@@ -11,7 +11,7 @@ import { adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "./
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule, userMatchesRule, type GroupRule } from "./groups.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
-import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroups, drainScimDeprovisionQueue } from "./scim-client.js";
+import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroupsAllTargets, scimDeprovisionStatementsForMany, drainScimDeprovisionQueue } from "./scim-client.js";
 import { setUserEmails, UserEmailError } from "./user-emails.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -242,21 +242,23 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(keepGroups).all<GroupRow>();
 
   // The remote ids are queued in the same batch as the deletion: once the
-  // rows are gone they are the only way to find these objects downstream.
-  const now = new Date().toISOString();
+  // rows (and their links) are gone, the queue is the only way to find these
+  // objects downstream.
   const queue = [
-    ...doomed.filter((u) => u.scim_id).map((u) => env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES ('user', ?, ?, ?)").bind(u.scim_id, u.upn, now)),
-    ...doomedGroups.filter((g) => g.scim_id).map((g) => env.DB.prepare("INSERT OR IGNORE INTO scim_deprovision_queue (kind, scim_id, label, queued_at) VALUES ('group', ?, ?, ?)").bind(g.scim_id, g.name, now)),
+    ...(await scimDeprovisionStatementsForMany(env, "user", doomed.map((u) => ({ id: u.id, label: u.upn })))),
+    ...(await scimDeprovisionStatementsForMany(env, "group", doomedGroups.map((g) => ({ id: g.id, label: g.name })))),
   ];
+  const linkedUsers = new Set(queue.length ? (await env.DB.prepare("SELECT user_id AS id FROM scim_user_links WHERE user_id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(doomed.map((u) => u.id))).all<{ id: number }>()).results.map((r) => r.id) : []);
+  const linkedGroups = new Set(queue.length ? (await env.DB.prepare("SELECT group_id AS id FROM scim_group_links WHERE group_id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(doomedGroups.map((g) => g.id))).all<{ id: number }>()).results.map((r) => r.id) : []);
   await env.DB.batch([
     ...queue,
     ...(doomed.length > 0 ? deleteUserStatements(env, ...doomed.map((r) => r.id)) : []),
     env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`).bind(keepGroups),
   ]);
 
-  // Returned so the caller can remove them from the SCIM server too: once the
-  // rows are gone, their scim_ids are the only way to find them there.
-  return { users: doomed.filter((u) => u.scim_id), groups: doomedGroups.filter((g) => g.scim_id) };
+  // Returned so the caller knows remote DELETEs are queued: the linked rows
+  // are gone after this, their queued remote ids are what survives.
+  return { users: doomed.filter((u) => linkedUsers.has(u.id)), groups: doomedGroups.filter((g) => linkedGroups.has(g.id)) };
 }
 
 export interface ImportOptions {
@@ -741,7 +743,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     // Re-pushing the whole directory for a one-person import took minutes.
     // A large import (or a replace) still re-pushes everything.
     const affected = bundle.mode === "replace" || touchedUserIds.length > SCIM_TARGETED_LIMIT ? undefined : await affectedGroupIds(env, groupsBefore, touchedUserIds, groups.map((g) => cleanString(g.name)));
-    const { groups: groupsPushed, groupErrors } = await syncGroups(env, affected);
+    const { groups: groupsPushed, groupErrors } = await syncGroupsAllTargets(env, affected);
     scim.groups_pushed = groupsPushed - groupErrors;
     scim.errors += groupErrors;
     result.scim = scim;

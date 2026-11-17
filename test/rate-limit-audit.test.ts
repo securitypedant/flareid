@@ -171,7 +171,7 @@ describe("directory import and SCIM", () => {
     });
     expect(first.status).toBe(200);
     expect(first.body.scim).toMatchObject({ users_pushed: 1, errors: 0 });
-    expect((await env.DB.prepare("SELECT scim_id FROM users WHERE username = 'una'").first<{ scim_id: string | null }>())?.scim_id).toBeTruthy();
+    expect((await env.DB.prepare("SELECT l.scim_id FROM scim_user_links l JOIN users u ON u.id = l.user_id WHERE u.username = 'una'").first<{ scim_id: string | null }>())?.scim_id).toBeTruthy();
 
     const replaced = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, mode: "replace", users: [], groups: [] } });
     expect(replaced.status).toBe(200);

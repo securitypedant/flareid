@@ -79,31 +79,31 @@ describe("storing the SCIM endpoint", () => {
 
     const good = await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "tok-1" } });
     expect(good.status).toBe(200);
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe("tok-1");
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("tok-1");
 
     // A blank secret keeps the stored one; clearing the endpoint removes it.
     await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "" } });
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe("tok-1");
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("tok-1");
     await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "" } });
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe("");
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("");
   });
 
   it("the console refuses an invalid endpoint with an inline error", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
     const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
     const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    const res = await SELF.fetch(`${BASE}/admin/scim`, {
+    const res = await SELF.fetch(`${BASE}/admin/scim/targets`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie },
-      body: new URLSearchParams({ endpoint: "https://10.0.0.5/scim", secret: "x" }).toString(),
+      body: new URLSearchParams({ name: "Bad", endpoint: "https://10.0.0.5/scim", secret: "x" }).toString(),
       redirect: "manual",
     });
     expect(res.status).toBe(302);
     const location = res.headers.get("Location")!;
-    expect(location).toContain("/admin/integrations/scim?error=");
+    expect(location).toContain("/admin/integrations/scim/new?error=");
     // The refused write stores nothing, and the error is shown on the page.
     const page = await (await SELF.fetch(`${BASE}${location}`, { headers: { Cookie: cookie } })).text();
     expect(page).toContain("private");
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_endpoint'").first<{ value: string }>())!.value).toBe("");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_targets").first<{ n: number }>()).toEqual({ n: 0 });
   });
 });

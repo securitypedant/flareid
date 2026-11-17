@@ -4,6 +4,38 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+**Migration `0034_scim_targets.sql`** - `scim_targets` (one row per downstream
+SCIM server) plus the per-target link tables `scim_user_links` /
+`scim_group_links`; the existing single-target settings and `scim_id` columns
+seed the first target, and `scim_group_state`, `scim_group_members` and
+`scim_deprovision_queue` are rebuilt keyed by target.
+
+### Added
+
+- **Outbound SCIM is multi-target.** FlareID can push users and groups to
+  several SCIM servers at once - Cloudflare Access and Google Workspace side
+  by side, or a second Access account for a different org slice - each with
+  its own name, endpoint, write-only credential, sync scope and push tuning,
+  the same shape the OIDC client and SAML service-provider lists already
+  have. The Integrations → SCIM page becomes a target list with per-target
+  detail pages (connection, scope, tuning, test & sync, delete), and the API
+  gains `GET|POST /api/v1/scim/targets` and `GET|PATCH|DELETE
+  /api/v1/scim/targets/{id}`; `POST /api/v1/scim/config` keeps working as the
+  single-target view over the first target. Test and sync take an optional
+  `target_id`, syncs stay single-flight per target, and pushes fan out: every
+  enabled target gets the write, each paced by its own tuning. Deletion queues
+  a downstream deprovision per target the object was linked to; deleting a
+  target drops its links and queue but leaves the remote objects.
+
+### Fixed
+
+- **A stale push can no longer resurrect a deleted object.** With the move to
+  per-target link tables (cascaded on delete), a push working from a row
+  captured before a deletion now verifies the user or group still exists
+  before creating it downstream.
+
 ## [4.0.0] - 2026-11-17
 
 **Migration `0032_user_emails.sql`** - `user_emails`, the per-account contact

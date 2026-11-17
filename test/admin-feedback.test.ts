@@ -200,7 +200,7 @@ describe("admin console navigation and pages", () => {
     expect(summaryHtml).toContain("Cloudflare Access");
     expect(summaryHtml).toContain("1 registered");
     expect(summaryHtml).toContain("test-suite"); // the bootstrap helper's admin key
-    expect(summaryHtml).toContain("Not configured"); // SCIM
+    expect(summaryHtml).toContain("0 targets"); // SCIM
 
     for (const [path, title] of [
       ["/admin/integrations/oidc", "OIDC clients"],

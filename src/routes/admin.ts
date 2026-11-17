@@ -29,7 +29,7 @@ import {
   validatePassword,
 } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
-import { getScimConfig, getScimScope, getScimTuning, setScimConfig, setScimTuning } from "../lib/settings.js";
+import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -56,7 +56,7 @@ import { importDirectory, ImportValidationError, type DirectoryBundle } from "..
 import { allLocales } from "../lib/i18n.js";
 import { getEmailSettings, isEmailConfigured, isEmailEnabled, recipientFor } from "../lib/email.js";
 import { deleteUserStatements, listActiveSessionsForUser } from "../lib/sessions.js";
-import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
+import { deleteGroupScim, deleteUserScim, syncAll, testScimConnection, drainScimDeprovisionQueue, scimDeprovisionStatementsForMany } from "../lib/scim-client.js";
 import { CLAIM_GROUP_LABELS, CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata } from "../lib/saml/sp-metadata.js";
 import { API_SCOPES, createApiKey, isApiScope, listApiKeys, parseScopes, type ApiKeyRow, type ApiScope } from "../lib/api-keys.js";
@@ -933,8 +933,8 @@ async function removeSampleDirectoryData(c: { env: Env; get: (k: "user") => User
   // ids queued in the same batch; downstream DELETEs drain from the queue.
   const sampleUserIds = sampleUsers.map((u) => u.id);
   await c.env.DB.batch([
-    ...sampleUsers.filter((u) => u.scim_id).map((u) => queueScimDeprovision(c.env, "user", u.scim_id!, u.upn)),
-    ...sampleGroups.filter((g) => g.scim_id).map((g) => queueScimDeprovision(c.env, "group", g.scim_id!, g.name)),
+    ...(await scimDeprovisionStatementsForMany(c.env, "user", sampleUsers.map((u) => ({ id: u.id, label: u.upn })))),
+    ...(await scimDeprovisionStatementsForMany(c.env, "group", sampleGroups.map((g) => ({ id: g.id, label: g.name })))),
     ...(sampleUserIds.length > 0 ? deleteUserStatements(c.env, ...sampleUserIds) : []),
     c.env.DB.prepare("DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(keepGroups),
   ]);
@@ -1436,13 +1436,17 @@ admin.get("/admin/users/:id", async (c) => {
   // The record exactly as the API and provisioning syncs see it: the row plus
   // its parsed attributes, addresses and memberships - never the credential
   // material (hashes, salts, TOTP secrets).
-  const { password_hash: _ph, password_salt: _ps, password_iterations: _pi, totp_secret: _ts, totp_last_counter: _tc, ...publicRow } = user;
+  const { password_hash: _ph, password_salt: _ps, password_iterations: _pi, totp_secret: _ts, totp_last_counter: _tc, scim_id: _si, ...publicRow } = user;
   const userEmails = await listUserEmails(c.env, id);
+  const { results: scimLinks } = await c.env.DB.prepare(
+    "SELECT t.name AS target, l.scim_id FROM scim_user_links l JOIN scim_targets t ON t.id = l.target_id WHERE l.user_id = ? ORDER BY t.name"
+  ).bind(id).all<{ target: string; scim_id: string }>();
   const rawUserJson = JSON.stringify(
     {
       ...publicRow,
       custom_attributes: JSON.parse(user.custom_attributes || "{}"),
       emails: userEmails.map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 })),
+      ...(scimLinks.length ? { scim: Object.fromEntries(scimLinks.map((l) => [l.target, l.scim_id])) } : {}),
       groups: {
         static: groups.filter((g) => memberGroupIds.has(g.id) && !parseRule(g.rule)).map((g) => g.name),
         dynamic: dynamicGroups.map((g) => g.name),
@@ -2233,6 +2237,7 @@ document.addEventListener("click", async function (e) {
   const btn = e.target.closest("[data-scim]");
   if (!btn) return;
   const kind = btn.dataset.scim;
+  const tq = btn.dataset.scimTarget ? "?target=" + encodeURIComponent(btn.dataset.scimTarget) : "";
   const status = document.getElementById("scim-status");
   const original = btn.textContent;
   btn.disabled = true;
@@ -2242,7 +2247,7 @@ document.addEventListener("click", async function (e) {
   p.style.marginTop = "12px";
   try {
     if (kind === "test") {
-      const data = await (await fetch("/admin/scim/test", { method: "POST" })).json();
+      const data = await (await fetch("/admin/scim/test" + tq, { method: "POST" })).json();
       p.className = data.ok ? "success" : "error";
       p.textContent = data.message;
     } else {
@@ -2261,7 +2266,7 @@ document.addEventListener("click", async function (e) {
       let users = 0, userErrors = 0, first = true, data;
       do {
         const t0 = Date.now();
-        const res = await fetch("/admin/scim/sync" + (first ? "?restart=1" : ""), { method: "POST" });
+        const res = await fetch("/admin/scim/sync" + tq + (first ? (tq ? "&" : "?") + "restart=1" : ""), { method: "POST" });
         if (!res.ok) { line("Stopped: the server answered " + res.status + ". Press Sync all now to carry on from here."); throw new Error("HTTP " + res.status); }
         data = await res.json();
         first = false;
@@ -2336,24 +2341,16 @@ function summaryCard(opts: { title: string; count: string; rows: string[]; empty
 }
 
 admin.get("/admin/integrations", async (c) => {
-  const [{ results: clients }, { results: sps }, apiKeys, scim, scope, ldapApps, ldapSettings] = await Promise.all([
+  const [{ results: clients }, { results: sps }, apiKeys, scimTargets, ldapApps, ldapSettings] = await Promise.all([
     c.env.DB.prepare("SELECT id, name, client_id FROM oauth_clients ORDER BY name").all<Pick<OAuthClientRow, "id" | "name" | "client_id">>(),
     c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers ORDER BY name").all<Pick<SamlServiceProviderRow, "id" | "name" | "entity_id">>(),
     listApiKeys(c.env),
-    getScimConfig(c.env),
-    getScimScope(c.env),
+    listScimTargets(c.env),
     listLdapApps(c.env),
     getLdapSettings(c.env),
   ]);
   const activeKeys = apiKeys.filter((k) => !k.revoked_at);
   const revokedKeys = apiKeys.length - activeKeys.length;
-  const scimConfigured = Boolean(scim.endpoint && scim.secret);
-  let scimHost = "";
-  try {
-    scimHost = scim.endpoint ? new URL(scim.endpoint).host : "";
-  } catch {
-    scimHost = scim.endpoint;
-  }
 
   return c.html(
     layout(
@@ -2390,13 +2387,11 @@ admin.get("/admin/integrations", async (c) => {
         })}
         ${summaryCard({
           title: "SCIM provisioning",
-          count: `<span class="badge ${scimConfigured ? "badge-active" : "badge-disabled"}">${scimConfigured ? "Configured" : "Not configured"}</span>`,
-          rows: scimConfigured
-            ? [
-                `<tr><td>Endpoint</td><td><code>${escapeHtml(scimHost)}</code></td></tr>`,
-                `<tr><td>Scope</td><td>${scope.mode === "all" ? "All groups" : `${scope.groupIds.length} selected group${scope.groupIds.length === 1 ? "" : "s"}`}</td></tr>`,
-              ]
-            : [],
+          count: `${scimTargets.length} target${scimTargets.length === 1 ? "" : "s"}`,
+          rows: scimTargets.map(
+            (t) =>
+              `<tr><td><a href="/admin/integrations/scim/${t.id}">${escapeHtml(t.name)}</a></td><td><code>${escapeHtml(scimHost(t.endpoint) || "—")}</code></td>${t.enabled ? "" : '<td><span class="badge badge-disabled">Disabled</span></td>'}</tr>`
+          ),
           empty: "Users and groups are not being pushed anywhere.",
           manage: "scim",
         })}
@@ -2596,15 +2591,12 @@ admin.get("/admin/integrations/api-keys", async (c) => {
   );
 });
 
-admin.get("/admin/integrations/scim", async (c) => {
-  const config = await getScimConfig(c.env);
-  const scope = await getScimScope(c.env);
-  const tuning = await getScimTuning(c.env);
-  // The last SCIM events (syncs, failures, scope changes), newest last, as the log's starting content.
-  const { results: scimEvents } = await c.env.DB.prepare(
+/** The last SCIM events (syncs, failures, scope changes), newest last, as the log's starting content. */
+async function scimLogTail(env: Env): Promise<string> {
+  const { results: scimEvents } = await env.DB.prepare(
     "SELECT at, actor_upn, action, target, details FROM audit_log WHERE action LIKE 'scim.%' ORDER BY id DESC LIMIT 15"
   ).all<{ at: string; actor_upn: string | null; action: string; target: string | null; details: string | null }>();
-  const scimLog = scimEvents
+  return scimEvents
     .reverse()
     .map((e) => {
       const d = e.details ? (JSON.parse(e.details) as Record<string, unknown>) : {};
@@ -2615,7 +2607,27 @@ admin.get("/admin/integrations/scim", async (c) => {
       return `[${e.at.slice(0, 19).replace("T", " ")}] ${summary}${e.actor_upn ? ` (${e.actor_upn})` : ""}`;
     })
     .join("\n");
-  const { results: scopeGroups } = await c.env.DB.prepare("SELECT * FROM groups ORDER BY name").all<GroupRow>();
+}
+
+/** A target's endpoint reduced to its host, for list displays. */
+function scimHost(endpoint: string): string {
+  try {
+    return endpoint ? new URL(endpoint).host : "";
+  } catch {
+    return endpoint;
+  }
+}
+
+admin.get("/admin/integrations/scim", async (c) => {
+  const targets = await listScimTargets(c.env);
+  // Per-target pushed counts for the list (one grouped query each way).
+  const [{ results: userCounts }, { results: groupCounts }] = await Promise.all([
+    c.env.DB.prepare("SELECT target_id, COUNT(*) AS n FROM scim_user_links GROUP BY target_id").all<{ target_id: number; n: number }>(),
+    c.env.DB.prepare("SELECT target_id, COUNT(*) AS n FROM scim_group_links GROUP BY target_id").all<{ target_id: number; n: number }>(),
+  ]);
+  const usersBy = new Map(userCounts.map((r) => [r.target_id, r.n]));
+  const groupsBy = new Map(groupCounts.map((r) => [r.target_id, r.n]));
+  const scimLog = await scimLogTail(c.env);
   return c.html(
     layout(
       c,
@@ -2624,37 +2636,139 @@ admin.get("/admin/integrations/scim", async (c) => {
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        ${integrationIntro("FlareID acts as a SCIM 2.0 <em>client</em>, pushing users and groups to a SCIM server &mdash; for example the endpoint and secret Cloudflare generates once you enable SCIM on this IdP's Access identity provider.")}
-        <form method="POST" action="/admin/scim">
+        ${integrationIntro("FlareID acts as a SCIM 2.0 <em>client</em>, pushing users and groups to one or more SCIM servers &mdash; for example the endpoint and secret Cloudflare generates once you enable SCIM on this IdP's Access identity provider. Each target has its own scope and push tuning.", { href: "/admin/integrations/scim/new", label: "+ New target" })}
+        ${
+          targets.length === 0
+            ? '<p class="muted">No SCIM targets yet &mdash; users and groups are not being pushed anywhere.</p>'
+            : `<table>
+                <thead><tr><th>Name</th><th>Endpoint</th><th>Scope</th><th>Pushed</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${targets
+                    .map(
+                      (t) =>
+                        `<tr${t.enabled ? "" : ' style="opacity:.55;"'}>
+                          <td><a href="/admin/integrations/scim/${t.id}">${escapeHtml(t.name)}</a></td>
+                          <td><code>${escapeHtml(scimHost(t.endpoint) || "—")}</code></td>
+                          <td>${t.scope.mode === "all" ? "All groups" : `${t.scope.groupIds.length} group${t.scope.groupIds.length === 1 ? "" : "s"}`}</td>
+                          <td class="muted">${usersBy.get(t.id) ?? 0} user${(usersBy.get(t.id) ?? 0) === 1 ? "" : "s"}, ${groupsBy.get(t.id) ?? 0} group${(groupsBy.get(t.id) ?? 0) === 1 ? "" : "s"}</td>
+                          <td><span class="badge ${t.enabled ? "badge-active" : "badge-disabled"}">${t.enabled ? "Enabled" : "Disabled"}</span></td>
+                        </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      ${cardSection(`
+        <h2>Sync log</h2>
+        <pre id="scim-log" class="import-log">${escapeHtml(scimLog || "No syncs yet.")}</pre>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SCIM provisioning" }]
+    )
+  );
+});
+
+admin.get("/admin/integrations/scim/new", async (c) => {
+  const { results: scopeGroups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  return c.html(
+    layout(
+      c,
+      "New SCIM target",
+      `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <p class="sub">Each target is one downstream SCIM server with its own credential, scope and push tuning.</p>
+        <form method="POST" action="/admin/scim/targets">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required placeholder="e.g. Cloudflare Access, Google Workspace" />
           <div class="field-row">
             <div>
               <label for="endpoint">SCIM endpoint (base URL)</label>
-              <input type="text" id="endpoint" name="endpoint" value="${escapeHtml(config.endpoint)}" placeholder="https://api.cloudflare.com/client/v4/accounts/&lt;account_id&gt;/access/scim" />
+              <input type="text" id="endpoint" name="endpoint" required placeholder="https://api.cloudflare.com/client/v4/accounts/&lt;account_id&gt;/access/scim" />
             </div>
             <div>
               <label for="secret">SCIM secret</label>
-              <input type="password" id="secret" name="secret" value="" autocomplete="new-password" placeholder="${config.secret ? "Saved - leave blank to keep it" : "Bearer token from Cloudflare"}" />
+              <input type="password" id="secret" name="secret" required autocomplete="new-password" placeholder="Bearer token from the target" />
               <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
             </div>
           </div>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" checked style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; push to this target as soon as it saves</label>
+          <h3 style="margin-top:18px;">Sync scope</h3>
+          <label><input type="radio" name="mode" value="all" checked data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
+          <label><input type="radio" name="mode" value="selected" data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
+          <div id="scim-scope-groups" style="display:none; margin-top:8px;">
+            ${multiSelect("group_ids", scopeGroups.map((g) => ({ id: g.id, label: g.name })), new Set<number>(), "Search groups...")}
+          </div>
+          <div class="form-actions" style="margin-top:16px;">
+            <button class="primary" type="submit">Create target</button>
+            ${cancelLink("/admin/integrations/scim", "Cancel")}
+          </div>
         </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("scim"), { label: "New target" }]
+    )
+  );
+});
+
+admin.get("/admin/integrations/scim/:id", async (c) => {
+  const target = await getScimTarget(c.env, Number(c.req.param("id")));
+  if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const { results: scopeGroups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  const [{ n: pushedUsers }, { n: pushedGroups }, { n: queued }] = await Promise.all([
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_user_links WHERE target_id = ?").bind(target.id).first<{ n: number }>().then((r) => r ?? { n: 0 }),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_group_links WHERE target_id = ?").bind(target.id).first<{ n: number }>().then((r) => r ?? { n: 0 }),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE target_id = ?").bind(target.id).first<{ n: number }>().then((r) => r ?? { n: 0 }),
+  ]);
+  return c.html(
+    layout(
+      c,
+      target.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <div class="row between" style="margin:0 0 14px 0; align-items:flex-start;">
+          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.</p>
+          <span class="badge ${target.enabled ? "badge-active" : "badge-disabled"}">${target.enabled ? "Enabled" : "Disabled"}</span>
+        </div>
+        <form method="POST" action="/admin/scim/targets/${target.id}">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required value="${escapeHtml(target.name)}" />
+          <div class="field-row">
+            <div>
+              <label for="endpoint">SCIM endpoint (base URL)</label>
+              <input type="text" id="endpoint" name="endpoint" value="${escapeHtml(target.endpoint)}" placeholder="https://api.cloudflare.com/client/v4/accounts/&lt;account_id&gt;/access/scim" />
+            </div>
+            <div>
+              <label for="secret">SCIM secret</label>
+              <input type="password" id="secret" name="secret" value="" autocomplete="new-password" placeholder="${target.secret ? "Saved - leave blank to keep it" : "Bearer token from the target"}" />
+              <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
+            </div>
+          </div>
+          <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${target.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled</label>
+          <div class="form-actions end">${cancelLink("/admin/integrations/scim")}<button class="primary" type="submit">Save</button></div>
+        </form>
+        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
+          <form method="POST" action="/admin/scim/targets/${target.id}/delete" ${confirmAttrs(
+            `Deleting "${target.name}" stops pushing to it and forgets which users and groups were pushed. The objects already created on the SCIM server are left there.`,
+            { title: `Delete the SCIM target "${target.name}"?`, action: "Delete target", danger: true }
+          )}>
+            <button class="danger" type="submit">Delete target</button>
+          </form>
+        </div>
       `)}
 
       <div class="two-col">
         ${cardSection(`
           <h2>Sync scope</h2>
           <p class="muted">Push everyone, or only members of specific groups. Users and groups outside scope are removed from the SCIM server if they had previously been synced.</p>
-          <form method="POST" action="/admin/scim/scope">
-            <label><input type="radio" name="mode" value="all" ${scope.mode === "all" ? "checked" : ""} data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
-            <label><input type="radio" name="mode" value="selected" ${scope.mode === "selected" ? "checked" : ""} data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
-            <div id="scim-scope-groups" style="display:${scope.mode === "selected" ? "block" : "none"}; margin-top:8px;">
-              ${multiSelect(
-                "group_ids",
-                scopeGroups.map((g) => ({ id: g.id, label: g.name })),
-                new Set(scope.groupIds),
-                "Search groups..."
-              )}
+          <form method="POST" action="/admin/scim/targets/${target.id}/scope">
+            <label><input type="radio" name="mode" value="all" ${target.scope.mode === "all" ? "checked" : ""} data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
+            <label><input type="radio" name="mode" value="selected" ${target.scope.mode === "selected" ? "checked" : ""} data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
+            <div id="scim-scope-groups" style="display:${target.scope.mode === "selected" ? "block" : "none"}; margin-top:8px;">
+              ${multiSelect("group_ids", scopeGroups.map((g) => ({ id: g.id, label: g.name })), new Set(target.scope.groupIds), "Search groups...")}
             </div>
             <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save scope</button></div>
           </form>
@@ -2662,19 +2776,19 @@ admin.get("/admin/integrations/scim", async (c) => {
         ${cardSection(`
           <h2>Sync tuning</h2>
           <p class="muted">How hard to push against this SCIM server. Receivers backed by a single object (Cloudflare Access's endpoint is) reject large bodies and dense requests - lower both if syncs come back with errors.</p>
-          <form method="POST" action="/admin/scim/tuning">
+          <form method="POST" action="/admin/scim/targets/${target.id}/tuning">
             <div class="field-row">
               <div>
                 <label for="pace_ms">Pause between requests (ms)</label>
-                <input type="number" id="pace_ms" name="pace_ms" min="0" max="10000" step="50" value="${tuning.paceMs}" />
+                <input type="number" id="pace_ms" name="pace_ms" min="0" max="10000" step="50" value="${target.paceMs}" />
               </div>
               <div>
                 <label for="members_per_request">Members per group request</label>
-                <input type="number" id="members_per_request" name="members_per_request" min="1" max="500" value="${tuning.membersPerRequest}" />
+                <input type="number" id="members_per_request" name="members_per_request" min="1" max="500" value="${target.membersPerRequest}" />
               </div>
             </div>
             <label for="sync_batch">Users per sync batch</label>
-            <input type="number" id="sync_batch" name="sync_batch" min="10" max="500" value="${tuning.syncBatchSize}" style="max-width:220px;" />
+            <input type="number" id="sync_batch" name="sync_batch" min="10" max="500" value="${target.syncBatchSize}" style="max-width:220px;" />
             <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save tuning</button></div>
           </form>
         `)}
@@ -2682,18 +2796,18 @@ admin.get("/admin/integrations/scim", async (c) => {
           <h2>Test &amp; sync</h2>
           <p class="muted">Test the connection, then push every in-scope user and group. New and changed users and groups are pushed automatically from then on.</p>
           <div class="row" style="justify-content:flex-start; gap:10px;">
-            <button class="secondary" type="button" id="scim-test-btn" data-scim="test">Test connection</button>
-            <button class="primary" type="button" id="scim-sync-btn" data-scim="sync">Sync all now</button>
+            <button class="secondary" type="button" data-scim="test" data-scim-target="${target.id}" ${target.enabled ? "" : "disabled"}>Test connection</button>
+            <button class="primary" type="button" data-scim="sync" data-scim-target="${target.id}" ${target.enabled ? "" : "disabled"}>Sync all now</button>
           </div>
           <div id="scim-status"></div>
           <h3 style="margin-top:18px;">Sync log</h3>
-          <pre id="scim-log" class="import-log">${escapeHtml(scimLog || "No syncs yet.")}</pre>
+          <pre id="scim-log" class="import-log">${escapeHtml(await scimLogTail(c.env) || "No syncs yet.")}</pre>
         `)}
       </div>
 
       ${scriptTag(SCIM_SCRIPT)}
       `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SCIM provisioning" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("scim"), { label: target.name }]
     )
   );
 });
@@ -5097,32 +5211,65 @@ admin.post("/admin/security/audit-retention", async (c) => {
 
 // ---------- SCIM (push users/groups to e.g. Cloudflare Access) ----------
 
-admin.post("/admin/scim", async (c) => {
+function scimScopeFrom(body: Record<string, unknown>): { mode: "all" | "selected"; groupIds: number[] } {
+  return {
+    mode: body.mode === "selected" ? "selected" : "all",
+    groupIds: Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [],
+  };
+}
+
+const scimTargetUrl = (id: number, extra = "") => `/admin/integrations/scim/${id}${extra}`;
+
+admin.post("/admin/scim/targets", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  try {
+    const t = await createScimTarget(c.env, {
+      name: String(body.name ?? ""),
+      endpoint: String(body.endpoint ?? ""),
+      secret: String(body.secret ?? ""),
+      scope: scimScopeFrom(body),
+      paceMs: 200,
+      membersPerRequest: 50,
+      syncBatchSize: 50,
+      enabled: body.enabled === "1",
+    });
+    await logAudit(c.env, c.get("user"), "settings.scim_target_created", t.name, undefined, c.req.raw);
+    return c.redirect(scimTargetUrl(t.id, "?saved=1"), 302);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/scim/new?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/scim/targets/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const target = await getScimTarget(c.env, id);
+  if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody();
   const endpoint = String(body.endpoint ?? "").trim();
   // The field renders write-only: blank keeps the stored secret, and clearing
-  // the endpoint removes the configuration - and its credential - entirely.
-  const posted = String(body.secret ?? "").trim();
-  const secret = endpoint === "" ? "" : posted || (await getScimConfig(c.env)).secret;
+  // the endpoint removes the credential with it.
+  const secret = endpoint === "" ? "" : String(body.secret ?? "").trim();
   try {
-    await setScimConfig(c.env, { endpoint, secret });
+    await updateScimTarget(c.env, id, { name: String(body.name ?? ""), endpoint, secret, enabled: body.enabled === "1" });
   } catch (e) {
-    return c.redirect(`/admin/integrations/scim?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+    return c.redirect(`${scimTargetUrl(id)}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
   }
-  await logAudit(c.env, c.get("user"), "settings.scim_config_changed", undefined, undefined, c.req.raw);
-  return c.redirect("/admin/integrations/scim?saved=1", 302);
+  await logAudit(c.env, c.get("user"), "settings.scim_target_changed", target.name, undefined, c.req.raw);
+  return c.redirect(scimTargetUrl(id, "?saved=1"), 302);
 });
 
-admin.post("/admin/scim/scope", async (c) => {
+admin.post("/admin/scim/targets/:id/scope", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!(await getScimTarget(c.env, id))) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody({ all: true });
-  const mode = body.mode === "selected" ? "selected" : "all";
-  const groupIds = Array.isArray(body.group_ids) ? body.group_ids.map(Number) : body.group_ids ? [Number(body.group_ids)] : [];
-  // Re-evaluates everything already pushed against the new scope (services/scim-sync.ts).
-  await applyScimScope(consoleCtx(c), { mode, groupIds }, (p) => c.executionCtx.waitUntil(p));
-  return c.redirect("/admin/integrations/scim?saved=1", 302);
+  // Re-evaluates everything already pushed to this target against the new scope (services/scim-sync.ts).
+  await applyScimScope(consoleCtx(c), id, scimScopeFrom(body), (p) => c.executionCtx.waitUntil(p));
+  return c.redirect(scimTargetUrl(id, "?saved=1"), 302);
 });
 
-admin.post("/admin/scim/tuning", async (c) => {
+admin.post("/admin/scim/targets/:id/tuning", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!(await getScimTarget(c.env, id))) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody();
   const int = (v: unknown) => {
     const n = Number(v);
@@ -5132,16 +5279,31 @@ admin.post("/admin/scim/tuning", async (c) => {
   const membersPerRequest = int(body.members_per_request);
   const syncBatchSize = int(body.sync_batch);
   if (!(paceMs >= 0 && paceMs <= 10_000) || !(membersPerRequest >= 1 && membersPerRequest <= 500) || !(syncBatchSize >= 10 && syncBatchSize <= 500)) {
-    return c.redirect("/admin/integrations/scim?error=Tuning values out of range.", 302);
+    return c.redirect(`${scimTargetUrl(id)}?error=${encodeURIComponent("Tuning values out of range.")}`, 302);
   }
-  await setScimTuning(c.env, { paceMs, membersPerRequest, syncBatchSize });
-  await logAudit(c.env, c.get("user"), "settings.scim_tuning_changed", undefined, { paceMs, membersPerRequest, syncBatchSize }, c.req.raw);
+  await updateScimTarget(c.env, id, { paceMs, membersPerRequest, syncBatchSize });
+  await logAudit(c.env, c.get("user"), "settings.scim_tuning_changed", undefined, { paceMs, membersPerRequest, syncBatchSize, target: id }, c.req.raw);
+  return c.redirect(scimTargetUrl(id, "?saved=1"), 302);
+});
+
+admin.post("/admin/scim/targets/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  const target = await getScimTarget(c.env, id);
+  if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  await deleteScimTarget(c.env, id);
+  await logAudit(c.env, c.get("user"), "settings.scim_target_deleted", target.name, undefined, c.req.raw);
   return c.redirect("/admin/integrations/scim?saved=1", 302);
 });
 
+/** The target the Test / Sync buttons act on: ?target=N, else the first enabled one. */
+function scimTargetParam(c: Context<{ Bindings: Env }>): number | undefined {
+  const n = Number(c.req.query("target"));
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 admin.post("/admin/scim/test", async (c) => {
-  const result = await testScimConnection(c.env);
-  await logAudit(c.env, c.get("user"), "scim.connection_tested", undefined, { ok: result.ok }, c.req.raw);
+  const result = await testScimConnection(c.env, scimTargetParam(c));
+  await logAudit(c.env, c.get("user"), "scim.connection_tested", undefined, { ok: result.ok, target: scimTargetParam(c) }, c.req.raw);
 
   return c.json({
     ok: result.ok,
@@ -5153,9 +5315,9 @@ admin.post("/admin/scim/test", async (c) => {
 
 admin.post("/admin/scim/sync", async (c) => {
   // One batch per request; the page calls again until `complete` (see SCIM_SCRIPT).
-  const summary = await syncAll(c.env, { restart: c.req.query("restart") === "1" });
+  const summary = await syncAll(c.env, { restart: c.req.query("restart") === "1", targetId: scimTargetParam(c) });
   if (summary.complete || summary.userErrors || summary.groupErrors) {
-    await logAudit(c.env, c.get("user"), summary.complete ? "scim.sync_all" : "scim.sync_batch_errors", undefined, { ...summary }, c.req.raw);
+    await logAudit(c.env, c.get("user"), summary.complete ? "scim.sync_all" : "scim.sync_batch_errors", undefined, { ...summary, target: scimTargetParam(c) }, c.req.raw);
   }
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
 });

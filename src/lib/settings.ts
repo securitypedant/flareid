@@ -2,6 +2,10 @@ import type { Env } from "../env.js";
 import type { Brand } from "./brands.js";
 import { generateTempPassword, hashPassword } from "./password.js";
 import { DEFAULT_LOCALE, formatList, isSupportedLocale, SUPPORTED_LOCALES, t, type Locale, type MessageKey } from "./i18n.js";
+import { createScimTarget, listScimTargets, updateScimTarget, validateScimEndpoint, type ScimScope } from "./scim-targets.js";
+
+export { validateScimEndpoint };
+export type { ScimScope };
 
 export interface PasswordPolicy {
   minLength: number;
@@ -39,69 +43,19 @@ export interface ScimConfig {
   secret: string;
 }
 
-/** A literal host (IP or name) on an address the provisioning Bearer must never be sent to. */
-function isLocalAddress(host: string): boolean {
-  if (host === "localhost" || host.endsWith(".localhost")) return true;
-  // IPv6 literals contain ":" (hostnames cannot): loopback, unspecified,
-  // link-local, unique-local, and IPv4-mapped forms.
-  if (host.includes(":")) {
-    if (host === "::1" || host === "::") return true;
-    if (/^fe[89ab]/.test(host)) return true; // fe80::/10 link-local
-    if (/^f[cd]/.test(host)) return true; // fc00::/7 unique-local
-    if (host.startsWith("::ffff:")) {
-      // IPv4-mapped: the parser normalizes ::ffff:1.2.3.4 to ::ffff:hhhh:hhhh.
-      const tail = host.slice(7);
-      if (!tail.includes(":")) return isLocalAddress(tail);
-      const m = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-      if (m) {
-        const hi = parseInt(m[1]!, 16); const lo = parseInt(m[2]!, 16);
-        return isLocalAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-      }
-      return true;
-    }
-    return false;
-  }
-  // IPv4 literals (the URL parser has already normalized hex/octal/integer forms to dotted decimal).
-  const parts = host.split(".");
-  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
-    const a = Number(parts[0]); const b = Number(parts[1]);
-    return (
-      a === 0 || a === 10 || a === 127 || // this-net, private, loopback
-      (a === 100 && b >= 64 && b <= 127) || // CGNAT
-      (a === 169 && b === 254) || // link-local
-      (a === 172 && b >= 16 && b <= 31) || // private
-      (a === 192 && b === 168) || // private
-      (a === 198 && (b === 18 || b === 19)) || // benchmarking
-      a >= 224 // multicast + reserved
-    );
-  }
-  return false;
-}
-
 /**
- * Where the SCIM client pushes the whole directory, with a Bearer credential:
- * an absolute https URL, no embedded credentials/query/fragment, and not a
- * loopback/private/link-local literal address. Returns the problem, or null.
- * (Checked on save, and again on use, so a stale or hand-edited row cannot aim
- * the credentialed fetch at an arbitrary origin.)
+ * The legacy single-target SCIM helpers, now thin wrappers over the first
+ * `scim_targets` row (see lib/scim-targets.ts). `POST /api/v1/scim/config` and
+ * older tests still speak this shape; the console manages every target.
  */
-export function validateScimEndpoint(endpoint: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(endpoint);
-  } catch {
-    return "The SCIM endpoint is not a valid URL.";
-  }
-  if (u.protocol !== "https:") return "The SCIM endpoint must use https.";
-  if (u.username || u.password) return "The SCIM endpoint must not embed credentials.";
-  if (u.search || u.hash) return "The SCIM endpoint must not include a query or fragment.";
-  if (isLocalAddress(u.hostname.toLowerCase().replace(/^\[|\]$/g, ""))) return "The SCIM endpoint must not be a loopback or private address.";
-  return null;
+async function defaultScimTarget(env: Env) {
+  const targets = await listScimTargets(env);
+  return targets.sort((a, b) => a.id - b.id)[0];
 }
 
 export async function getScimConfig(env: Env): Promise<ScimConfig> {
-  const [endpoint, secret] = await Promise.all([getSetting(env, "scim_endpoint"), getSetting(env, "scim_secret")]);
-  return { endpoint: endpoint ?? "", secret: secret ?? "" };
+  const t = await defaultScimTarget(env);
+  return { endpoint: t?.endpoint ?? "", secret: t?.secret ?? "" };
 }
 
 export async function setScimConfig(env: Env, config: ScimConfig): Promise<void> {
@@ -110,36 +64,33 @@ export async function setScimConfig(env: Env, config: ScimConfig): Promise<void>
     const problem = validateScimEndpoint(endpoint);
     if (problem) throw new Error(problem);
   }
-  await Promise.all([
-    setSetting(env, "scim_endpoint", endpoint),
-    setSetting(env, "scim_secret", config.secret.trim()),
-  ]);
-}
-
-export interface ScimScope {
-  mode: "all" | "selected";
-  groupIds: number[];
+  const t = await defaultScimTarget(env);
+  if (!t) {
+    if (endpoint) {
+      await createScimTarget(env, {
+        name: "Default",
+        endpoint,
+        secret: config.secret.trim(),
+        scope: { mode: "all", groupIds: [] },
+        ...SCIM_TUNING_DEFAULTS,
+        enabled: true,
+      });
+    }
+    return;
+  }
+  // Blank secret keeps the stored one; clearing the endpoint drops the
+  // credential with it (both inside updateScimTarget).
+  await updateScimTarget(env, t.id, { endpoint, secret: config.secret.trim() });
 }
 
 export async function getScimScope(env: Env): Promise<ScimScope> {
-  const [mode, idsRaw] = await Promise.all([
-    getSetting(env, "scim_scope_mode"),
-    getSetting(env, "scim_scope_group_ids"),
-  ]);
-  let groupIds: number[] = [];
-  try {
-    groupIds = idsRaw ? JSON.parse(idsRaw) : [];
-  } catch {
-    groupIds = [];
-  }
-  return { mode: mode === "selected" ? "selected" : "all", groupIds };
+  return (await defaultScimTarget(env))?.scope ?? { mode: "all", groupIds: [] };
 }
 
+/** The raw scope write - callers wanting the pushed set re-evaluated use applyScimScope instead. */
 export async function setScimScope(env: Env, scope: ScimScope): Promise<void> {
-  await Promise.all([
-    setSetting(env, "scim_scope_mode", scope.mode),
-    setSetting(env, "scim_scope_group_ids", JSON.stringify(scope.groupIds)),
-  ]);
+  const t = await defaultScimTarget(env);
+  if (t) await updateScimTarget(env, t.id, { scope });
 }
 
 /**
@@ -159,32 +110,14 @@ export interface ScimTuning {
 
 const SCIM_TUNING_DEFAULTS: ScimTuning = { paceMs: 200, membersPerRequest: 50, syncBatchSize: 50 };
 
-const clampInt = (raw: string | null, min: number, max: number, fallback: number): number => {
-  // Number(null) is 0, which can sit inside the range - missing is missing.
-  if (raw === null || raw.trim() === "") return fallback;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
-};
-
 export async function getScimTuning(env: Env): Promise<ScimTuning> {
-  const [pace, members, batch] = await Promise.all([
-    getSetting(env, "scim_pace_ms"),
-    getSetting(env, "scim_members_per_request"),
-    getSetting(env, "scim_sync_batch"),
-  ]);
-  return {
-    paceMs: clampInt(pace, 0, 10_000, SCIM_TUNING_DEFAULTS.paceMs),
-    membersPerRequest: clampInt(members, 1, 500, SCIM_TUNING_DEFAULTS.membersPerRequest),
-    syncBatchSize: clampInt(batch, 10, 500, SCIM_TUNING_DEFAULTS.syncBatchSize),
-  };
+  const t = await defaultScimTarget(env);
+  return t ? { paceMs: t.paceMs, membersPerRequest: t.membersPerRequest, syncBatchSize: t.syncBatchSize } : { ...SCIM_TUNING_DEFAULTS };
 }
 
 export async function setScimTuning(env: Env, tuning: ScimTuning): Promise<void> {
-  await Promise.all([
-    setSetting(env, "scim_pace_ms", String(tuning.paceMs)),
-    setSetting(env, "scim_members_per_request", String(tuning.membersPerRequest)),
-    setSetting(env, "scim_sync_batch", String(tuning.syncBatchSize)),
-  ]);
+  const t = await defaultScimTarget(env);
+  if (t) await updateScimTarget(env, t.id, { paceMs: tuning.paceMs, membersPerRequest: tuning.membersPerRequest, syncBatchSize: tuning.syncBatchSize });
 }
 
 export type NewUserPasswordMode = "default" | "random";

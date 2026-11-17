@@ -1,15 +1,14 @@
 import type { Env } from "../env.js";
-import { deactivateUserScim, pushGroupCurrent, pushUser, pushUsersById, syncGroups } from "../lib/scim-client.js";
-import { getScimConfig, setScimScope, type ScimScope } from "../lib/settings.js";
+import { deactivateUserScim, pushGroupCurrent, pushUser, pushUserToTarget, syncGroups } from "../lib/scim-client.js";
+import { getScimTarget, isScimConfigured, updateScimTarget, type ScimScope } from "../lib/scim-targets.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { audit, type ServiceCtx } from "./context.js";
 
 export async function scimConfigured(env: Env): Promise<boolean> {
-  const { endpoint, secret } = await getScimConfig(env);
-  return !!endpoint && !!secret;
+  return isScimConfigured(env);
 }
 
-/** Best-effort push - never blocks the admin action if SCIM isn't configured or the remote call fails. */
+/** Best-effort push - never blocks the admin action if SCIM isn't configured or a remote call fails. */
 export async function syncUserBestEffort(ctx: ServiceCtx, userId: number, action: "push" | "deactivate" | "delete"): Promise<void> {
   if (!(await scimConfigured(ctx.env))) return;
   const user = await ctx.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>();
@@ -35,24 +34,32 @@ export async function syncGroupBestEffort(ctx: ServiceCtx, groupId: number): Pro
 }
 
 /**
- * Saves which users and groups are provisioned, then re-evaluates everything
- * already pushed against the new scope: users out of scope are deactivated,
- * groups out of scope removed (pushGroup). That runs after the response, via
- * `waitUntil`; failures are audited, as for every other SCIM writer.
+ * Saves a target's provisioning scope, then re-evaluates everything already
+ * pushed to it against the new scope: users out of scope are deactivated,
+ * groups out of scope removed. That runs after the response, via `waitUntil`;
+ * failures are audited, as for every other SCIM writer.
  */
-export async function applyScimScope(ctx: ServiceCtx, scope: ScimScope, waitUntil: (p: Promise<unknown>) => void): Promise<void> {
-  await setScimScope(ctx.env, scope);
-  await audit(ctx, "settings.scim_scope_changed", undefined, { mode: scope.mode, groupIds: scope.groupIds });
-  if (!(await scimConfigured(ctx.env))) return;
-  const { results } = await ctx.env.DB.prepare("SELECT id FROM users WHERE scim_id IS NOT NULL").all<{ id: number }>();
+export async function applyScimScope(ctx: ServiceCtx, targetId: number, scope: ScimScope, waitUntil: (p: Promise<unknown>) => void): Promise<void> {
+  await updateScimTarget(ctx.env, targetId, { scope });
+  const target = await getScimTarget(ctx.env, targetId);
+  if (!target) return;
+  await audit(ctx, "settings.scim_scope_changed", target.name, { mode: scope.mode, groupIds: scope.groupIds });
+  if (!target.enabled || !target.endpoint || !target.secret) return;
+  const { results } = await ctx.env.DB.prepare("SELECT user_id AS id FROM scim_user_links WHERE target_id = ?").bind(target.id).all<{ id: number }>();
   // Without the request: the work outlives it.
   const later: ServiceCtx = { ...ctx, req: undefined };
   waitUntil(
     (async () => {
-      const users = await pushUsersById(ctx.env, results.map((r) => r.id));
-      const groups = await syncGroups(ctx.env);
-      if (!users.ok || groups.groupErrors) {
-        await audit(later, "scim.user_sync_failed", undefined, { action: "scope_changed", error: users.error, group_errors: groups.groupErrors });
+      const errors: string[] = [];
+      for (const { id } of results) {
+        const user = await ctx.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+        if (!user) continue;
+        const r = await pushUserToTarget(ctx.env, target, user);
+        if (!r.ok) errors.push(`${user.upn}: ${r.error ?? r.status}`);
+      }
+      const groups = await syncGroups(ctx.env, target);
+      if (errors.length || groups.groupErrors) {
+        await audit(later, "scim.user_sync_failed", target.name, { action: "scope_changed", error: errors.join("; ").slice(0, 500), group_errors: groups.groupErrors });
       }
     })()
   );

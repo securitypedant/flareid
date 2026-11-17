@@ -24,7 +24,7 @@ export interface UserRow {
   status: "active" | "disabled";
   created_at: string;
   updated_at: string;
-  /** Remote SCIM resource id (e.g. in Cloudflare Access), once pushed there. */
+  /** Legacy single-target remote SCIM resource id - writes moved to scim_user_links; kept for migration history. */
   scim_id: string | null;
   /** Stable UUID, used as the OIDC "id" claim / SCIM externalId, and as the manager reference (instead of email). */
   external_id: string;
@@ -59,6 +59,7 @@ export interface GroupRow {
   id: number;
   name: string;
   description: string | null;
+  /** Legacy single-target remote SCIM resource id - writes moved to scim_group_links; kept for migration history. */
   scim_id: string | null;
   /** JSON dynamic-membership rule (see src/lib/groups.ts) - empty for explicit-only groups. */
   rule: string;

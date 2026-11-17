@@ -2,7 +2,7 @@ import type { Env } from "../env.js";
 import { MAX_RULE_BYTES, MAX_RULE_CONDITIONS, parseRule, userMatchesRule } from "../lib/groups.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { userEditableAttributeNames } from "../lib/schemas.js";
-import { drainScimDeprovisionQueue, pushUsersById, queueScimDeprovision } from "../lib/scim-client.js";
+import { drainScimDeprovisionQueue, pushUsersById, scimDeprovisionStatements } from "../lib/scim-client.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayNameGroup, assertMayTouchGroup } from "./guards.js";
@@ -144,7 +144,7 @@ export async function deleteGroup(ctx: ServiceCtx, id: number): Promise<GroupRow
   const { results: members } = await ctx.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
   // Local first with the remote id queued in the same batch, as for users.
   await ctx.env.DB.batch([
-    ...(group.scim_id ? [queueScimDeprovision(ctx.env, "group", group.scim_id, group.name)] : []),
+    ...(await scimDeprovisionStatements(ctx.env, "group", group.id, group.name)),
     ctx.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
   ]);
   await afterResponse(ctx, async (later) => {

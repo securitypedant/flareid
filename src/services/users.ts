@@ -6,7 +6,7 @@ import { domainExists } from "../lib/domains.js";
 import { recipientFor } from "../lib/email.js";
 import { hashPassword } from "../lib/password.js";
 import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserAttributes } from "../lib/schemas.js";
-import { drainScimDeprovisionQueue, queueScimDeprovision } from "../lib/scim-client.js";
+import { drainScimDeprovisionQueue, scimDeprovisionStatements } from "../lib/scim-client.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { resolveNewAccountPassword } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
@@ -419,7 +419,7 @@ export async function deleteUser(ctx: ServiceCtx, id: number): Promise<UserRow> 
   // Local first, in one batch, and only then the remote delete. The other way
   // round, a local failure (a trusted_devices row the batch didn't cover, once)
   // left the user deleted downstream but alive here.
-  await ctx.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(ctx.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(ctx.env, id)]);
+  await ctx.env.DB.batch([...(await scimDeprovisionStatements(ctx.env, "user", id, user.upn)), ...deleteUserStatements(ctx.env, id)]);
 
   await afterResponse(ctx, async (later) => {
     if (await scimConfigured(later.env)) {

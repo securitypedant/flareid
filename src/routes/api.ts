@@ -1,6 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import { ID_TOKEN_ALGS, isIdTokenAlg, validFrontchannelUri } from "../services/clients.js";
-import { api, apiErrorHandler, AnyObject, badRequest, defineRoute, readJson } from "../api/openapi.js";
+import { api, apiErrorHandler, AnyObject, badRequest, defineRoute, notFound, readJson } from "../api/openapi.js";
 import { GroupSchema, IdParam, Paging, PasswordPolicySchema, SchemaAttributeInput, ServiceProviderSchema, StringMap, UserSchema } from "../api/schemas.js";
 // Each module registers its routes on `api` when imported (users.ts also
 // shares the user query with the list below).
@@ -38,7 +38,8 @@ import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
-import { getAppName, getScimConfig, isSetupCompleted, setScimConfig, setScimTuning } from "../lib/settings.js";
+import { getAppName, isSetupCompleted } from "../lib/settings.js";
+import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
@@ -643,8 +644,9 @@ defineRoute({
 // ---------------------------------------------------------------------------
 
 defineRoute({
-  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the SCIM endpoint, secret, scope and tuning",
-  description: "A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
+  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the first SCIM target's endpoint, secret, scope and tuning",
+  description:
+    "The legacy single-target view: updates the first target (creating one named Default when none exists). `POST /api/v1/scim/targets` and `/api/v1/scim/targets/{id}` manage them all. A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
   body: z.object({
     endpoint: z.string().optional(),
     secret: z.string().optional(),
@@ -654,52 +656,155 @@ defineRoute({
 }, async (c) => {
   const body = await readJson<{ endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] }; tuning?: { pace_ms?: number; members_per_request?: number; sync_batch?: number } }>(c);
 
-  if (body.endpoint !== undefined || body.secret !== undefined) {
-    const endpoint = String(body.endpoint ?? (await getScimConfig(c.env)).endpoint).trim();
-    // A blank secret keeps the stored one (the console's write-only field);
-    // clearing the endpoint removes the credential with it.
-    const secret = endpoint === "" ? "" : String(body.secret ?? "").trim() || (await getScimConfig(c.env)).secret;
+  const existing = (await listScimTargets(c.env)).sort((a, b) => a.id - b.id)[0];
+  if (!existing) {
+    const endpoint = String(body.endpoint ?? "").trim();
+    const secret = String(body.secret ?? "").trim();
+    if (!endpoint || !secret) return c.json(badRequest("endpoint and secret are required to create the first target."), 400);
     try {
-      await setScimConfig(c.env, { endpoint, secret });
+      await createScimTarget(c.env, {
+        name: "Default",
+        endpoint,
+        secret,
+        scope: { mode: body.scope?.mode === "selected" ? "selected" : "all", groupIds: Array.isArray(body.scope?.group_ids) ? body.scope.group_ids.map(Number) : [] },
+        paceMs: body.tuning?.pace_ms ?? 200,
+        membersPerRequest: body.tuning?.members_per_request ?? 50,
+        syncBatchSize: body.tuning?.sync_batch ?? 50,
+        enabled: true,
+      });
     } catch (e) {
       return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
     }
-  }
-  if (body.scope) {
-    // As in the console: what was already pushed is re-evaluated against the new scope.
-    await applyScimScope(apiCtx(c), {
-      mode: body.scope.mode === "selected" ? "selected" : "all",
-      groupIds: Array.isArray(body.scope.group_ids) ? body.scope.group_ids.map(Number) : [],
-    }, (p) => c.executionCtx.waitUntil(p));
-  }
-  if (body.tuning) {
-    await setScimTuning(c.env, {
-      paceMs: body.tuning.pace_ms!,
-      membersPerRequest: body.tuning.members_per_request!,
-      syncBatchSize: body.tuning.sync_batch!,
-    });
+  } else {
+    const updates: Parameters<typeof updateScimTarget>[2] = {};
+    if (body.endpoint !== undefined || body.secret !== undefined) {
+      updates.endpoint = String(body.endpoint ?? existing.endpoint).trim();
+      // A blank secret keeps the stored one; clearing the endpoint removes the credential with it.
+      updates.secret = updates.endpoint === "" ? "" : String(body.secret ?? "").trim();
+    }
+    if (body.tuning) {
+      updates.paceMs = body.tuning.pace_ms;
+      updates.membersPerRequest = body.tuning.members_per_request;
+      updates.syncBatchSize = body.tuning.sync_batch;
+    }
+    if (Object.keys(updates).length) {
+      try {
+        await updateScimTarget(c.env, existing.id, updates);
+      } catch (e) {
+        return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+      }
+    }
+    if (body.scope) {
+      // As in the console: what was already pushed is re-evaluated against the new scope.
+      await applyScimScope(apiCtx(c), existing.id, {
+        mode: body.scope.mode === "selected" ? "selected" : "all",
+        groupIds: Array.isArray(body.scope.group_ids) ? body.scope.group_ids.map(Number) : [],
+      }, (p) => c.executionCtx.waitUntil(p));
+    }
   }
 
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_config_changed", undefined, undefined, c.req.raw);
   return c.json({ ok: true });
 });
 
+const ScimTargetBody = z.object({
+  name: z.string().min(1).max(80),
+  endpoint: z.string(),
+  secret: z.string().optional(),
+  scope: z.object({ mode: z.enum(["all", "selected"]).optional(), group_ids: z.array(z.number()).optional() }).optional(),
+  tuning: z.object({ pace_ms: z.number().int().min(0).max(10_000), members_per_request: z.number().int().min(1).max(500), sync_batch: z.number().int().min(10).max(500) }).optional(),
+  enabled: z.boolean().optional(),
+});
+
 defineRoute({
-  method: "post", path: "/api/v1/scim/test", tag: "SCIM", permission: "scim:write", summary: "Test the SCIM connection",
+  method: "post", path: "/api/v1/scim/targets", tag: "SCIM", permission: "scim:write", summary: "Add an outbound SCIM target",
+  description: "One target per downstream SCIM server. `name` is unique; `secret` is write-only.",
+  body: ScimTargetBody, errors: [400, 409],
+}, async (c) => {
+  const body = await readJson<{ name?: string; endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] }; tuning?: { pace_ms?: number; members_per_request?: number; sync_batch?: number }; enabled?: boolean }>(c);
+  try {
+    const t = await createScimTarget(c.env, {
+      name: String(body.name ?? ""),
+      endpoint: String(body.endpoint ?? ""),
+      secret: String(body.secret ?? ""),
+      scope: { mode: body.scope?.mode === "selected" ? "selected" : "all", groupIds: Array.isArray(body.scope?.group_ids) ? body.scope.group_ids.map(Number) : [] },
+      paceMs: body.tuning?.pace_ms ?? 200,
+      membersPerRequest: body.tuning?.members_per_request ?? 50,
+      syncBatchSize: body.tuning?.sync_batch ?? 50,
+      enabled: body.enabled ?? true,
+    });
+    await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_target_created", t.name, undefined, c.req.raw);
+    return c.json({ id: t.id, ok: true });
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+});
+
+defineRoute({
+  method: "patch", path: "/api/v1/scim/targets/{id}", tag: "SCIM", permission: "scim:write", summary: "Change a SCIM target",
+  description: "Fields not supplied keep their values; a blank secret keeps the stored credential. A changed scope re-evaluates everything already pushed, after the response.",
+  body: ScimTargetBody.partial(), errors: [400, 404],
+}, async (c) => {
+  const id = Number(c.req.param("id"));
+  const target = await getScimTarget(c.env, id);
+  if (!target) return notFound(c, "No such SCIM target.");
+  const body = await readJson<{ name?: string; endpoint?: string; secret?: string; scope?: { mode?: string; group_ids?: number[] }; tuning?: { pace_ms?: number; members_per_request?: number; sync_batch?: number }; enabled?: boolean }>(c);
+  const scope = body.scope ? { mode: body.scope.mode === "selected" ? ("selected" as const) : ("all" as const), groupIds: Array.isArray(body.scope.group_ids) ? body.scope.group_ids.map(Number) : [] } : undefined;
+  try {
+    await updateScimTarget(c.env, id, {
+      name: body.name,
+      endpoint: body.endpoint,
+      secret: body.secret,
+      paceMs: body.tuning?.pace_ms,
+      membersPerRequest: body.tuning?.members_per_request,
+      syncBatchSize: body.tuning?.sync_batch,
+      enabled: body.enabled,
+    });
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+  if (scope) {
+    // As in the console: what was already pushed is re-evaluated against the new scope.
+    await applyScimScope(apiCtx(c), id, scope, (p) => c.executionCtx.waitUntil(p));
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_target_changed", target.name, undefined, c.req.raw);
+  return c.json({ ok: true });
+});
+
+defineRoute({
+  method: "delete", path: "/api/v1/scim/targets/{id}", tag: "SCIM", permission: "scim:write", summary: "Remove a SCIM target",
+  description: "Links, push state and queued deprovisions go with it; the objects already created downstream are left there.",
+  errors: [404],
+}, async (c) => {
+  const id = Number(c.req.param("id"));
+  const target = await getScimTarget(c.env, id);
+  if (!target) return notFound(c, "No such SCIM target.");
+  await deleteScimTarget(c.env, id);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_target_deleted", target.name, undefined, c.req.raw);
+  return c.json({ ok: true });
+});
+
+defineRoute({
+  method: "post", path: "/api/v1/scim/test", tag: "SCIM", permission: "scim:write", summary: "Test a SCIM connection",
+  description: "`target_id` picks the target; without it the first enabled one.",
+  body: z.object({ target_id: z.number().int().optional() }).optional(),
   response: z.object({ ok: z.boolean(), status: z.number().optional(), error: z.string().optional() }).passthrough(),
 }, async (c) => {
-  const result = await testScimConnection(c.env);
-  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.connection_tested", undefined, { ok: result.ok }, c.req.raw);
+  const body = await readJson<{ target_id?: number }>(c).catch(() => ({}) as { target_id?: number });
+  const result = await testScimConnection(c.env, body?.target_id);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.connection_tested", undefined, { ok: result.ok, target_id: body?.target_id }, c.req.raw);
   return c.json(result);
 });
 
 defineRoute({
   method: "post", path: "/api/v1/scim/sync", tag: "SCIM", permission: "scim:write", summary: "Push the next batch of users, then the groups",
-  description: "Call again until `complete` is true.",
+  description: "Call again until `complete` is true. `target_id` picks the target; without it the first enabled one.",
+  body: z.object({ target_id: z.number().int().optional() }).optional(),
   response: z.object({ ok: z.boolean(), complete: z.boolean() }).passthrough(),
 }, async (c) => {
-  const summary = await syncAll(c.env);
-  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, { ...summary }, c.req.raw);
+  const body = await readJson<{ target_id?: number }>(c).catch(() => ({}) as { target_id?: number });
+  const summary = await syncAll(c.env, { targetId: body?.target_id });
+  await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_all", undefined, { ...summary, target_id: body?.target_id }, c.req.raw);
   return c.json({ ok: summary.userErrors === 0 && summary.groupErrors === 0, ...summary });
 });
 

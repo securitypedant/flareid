@@ -267,11 +267,16 @@ describe("wave 2", () => {
 
   it("directory reset queues downstream deletions instead of losing them", async () => {
     const { apiKey } = await setup();
-    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE username = 'ola'").run();
+    const { setScimConfig } = await import("../src/lib/settings.js");
+    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x" });
+    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets").first<{ id: number }>())!.id;
+    const ola = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO scim_user_links (target_id, user_id, scim_id) VALUES (?, ?, 'remote-ola')").bind(targetId, ola).run();
+    // A disabled target cannot be drained to - the entry stays queued for later.
+    await env.DB.prepare("UPDATE scim_targets SET enabled = 0 WHERE id = ?").bind(targetId).run();
     const reset = await apiCall("/api/v1/directory/reset", { token: apiKey, body: {} });
     expect(reset.status).toBe(200);
-    // SCIM is not configured here, so the entry stays queued for a later drain.
-    expect((await env.DB.prepare("SELECT label FROM scim_deprovision_queue WHERE scim_id = 'remote-ola'").first<{ label: string }>())?.label).toBe("ola@horizon.test");
+    expect((await env.DB.prepare("SELECT label FROM scim_deprovision_queue WHERE target_id = ? AND scim_id = 'remote-ola'").bind(targetId).first<{ label: string }>())?.label).toBe("ola@horizon.test");
   });
 });
 
@@ -290,7 +295,12 @@ describe("wave 3", () => {
     const ola = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
     const now = new Date().toISOString();
     await env.DB.prepare("INSERT INTO trusted_devices (id, user_id, created_at, last_used_at, expires_at) VALUES ('d1', ?, ?, ?, '2999-01-01T00:00:00Z')").bind(ola, now, now).run();
-    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE id = ?").bind(ola).run();
+    const { setScimConfig } = await import("../src/lib/settings.js");
+    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x" });
+    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO scim_user_links (target_id, user_id, scim_id) VALUES (?, ?, 'remote-ola')").bind(targetId, ola).run();
+    // Disabled targets are skipped by the drain - the entry stays queued.
+    await env.DB.prepare("UPDATE scim_targets SET enabled = 0 WHERE id = ?").bind(targetId).run();
     const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
     const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
     const res = await call("/admin/setup", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "domain=horizon.test&sample_data=remove" });
@@ -306,7 +316,9 @@ describe("wave 4", () => {
     const { setScimConfig } = await import("../src/lib/settings.js");
     await setup();
     await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x" });
-    await env.DB.prepare("UPDATE users SET scim_id = 'remote-ola' WHERE username = 'ola'").run();
+    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets").first<{ id: number }>())!.id;
+    const ola = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ola'").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO scim_user_links (target_id, user_id, scim_id) VALUES (?, ?, 'remote-ola')").bind(targetId, ola).run();
     const stale = (await env.DB.prepare("SELECT * FROM users WHERE username = 'ola'").first<import("../src/lib/types.js").UserRow>())!;
     await env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(stale.id).run();
     await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(stale.id).run();
@@ -327,8 +339,13 @@ describe("wave 4", () => {
 
   it("deleting a single group queues its remote id", async () => {
     const { apiKey } = await setup();
+    const { setScimConfig } = await import("../src/lib/settings.js");
+    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x" });
+    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets").first<{ id: number }>())!.id;
     const g = await apiCall("/scim/v2/Groups", { token: apiKey, body: { displayName: "Vendors" } });
-    await env.DB.prepare("UPDATE groups SET scim_id = 'remote-vendors' WHERE id = ?").bind(Number(g.body.id)).run();
+    await env.DB.prepare("INSERT INTO scim_group_links (target_id, group_id, scim_id) VALUES (?, ?, 'remote-vendors')").bind(targetId, Number(g.body.id)).run();
+    // Disabled targets are skipped by the drain - the entry stays queued.
+    await env.DB.prepare("UPDATE scim_targets SET enabled = 0 WHERE id = ?").bind(targetId).run();
     expect((await call(`/scim/v2/Groups/${g.body.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` } })).status).toBe(204);
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue WHERE kind = 'group' AND scim_id = 'remote-vendors'").first<{ n: number }>())!.n).toBe(1);
   });

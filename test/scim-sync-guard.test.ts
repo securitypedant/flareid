@@ -7,13 +7,15 @@ import { env } from "cloudflare:test";
 import { apiCall, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { pushUser, syncAll } from "../src/lib/scim-client.js";
 import { setScimConfig } from "../src/lib/settings.js";
+import { listScimTargets } from "../src/lib/scim-targets.js";
 import type { UserRow } from "../src/lib/types.js";
 
 beforeEach(resetDatabase);
 afterEach(() => vi.restoreAllMocks());
 
-const LOCK_KEY = "scim_sync_lock";
 const scim = () => setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24) });
+const target = async () => (await listScimTargets(env))[0]!;
+const lockKey = (targetId: number) => `scim_sync_lock:${targetId}`;
 
 async function provisioned(username = "admin"): Promise<UserRow> {
   const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
@@ -27,8 +29,9 @@ async function provisioned(username = "admin"): Promise<UserRow> {
 describe("SCIM sync single-flight", () => {
   it("a held lock coalesces a second sync; a stale lock expires", async () => {
     await provisioned();
+    const key = lockKey((await target()).id);
     const held = new Date().toISOString();
-    await env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?)").bind(LOCK_KEY, `${held}:other-runner`, held).run();
+    await env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?)").bind(key, `${held}:other-runner`, held).run();
     const busy = await syncAll(env);
     expect(busy.busy).toBe(true);
     expect(busy.complete).toBe(false);
@@ -36,23 +39,24 @@ describe("SCIM sync single-flight", () => {
 
     // Fifteen minutes on, the dead runner's lock expires and the sync runs.
     const stale = new Date(Date.now() - 16 * 60 * 1000).toISOString();
-    await env.DB.prepare("UPDATE idp_settings SET value = ? WHERE key = ?").bind(`${stale}:other-runner`, LOCK_KEY).run();
+    await env.DB.prepare("UPDATE idp_settings SET value = ? WHERE key = ?").bind(`${stale}:other-runner`, key).run();
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ id: "r-1", Resources: [] }, { status: 201 }));
     const step = await syncAll(env);
     expect(step.busy).toBeUndefined();
     // The lock row itself was released, not left behind.
-    expect(await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(LOCK_KEY).first()).toBeNull();
+    expect(await env.DB.prepare("SELECT value FROM idp_settings WHERE key = ?").bind(key).first()).toBeNull();
   });
 });
 
 describe("SCIM create race-safety", () => {
   it("a remote id that loses the link race is queued for deprovision, not orphaned", async () => {
     const user = await provisioned("racer");
+    const t = await target();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST") {
         // A concurrent push links its own remote id while our POST is in flight.
-        await env.DB.prepare("UPDATE users SET scim_id = 'u-other' WHERE id = ?").bind(user.id).run();
+        await env.DB.prepare("INSERT INTO scim_user_links (target_id, user_id, scim_id) VALUES (?, ?, 'u-other')").bind(t.id, user.id).run();
         return Response.json({ id: "u-ours" }, { status: 201 });
       }
       return Response.json({ Resources: [] });
@@ -60,13 +64,14 @@ describe("SCIM create race-safety", () => {
     const result = await pushUser(env, user);
     expect(result.ok).toBe(true);
     // The first link wins; ours is a duplicate queued for removal.
-    expect((await env.DB.prepare("SELECT scim_id FROM users WHERE id = ?").bind(user.id).first<{ scim_id: string }>())!.scim_id).toBe("u-other");
-    const queued = await env.DB.prepare("SELECT scim_id FROM scim_deprovision_queue WHERE kind = 'user'").first<{ scim_id: string }>();
+    expect((await env.DB.prepare("SELECT scim_id FROM scim_user_links WHERE target_id = ? AND user_id = ?").bind(t.id, user.id).first<{ scim_id: string }>())!.scim_id).toBe("u-other");
+    const queued = await env.DB.prepare("SELECT scim_id FROM scim_deprovision_queue WHERE target_id = ? AND kind = 'user'").bind(t.id).first<{ scim_id: string }>();
     expect(queued!.scim_id).toBe("u-ours");
   });
 
   it("a 409 from the remote resolves the existing object by externalId and links it", async () => {
     const user = await provisioned("already-there");
+    const t = await target();
     const calls: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
@@ -78,7 +83,7 @@ describe("SCIM create race-safety", () => {
     });
     const result = await pushUser(env, user);
     expect(result.ok).toBe(true);
-    expect((await env.DB.prepare("SELECT scim_id FROM users WHERE id = ?").bind(user.id).first<{ scim_id: string }>())!.scim_id).toBe("u-existing");
+    expect((await env.DB.prepare("SELECT scim_id FROM scim_user_links WHERE target_id = ? AND user_id = ?").bind(t.id, user.id).first<{ scim_id: string }>())!.scim_id).toBe("u-existing");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM scim_deprovision_queue").first<{ n: number }>()).toEqual({ n: 0 });
   });
 });

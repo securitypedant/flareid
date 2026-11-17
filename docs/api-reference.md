@@ -1377,16 +1377,21 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 
 | Method | Path | Permission | Summary |
 |---|---|---|---|
-| `GET` | `/api/v1/scim/config` | `scim:read` | Read the SCIM configuration |
-| `POST` | `/api/v1/scim/config` | `scim:write` | Set the SCIM endpoint, secret, scope and tuning |
-| `POST` | `/api/v1/scim/test` | `scim:write` | Test the SCIM connection |
+| `GET` | `/api/v1/scim/config` | `scim:read` | Read the first SCIM target's configuration |
+| `POST` | `/api/v1/scim/config` | `scim:write` | Set the first SCIM target's endpoint, secret, scope and tuning |
+| `GET` | `/api/v1/scim/targets` | `scim:read` | List outbound SCIM targets |
+| `POST` | `/api/v1/scim/targets` | `scim:write` | Add an outbound SCIM target |
+| `GET` | `/api/v1/scim/targets/{id}` | `scim:read` | Read one SCIM target |
+| `PATCH` | `/api/v1/scim/targets/{id}` | `scim:write` | Change a SCIM target |
+| `DELETE` | `/api/v1/scim/targets/{id}` | `scim:write` | Remove a SCIM target |
+| `POST` | `/api/v1/scim/test` | `scim:write` | Test a SCIM connection |
 | `POST` | `/api/v1/scim/sync` | `scim:write` | Push the next batch of users, then the groups |
 
 ### `GET /api/v1/scim/config`
 
-Read the SCIM configuration.
+Read the first SCIM target's configuration.
 
-Whether a secret is set, never the secret.
+The legacy single-target view: the first target in the list. Whether a secret is set, never the secret. `/api/v1/scim/targets` lists them all.
 
 Permission: `scim:read`
 
@@ -1402,9 +1407,9 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 ### `POST /api/v1/scim/config`
 
-Set the SCIM endpoint, secret, scope and tuning.
+Set the first SCIM target's endpoint, secret, scope and tuning.
 
-A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.
+The legacy single-target view: updates the first target (creating one named Default when none exists). `POST /api/v1/scim/targets` and `/api/v1/scim/targets/{id}` manage them all. A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.
 
 Permission: `scim:write`
 
@@ -1427,11 +1432,143 @@ Response `200`:
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
-### `POST /api/v1/scim/test`
+### `GET /api/v1/scim/targets`
 
-Test the SCIM connection.
+List outbound SCIM targets.
+
+One row per downstream SCIM server, each with its own endpoint, credential (write-only), scope and tuning.
+
+Permission: `scim:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `targets` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/scim/targets`
+
+Add an outbound SCIM target.
+
+One target per downstream SCIM server. `name` is unique; `secret` is write-only.
 
 Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `endpoint` | string | yes |  |
+| `secret` | string | no |  |
+| `scope` | object { mode, group_ids } | no |  |
+| `tuning` | object { pace_ms, members_per_request, sync_batch } | no |  |
+| `enabled` | boolean | no |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `409` (`{ "error", "message" }`).
+
+### `GET /api/v1/scim/targets/{id}`
+
+Read one SCIM target.
+
+Permission: `scim:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `endpoint` | string | yes |  |
+| `secret_set` | boolean | yes |  |
+| `scope` | object { mode, group_ids } | yes |  |
+| `tuning` | object { pace_ms, members_per_request, sync_batch } | yes |  |
+| `enabled` | boolean | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/scim/targets/{id}`
+
+Change a SCIM target.
+
+Fields not supplied keep their values; a blank secret keeps the stored credential. A changed scope re-evaluates everything already pushed, after the response.
+
+Permission: `scim:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no |  |
+| `endpoint` | string | no |  |
+| `secret` | string | no |  |
+| `scope` | object { mode, group_ids } | no |  |
+| `tuning` | object { pace_ms, members_per_request, sync_batch } | no |  |
+| `enabled` | boolean | no |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/scim/targets/{id}`
+
+Remove a SCIM target.
+
+Links, push state and queued deprovisions go with it; the objects already created downstream are left there.
+
+Permission: `scim:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/scim/test`
+
+Test a SCIM connection.
+
+`target_id` picks the target; without it the first enabled one.
+
+Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `target_id` | integer | no |  |
 
 Response `200`:
 
@@ -1447,9 +1584,15 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Push the next batch of users, then the groups.
 
-Call again until `complete` is true.
+Call again until `complete` is true. `target_id` picks the target; without it the first enabled one.
 
 Permission: `scim:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `target_id` | integer | no |  |
 
 Response `200`:
 

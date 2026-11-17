@@ -102,10 +102,13 @@ describe("SCIM full sync in steps", () => {
 describe("inline scripts", () => {
   it("the SCIM page script keeps its newline escape (a raw newline in a string broke the whole script)", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
+    const { setScimConfig } = await import("../src/lib/settings.js");
+    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24) });
+    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets ORDER BY id").first<{ id: number }>())!.id;
     const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
     const { createSession } = await import("../src/lib/sessions.js");
     const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    const html = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
+    const html = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim/${targetId}`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
     expect(html).toContain('text + "\\n";');
     // No double-quoted string in any inline script runs across a line break.
     for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
@@ -134,7 +137,7 @@ describe("import SCIM push", () => {
     const { syncAll } = await import("../src/lib/scim-client.js");
     while (!(await syncAll(env)).complete) { /* next step */ }
     groupWrites.length = 0;
-    const byScimId = new Map((await env.DB.prepare("SELECT name, scim_id FROM groups").all<{ name: string; scim_id: string }>()).results.map((g) => [g.scim_id, g.name]));
+    const byScimId = new Map((await env.DB.prepare("SELECT g.name, l.scim_id FROM groups g JOIN scim_group_links l ON l.group_id = g.id").all<{ name: string; scim_id: string }>()).results.map((g) => [g.scim_id, g.name]));
     // u1 moves from A to C: A and C change, B does not. The push runs after the
     // import's response, so give it a moment to land its writes.
     const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });

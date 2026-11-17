@@ -99,7 +99,7 @@ does - in summary:
 | Users | `POST /users`, `GET`/`PATCH`/`DELETE /users/{username}`, `POST .../reset-password`, `POST .../reset-mfa`, `GET`/`DELETE .../sessions`, `GET .../passkeys`, `DELETE .../passkeys/{credential_id}`, `GET .../apps`, `DELETE .../apps/{client_id}` |
 | Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members paged, `?search=`), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}` |
 | OIDC clients | `GET`/`PATCH`/`DELETE /clients/{client_id}`, `POST .../rotate-secret` |
-| SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config` |
+| SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config`, `GET /scim/targets`, `GET /scim/targets/{id}` |
 | Domains | `DELETE /domains/{domain}`, `PUT /domains/{domain}/brand` |
 | API keys | `GET /api-keys` (never tokens or hashes), `DELETE /api-keys/{id}` |
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
@@ -553,31 +553,55 @@ Users and groups in `GET /users` / `GET /groups` now include `schema_name`,
 `member_count` (rule matches for a dynamic group, assigned members for a
 static one) and `explicit_member_count` (always 0 for a dynamic group).
 
-### `POST /scim/config`, `POST /scim/test`, `POST /scim/sync`
+### `GET|POST /scim/targets`, `GET|PATCH|DELETE /scim/targets/{id}`
 
-Scope: `settings:write`.
+Scope: `scim:write` (reads: `scim:read` / `settings:read`).
+
+Outbound provisioning is multi-target: one row per downstream SCIM server,
+each with its own endpoint, secret, sync scope and tuning - like the OIDC
+client and SAML service-provider lists.
 
 ```json
 {
+  "name": "Cloudflare Access",
   "endpoint": "https://api.cloudflare.com/client/v4/accounts/<id>/access/scim/v2",
   "secret": "...",
-  "scope": { "mode": "all", "group_ids": [] }
+  "scope": { "mode": "all", "group_ids": [] },
+  "tuning": { "pace_ms": 200, "members_per_request": 50, "sync_batch": 50 },
+  "enabled": true
 }
 ```
 
-The endpoint must be a plain `https:` URL with no credentials, query or
-fragment, and must not point at a loopback, private, link-local or otherwise
-reserved address (`400` otherwise). `secret` is write-only: `GET` never
-returns it, and a blank `secret` keeps the stored one. Clearing `endpoint`
-removes the configuration and its credential. Redirects from the endpoint
-are only followed while they stay on the configured origin.
+`name` is unique and display-only. The endpoint must be a plain `https:` URL
+with no credentials, query or fragment, and must not point at a loopback,
+private, link-local or otherwise reserved address (`400` otherwise).
+`secret` is write-only: `GET` never returns it (only `secret_set`), and a
+blank `secret` on PATCH keeps the stored one. Clearing `endpoint` removes the
+credential with it. `tuning` fields not supplied on PATCH keep their values;
+`pace_ms` 0-10000, `members_per_request` 1-500, `sync_batch` 10-500. A changed
+`scope` re-evaluates everything already pushed after the response. `DELETE`
+drops the target's links, push state and queued deprovisions - the objects
+already created on the SCIM server are left there. Redirects from the
+endpoint are only followed while they stay on the configured origin.
 
-`POST /scim/sync` runs a full sync in batches of 200 users per call, then the
-groups. The response carries `complete` and `remainingUsers`: call it again
-until `complete` is `true` (the hourly cron also carries an unfinished sync
-on). Syncs are single-flight: while another caller or the cron holds the
-sync, a call does no work and answers `busy: true` instead of pushing the
-same batch twice - poll again rather than treating it as an error.
+### `POST /scim/config`, `POST /scim/test`, `POST /scim/sync`
+
+Scope: `scim:write`.
+
+`POST /scim/config` is the legacy single-target view: it updates the first
+target (creating one named `Default` when none exists) with the same
+`endpoint` / `secret` / `scope` / `tuning` body shape as `POST /scim/targets`.
+
+`POST /scim/test` answers `{ ok, status }` for a target's
+`GET /Users?count=1`. `POST /scim/sync` runs a full sync in batches of
+`sync_batch` users per call, then the groups. The response carries `complete`
+and `remainingUsers`: call it again until `complete` is `true` (the hourly
+cron also carries an unfinished sync on). Both take an optional
+`{ "target_id": N }` body picking the target - without it, the first enabled
+one. Syncs are single-flight per target: while another caller or the cron
+holds the sync, a call does no work and answers `busy: true` instead of
+pushing the same batch twice - poll again rather than treating it as an
+error.
 
 ### SCIM 2.0 server (`/scim/v2`)
 

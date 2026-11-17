@@ -14,7 +14,7 @@ import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } f
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { revokeAccountTokens } from "../lib/account-tokens.js";
-import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushChangedDynamicGroups, pushGroupCurrent, pushUser, pushUsersById, queueScimDeprovision, type ScimResult } from "../lib/scim-client.js";
+import { deactivateUserScim, drainScimDeprovisionQueue, isScimConfigured, pushChangedDynamicGroups, pushGroupCurrent, pushUser, pushUsersById, scimDeprovisionStatements, type ScimResult } from "../lib/scim-client.js";
 
 /**
  * SCIM 2.0 server (RFC 7643/7644) for inbound provisioning: an HR system or
@@ -432,9 +432,9 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
 
 scimServer.delete("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
-  await c.env.DB.batch([...(user.scim_id ? [queueScimDeprovision(c.env, "user", user.scim_id, user.upn)] : []), ...deleteUserStatements(c.env, user.id)]);
+  await c.env.DB.batch([...(await scimDeprovisionStatements(c.env, "user", user.id, user.upn)), ...deleteUserStatements(c.env, user.id)]);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_deleted", user.upn, undefined, c.req.raw);
-  // The row (and its scim_id) is gone now; the captured copy still names the remote user.
+  // The row (and its links) is gone now; the queue still names the remote objects.
   downstream(c, async () => { const r = await drainScimDeprovisionQueue(c.env); return r.failed ? { ok: false, error: `${r.remaining} queued` } : { ok: true }; }, "delete", user.upn);
   return c.body(null, 204);
 });
@@ -605,7 +605,7 @@ scimServer.delete("/scim/v2/Groups/:id", requireScope("directory:write"), async 
   const membersBefore = await explicitMembers(c.env, group.id);
   // Queued with the deletion, like users: the remote id must survive a failed DELETE.
   await c.env.DB.batch([
-    ...(group.scim_id ? [queueScimDeprovision(c.env, "group", group.scim_id, group.name)] : []),
+    ...(await scimDeprovisionStatements(c.env, "group", group.id, group.name)),
     c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(group.id),
     c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(group.id),
   ]);

@@ -21,37 +21,39 @@ describe("stored credentials are write-only in the console", () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "audi", status: "active", groups: ["Auditors"] }] } });
     const SECRET = "cf-scim-bearer-live-token-9f8e7d";
-    await env.DB.prepare("INSERT OR REPLACE INTO idp_settings (key, value, updated_at) VALUES ('scim_endpoint', 'https://api.cloudflare.com/client/v4/accounts/abc/access/scim', ''), ('scim_secret', ?, '')").bind(SECRET).run();
+    const now = new Date().toISOString();
+    const target = (await env.DB.prepare("INSERT INTO scim_targets (name, endpoint, secret, scope_mode, scope_group_ids, created_at, updated_at) VALUES ('Default', 'https://api.cloudflare.com/client/v4/accounts/abc/access/scim', ?, 'all', '[]', ?, ?) RETURNING id").bind(SECRET, now, now).first<{ id: number }>())!;
 
     // Read-only Auditor.
     const audi = await sessionOf("audi");
-    const page = await (await get("/admin/integrations/scim", audi)).text();
+    const page = await (await get(`/admin/integrations/scim/${target.id}`, audi)).text();
     expect(page).not.toContain(SECRET);
     expect(page).toContain("leave blank to keep it");
 
     // Write role gets the same write-only field.
     const admin = await sessionOf("admin");
-    const writerPage = await (await get("/admin/integrations/scim", admin)).text();
+    const writerPage = await (await get(`/admin/integrations/scim/${target.id}`, admin)).text();
     expect(writerPage).not.toContain(SECRET);
   });
 
   it("a blank secret field keeps the stored credential; clearing the endpoint removes it", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const SECRET = "cf-scim-bearer-live-token-9f8e7d";
-    await env.DB.prepare("INSERT OR REPLACE INTO idp_settings (key, value, updated_at) VALUES ('scim_endpoint', 'https://example.test/scim', ''), ('scim_secret', ?, '')").bind(SECRET).run();
+    const now = new Date().toISOString();
+    const target = (await env.DB.prepare("INSERT INTO scim_targets (name, endpoint, secret, scope_mode, scope_group_ids, created_at, updated_at) VALUES ('Default', 'https://example.test/scim', ?, 'all', '[]', ?, ?) RETURNING id").bind(SECRET, now, now).first<{ id: number }>())!;
     const admin = await sessionOf("admin");
 
     // Save with an unchanged endpoint and a blank secret field.
-    await post("/admin/scim", admin, { endpoint: "https://example.test/scim", secret: "" });
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe(SECRET);
+    await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "https://example.test/scim", secret: "" });
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret).toBe(SECRET);
 
     // Rotating it stores the new one.
-    await post("/admin/scim", admin, { endpoint: "https://example.test/scim", secret: "rotated-secret-1" });
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe("rotated-secret-1");
+    await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "https://example.test/scim", secret: "rotated-secret-1" });
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret).toBe("rotated-secret-1");
 
     // Clearing the endpoint removes the credential too.
-    await post("/admin/scim", admin, { endpoint: "", secret: "" });
-    expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'scim_secret'").first<{ value: string }>())!.value).toBe("");
+    await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "", secret: "" });
+    expect((await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret).toBe("");
   });
 
   it("the Security page does not render the stored default password", async () => {
