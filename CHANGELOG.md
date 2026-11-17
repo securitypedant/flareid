@@ -11,6 +11,11 @@ observability work.
 
 ### Added
 
+- **A Terraform example** (`examples/terraform-access/`) that wires the
+  Cloudflare Access integration in one apply: it generates the client
+  credential, registers it over the API, creates the Generic OIDC identity
+  provider with SCIM enabled, and points FlareID's outbound SCIM at the
+  generated endpoint. Optional demo application included.
 - **Sub-request performance telemetry.** A second Analytics Engine dataset
   (`flareid_spans`, binding `METRICS_SPANS`) records what inside a request
   costs time - password verification and hashing, token signing, the LDAP

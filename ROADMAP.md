@@ -107,8 +107,8 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     consent pages.~~ (done - en/fr/de/es/pt-br/zh-cn/ja/it with locale
     negotiation incl. region fallback, plural rules, a flag picker, and a11y
     structure asserted by test/i18n.test.ts)
-32. Versioned releases, semver, a changelog, and a published Terraform snippet
-    for the Access integration.
+~~32. Versioned releases, semver, a changelog, and a published Terraform
+    snippet for the Access integration.~~ (examples/terraform-access)
 33. A naming and trademark review. "FlareID" is Cloudflare-adjacent, and the
     README needs to keep saying plainly that this is not an official Cloudflare
     product.

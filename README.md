@@ -280,7 +280,8 @@ under **Admin → Integrations** makes group names appear in the policy builder,
 but is not required for group matching to work.
 
 The whole of this can be done over the API instead - see
-[docs/api.md](docs/api.md).
+[docs/api.md](docs/api.md) - or declaratively in one `terraform apply` with
+[examples/terraform-access](examples/terraform-access/).
 
 ## Roadmap
 

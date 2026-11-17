@@ -1,0 +1,8 @@
+flareid_base_url      = "https://idp.example.com"
+flareid_api_key       = "flk_…"                 # Admin → Integrations; needs oidc+scim read/write
+cloudflare_account_id = "…"
+cloudflare_team_name  = "your-team"
+
+# Optional demo application:
+# example_app_domain   = "app.example.com"
+# example_email_domain = "example.com"
