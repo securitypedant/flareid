@@ -6,6 +6,7 @@ import { drainScimDeprovisionQueue, pushUsersById, scimDeprovisionStatements } f
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayNameGroup, assertMayTouchGroup } from "./guards.js";
+import { adminRoleGroupIds } from "../lib/admin-roles.js";
 import { scimConfigured, syncGroupBestEffort } from "./scim-sync.js";
 
 export async function getGroupById(env: Env, id: number): Promise<GroupRow | null> {
@@ -211,4 +212,53 @@ export async function groupMembers(env: Env, group: GroupRow, search: string, li
   const total = (await env.DB.prepare(`SELECT COUNT(*) AS n ${where}`).bind(group.id, like, like, like).first<{ n: number }>())?.n ?? 0;
   const rows = (await env.DB.prepare(`SELECT u.* ${where} ORDER BY u.display_name LIMIT ? OFFSET ?`).bind(group.id, like, like, like, limit, offset).all<UserRow>()).results;
   return { total, rows };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk actions over the groups list: selection can span pages and searches,
+// so each group is re-checked when the action runs - never trust the page's
+// idea of what was selected.
+// ---------------------------------------------------------------------------
+
+export interface BulkGroupResult {
+  /** Names of the groups the action applied to. */
+  applied: string[];
+  /** Names it could not touch: dynamic (no assigned membership to edit) or, for a non-privileged actor, admin role groups. */
+  skipped: string[];
+}
+
+/** The groups an action may touch: static, and below Super Admin authority not admin-role ones. */
+async function bulkEditableGroups(ctx: ServiceCtx, ids: number[]): Promise<{ editable: GroupRow[]; skipped: string[] }> {
+  const unique = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+  if (!unique.length) return { editable: [], skipped: [] };
+  const { results } = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(unique)).all<GroupRow>();
+  const skipped = results.filter((g) => g.rule).map((g) => g.name);
+  let editable = results.filter((g) => !g.rule);
+  if (!ctx.privileged) {
+    const protectedIds = await adminRoleGroupIds(ctx.env);
+    skipped.push(...editable.filter((g) => protectedIds.has(g.id)).map((g) => g.name));
+    editable = editable.filter((g) => !protectedIds.has(g.id));
+  }
+  return { editable, skipped };
+}
+
+/** Turns "People can request membership" on or off for every static, unprotected group in the set. */
+export async function bulkSetRequestable(ctx: ServiceCtx, ids: number[], on: boolean): Promise<BulkGroupResult> {
+  const { editable, skipped } = await bulkEditableGroups(ctx, ids);
+  if (!editable.length) throw new ServiceError(400, skipped.length ? `None of the selected groups can be changed: ${skipped.join(", ")}.` : "No groups selected.");
+  await ctx.env.DB.batch(editable.map((g) => ctx.env.DB.prepare("UPDATE groups SET requestable = ? WHERE id = ?").bind(on ? 1 : 0, g.id)));
+  await audit(ctx, "group.bulk_requestable", undefined, { on, groups: editable.map((g) => g.name), skipped });
+  return { applied: editable.map((g) => g.name), skipped };
+}
+
+/** Adds the same people to every static, unprotected group in the set - the same writes the members endpoints make. */
+export async function bulkAddMembers(ctx: ServiceCtx, ids: number[], userIds: number[]): Promise<BulkGroupResult & { added: number }> {
+  const { editable, skipped } = await bulkEditableGroups(ctx, ids);
+  if (!editable.length) throw new ServiceError(400, skipped.length ? `None of the selected groups can take members: ${skipped.join(", ")}.` : "No groups selected.");
+  let added = 0;
+  for (const group of editable) {
+    added += await addGroupMembers(ctx, group.id, userIds);
+  }
+  await audit(ctx, "group.bulk_members_added", undefined, { groups: editable.map((g) => g.name), people: userIds.length, added, skipped });
+  return { applied: editable.map((g) => g.name), skipped, added };
 }

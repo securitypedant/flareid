@@ -4,7 +4,7 @@ import { resolveGroupMemberUserIds } from "../lib/groups.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes } from "../lib/schemas.js";
 import type { GroupRow } from "../lib/types.js";
 import { apiCtx, ServiceError } from "../services/context.js";
-import { addGroupMembers, createGroup, deleteGroup, freezeGroup, getGroupById, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
+import { addGroupMembers, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, getGroupById, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
 import { defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import { GroupSchema, IdParam, MemberSchema, RuleSchema, StringMap } from "./schemas.js";
 
@@ -142,6 +142,35 @@ defineRoute(
       requestable: body.requestable ?? Boolean(group.requestable),
     });
     return c.json(await groupJson(c.env, (await getGroupById(c.env, group.id))!));
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/groups/bulk",
+    tag: "Groups",
+    permission: "groups:write",
+    summary: "Apply an action to many groups at once",
+    description:
+      "Only static groups are ever touched - a dynamic group's membership follows its rule, so it lands in `skipped` (as does an admin role group when the token lacks `*`). `requestable_on`/`requestable_off` toggles membership requests on My account; `add_members` adds `usernames` to each group.",
+    body: z.object({
+      group_ids: z.array(z.number().int()),
+      action: z.enum(["requestable_on", "requestable_off", "add_members"]),
+      usernames: z.array(z.string()).optional().openapi({ description: "Required for add_members." }),
+    }),
+    errors: [404],
+    response: z.object({ ok: z.literal(true), applied: z.array(z.string()), skipped: z.array(z.string()), added: z.number().optional() }),
+  },
+  async (c) => {
+    const body = await readJson<{ group_ids?: number[]; action: "requestable_on" | "requestable_off" | "add_members"; usernames?: string[] }>(c);
+    if (body.action === "add_members") {
+      const ids = await userIds(c.env, body.usernames ?? []);
+      const result = await bulkAddMembers(apiCtx(c), body.group_ids ?? [], ids);
+      return c.json({ ok: true, ...result });
+    }
+    const result = await bulkSetRequestable(apiCtx(c), body.group_ids ?? [], body.action === "requestable_on");
+    return c.json({ ok: true, ...result });
   }
 );
 

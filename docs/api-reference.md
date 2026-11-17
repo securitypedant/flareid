@@ -508,6 +508,7 @@ Static and dynamic (rule-based) groups.
 | `GET` | `/api/v1/groups/{id}` | `groups:read` | Get a group and a page of its members |
 | `PATCH` | `/api/v1/groups/{id}` | `groups:write` | Update a group |
 | `DELETE` | `/api/v1/groups/{id}` | `groups:write` | Delete a group |
+| `POST` | `/api/v1/groups/bulk` | `groups:write` | Apply an action to many groups at once |
 | `POST` | `/api/v1/groups/{id}/freeze` | `groups:write` | Convert a dynamic group to static |
 | `POST` | `/api/v1/groups/{id}/members` | `groups:write` | Add members to a static group |
 | `DELETE` | `/api/v1/groups/{id}/members/{username}` | `groups:write` | Remove a member from a static group |
@@ -643,6 +644,33 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
+### `POST /api/v1/groups/bulk`
+
+Apply an action to many groups at once.
+
+Only static groups are ever touched - a dynamic group's membership follows its rule, so it lands in `skipped` (as does an admin role group when the token lacks `*`). `requestable_on`/`requestable_off` toggles membership requests on My account; `add_members` adds `usernames` to each group.
+
+Permission: `groups:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `group_ids` | integer[] | yes |  |
+| `action` | "requestable_on" \| "requestable_off" \| "add_members" | yes |  |
+| `usernames` | string[] | no | Required for add_members. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `applied` | string[] | yes |  |
+| `skipped` | string[] | yes |  |
+| `added` | number | no |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
 ### `POST /api/v1/groups/{id}/freeze`
 
 Convert a dynamic group to static.
@@ -730,20 +758,23 @@ Access requests and certification campaigns over group membership.
 
 List access requests.
 
-Defaults to requests still waiting; `status` filters, `all` lists every request.
+Defaults to requests still waiting; `status` filters, `all` lists every request, `search` matches the person, group or reason.
 
 Permission: `groups:read`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
 | `status` | query | no | "pending" \\| "approved" \\| "denied" \\| "cancelled" \\| "all" |
+| `search` | query | no | string |
 | `limit` | query | no | Default 100, at most 500. |
+| `offset` | query | no | string |
 
 Response `200`:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `requests` | AccessRequest[] | yes |  |
+| `total` | number | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

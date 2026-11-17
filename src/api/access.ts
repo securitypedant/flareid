@@ -66,14 +66,24 @@ defineRoute(
     tag: "Access",
     permission: "groups:read",
     summary: "List access requests",
-    description: "Defaults to requests still waiting; `status` filters, `all` lists every request.",
-    query: z.object({ status: z.enum(["pending", "approved", "denied", "cancelled", "all"]).optional(), limit: z.string().optional().openapi({ description: "Default 100, at most 500." }) }),
-    response: z.object({ requests: z.array(RequestSchema) }),
+    description: "Defaults to requests still waiting; `status` filters, `all` lists every request, `search` matches the person, group or reason.",
+    query: z.object({
+      status: z.enum(["pending", "approved", "denied", "cancelled", "all"]).optional(),
+      search: z.string().optional(),
+      limit: z.string().optional().openapi({ description: "Default 100, at most 500." }),
+      offset: z.string().optional(),
+    }),
+    response: z.object({ requests: z.array(RequestSchema), total: z.number() }),
   },
   async (c) => {
     const status = c.req.query("status") ?? "pending";
-    const limit = Math.min(Number(c.req.query("limit") ?? 100) || 100, 500);
-    return c.json({ requests: await listAccessRequests(c.env, status === "all" ? undefined : status, limit) });
+    const { total, rows } = await listAccessRequests(c.env, {
+      status: status === "all" ? undefined : status,
+      search: c.req.query("search"),
+      limit: Math.min(Number(c.req.query("limit") ?? 100) || 100, 500),
+      offset: Math.max(Number(c.req.query("offset") ?? 0) || 0, 0),
+    });
+    return c.json({ requests: rows, total });
   }
 );
 

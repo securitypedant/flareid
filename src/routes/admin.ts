@@ -100,7 +100,7 @@ import {
   setUserStatus,
   updateUserProfile,
 } from "../services/users.js";
-import { assertRuleAllowed, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
+import { assertRuleAllowed, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import {
   addSecurityQuestion,
@@ -369,6 +369,8 @@ function layout(
       ? ({ Policies: "policies", Factors: "factors", Roles: "roles", "Signing keys": "signing-keys" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section === "branding"
       ? ({ "Email templates": "email-templates", Brands: "brands" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
+      : section === "groups"
+      ? (crumbs?.[2]?.label === "Access" ? "access" : "groups")
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -1274,6 +1276,32 @@ admin.get("/admin/users/import", async (c) =>
   c.html(layout(c, "Import users from CSV", await importPageHtml(c.env, "users"), [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: "Import CSV" }]))
 );
 
+// Feeds group pickers search-as-you-type (e.g. the review form), returning
+// {id, label, desc} items like /admin/users/lookup. static=1 limits to
+// assigned-membership groups - the only kind an action over members can use.
+admin.get("/admin/groups/lookup", async (c) => {
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+  if (!q) return c.json([]);
+  const staticOnly = c.req.query("static") === "1";
+  const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const { results } = await c.env.DB.prepare(
+    `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count
+     FROM groups g
+     WHERE (lower(g.name) LIKE ? ESCAPE '\\' OR lower(g.description) LIKE ? ESCAPE '\\')
+       ${staticOnly ? "AND (g.rule IS NULL OR g.rule = '')" : ""}
+     ORDER BY (lower(g.name) LIKE ? ESCAPE '\\') DESC, g.name LIMIT 20`
+  )
+    .bind(like, like, like)
+    .all<GroupRow & { member_count: number }>();
+  return c.json(
+    results.map((g) => ({
+      id: g.id,
+      label: g.name,
+      desc: `${g.member_count} member${g.member_count === 1 ? "" : "s"}${g.description ? ` · ${g.description}` : ""}`,
+    }))
+  );
+});
+
 admin.get("/admin/groups/import", async (c) =>
   c.html(layout(c, "Import groups from CSV", await importPageHtml(c.env, "groups"), [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: "Import CSV" }]))
 );
@@ -2111,6 +2139,8 @@ admin.get("/admin/groups", async (c) => {
       c,
       `Groups (${total.toLocaleString("en")})`,
       `
+      ${c.req.query("notice") ? successBanner(c.req.query("notice")!) : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <form method="GET" class="list-toolbar">
           <div class="list-toolbar-filters">
@@ -2128,14 +2158,34 @@ admin.get("/admin/groups", async (c) => {
         </form>
       `)}
       ${cardSection(`
+        <form method="POST" action="/admin/groups/bulk" id="bulk-bar" style="display:none; margin:0;">
+          <div id="bulk-ids"></div>
+          <div class="row" style="justify-content:flex-start; gap:14px; flex-wrap:wrap; align-items:flex-end;">
+            <strong style="margin-bottom:8px;"><span id="bulk-count">0</span> selected</strong>
+            <span style="display:flex; gap:6px; align-items:center;">
+              <select name="requestable" style="margin:0; width:auto;">
+                <option value="1">Allow membership requests</option>
+                <option value="0">Stop membership requests</option>
+              </select>
+              <button class="secondary" type="submit" name="action" value="requestable" style="margin:0;">Apply</button>
+            </span>
+            <span style="display:flex; gap:6px; align-items:flex-start; flex:1; min-width:300px;">
+              <span style="flex:1;">${remoteMultiSelect("user_ids", "/admin/users/lookup", [], "People to add to all selected...")}</span>
+              <button class="secondary" type="submit" name="action" value="add_members" style="margin:8px 0 0;">Add members</button>
+            </span>
+            <a href="#" id="bulk-clear" class="cancel" style="margin-bottom:8px;">Clear selection</a>
+          </div>
+          <p class="muted" style="margin:8px 0 0;">Selection survives paging and filtering. Only static groups can be selected - a dynamic group's membership follows its rule.</p>
+        </form>
         <table>
-          <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Members</th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" id="gsel-all" style="width:auto; margin:0;" title="Select all on this page" /></th><th>Name</th><th>Type</th><th>Description</th><th>Members</th></tr></thead>
           <tbody>
             ${groups
               .map((g) => {
                 const rule = parseRule(g.rule);
                 return `<tr>
-                  <td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${g.name === SUPER_ADMINS_GROUP ? ' <span class="badge badge-admin">Admin access</span>' : ""}</td>
+                  <td>${rule ? "" : `<input type="checkbox" data-gsel value="${g.id}" style="width:auto; margin:0;" />`}</td>
+                  <td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${g.name === SUPER_ADMINS_GROUP ? ' <span class="badge badge-admin">Admin access</span>' : ""}${!rule && g.requestable ? ' <span class="pill" title="People can ask to join on My account">Requestable</span>' : ""}</td>
                   <td>${rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'}</td>
                   <td>${escapeHtml(g.description ?? "")}</td>
                   <td>${countFor(g)}</td>
@@ -2146,11 +2196,53 @@ admin.get("/admin/groups", async (c) => {
         </table>
         ${paginationControls("/admin/groups", page, totalPages, { search, type: typeFilter, pageSize })}
       `)}
+      ${scriptTag(GROUP_SELECT_SCRIPT)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Groups" }]
     )
   );
 });
+
+/**
+ * Checkbox selection on the groups list, kept in sessionStorage so it
+ * survives paging and search/filter reloads; the bulk bar's hidden inputs are
+ * rebuilt from it on every load and change.
+ */
+const GROUP_SELECT_SCRIPT = `
+(function () {
+  var KEY = "fi-group-sel";
+  var sel;
+  try { sel = new Set(JSON.parse(sessionStorage.getItem(KEY) || "[]")); } catch (e) { sel = new Set(); }
+  var bar = document.getElementById("bulk-bar");
+  var idsEl = document.getElementById("bulk-ids");
+  var countEl = document.getElementById("bulk-count");
+  var allBox = document.getElementById("gsel-all");
+  function pageIds() {
+    return Array.prototype.slice.call(document.querySelectorAll("input[data-gsel]")).map(function (b) { return Number(b.value); });
+  }
+  function render() {
+    try { sessionStorage.setItem(KEY, JSON.stringify(Array.from(sel))); } catch (e) {}
+    document.querySelectorAll("input[data-gsel]").forEach(function (b) { b.checked = sel.has(Number(b.value)); });
+    var ids = pageIds();
+    if (allBox) allBox.checked = ids.length > 0 && ids.every(function (id) { return sel.has(id); });
+    if (countEl) countEl.textContent = String(sel.size);
+    if (idsEl) idsEl.replaceChildren.apply(idsEl, Array.from(sel).map(function (id) {
+      var i = document.createElement("input"); i.type = "hidden"; i.name = "group_ids"; i.value = String(id); return i;
+    }));
+    if (bar) bar.style.display = sel.size ? "" : "none";
+  }
+  document.querySelectorAll("input[data-gsel]").forEach(function (b) {
+    b.addEventListener("change", function () { if (b.checked) sel.add(Number(b.value)); else sel.delete(Number(b.value)); render(); });
+  });
+  if (allBox) allBox.addEventListener("change", function () {
+    pageIds().forEach(function (id) { if (allBox.checked) sel.add(id); else sel.delete(id); });
+    render();
+  });
+  var clear = document.getElementById("bulk-clear");
+  if (clear) clear.addEventListener("click", function (e) { e.preventDefault(); sel.clear(); render(); });
+  render();
+})();
+`;
 
 admin.get("/admin/groups/new", async (c) => {
   return c.html(
@@ -2243,6 +2335,31 @@ admin.get("/admin/groups/:id", async (c) => {
   );
 });
 
+admin.post("/admin/groups/bulk", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const groupIds = list(body.group_ids).map(Number).filter(Boolean);
+  const action = String(body.action ?? "");
+  try {
+    if (action === "requestable") {
+      const on = String(body.requestable ?? "") === "1";
+      const result = await bulkSetRequestable(consoleCtx(c), groupIds, on);
+      const note = `Requests ${on ? "allowed" : "stopped"} on ${result.applied.length} group${result.applied.length === 1 ? "" : "s"}.`;
+      return c.redirect(`/admin/groups?notice=${encodeURIComponent(result.skipped.length ? `${note} Skipped: ${result.skipped.join(", ")}.` : note)}`, 302);
+    }
+    if (action === "add_members") {
+      const userIds = list(body.user_ids).map(Number).filter(Boolean);
+      if (!userIds.length) throw new Error("Pick at least one person to add.");
+      const result = await bulkAddMembers(consoleCtx(c), groupIds, userIds);
+      const note = `Added ${result.added} membership${result.added === 1 ? "" : "s"} across ${result.applied.length} group${result.applied.length === 1 ? "" : "s"}.`;
+      return c.redirect(`/admin/groups?notice=${encodeURIComponent(result.skipped.length ? `${note} Skipped: ${result.skipped.join(", ")}.` : note)}`, 302);
+    }
+    throw new Error("Pick an action first.");
+  } catch (e) {
+    return c.redirect(`/admin/groups?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
 admin.post("/admin/groups/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const existing = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(id).first<GroupRow>();
@@ -2281,8 +2398,18 @@ const ACCESS_CRUMBS: Breadcrumb[] = [{ label: "Admin", href: "/admin" }, { label
 
 admin.get("/admin/access", async (c) => {
   const statusFilter = c.req.query("status") ?? "pending";
-  const [requests, campaigns] = await Promise.all([listAccessRequests(c.env, statusFilter === "all" ? undefined : statusFilter), listCampaigns(c.env)]);
-  const { n: pendingCount } = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE status = 'pending'").first<{ n: number }>()) ?? { n: 0 };
+  const search = (c.req.query("search") ?? "").slice(0, 100);
+  const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
+  const page = Math.max(1, Number(c.req.query("page")) || 1);
+  const [{ total, rows: requests }, campaigns, pendingRow, roleGroups] = await Promise.all([
+    listAccessRequests(c.env, { status: statusFilter === "all" ? undefined : statusFilter, search, limit: pageSize, offset: (page - 1) * pageSize }),
+    listCampaigns(c.env),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE status = 'pending'").first<{ n: number }>(),
+    adminRoleGroupIds(c.env),
+  ]);
+  const pendingCount = pendingRow?.n ?? 0;
+  const privileged = Boolean(c.get("isSuperAdmin"));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   return c.html(
     layout(
       c,
@@ -2293,18 +2420,23 @@ admin.get("/admin/access", async (c) => {
       ${cardSection(`
         <div class="card-head">
           <h2>Requests${pendingCount ? ` <span class="badge badge-pending">${pendingCount}</span>` : ""}</h2>
-          <form method="GET">
+        </div>
+        <form method="GET" class="list-toolbar">
+          <div class="list-toolbar-filters">
+            <input type="text" name="search" placeholder="Search person, group or reason" value="${escapeHtml(search)}" />
             <select name="status" data-autosubmit style="margin-bottom:0; width:auto;">
               ${[["pending", "Pending"], ["all", "All"], ["approved", "Approved"], ["denied", "Denied"], ["cancelled", "Withdrawn"]]
                 .map(([v, l]) => `<option value="${v}" ${v === statusFilter ? "selected" : ""}>${l}</option>`)
                 .join("")}
             </select>
-          </form>
-        </div>
+            <input type="hidden" name="page" value="1" />
+            ${pageSizeSelect(pageSize)}
+          </div>
+        </form>
         <p class="muted">People ask for a group from My account when the group allows requests. Approving adds them like editing the group does.</p>
         ${
           requests.length === 0
-            ? `<p class="muted">No ${statusFilter === "pending" ? "requests waiting for a decision" : statusFilter === "all" ? "requests yet" : `${statusFilter} requests`}.</p>`
+            ? `<p class="muted">No ${search ? `requests matching "${escapeHtml(search)}"` : statusFilter === "pending" ? "requests waiting for a decision" : statusFilter === "all" ? "requests yet" : `${statusFilter} requests`}.</p>`
             : `<table>
                 <thead><tr><th>Person</th><th>Group</th><th>Reason</th><th>Asked</th><th>Status</th><th></th></tr></thead>
                 <tbody>
@@ -2312,26 +2444,29 @@ admin.get("/admin/access", async (c) => {
                     .map(
                       (r) => `<tr>
                         <td><a href="/admin/users/${r.user_id}">${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
-                        <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a></td>
+                        <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a>${roleGroups.has(r.group_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>
                         <td>${requestBadge(r.status)}${r.status !== "pending" && r.decided_at ? `<br/><span class="muted" style="font-size:12px;">${ts(r.decided_at)}${r.note ? ` · ${escapeHtml(r.note)}` : ""}</span>` : ""}</td>
                         <td style="white-space:nowrap;">
                           ${
-                            r.status === "pending"
-                              ? `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
+                            r.status !== "pending"
+                              ? ""
+                              : roleGroups.has(r.group_id) && !privileged
+                              ? `<span class="muted" style="font-size:12px;">Needs a Super Admin</span>`
+                              : `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
                                   <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
                                   <button class="secondary" type="submit" name="decision" value="approved" style="margin:0;">Approve</button>
                                   <button class="secondary" type="submit" name="decision" value="denied" style="margin:0;">Deny</button>
                                 </form>`
-                              : ""
                           }
                         </td>
                       </tr>`
                     )
                     .join("")}
                 </tbody>
-              </table>`
+              </table>
+              ${paginationControls("/admin/access", page, totalPages, { search, status: statusFilter, pageSize })}`
         }
       `)}
       ${cardSection(`
@@ -2368,10 +2503,6 @@ admin.get("/admin/access", async (c) => {
 });
 
 admin.get("/admin/access/reviews/new", async (c) => {
-  const { results: groups } = await c.env.DB.prepare(
-    `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count
-     FROM groups g WHERE g.rule = '' OR g.rule IS NULL ORDER BY g.name`
-  ).all<GroupRow & { member_count: number }>();
   return c.html(
     layout(
       c,
@@ -2384,20 +2515,8 @@ admin.get("/admin/access/reviews/new", async (c) => {
           <label for="name">Name</label>
           <input type="text" id="name" name="name" required placeholder="Quarterly contractors review" />
           <label>Groups to review</label>
-          ${
-            groups.length === 0
-              ? '<p class="muted">No static groups to review.</p>'
-              : `<div style="max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:10px 14px;">
-                  ${groups
-                    .map(
-                      (g) => `<label style="display:flex; align-items:center; gap:8px; font-weight:500; margin:6px 0;">
-                        <input type="checkbox" name="group_ids" value="${g.id}" style="width:auto; margin:0;" />
-                        ${escapeHtml(g.name)} <span class="muted" style="font-weight:400;">· ${g.member_count} member${g.member_count === 1 ? "" : "s"}</span>
-                      </label>`
-                    )
-                    .join("")}
-                </div>`
-          }
+          ${remoteMultiSelect("group_ids", "/admin/groups/lookup?static=1", [], "Search static groups...")}
+          <p class="muted" style="margin-top:-8px;">Only assigned memberships can be reviewed - a dynamic group's members follow its rule, so it's never offered here.</p>
         `)}
         <div class="form-actions end" style="margin-bottom:18px;">
           ${cancelLink("/admin/access")}

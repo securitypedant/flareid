@@ -3998,6 +3998,138 @@
         }
       }
     },
+    "/api/v1/groups/bulk": {
+      "post": {
+        "tags": [
+          "Groups"
+        ],
+        "summary": "Apply an action to many groups at once",
+        "description": "Only static groups are ever touched - a dynamic group's membership follows its rule, so it lands in `skipped` (as does an admin role group when the token lacks `*`). `requestable_on`/`requestable_off` toggles membership requests on My account; `add_members` adds `usernames` to each group.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "groups:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "group_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "requestable_on",
+                      "requestable_off",
+                      "add_members"
+                    ]
+                  },
+                  "usernames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Required for add_members."
+                  }
+                },
+                "required": [
+                  "group_ids",
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "applied": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "skipped": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "added": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "applied",
+                    "skipped"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/groups/{id}/freeze": {
       "post": {
         "tags": [
@@ -4302,7 +4434,7 @@
           "Access"
         ],
         "summary": "List access requests",
-        "description": "Defaults to requests still waiting; `status` filters, `all` lists every request.",
+        "description": "Defaults to requests still waiting; `status` filters, `all` lists every request, `search` matches the person, group or reason.",
         "security": [
           {
             "bearer": []
@@ -4327,12 +4459,28 @@
           },
           {
             "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "search",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "description": "Default 100, at most 500."
             },
             "required": false,
             "description": "Default 100, at most 500.",
             "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
             "in": "query"
           }
         ],
@@ -4349,10 +4497,14 @@
                       "items": {
                         "$ref": "#/components/schemas/AccessRequest"
                       }
+                    },
+                    "total": {
+                      "type": "number"
                     }
                   },
                   "required": [
-                    "requests"
+                    "requests",
+                    "total"
                   ]
                 }
               }

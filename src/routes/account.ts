@@ -44,6 +44,7 @@ import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 import { cancelAccessRequest, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
+import { adminRoleGroupIds } from "../lib/admin-roles.js";
 import { consoleCtx } from "../services/context.js";
 
 export const account = new Hono<{ Bindings: Env }>();
@@ -221,15 +222,10 @@ account.get("/account", async (c) => {
       ${cardSection(`
         <h2>Groups</h2>
         ${groups.length > 0 ? groups.map((g) => `<span class="pill">${escapeHtml(g)}</span>`).join("") : '<p class="muted">No group memberships</p>'}
-      `)}
-
-      ${
-        requestable.length || myRequests.length
-          ? cardSection(`
-        <h2>Access requests</h2>
         ${
           requestable.length
-            ? `<p class="muted">Ask to join a group - an administrator approves or denies each request.</p>
+            ? `<h3 style="margin-top:16px;">Request access</h3>
+               <p class="muted">Some groups accept self-service requests - an administrator approves or denies each ask.</p>
                <form method="POST" action="/account/access/request">
                  <label>Group</label>
                  ${remoteMultiSelect("group_id", "/account/access/groups", [], "Search groups you can ask for...", true)}
@@ -241,7 +237,8 @@ account.get("/account", async (c) => {
         }
         ${
           myRequests.length
-            ? `<table style="${requestable.length ? "margin-top:16px;" : ""}">
+            ? `<h3 style="margin-top:16px;">Your requests</h3>
+               <table>
                  <thead><tr><th>Group</th><th>Asked</th><th>Status</th><th></th></tr></thead>
                  <tbody>
                    ${myRequests
@@ -264,9 +261,7 @@ account.get("/account", async (c) => {
                </table>`
             : ""
         }
-      `)
-          : ""
-      }
+      `)}
 
       <h2 class="section-title">Security</h2>
       <p class="muted" id="second-factors">${
@@ -580,8 +575,15 @@ account.post("/account/profile", async (c) => {
 account.get("/account/access/groups", async (c) => {
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
   if (!q) return c.json([]);
-  const groups = await requestableGroups(c.env, c.get("user").id, q, 20);
-  return c.json(groups.map((g) => ({ id: g.id, label: g.name, desc: g.description ?? "" })));
+  const [groups, roleGroups] = await Promise.all([requestableGroups(c.env, c.get("user").id, q, 20), adminRoleGroupIds(c.env)]);
+  return c.json(
+    groups.map((g) => ({
+      id: g.id,
+      label: g.name,
+      // Asking for a role-bearing group is asking for the role - say so.
+      desc: roleGroups.has(g.id) ? `Admin access${g.description ? ` · ${g.description}` : ""}` : g.description ?? "",
+    }))
+  );
 });
 
 account.post("/account/access/request", async (c) => {

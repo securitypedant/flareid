@@ -76,16 +76,37 @@ export async function myAccessRequests(env: Env, userId: number): Promise<Access
   ).results;
 }
 
-export async function listAccessRequests(env: Env, status?: string, limit = 100): Promise<AccessRequestView[]> {
-  return (
-    await env.DB.prepare(
-      `SELECT r.*, u.upn, u.display_name, g.name AS group_name FROM access_requests r
-        JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id
-        ${status ? "WHERE r.status = ?" : ""} ORDER BY r.created_at DESC LIMIT ?`
-    )
-      .bind(...(status ? [status, limit] : [limit]))
-      .all<AccessRequestView>()
-  ).results;
+export interface AccessRequestQuery {
+  /** One status, or undefined for every request. */
+  status?: string;
+  /** Matches the person's UPN or display name, the group name, or the reason. */
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listAccessRequests(env: Env, q: AccessRequestQuery = {}): Promise<{ total: number; rows: AccessRequestView[] }> {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  if (q.status) {
+    conditions.push("r.status = ?");
+    params.push(q.status);
+  }
+  const needle = q.search?.trim().toLowerCase();
+  if (needle) {
+    const like = `%${needle.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(g.name) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
+    params.push(like, like, like, like);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const from = `FROM access_requests r JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id ${where}`;
+  const limit = Math.min(q.limit ?? 100, 500);
+  const offset = Math.max(q.offset ?? 0, 0);
+  const [count, rows] = await env.DB.batch([
+    env.DB.prepare(`SELECT COUNT(*) AS n ${from}`).bind(...params),
+    env.DB.prepare(`SELECT r.*, u.upn, u.display_name, g.name AS group_name ${from} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).bind(...params, limit, offset),
+  ]);
+  return { total: Number((count?.results[0] as { n: number } | undefined)?.n ?? 0), rows: (rows?.results ?? []) as AccessRequestView[] };
 }
 
 export async function getAccessRequest(env: Env, id: number): Promise<AccessRequestView | null> {

@@ -44,7 +44,7 @@ describe("access requests", () => {
     // The group shows up on My account as something to ask for, searchable by
     // name or description, with both shown.
     const accountPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
-    expect(accountPage).toContain("Access requests");
+    expect(accountPage).toContain("Request access");
     const found = await (await SELF.fetch(`${BASE}/account/access/groups?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string }[];
     expect(found).toEqual([{ id: groupId, label: "VPN users", desc: "For the field team" }]);
     expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=nomatch`, { headers: { Cookie: cookie } })).json()).toEqual([]);
@@ -167,6 +167,102 @@ describe("access requests", () => {
     const fine = await apiCall(`/api/v1/access/requests/${req.id}`, { token: apiKey, body: { decision: "approved" } });
     expect(fine.status).toBe(200);
     expect(await memberOf(sup.id, uid)).toBeTruthy();
+  });
+});
+
+describe("the requests queue", () => {
+  it("searches by person, group and reason, and pages", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const groupId = await makeGroup(apiKey, "VPN users", { requestable: true });
+    // Seed 25 requests from different people so pagination has something to do.
+    for (let i = 0; i < 25; i++) {
+      const uid = await seedUser(apiKey, `seeker${String(i).padStart(2, "0")}`);
+      const cookie = await sessionFor(uid);
+      await SELF.fetch(`${BASE}/account/access/request`, {
+        method: "POST",
+        headers: { ...FORM, Cookie: cookie },
+        body: new URLSearchParams({ group_id: String(groupId), reason: i === 7 ? "needle project" : "access" }).toString(),
+      });
+    }
+
+    const all = await apiCall("/api/v1/access/requests?status=all&limit=10", { token: apiKey });
+    expect(all.body.total).toBe(25);
+    expect(all.body.requests.length).toBe(10);
+    const second = await apiCall("/api/v1/access/requests?status=all&limit=10&offset=20", { token: apiKey });
+    expect(second.body.requests.length).toBe(5);
+
+    const byReason = await apiCall("/api/v1/access/requests?status=all&search=needle", { token: apiKey });
+    expect(byReason.body.total).toBe(1);
+    expect(byReason.body.requests[0].reason).toBe("needle project");
+    const byPerson = await apiCall("/api/v1/access/requests?status=all&search=seeker07", { token: apiKey });
+    expect(byPerson.body.total).toBe(1);
+    const byGroup = await apiCall("/api/v1/access/requests?status=all&search=VPN", { token: apiKey });
+    expect(byGroup.body.total).toBe(25);
+    const none = await apiCall("/api/v1/access/requests?status=all&search=zzz", { token: apiKey });
+    expect(none.body.total).toBe(0);
+
+    // The console page pages the same way.
+    const admin = await adminCookie();
+    const page1 = await (await SELF.fetch(`${BASE}/admin/access?status=all&pageSize=20&page=1`, { headers: { Cookie: admin } })).text();
+    expect(page1).toContain("Page 1 of 2");
+    const search = await (await SELF.fetch(`${BASE}/admin/access?status=all&search=needle`, { headers: { Cookie: admin } })).text();
+    expect(search).toContain("needle project");
+    expect(search).not.toContain("Page 1 of");
+  });
+});
+
+describe("bulk group actions", () => {
+  it("toggles requestable across static groups, skipping dynamic and protected ones", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const a = await makeGroup(apiKey, "Bulk A");
+    const b = await makeGroup(apiKey, "Bulk B");
+    const dyn = await makeGroup(apiKey, "Dyn", { rule: { all: [{ field: "username", op: "eq", value: "nobody" }] } });
+    const sup = (await env.DB.prepare("SELECT id FROM groups WHERE name = 'Super Admins'").first<{ id: number }>())!;
+
+    // A groups:write key (not admin) can mass-toggle - but protected groups skip.
+    const scoped = await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "dir", scopes: ["groups:write"] } });
+    const res = await apiCall("/api/v1/groups/bulk", { token: scoped.body.token, body: { group_ids: [a, b, dyn, sup.id], action: "requestable_on" } });
+    expect(res.status).toBe(200);
+    expect(res.body.applied.sort()).toEqual(["Bulk A", "Bulk B"]);
+    expect(res.body.skipped.sort()).toEqual(["Dyn", "Super Admins"]);
+    const { results: flags } = await env.DB.prepare("SELECT name, requestable FROM groups").all<{ name: string; requestable: number }>();
+    expect(Object.fromEntries(flags.map((f) => [f.name, f.requestable]))).toMatchObject({ "Bulk A": 1, "Bulk B": 1, Dyn: 0, "Super Admins": 0 });
+
+    const off = await apiCall("/api/v1/groups/bulk", { token: scoped.body.token, body: { group_ids: [a, b], action: "requestable_off" } });
+    expect(off.status).toBe(200);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM groups WHERE requestable = 1").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("adds the same people to every selected static group", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const pat = await seedUser(apiKey, "pat");
+    const sam = await seedUser(apiKey, "sam");
+    const a = await makeGroup(apiKey, "Bulk A");
+    const b = await makeGroup(apiKey, "Bulk B");
+    const dyn = await makeGroup(apiKey, "Dyn", { rule: { all: [{ field: "username", op: "eq", value: "nobody" }] } });
+
+    const res = await apiCall("/api/v1/groups/bulk", { token: apiKey, body: { group_ids: [a, b, dyn], action: "add_members", usernames: ["pat", "sam"] } });
+    expect(res.status).toBe(200);
+    expect(res.body.added).toBe(4);
+    expect(res.body.skipped).toEqual(["Dyn"]);
+    for (const [g, u] of [[a, pat], [a, sam], [b, pat], [b, sam]] as const) expect(await memberOf(g, u)).toBeTruthy();
+    // Adding again is a no-op, not an error.
+    const again = await apiCall("/api/v1/groups/bulk", { token: apiKey, body: { group_ids: [a], action: "add_members", usernames: ["pat"] } });
+    expect(again.body.added).toBe(0);
+  });
+
+  it("goes through the console bulk form too", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const a = await makeGroup(apiKey, "Bulk A");
+    const admin = await adminCookie();
+    const res = await SELF.fetch(`${BASE}/admin/groups/bulk`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: admin },
+      body: new URLSearchParams({ action: "requestable", requestable: "1", group_ids: String(a) }).toString(),
+      redirect: "manual",
+    });
+    expect(res.headers.get("Location")).toContain("notice=");
+    expect((await env.DB.prepare("SELECT requestable FROM groups WHERE id = ?").bind(a).first<{ requestable: number }>())!.requestable).toBe(1);
   });
 });
 

@@ -33,6 +33,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/groups/:id/freeze": "POST /api/v1/groups/{id}/freeze",
   "POST /admin/groups/:id": "PATCH /api/v1/groups/{id}",
   "POST /admin/groups/:id/delete": "DELETE /api/v1/groups/{id}",
+  "POST /admin/groups/bulk": "POST /api/v1/groups/bulk",
   "POST /admin/access/requests/:id": "POST /api/v1/access/requests/{id}",
   "POST /admin/access/reviews": "POST /api/v1/access/campaigns",
   "POST /admin/access/reviews/:id/close": "POST /api/v1/access/campaigns/{id}/close",
