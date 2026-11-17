@@ -4318,12 +4318,10 @@ function emailPreview(appName: string, key: TemplateKey, t: EmailTemplate, accen
 const EMAIL_PREVIEW_SCRIPT = `(function(){
   var form = document.getElementById("email-template-form");
   var out = document.getElementById("email-preview");
-  var accent = document.getElementById("email_accent");
   if (!form || !out) return;
   var timer = null, seq = 0;
   function refresh() {
     var q = new URLSearchParams(new FormData(form));
-    if (accent) q.set("accent", accent.value);
     var n = ++seq;
     fetch("/admin/branding/email-templates/preview?" + q.toString(), { credentials: "same-origin" })
       .then(function (r) { return r.ok ? r.text() : null; })
@@ -4332,7 +4330,6 @@ const EMAIL_PREVIEW_SCRIPT = `(function(){
   }
   function later() { clearTimeout(timer); timer = setTimeout(refresh, 250); }
   form.addEventListener("input", later);
-  if (accent) accent.addEventListener("input", later);
 })();`;
 
 admin.get("/admin/branding/email-templates", async (c) => {
@@ -4374,6 +4371,9 @@ admin.get("/admin/branding/email-templates", async (c) => {
           <p class="muted" style="margin-top:-8px;">A blank line starts a new paragraph.${key === "email_otp" ? " The code is shown under the body." : " The button and the link are added under the body."}</p>
           ${info.hasLink ? field("action", "Button label", 60) : ""}
           ${field("footer", "Footer", 500)}
+          <label for="email_accent" style="margin-top:18px;">Accent colour</label>
+          <input type="color" id="email_accent" name="accent" value="${escapeHtml(accent)}" style="height:42px; max-width:120px; padding:4px; cursor:pointer; display:block;" />
+          <p class="muted" style="margin-top:2px;">The top border, button and link colour of every email in the default brand (a <a href="/admin/branding/brands">brand</a> can have its own). The wording above is shared by every brand too: <code>{{app_name}}</code> is the person's brand's app name.</p>
           <p class="muted" style="margin-bottom:6px;">Placeholders:</p>
           <ul class="muted" style="margin:0 0 16px; padding-left:18px;">
             ${info.placeholders.map((p) => `<li><code>{{${escapeHtml(p)}}}</code> ${escapeHtml(PLACEHOLDER_HELP[p] ?? "")}</li>`).join("")}
@@ -4393,16 +4393,6 @@ admin.get("/admin/branding/email-templates", async (c) => {
         <div id="email-preview">${emailPreview(c.get("appName"), key, t, accent, emailLogoUrl(c.env, { logoUrl: c.get("logoUrl") }))}</div>
       `)}
       </div>
-      ${cardSection(`
-        <h2>Accent colour</h2>
-        <p class="muted">The top border, button and link colour of every email in the default brand (a <a href="/admin/branding/brands">brand</a> can have its own). The wording here is shared by every brand: <code>{{app_name}}</code> is the person's brand's app name.</p>
-        <form method="POST" action="/admin/branding/email-accent">
-          <input type="hidden" name="t" value="${key}" />
-          <label for="email_accent">Accent colour</label>
-          <input type="color" id="email_accent" name="accent" value="${escapeHtml(accent)}" style="height:42px; max-width:120px; padding:4px; cursor:pointer;" />
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
-        </form>
-      `)}
       ${scriptTag(EMAIL_PREVIEW_SCRIPT)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Branding", href: "/admin/branding" }, { label: "Email templates" }]
@@ -4426,6 +4416,9 @@ admin.post("/admin/branding/email-templates/:key", async (c) => {
   for (const f of TEMPLATE_FIELDS) if (typeof body[f] === "string") t[f] = body[f] as string;
   try {
     await saveEmailTemplate(consoleCtx(c), key, t);
+    // The accent lives on the same form; only a real change is saved (and audited).
+    const accent = String(body.accent ?? "").trim();
+    if (accent && accent.toLowerCase() !== (await getAccent(c.env))) await saveEmailAccent(consoleCtx(c), accent);
   } catch (e) {
     if (!(e instanceof ServiceError)) throw e;
     return c.redirect(`/admin/branding/email-templates?t=${key}&error=${encodeURIComponent(e.message)}`, 302);
@@ -4443,7 +4436,7 @@ admin.post("/admin/branding/email-templates/:key/reset", async (c) => {
 admin.post("/admin/branding/email-accent", async (c) => {
   const body = await c.req.parseBody();
   const key = isTemplateKey(String(body.t ?? "")) ? String(body.t) : "invitation";
-  // Refused (400) unless #rrggbb; the colour picker never sends anything else.
+  // Kept for older links; the editor posts the accent with the template form.
   await saveEmailAccent(consoleCtx(c), String(body.accent ?? "").trim());
   return c.redirect(`/admin/branding/email-templates?t=${key}&saved=1`, 302);
 });

@@ -44,6 +44,11 @@ observability work.
   same way (`?lang=`, cookie, `ui_locales`, Accept-Language or the instance
   default). The language links in the auth footer are now a compact dropdown
   with flags, which scales as more locales arrive.
+- **Four more sign-in locales:** Brazilian Portuguese (`pt-br`), Simplified
+  Chinese (`zh-cn`), Japanese (`ja`) and Italian (`it`), each flagged
+  machine-assisted pending a native review. Locale matching also falls back
+  across regions now - a browser asking for `pt-PT` gets `pt-br` rather than
+  the instance default.
 - **API keys are editable.** An existing key's name and permission set can be
   changed from its console edit page or `PATCH /api/v1/api-keys/{id}` -
   changes apply on the key's next request and the token itself never
@@ -57,6 +62,13 @@ observability work.
 
 ### Fixed
 
+- The email-template form carries the accent colour too, so the page has one
+  Save button; the preview script reads it off the same form.
+- Multi-card columns in a `two-col` grid (the brand edit page) keep each
+  card at natural height again - the equal-height rule only applies to a
+  pair of cards, not to a column of several.
+- The failed-sign-ins line and the p95 latency line draw a card-coloured
+  halo under the stroke, so the line stays readable where it crosses a bar.
 - **Directory writes no longer wait on the SCIM remote.** Creating, editing,
   or deleting a user or group used to await the outbound provisioning pushes
   - one call for the object, then one per affected group - so a slow or

@@ -266,6 +266,12 @@ const FLAGS: Record<string, string> = {
   fr: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="6" height="12" fill="#0055A4"/><rect x="6" width="6" height="12" fill="#fff"/><rect x="12" width="6" height="12" fill="#EF4135"/></svg>',
   de: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="4" fill="#151515"/><rect y="4" width="18" height="4" fill="#DD0000"/><rect y="8" width="18" height="4" fill="#FFCE00"/></svg>',
   es: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="3" fill="#AA151B"/><rect y="3" width="18" height="6" fill="#F1BF00"/><rect y="9" width="18" height="3" fill="#AA151B"/></svg>',
+  "pt-br":
+    '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="12" fill="#009739"/><path d="M9 1.2 16.2 6 9 10.8 1.8 6Z" fill="#FEDD00"/><circle cx="9" cy="6" r="2" fill="#012169"/></svg>',
+  "zh-cn":
+    '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="12" fill="#DE2910"/><path d="M0 -1 .224 -.309 .951 -.309 .363 .118 .588 .809 0 .382 -.588 .809 -.363 .118 -.951 -.309 -.224 -.309Z" fill="#FFDE00" transform="translate(4.2 3.6) scale(1.9)"/></svg>',
+  ja: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="18" height="12" fill="#fff"/><circle cx="9" cy="6" r="3.4" fill="#BC002D"/></svg>',
+  it: '<svg viewBox="0 0 18 12" aria-hidden="true"><rect width="6" height="12" fill="#009246"/><rect x="6" width="6" height="12" fill="#fff"/><rect x="12" width="6" height="12" fill="#CE2B37"/></svg>',
 };
 const GLOBE_FLAG =
   '<svg viewBox="0 0 18 12" aria-hidden="true"><circle cx="9" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.4 6h9.2M9 1.4c1.8 1.3 1.8 7.9 0 9.2M9 1.4c-1.8 1.3-1.8 7.9 0 9.2" fill="none" stroke="currentColor" stroke-width="1"/></svg>';

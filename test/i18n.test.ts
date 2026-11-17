@@ -73,11 +73,11 @@ describe("i18n helpers", () => {
   it("matches a region to its language, case-insensitively, and refuses junk", () => {
     expect(matchLocale("FR-ca")).toBe("fr");
     expect(matchLocale("de_DE")).toBe("de");
-    expect(matchLocale("ja")).toBeNull();
+    expect(matchLocale("ko")).toBeNull();
     expect(matchLocale('fr"><script>')).toBeNull();
-    expect(pickLocale(["ja", "pt-BR", "de-AT"], "en")).toBe("de");
-    expect(pickLocale(["ja"], "fr")).toBe("fr");
-    expect(uiLocalesPreference("ja de-CH fr")).toBe("de");
+    expect(pickLocale(["ko", "pt-PT", "de-AT"], "en")).toBe("pt-br");
+    expect(pickLocale(["ko"], "fr")).toBe("fr");
+    expect(uiLocalesPreference("ko de-CH fr")).toBe("de");
   });
 
   it("fills placeholders, formats numbers and lists, and falls back to English", () => {
@@ -157,7 +157,7 @@ describe("sign-in pages", () => {
   });
 
   it("follows Accept-Language, then ?lang= (remembered in a cookie), then the cookie", async () => {
-    const fr = await get("/login", { "Accept-Language": "ja, fr-CA;q=0.8, de;q=0.5" });
+    const fr = await get("/login", { "Accept-Language": "ko, fr-CA;q=0.8, de;q=0.5" });
     expect(fr.html).toContain('<html lang="fr" dir="ltr"');
     expect(fr.html).toContain("Nom d&#039;utilisateur");
     expect(fr.res.headers.get("Set-Cookie") ?? "").not.toContain("flareid_lang");
@@ -185,7 +185,7 @@ describe("sign-in pages", () => {
     expect(ok.body.default_language).toBe("de");
     expect(ok.body.available_languages.map((l: { code: string }) => l.code)).toEqual(Object.keys(LOCALES));
 
-    expect((await get("/login", { "Accept-Language": "ja" })).html).toContain('<html lang="de"');
+    expect((await get("/login", { "Accept-Language": "ko" })).html).toContain('<html lang="de"');
     expect((await get("/login")).html).toContain('<html lang="de"');
     // A language the browser asks for still wins over the default.
     expect((await get("/login", { "Accept-Language": "en-GB" })).html).toContain('<html lang="en"');
@@ -261,7 +261,7 @@ describe("sign-in pages", () => {
   it("uses an app's OIDC ui_locales for the sign-in page", async () => {
     const client = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: ["https://rp.test/cb"] } });
     expect(client.status).toBeLessThan(300);
-    const q = new URLSearchParams({ client_id: client.body.client_id, redirect_uri: "https://rp.test/cb", response_type: "code", scope: "openid", ui_locales: "ja de" });
+    const q = new URLSearchParams({ client_id: client.body.client_id, redirect_uri: "https://rp.test/cb", response_type: "code", scope: "openid", ui_locales: "ko de" });
     const { html } = await get(`/authorize?${q}`, { "Accept-Language": "fr" });
     expect(html).toContain('<html lang="de"');
     // The explicit choice (the cookie) still wins over the app's.

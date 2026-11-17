@@ -114,7 +114,8 @@ export function formatList(locale: Locale, items: string[]): string {
 
 /**
  * The supported locale a language tag asks for: the exact tag, else its
- * primary subtag ("fr-CA" -> "fr"), case-insensitively. Null when none.
+ * primary subtag ("fr-CA" -> "fr"), else another region of the same
+ * language ("pt-PT" -> "pt-br"), case-insensitively. Null when none.
  */
 export function matchLocale(tag: string | null | undefined): Locale | null {
   if (!tag) return null;
@@ -122,7 +123,8 @@ export function matchLocale(tag: string | null | undefined): Locale | null {
   if (!/^[a-z]{2,8}(-[a-z0-9]{1,8})*$/.test(clean)) return null;
   if (isSupportedLocale(clean)) return clean;
   const primary = clean.split("-")[0]!;
-  return isSupportedLocale(primary) ? primary : null;
+  if (isSupportedLocale(primary)) return primary;
+  return SUPPORTED_LOCALES.find((l) => l.split("-")[0] === primary) ?? null;
 }
 
 /**

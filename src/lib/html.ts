@@ -117,6 +117,8 @@ const STYLES = `
   .chart .dot.s-p95 { fill: var(--fi-faint); }
   .chart .line.s-err { stroke: var(--fi-err-line); stroke-width: 2.5; }
   .chart .dot.s-err, .chart text.s-err { fill: var(--fi-err-line); }
+  .chart .line-halo { stroke: var(--fi-surface); stroke-width: 5.5; }
+  .chart .dot-halo { stroke: var(--fi-surface); stroke-width: 1.5px; }
   .chart .bar.err { fill: var(--fi-red); }
   .range-tabs { display: inline-flex; border: 1px solid var(--fi-line); border-radius: 8px; overflow: hidden; }
   .range-tabs a { padding: 6px 12px; font-size: 0.8125rem; color: var(--fi-body); text-decoration: none; }
@@ -219,7 +221,11 @@ const STYLES = `
   .attr-row label { margin: 0; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .header-meta { font-size: 0.875rem; font-weight: 400; color: var(--fi-muted); margin-left: 10px; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
-  .two-col .card { margin-bottom: 0; height: 100%; }
+  /* Equal-height pairs - direct children only. A column that wraps several
+     cards keeps them at natural height (the brands edit page does this). */
+  .two-col > .card { margin-bottom: 0; height: 100%; }
+  .two-col > div:not(.card) { display: flex; flex-direction: column; }
+  .two-col > div:not(.card) > .card:last-child { margin-bottom: 0; }
   @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
 
   .breadcrumbs { font-size: 0.8125rem; color: var(--fi-muted); margin-bottom: 6px; }
@@ -976,9 +982,13 @@ export function barLineChart(
       return `<rect class="bar" x="${cx(i) - barW / 2}" y="${pad.top + plotH - h}" width="${barW}" height="${Math.max(0, h)}" rx="2"><title>${escapeHtml(p.label)}: ${p.value}</title></rect>`;
     })
     .join("");
+  // The line gets a card-coloured halo under it: where it crosses a bar the
+  // colour stays readable instead of blending into the accent fill.
+  const points = line.values.map((v, i) => `${cx(i).toFixed(1)},${yLine(v).toFixed(1)}`).join(" ");
   const poly =
-    `<polyline class="line ${line.className}" fill="none" points="${line.values.map((v, i) => `${cx(i).toFixed(1)},${yLine(v).toFixed(1)}`).join(" ")}" />` +
-    line.values.map((v, i) => `<circle class="dot ${line.className}" cx="${cx(i).toFixed(1)}" cy="${yLine(v).toFixed(1)}" r="2.5"><title>${escapeHtml(bars[i]?.label ?? "")} ${escapeHtml(line.name)}: ${v}</title></circle>`).join("");
+    `<polyline class="line-halo" fill="none" points="${points}" />` +
+    `<polyline class="line ${line.className}" fill="none" points="${points}" />` +
+    line.values.map((v, i) => `<circle class="dot ${line.className} dot-halo" cx="${cx(i).toFixed(1)}" cy="${yLine(v).toFixed(1)}" r="2.5"><title>${escapeHtml(bars[i]?.label ?? "")} ${escapeHtml(line.name)}: ${v}</title></circle>`).join("");
   const step = Math.ceil(bars.length / 8) || 1;
   const labels = bars.map((p, i) => (i % step === 0 ? `<text x="${cx(i)}" y="${height - 10}" text-anchor="middle">${escapeHtml(p.label)}</text>` : "")).join("");
 
