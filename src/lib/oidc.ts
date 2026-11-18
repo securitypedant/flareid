@@ -186,9 +186,14 @@ export async function recordConsent(env: Env, userId: number, clientId: string, 
     .run();
 }
 
-/** Builds an error redirect back to the client, per RFC 6749 section 4.1.2.1. */
-export function authorizeErrorRedirect(redirectUri: string, error: string, state: string, description?: string): string {
+/**
+ * Builds an error redirect back to the client, per RFC 6749 section 4.1.2.1.
+ * RFC 9207: every authorization response, errors included, carries `iss` so a
+ * client behind a multi-issuer setup can tell who answered.
+ */
+export function authorizeErrorRedirect(issuer: string, redirectUri: string, error: string, state: string, description?: string): string {
   const url = new URL(redirectUri);
+  url.searchParams.set("iss", issuer);
   url.searchParams.set("error", error);
   if (description) url.searchParams.set("error_description", description);
   if (state) url.searchParams.set("state", state);

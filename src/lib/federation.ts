@@ -2,6 +2,7 @@ import { DOMParser, type Element as XmlElement, type Node as XmlNode } from "@xm
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { SignedXml } from "xml-crypto";
 import { normalizeCertPem } from "./saml/x509.js";
+import { grantsAdminRoleGroup } from "./admin-roles.js";
 import type { Env } from "../env.js";
 import { defaultSchemaId } from "./schemas.js";
 import { getUserByLoginIdentifier } from "./db.js";
@@ -512,6 +513,31 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   const upn = `${candidate}@${domain}`;
   const t = now();
   const schemaId = await defaultSchemaId(env, "user");
+  // The same boundary every other user writer honours: the IdP chose the
+  // claims, so they must not land the new account in a group that grants an
+  // admin role - a dynamic rule on username or display_name turns a JIT
+  // account into an instant admin grant.
+  const granted = await grantsAdminRoleGroup(env, null, {
+    upn,
+    username: candidate,
+    display_name: profile.displayName || upn,
+    given_name: profile.givenName,
+    family_name: profile.familyName,
+    external_id: "",
+    job_title: "",
+    department: "",
+    employee_number: "",
+    hire_date: "",
+    employment_status: "",
+    employment_type: "",
+    location: "",
+    status: "active",
+    manager_external_id: null,
+    source_id: null,
+    custom_attributes: "{}",
+    email: profile.email || null,
+  } as UserRow);
+  if (granted) throw new FederationError(`Provisioning would place the account in ${granted}, a group that grants an admin role.`);
   const inserted = await env.DB.prepare(
     `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, is_admin, status, schema_id, custom_attributes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '!', '', 0, 0, 'active', ?, '{}', ?, ?) RETURNING id`

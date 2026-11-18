@@ -76,7 +76,6 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/integrations/ldap", "ldap"],
   ["/admin/ldap", "ldap"],
   ["/admin/integrations/federation", "federation"],
-  ["/admin/federation", "federation"],
   ["/admin/integrations/email", "email"],
   ["/admin/email", "email"],
   ["/admin/integrations/cf-one", "cfone"],
@@ -111,6 +110,11 @@ export function requiredPermission(method: string, path: string): Permission | n
   // step-up ceremony itself.
   if (path === "/admin" || path === "/admin/integrations" || under(path, "/admin/reauth")) return null;
   const write = method !== "GET" && method !== "HEAD";
+  // Registering or changing an upstream IdP hands its claims authority over
+  // every account here (adoption by address match, JIT provisioning) - the
+  // same blast radius as minting an admin key, so writes are Super-Admin-only.
+  // Reads stay delegated (federation:read via /admin/integrations/federation).
+  if (under(path, "/admin/federation")) return write ? "super" : "federation:read";
   const hit = PATH_AREAS.find(([prefix]) => under(path, prefix));
   // Anything unmapped fails closed to Super Admin - a new console page is
   // denied until it deliberately joins PATH_AREAS, never accidentally open.

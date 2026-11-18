@@ -84,6 +84,30 @@ describe("SCIM admin-role boundary", () => {
     expect((await accessFor(env, await userId("oncall.hire@horizon.test"))).isAdmin).toBe(true);
   });
 
+  it("refuses a mapped custom attribute that lands the user in a role group", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    // Rules match custom_attributes by bare name - a mapping writing one is
+    // the same grant as writing department.
+    await linkDynamicRoleGroup("Vip Admins", "Directory Admin", "level", "gold");
+    await apiCall("/api/v1/scim/mappings", { token: apiKey, method: "PUT", body: { mappings: [{ target: "custom.level", expression: "title" }] } });
+    const dw = await directoryWriter(apiKey);
+
+    const created = await scim(dw, "/Users", "POST", { userName: "mallory@horizon.test", title: "staff" });
+    expect(created.status).toBe(201);
+
+    const patched = await scim(dw, `/Users/${created.body.id}`, "PATCH", {
+      schemas: [PATCH],
+      Operations: [{ op: "replace", path: "title", value: "gold" }],
+    });
+    expect(patched.status).toBe(403);
+    const row = (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(await userId("mallory@horizon.test")).first<{ custom_attributes: string }>())!;
+    expect(JSON.parse(row.custom_attributes).level ?? "").not.toBe("gold");
+    expect((await accessFor(env, await userId("mallory@horizon.test"))).isAdmin).toBe(false);
+
+    const put = await scim(dw, `/Users/${created.body.id}`, "PUT", { userName: "mallory@horizon.test", title: "gold" });
+    expect(put.status).toBe(403);
+  });
+
   it("refuses a non-admin key to touch an account holding any admin role", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const dw = await directoryWriter(apiKey);

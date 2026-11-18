@@ -735,8 +735,10 @@ whose DN names no app (`alice@example.com`, `NETBIOS\alice`, bare usernames)
 
 ### `GET|POST /federation/idps`, `GET|PATCH|DELETE /federation/idps/{id}`
 
-Scope: `federation:write` (reads: `federation:read`; both come with
-`clients:write`).
+Scope: reads `federation:read` (comes with `clients:write`). Writes are
+**admin-only** — registering or changing an upstream IdP hands its claims
+authority over every account here, the same trust decision as minting an
+admin key.
 
 Inbound federation: the upstream identity providers people can sign in
 *through* - FlareID as the OIDC relying party / SAML service provider, the

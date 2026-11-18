@@ -209,6 +209,12 @@ describe("authorization code flow", () => {
     expect(payload.nonce).toBe("a-nonce");
   });
 
+  it("identifies itself on the authorization response (RFC 9207 iss)", async () => {
+    const { clientId, upn } = await seedRelyingParty();
+    const { location } = await authorizeAndLogin({ clientId, upn });
+    expect(new URL(location!, BASE).searchParams.get("iss")).toBe(BASE);
+  });
+
   it("rejects an authorization code the second time it is presented", async () => {
     const { clientId, clientSecret, upn } = await seedRelyingParty();
     const { code } = await authorizeAndLogin({ clientId, upn });
@@ -586,6 +592,8 @@ describe("PKCE", () => {
       expect(location.origin + location.pathname).toBe(REDIRECT_URI);
       expect(location.searchParams.get("error")).toBe("invalid_request");
       expect(location.searchParams.get("state")).toBe("s1");
+      // RFC 9207: error responses carry iss too.
+      expect(location.searchParams.get("iss")).toBe(BASE);
     }
   });
 });

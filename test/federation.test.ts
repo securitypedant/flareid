@@ -4,7 +4,7 @@ import { SignedXml } from "xml-crypto";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { TEST_SAML_IDP_CERT_PEM, TEST_SAML_IDP_KEY_PKCS8, TEST_SAML_SP_CERT_PEM, TEST_SAML_SP_KEY_PKCS8 } from "./fixtures/saml-keys.js";
-import { createUpstreamIdp, getUpstreamIdp, profileFromClaims, resolveFederatedUser, verifySamlResponse, NoLocalAccount, type SamlIdpConfig } from "../src/lib/federation.js";
+import { createUpstreamIdp, FederationError, getUpstreamIdp, profileFromClaims, resolveFederatedUser, verifySamlResponse, NoLocalAccount, type SamlIdpConfig } from "../src/lib/federation.js";
 import { sealLoginFlow } from "../src/lib/authorize-state.js";
 import { b64encode } from "../src/lib/saml/xml.js";
 
@@ -164,6 +164,20 @@ describe("resolveFederatedUser", () => {
     const again = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" });
     expect(again.id).toBe(user.id);
   });
+
+  it("refuses a JIT account whose claims would put it in an admin role group", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    // A dynamic rule on a claim-controlled field, linked to a role: the
+    // upstream asserts given_name and the account is born an administrator.
+    const gid = (await env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES ('Vip Admins', '', ?) RETURNING id")
+      .bind(JSON.stringify({ all: [{ field: "given_name", op: "eq", value: "RootOfTrust" }] }))
+      .first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO admin_role_groups (role_id, group_id) SELECT r.id, ? FROM admin_roles r WHERE r.name = 'Directory Admin'").bind(gid).run();
+
+    const idp = await createUpstreamIdp(env, { name: "U", protocol: "oidc", config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test" });
+    await expect(resolveFederatedUser(env, idp, { subject: "sub-x", email: "new@else.test", username: "nobody", givenName: "RootOfTrust", familyName: "", displayName: "RootOfTrust" })).rejects.toBeInstanceOf(FederationError);
+    expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = 'nobody'").first()).toBeNull();
+  });
 });
 
 describe("federation API", () => {
@@ -185,6 +199,23 @@ describe("federation API", () => {
     const del = await apiCall(`/api/v1/federation/idps/${idpId}`, { token: apiKey, method: "DELETE" });
     expect(del.status).toBe(200);
     expect(await apiCall(`/api/v1/federation/idps/${idpId}`, { token: apiKey })).toMatchObject({ status: 404 });
+  });
+
+  it("refuses delegated federation writes: registering an IdP needs an admin key", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const delegated = (await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "fed-admin", scopes: ["clients:write"] } })).body.token as string;
+
+    // clients:write grants federation:write - which still reads, but can no
+    // longer register, change or remove a trust anchor.
+    const created = await apiCall("/api/v1/federation/idps", { token: delegated, body: { name: "Rogue", protocol: "oidc", config: { issuer: "https://evil.test", client_id: "c" } } });
+    expect(created.status).toBe(403);
+    expect((await apiCall("/api/v1/federation/idps", { token: delegated })).status).toBe(200);
+
+    const adminCreated = await apiCall("/api/v1/federation/idps", { token: apiKey, body: { name: "Entra", protocol: "oidc", config: { issuer: "https://login.test", client_id: "c" } } });
+    const idpId = adminCreated.body.id as number;
+    expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated, method: "PATCH", body: { enabled: false } })).status).toBe(403);
+    expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated, method: "DELETE" })).status).toBe(403);
+    expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated })).status).toBe(200);
   });
 
   it("rejects bad issuer URLs and duplicate names", async () => {

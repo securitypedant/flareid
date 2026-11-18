@@ -933,9 +933,9 @@ function upstreamInput(body: { name?: string; protocol?: string; enabled?: boole
 }
 
 defineRoute({
-  method: "post", path: "/api/v1/federation/idps", tag: "Federation", permission: "federation:write", summary: "Add an upstream identity provider",
+  method: "post", path: "/api/v1/federation/idps", tag: "Federation", permission: "admin", summary: "Add an upstream identity provider",
   description:
-    "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches.",
+    "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.",
   body: UpstreamIdpBody, errors: [400, 409],
 }, async (c) => {
   const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }>(c);
@@ -949,7 +949,7 @@ defineRoute({
 });
 
 defineRoute({
-  method: "patch", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "federation:write", summary: "Change an upstream identity provider",
+  method: "patch", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "admin", summary: "Change an upstream identity provider",
   description: "Fields not supplied keep their values; `config` keys merge onto the stored config, and an omitted client_secret keeps the stored credential.",
   body: UpstreamIdpBody.partial(), errors: [400, 404],
 }, async (c) => {
@@ -967,7 +967,7 @@ defineRoute({
 });
 
 defineRoute({
-  method: "delete", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "federation:write", summary: "Remove an upstream identity provider",
+  method: "delete", path: "/api/v1/federation/idps/{id}", tag: "Federation", permission: "admin", summary: "Remove an upstream identity provider",
   description: "Its sign-in button and linked identities go with it; the accounts themselves are kept.",
   errors: [404],
 }, async (c) => {
@@ -1199,6 +1199,12 @@ defineRoute({
   // An explicit empty list used to be stored as admin while the response and
   // the audit entry said "no scopes". Omit `scopes` to mean admin; [] is an error.
   if (requested.length === 0) return c.json(badRequest("scopes cannot be empty. Omit it for an admin key, or list the scopes the key needs."), 400);
+  // A key can only carry scopes the caller holds (the console's rule): admin
+  // callers pass this trivially, and it keeps minting safe if the route's
+  // permission ever widens.
+  const mintActor = c.get("apiActor");
+  const beyond = requested.filter((s) => !hasScope(mintActor.scopes, s));
+  if (beyond.length) return c.json({ error: "forbidden", message: `This token cannot grant scopes it does not hold: ${beyond.join(", ")}.` }, 403);
 
   // An unparseable expiry used to be stored as-is, and NaN never compares as
   // expired - so a typo produced a key that lives forever.

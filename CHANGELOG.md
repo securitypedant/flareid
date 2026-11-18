@@ -273,6 +273,38 @@ third-party-initiated login and dynamic client registration.
   captured before a deletion now verifies the user or group still exists
   before creating it downstream.
 
+- **API-key scope self-escalation.** `PATCH /api/v1/api-keys/{id}` applied
+  the requested scopes without the cap the console has always enforced - a
+  key holding only `api_keys:write` could rewrite its own scopes to
+  `admin`. Both the PATCH and `POST /api/v1/api-keys` now refuse scopes the
+  calling token does not itself hold.
+
+- **Delegated federation write was a whole-directory takeover.**
+  `federation:write` (handed out by `clients:write` and delegable to
+  non-admin roles) could register or reconfigure an upstream identity
+  provider - whose verified-but-unauthenticated claims then adopt *any*
+  account by address match, including Super Admins. Registering, changing
+  and removing upstream IdPs now needs an admin-scoped API key and Super
+  Admin in the console; `federation:read` stays delegated.
+
+- **SCIM custom-attribute writes bypassed the admin-role guard.** Inbound
+  mapping writes to `custom_attributes` merged *after* the
+  no-admin-role-grant check ran, so a `directory:write` key could set an
+  attribute a role-linked dynamic group's rule matches and land the user
+  in an admin group. The merge now happens before the check sees the row,
+  on the correlate, PUT and PATCH paths (create already checked the
+  merged set).
+
+- **JIT provisioning skipped the admin-role guard.** A federated sign-in
+  creating an account never checked the post-insert row against role
+  linked dynamic-group rules - the only user-creation path that didn't -
+  so upstream-controlled claim fields could place the new account in an
+  admin group. It is checked now, like every other creator.
+
+- **Authorization responses identify the issuer (RFC 9207).** Success and
+  error redirects from `/authorize` (query and `form_post`) now carry
+  `iss`, which the OIDF conformance suite requires.
+
 ## [4.0.0] - 2026-11-17
 
 **Migration `0032_user_emails.sql`** - `user_emails`, the per-account contact

@@ -319,16 +319,24 @@ async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown;
   return { cols, emails, custom, userName, photo };
 }
 
-async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined, custom?: Record<string, string | null>, photo?: string | null) {
-  if (custom && Object.keys(custom).length) {
-    const current = (await env.DB.prepare("SELECT custom_attributes FROM users WHERE id = ?").bind(userId).first<{ custom_attributes: string }>())?.custom_attributes ?? "{}";
-    const attrs = JSON.parse(current) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(custom)) {
-      if (v === null) delete attrs[k];
-      else attrs[k] = v;
-    }
-    cols.custom_attributes = JSON.stringify(attrs);
+/**
+ * The custom-attribute merge, done BEFORE the admin-role guard runs - a rule
+ * on a dynamic group can match an attribute, so the guard must see the
+ * post-merge set, not just the mapped columns. `currentJson` is the row's
+ * stored attributes; null deletes a key. Returns nothing when there is no
+ * custom write.
+ */
+function mergedCustomAttributes(currentJson: string | null | undefined, custom: Record<string, string | null> | undefined): string | undefined {
+  if (!custom || !Object.keys(custom).length) return undefined;
+  const attrs = JSON.parse(currentJson ?? "{}") as Record<string, unknown>;
+  for (const [k, v] of Object.entries(custom)) {
+    if (v === null) delete attrs[k];
+    else attrs[k] = v;
   }
+  return JSON.stringify(attrs);
+}
+
+async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined, photo?: string | null) {
   const keys = Object.keys(cols);
   if (keys.length > 0) {
     await env.DB.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
@@ -374,8 +382,10 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
     const matched = await correlateUser(c.env, { upn, cols, emails });
     if (matched) {
       if (await holdsAdminRole(c.env, matched.user.id)) requireAdminFor(c, "Changing an account that holds an admin role");
+      const merged = mergedCustomAttributes(matched.user.custom_attributes, custom);
+      if (merged !== undefined) cols.custom_attributes = merged;
       await assertNoAdminRoleGrant(c, matched.user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-      await applyColumns(c.env, matched.user.id, cols, emails, custom, photo);
+      await applyColumns(c.env, matched.user.id, cols, emails, photo);
       await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_correlated", matched.user.upn, { key: matched.key }, c.req.raw);
       const fresh = (await getUserByExternalId(c.env, matched.user.external_id))!;
       downstream(c, () => pushUserAndRules(c.env, matched.user, fresh), "update", fresh.upn);
@@ -406,13 +416,10 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
     job_title: "", department: "", employee_number: "", hire_date: "", employment_status: "", employment_type: "",
     location: "", status: "disabled", manager_external_id: null, source_id: null, custom_attributes: "{}", ...cols,
   } as UserRow;
-  if (custom) {
-    const attrs = { ...(JSON.parse(after.custom_attributes) as Record<string, unknown>) };
-    for (const [k, v] of Object.entries(custom)) {
-      if (v === null) delete attrs[k];
-      else attrs[k] = v;
-    }
-    after.custom_attributes = JSON.stringify(attrs);
+  const mergedAttrs = mergedCustomAttributes("{}", custom);
+  if (mergedAttrs !== undefined) {
+    after.custom_attributes = mergedAttrs;
+    cols.custom_attributes = mergedAttrs;
   }
   if (!hasScope(c.get("apiActor").scopes, "admin")) {
     const granted = await grantsAdminRoleGroup(c.env, null, after);
@@ -425,7 +432,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   )
     .bind(upn, local, local, externalId, await defaultSchemaId(c.env, "user"), now, now)
     .first<{ id: number }>();
-  await applyColumns(c.env, inserted!.id, cols, emails, custom, photo);
+  await applyColumns(c.env, inserted!.id, cols, emails, photo);
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
   downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
@@ -454,8 +461,10 @@ scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) 
   const user = await guardedUser(c);
   const body = await c.req.json<ScimUserBody>();
   const { cols, emails, custom, photo } = await columnsFrom(c.env, body);
+  const merged = mergedCustomAttributes(user.custom_attributes, custom);
+  if (merged !== undefined) cols.custom_attributes = merged;
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails, custom, photo);
+  await applyColumns(c.env, user.id, cols, emails, photo);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -498,8 +507,10 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   // expression that yields nothing from clearing its field.
   const doc = mergeScimBody(await userResource(c.env, user), patchBody);
   const { cols, emails, custom, photo } = await columnsFrom(c.env, patchBody, { doc, partial: true });
+  const merged = mergedCustomAttributes(user.custom_attributes, custom);
+  if (merged !== undefined) cols.custom_attributes = merged;
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails, custom, photo);
+  await applyColumns(c.env, user.id, cols, emails, photo);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);

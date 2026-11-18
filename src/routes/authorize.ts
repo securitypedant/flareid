@@ -62,7 +62,7 @@ export async function finishOidcAuthorize(
     const requestedGroups = [...effectiveClaimGroups(client, req.scope, [...(req.claimGroups?.id_token ?? []), ...(req.claimGroups?.userinfo ?? [])])];
     const alreadyAgreed = !prompts.has("consent") && (await hasConsent(env, userId, client.client_id, req.scope, requestedGroups));
     if (!alreadyAgreed) {
-      if (prompts.has("none")) return { redirectTo: authorizeErrorRedirect(req.redirectUri, "consent_required", req.state) };
+      if (prompts.has("none")) return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "consent_required", req.state) };
       const consentId = randomToken(16);
       const pending: PendingConsent = { request: req, userId, amr, sid };
       await env.SESSIONS_KV.put(`consent:${consentId}`, JSON.stringify(pending), { expirationTtl: CONSENT_TTL_SECONDS });
@@ -103,6 +103,7 @@ export async function finishOidcAuthorize(
 
   const redirect = new URL(req.redirectUri);
   redirect.searchParams.set("code", code);
+  redirect.searchParams.set("iss", env.ISSUER_URL);
   if (req.state) redirect.searchParams.set("state", req.state);
   // OIDC Session Management: the RP keeps this salted hash and polls the OP's
   // check-session iframe to learn when the session here ends.
@@ -173,7 +174,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
 
   // From here the redirect_uri is known to be the client's own, so errors go
   // back to it (RFC 6749 4.1.2.1) rather than stranding the user on our page.
-  const fail = (error: string, description: string) => respondAuthorize(c, authorizeErrorRedirect(redirectUri, error, state, description), responseMode === "form_post" ? "form_post" : undefined);
+  const fail = (error: string, description: string) => respondAuthorize(c, authorizeErrorRedirect(c.env.ISSUER_URL, redirectUri, error, state, description), responseMode === "form_post" ? "form_post" : undefined);
   if (responseType !== "code") return fail("unsupported_response_type", "Only response_type=code is supported.");
   if (responseMode !== null && responseMode !== "query" && responseMode !== "form_post") {
     return fail("invalid_request", "response_mode must be query or form_post.");

@@ -94,6 +94,29 @@ describe("API authentication", () => {
     expect(writes.body.message).toMatch(/directory:write/);
   });
 
+  it("refuses a key to grant itself scopes it does not hold", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const narrow = (await apiCall("/api/v1/api-keys", {
+      token: apiKey,
+      body: { name: "narrow", scopes: ["api_keys:write"] },
+    })).body.token as string;
+
+    const list = await apiCall("/api/v1/api-keys", { token: narrow });
+    const me = (list.body.api_keys as { id: number; name: string }[]).find((k) => k.name === "narrow")!;
+
+    // The self-escalation the console has always refused: api_keys:write
+    // alone must not be able to turn itself into an admin key.
+    for (const scopes of [["admin"], ["api_keys:write", "users:write"], ["directory:write"]]) {
+      const res = await apiCall(`/api/v1/api-keys/${me.id}`, { token: narrow, method: "PATCH", body: { name: "narrow", scopes } });
+      expect(res.status, JSON.stringify(scopes)).toBe(403);
+    }
+
+    // Restating what it holds is fine - including a narrower permission its
+    // write implies.
+    const ok = await apiCall(`/api/v1/api-keys/${me.id}`, { token: narrow, method: "PATCH", body: { name: "narrow", scopes: ["api_keys:read"] } });
+    expect(ok.status).toBe(200);
+  });
+
   it("rejects an unknown scope rather than silently granting nothing", async () => {
     const { status, body } = await apiCall("/api/v1/api-keys", {
       token: BOOTSTRAP,

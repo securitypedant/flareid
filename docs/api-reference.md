@@ -2188,10 +2188,10 @@ Inbound federation: upstream identity providers people sign in through (FlareID 
 | Method | Path | Permission | Summary |
 |---|---|---|---|
 | `GET` | `/api/v1/federation/idps` | `federation:read` | List upstream identity providers |
-| `POST` | `/api/v1/federation/idps` | `federation:write` | Add an upstream identity provider |
+| `POST` | `/api/v1/federation/idps` | `admin` | Add an upstream identity provider |
 | `GET` | `/api/v1/federation/idps/{id}` | `federation:read` | Read one upstream identity provider |
-| `PATCH` | `/api/v1/federation/idps/{id}` | `federation:write` | Change an upstream identity provider |
-| `DELETE` | `/api/v1/federation/idps/{id}` | `federation:write` | Remove an upstream identity provider |
+| `PATCH` | `/api/v1/federation/idps/{id}` | `admin` | Change an upstream identity provider |
+| `DELETE` | `/api/v1/federation/idps/{id}` | `admin` | Remove an upstream identity provider |
 
 ### `GET /api/v1/federation/idps`
 
@@ -2213,9 +2213,9 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Add an upstream identity provider.
 
-FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches.
+FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.
 
-Permission: `federation:write`
+Permission: `admin`
 
 Request body:
 
@@ -2268,7 +2268,7 @@ Change an upstream identity provider.
 
 Fields not supplied keep their values; `config` keys merge onto the stored config, and an omitted client_secret keeps the stored credential.
 
-Permission: `federation:write`
+Permission: `admin`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
@@ -2301,7 +2301,7 @@ Remove an upstream identity provider.
 
 Its sign-in button and linked identities go with it; the accounts themselves are kept.
 
-Permission: `federation:write`
+Permission: `admin`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|

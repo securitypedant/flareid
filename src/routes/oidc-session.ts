@@ -78,7 +78,7 @@ oidcSession.post("/consent/:id", async (c) => {
 
   if (decision !== "allow" || !client) {
     await logAudit(c.env, { id: userId, upn: String(userId) }, "oauth.consent_denied", client?.name ?? request.clientId, undefined, c.req.raw);
-    return respondAuthorize(c, authorizeErrorRedirect(request.redirectUri, "access_denied", request.state, "The user declined."), request.responseMode);
+    return respondAuthorize(c, authorizeErrorRedirect(c.env.ISSUER_URL, request.redirectUri, "access_denied", request.state, "The user declined."), request.responseMode);
   }
   const shownGroups = [...effectiveClaimGroups(client, request.scope, [...(request.claimGroups?.id_token ?? []), ...(request.claimGroups?.userinfo ?? [])])];
   await recordConsent(c.env, userId, client.client_id, request.scope, shownGroups);

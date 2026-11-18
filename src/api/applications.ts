@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import { isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.js";
+import { hasScope, isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.js";
 import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimTarget, listScimTargets, type ScimTarget } from "../lib/scim-targets.js";
@@ -8,7 +8,7 @@ import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { apiCtx } from "../services/context.js";
 import { removeDomain, revokeKey, updateKey } from "../services/platform.js";
-import { badRequest, defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
+import { badRequest, defineRoute, forbidden, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import { ClientSchema, IdParam, ServiceProviderSchema } from "./schemas.js";
 
 /**
@@ -238,6 +238,11 @@ defineRoute(
     const invalid = requested.filter((s) => !isApiScope(s));
     if (invalid.length > 0) return c.json(badRequest(`Unknown scope(s): ${invalid.join(", ")}.`), 400);
     if (requested.length === 0) return c.json(badRequest("scopes cannot be empty."), 400);
+    // Same rule the console enforces: a key can only carry scopes the caller
+    // itself holds - otherwise api_keys:write alone could escalate itself to *.
+    const actor = c.get("apiActor");
+    const beyond = requested.filter((s) => !hasScope(actor.scopes, s));
+    if (beyond.length) return forbidden(c, `This token cannot grant scopes it does not hold: ${beyond.join(", ")}.`);
     await updateKey(apiCtx(c), Number(param(c, "id")), { name, scopes: requested });
     return c.json({ ok: true });
   }
