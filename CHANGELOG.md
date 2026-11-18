@@ -6,6 +6,11 @@ may break things.
 
 ## [Unreleased]
 
+- **`private_key_jwt` without `client_id`** - the token endpoint now
+  identifies the client from the assertion's `iss` when `client_id` is
+  omitted, as RFC 7523 allows (and the OIDF conformance suite exercises).
+  Previously every assertion-only token request was refused `invalid_client`.
+
 **Migration `0043_client_grant_types.sql`** - `oauth_clients.grant_types` and
 `oauth_clients.registered_scope`, persisting the RFC 7591 `grant_types` and
 `scope` metadata dynamic clients register, enforced at `/token` (NULL keeps

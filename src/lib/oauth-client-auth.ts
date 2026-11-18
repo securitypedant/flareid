@@ -1,4 +1,4 @@
-import { createLocalJWKSet, createRemoteJWKSet, jwtVerify, type JWTVerifyOptions } from "jose";
+import { createLocalJWKSet, createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyOptions } from "jose";
 import type { Env } from "../env.js";
 import { getClientByClientId } from "./db.js";
 import { sha256Hex } from "./tokens.js";
@@ -94,9 +94,21 @@ export async function authenticateClient(
   opts: { allowPublic?: boolean } = {}
 ): Promise<OAuthClientRow | null> {
   const basic = parseBasicAuth(authHeader);
-  const clientId = basic?.clientId ?? String(body.client_id ?? "");
+  let clientId = basic?.clientId ?? String(body.client_id ?? "");
   const clientSecret = basic?.clientSecret ?? String(body.client_secret ?? "");
-  if (!clientId) return null;
+  if (!clientId) {
+    // RFC 7523: client_id is optional with client_assertion - the client is
+    // identified by the assertion's iss. Read it unverified only to find the
+    // registration; the signature still has to check out below.
+    if (String(body.client_assertion_type ?? "") === ASSERTION_TYPE && typeof body.client_assertion === "string") {
+      try {
+        clientId = String(decodeJwt(body.client_assertion).iss ?? "");
+      } catch {
+        return null;
+      }
+    }
+    if (!clientId) return null;
+  }
 
   const client = await getClientByClientId(env, clientId);
   if (!client) return null;
