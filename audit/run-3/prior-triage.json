@@ -1,0 +1,1625 @@
+{
+ "run-1": {
+  "same": [],
+  "changed": [
+   {
+    "fp": "account.ts/apps-revoke-missing-auth_codes-delete",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/sessions.ts",
+     "src/routes/account.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts",
+     "src/services/clients.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/lib/sessions.ts",
+     "src/routes/account.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts",
+     "src/services/clients.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "account.ts:profile-clear:in-operator-inherited-proto",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/jwt.ts",
+     "src/lib/saml/attributes.ts",
+     "src/lib/schemas.ts",
+     "src/routes/account.ts"
+    ],
+    "changed_paths": [
+     "src/lib/jwt.ts",
+     "src/lib/schemas.ts",
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "admin-console:idp-settings-secret-echo:read-roles",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/api/applications.ts",
+     "src/api/settings.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/routes/admin.ts"
+    ],
+    "changed_paths": [
+     "src/api/applications.ts",
+     "src/api/settings.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/routes/admin.ts"
+    ]
+   },
+   {
+    "fp": "api-v1-audit-limit-unbounded-negative",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/monitoring.ts",
+     "src/services/monitoring.ts"
+    ],
+    "changed_paths": [
+     "src/api/monitoring.ts",
+     "src/services/monitoring.ts"
+    ]
+   },
+   {
+    "fp": "auth-policy-write-missing-usable-factor-guard",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/settings.ts",
+     "src/lib/auth-policy.ts",
+     "src/lib/settings.ts",
+     "src/routes/account.ts",
+     "src/services/access.ts",
+     "src/services/settings.ts",
+     "test/w1h15-probe.test.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/lib/auth-policy.ts",
+     "src/lib/settings.ts",
+     "src/routes/account.ts",
+     "src/services/access.ts",
+     "src/services/settings.ts"
+    ]
+   },
+   {
+    "fp": "authorize-state:flowSealKey-placeholder-secret-shadowing",
+    "verdict": "needs_validation",
+    "paths": [
+     ".dev.vars",
+     "src/lib/api-auth.ts",
+     "src/lib/authorize-state.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/setup.ts"
+    ],
+    "changed_paths": [
+     "src/lib/authorize-state.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/setup.ts"
+    ]
+   },
+   {
+    "fp": "directory-import.admin-role-group-rule-unguarded",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "directory-import.rolegroup-rule-privilege-bypass",
+    "verdict": "confirmed",
+    "paths": [
+     "docs/api.md",
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts"
+    ],
+    "changed_paths": [
+     "docs/api.md",
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "email.ts:sendEmail:unescaped-from-name-crlf",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/api/settings.ts",
+     "src/lib/email-templates.ts",
+     "src/lib/email.ts",
+     "src/routes/admin.ts",
+     "src/services/settings.ts",
+     "test/w1h14-probe.test.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/lib/email.ts",
+     "src/routes/admin.ts",
+     "src/services/settings.ts"
+    ]
+   },
+   {
+    "fp": "flareid.admin-security-default-password-disclosure",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/settings.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/routes/admin.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/routes/admin.ts"
+    ]
+   },
+   {
+    "fp": "flareid.branding.patch.unbounded-name-subtitle",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/settings.ts",
+     "src/index.ts",
+     "src/lib/html.ts",
+     "src/lib/permissions.ts",
+     "src/lib/settings.ts",
+     "src/services/branding.ts",
+     "src/services/settings.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/index.ts",
+     "src/lib/html.ts",
+     "src/lib/permissions.ts",
+     "src/lib/settings.ts",
+     "src/services/settings.ts"
+    ]
+   },
+   {
+    "fp": "flareid.default-password-apply-skips-breach-check",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/settings.ts",
+     "src/lib/breached-passwords.ts",
+     "src/lib/settings.ts",
+     "src/services/settings.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/lib/settings.ts",
+     "src/services/settings.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "flareid.email.subject.cr-injection-via-branding-fields",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/api/settings.ts",
+     "src/lib/email-templates.ts",
+     "src/lib/email.ts",
+     "src/lib/settings.ts",
+     "src/services/settings.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/lib/email.ts",
+     "src/lib/settings.ts",
+     "src/services/settings.ts"
+    ]
+   },
+   {
+    "fp": "flareid/edge-limit/attacker-controlled-client-dimension",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/edge-limit.ts",
+     "src/lib/oauth-client-auth.ts",
+     "src/routes/introspect.ts",
+     "test/hardening.test.ts",
+     "wrangler.jsonc"
+    ],
+    "changed_paths": [
+     "src/lib/edge-limit.ts",
+     "src/lib/oauth-client-auth.ts",
+     "src/routes/introspect.ts",
+     "test/hardening.test.ts",
+     "wrangler.jsonc"
+    ]
+   },
+   {
+    "fp": "flareid/rate-limit/ipv6-64-prefix-budget-rotation",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/edge-limit.ts",
+     "src/lib/rate-limit.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts",
+     "src/routes/setup.ts",
+     "test/w1h35-edge.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/edge-limit.ts",
+     "src/lib/rate-limit.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts",
+     "src/routes/setup.ts"
+    ]
+   },
+   {
+    "fp": "flareid:account-mfa-passkey-enrolled:cross-session-claim",
+    "verdict": "confirmed",
+    "paths": [
+     "src/routes/account.ts",
+     "test/w1h39-passkey-access.test.ts"
+    ],
+    "changed_paths": [
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "flareid:account-passkeys:mfa-gate-exemption",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts",
+     "test/w1h39-passkey-access.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "flareid:account-passkeys:no-step-up",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/middleware.ts",
+     "src/lib/passkeys.ts",
+     "src/lib/sessions.ts",
+     "src/lib/step-up.ts",
+     "src/routes/account.ts"
+    ],
+    "changed_paths": [
+     "src/lib/middleware.ts",
+     "src/lib/sessions.ts",
+     "src/lib/step-up.ts",
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "flareid:admin-clients:create-update:no-step-up",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/oidc.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts"
+    ],
+    "changed_paths": [
+     "src/lib/oidc.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "flareid:admin-domains-apply-to-all-missing-super-gate",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/email.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/routes/recovery.ts",
+     "src/services/setup.ts",
+     "test/api-parity.test.ts",
+     "test/audit-v3.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/email.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/routes/recovery.ts",
+     "src/services/setup.ts",
+     "test/api-parity.test.ts",
+     "test/audit-v3.test.ts"
+    ]
+   },
+   {
+    "fp": "flareid:admin-domains-set-default-missing-existence-check",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0001_schema.sql",
+     "src/lib/domains.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ],
+    "changed_paths": [
+     "src/lib/domains.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "flareid:admin-role-group:dynamic-membership-guard-bypass",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts",
+     "test/w1h16-dynamic-role.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "flareid:index.ts:unbounded-anonymous-request-body-buffering",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/index.ts",
+     "src/lib/edge-limit.ts",
+     "src/routes/admin.ts",
+     "src/routes/login.ts",
+     "src/routes/token.ts"
+    ],
+    "changed_paths": [
+     "src/index.ts",
+     "src/lib/edge-limit.ts",
+     "src/routes/admin.ts",
+     "src/routes/login.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "flareid:lib-domains-deleteDomain-check-then-act",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/applications.ts",
+     "src/lib/domains.ts",
+     "src/services/platform.ts"
+    ],
+    "changed_paths": [
+     "src/api/applications.ts",
+     "src/lib/domains.ts",
+     "src/services/platform.ts"
+    ]
+   },
+   {
+    "fp": "flareid:login-passkey:factor-disabled-not-enforced",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/passkeys.ts",
+     "src/routes/account.ts",
+     "src/routes/login.ts",
+     "test/w1h39-passkey-access.test.ts"
+    ],
+    "changed_paths": [
+     "src/routes/account.ts",
+     "src/routes/login.ts"
+    ]
+   },
+   {
+    "fp": "flareid:middleware-mfa-gate-login-redirect-loop",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/oidc-session.ts",
+     "test/auth-policy.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/oidc-session.ts",
+     "test/auth-policy.test.ts"
+    ]
+   },
+   {
+    "fp": "github/workflows/oidc-conformance.yml-conformance-results-artifact-credentials",
+    "verdict": "needs_validation",
+    "paths": [
+     ".github/workflows/oidc-conformance.yml",
+     "scripts/oidc-suite-setup.mjs"
+    ],
+    "changed_paths": [
+     ".github/workflows/oidc-conformance.yml",
+     "scripts/oidc-suite-setup.mjs"
+    ]
+   },
+   {
+    "fp": "github/workflows/oidc-conformance.yml-git-clone-mutable-tag-with-job-secrets",
+    "verdict": "confirmed",
+    "paths": [
+     ".github/workflows/oidc-conformance.yml",
+     "scripts/oidc-suite-setup.mjs"
+    ],
+    "changed_paths": [
+     ".github/workflows/oidc-conformance.yml",
+     "scripts/oidc-suite-setup.mjs"
+    ]
+   },
+   {
+    "fp": "github/workflows/oidc-conformance.yml-unpinned-pip-deps-with-job-secrets",
+    "verdict": "confirmed",
+    "paths": [
+     ".github/workflows/oidc-conformance.yml"
+    ],
+    "changed_paths": [
+     ".github/workflows/oidc-conformance.yml"
+    ]
+   },
+   {
+    "fp": "gitignore.conformance-results-export-dir",
+    "verdict": "needs_validation",
+    "paths": [
+     ".github/workflows/oidc-conformance.yml",
+     ".gitignore",
+     "scripts/oidc-suite-setup.mjs"
+    ],
+    "changed_paths": [
+     ".github/workflows/oidc-conformance.yml",
+     ".gitignore",
+     "scripts/oidc-suite-setup.mjs"
+    ]
+   },
+   {
+    "fp": "logAudit-unbounded-details-user-agent",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/audit.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts",
+     "wrangler.jsonc"
+    ],
+    "changed_paths": [
+     "src/lib/audit.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts",
+     "wrangler.jsonc"
+    ]
+   },
+   {
+    "fp": "login-mfa-accepts-disabled-totp-factor",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/auth-policy.ts",
+     "src/routes/login.ts",
+     "src/services/settings.ts"
+    ],
+    "changed_paths": [
+     "src/lib/auth-policy.ts",
+     "src/routes/login.ts",
+     "src/services/settings.ts"
+    ]
+   },
+   {
+    "fp": "migrations-0019-0023-name-keyed-role-group-binding",
+    "verdict": "confirmed",
+    "paths": [
+     "CHANGELOG.md",
+     "migrations/0001_schema.sql",
+     "migrations/0019_admin_roles.sql",
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/routes/admin.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "CHANGELOG.md",
+     "src/lib/admin-roles.ts",
+     "src/routes/admin.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "migrations-0022-name-keyed-mfa-policy-binding",
+    "verdict": "confirmed",
+    "paths": [
+     "CHANGELOG.md",
+     "migrations/0017_auth_policies.sql",
+     "migrations/0022_secure_defaults.sql",
+     "src/lib/auth-policy.ts",
+     "src/services/access.ts",
+     "src/services/setup.ts"
+    ],
+    "changed_paths": [
+     "CHANGELOG.md",
+     "src/lib/auth-policy.ts",
+     "src/services/access.ts",
+     "src/services/setup.ts"
+    ]
+   },
+   {
+    "fp": "oidc-consent-scope-keyed-vs-claims-param-release",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0009_oidc_clients.sql",
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts",
+     "src/routes/userinfo.ts"
+    ],
+    "changed_paths": [
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "oidc.ts:hasConsent-scope-only-vs-claims-groups",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts",
+     "src/routes/userinfo.ts"
+    ],
+    "changed_paths": [
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "oidc:hasConsent-scope-only-claims-param-release",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0009_oidc_clients.sql",
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts",
+     "src/routes/userinfo.ts"
+    ],
+    "changed_paths": [
+     "src/lib/oidc.ts",
+     "src/routes/authorize.ts",
+     "src/routes/oidc-session.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "recovery.ts:acceptPassword-reset-retains-webauthn_credentials",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/passkeys.ts",
+     "src/lib/sessions.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/lib/sessions.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "requireSession:mfa-enrolment-exemption-covers-login-gate",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts"
+    ],
+    "changed_paths": [
+     "src/lib/auth-policy.ts",
+     "src/lib/middleware.ts",
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "saml-sp.endpoint-url-scheme-unvalidated",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0003_saml.sql",
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/service-providers.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "test/w1h27-tofu.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/service-providers.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "saml-transient-nameid-sessionindex-shared-across-sps",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/saml/attributes.ts",
+     "src/lib/saml/messages.ts",
+     "src/lib/sessions.ts",
+     "src/routes/saml-slo.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/messages.ts",
+     "src/lib/sessions.ts",
+     "src/routes/saml-slo.ts"
+    ]
+   },
+   {
+    "fp": "saml.ts:default-acs-url-bypasses-allowlist-and-scheme",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/service-providers.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/security-headers.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "test/w1h60-units.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/service-providers.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/security-headers.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "saml.ts:request-id-replay-key-global-across-sps",
+    "verdict": "confirmed",
+    "paths": [
+     "src/routes/saml-slo.ts",
+     "src/routes/saml.ts",
+     "test/w1h60-units.test.ts"
+    ],
+    "changed_paths": [
+     "src/routes/saml-slo.ts",
+     "src/routes/saml.ts"
+    ]
+   },
+   {
+    "fp": "saml.ts:saml-complete-missing-signin-recheck",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/admin-roles.ts",
+     "src/routes/account.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts",
+     "test/w1h60-units.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/routes/account.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts"
+    ]
+   },
+   {
+    "fp": "scim-secret-rendered-to-read-only-admin",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/api/applications.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts"
+    ],
+    "changed_paths": [
+     "src/api/applications.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/settings.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts"
+    ]
+   },
+   {
+    "fp": "scim-server:admin-role-boundary-vs-name-only-guard",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/routes/scim-server.ts",
+     "src/services/guards.ts",
+     "test/admin-roles.test.ts",
+     "test/api-endpoints.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/routes/scim-server.ts",
+     "src/services/guards.ts",
+     "test/admin-roles.test.ts",
+     "test/api-endpoints.test.ts"
+    ]
+   },
+   {
+    "fp": "scim-server:admin-role-guard-literal-super-admins-only",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/lib/groups.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "scim-sync-concurrent-orphaned-remote-user",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/scim-client.ts",
+     "src/routes/admin.ts",
+     "src/services/users.ts",
+     "test/w1h51.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/scim-client.ts",
+     "src/routes/admin.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "scim.endpoint.unvalidated-host.outbound-ssrf",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts",
+     "test/v11-scim-outbound.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "scim.pushGroup.member-remote-id-rotation.stale-member",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0026_scim_group_state.sql",
+     "src/lib/scim-client.ts",
+     "test/w1h25-checks.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/scim-client.ts"
+    ]
+   },
+   {
+    "fp": "scim.scimFetch.no-scheme-gate.cleartext-bearer",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/lib/step-up.ts",
+     "src/routes/api.ts",
+     "test/v11-scim-confirm.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/lib/step-up.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "scim.scimFetch.no-timeout.head-of-line-block",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/scim-client.ts",
+     "test/v11-scim-confirm.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/sp-metadata.ts",
+     "src/lib/scim-client.ts"
+    ]
+   },
+   {
+    "fp": "scim.syncAll.no-single-flight.duplicate-remote-provision",
+    "verdict": "confirmed",
+    "paths": [
+     "src/index.ts",
+     "src/lib/scim-client.ts",
+     "src/routes/api.ts",
+     "test/w1h25-checks.test.ts"
+    ],
+    "changed_paths": [
+     "src/index.ts",
+     "src/lib/scim-client.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "scripts/generate-saml-cert.mjs-out-dir-key-mode",
+    "verdict": "confirmed",
+    "paths": [
+     "scripts/deploy.mjs",
+     "scripts/generate-saml-cert.mjs"
+    ],
+    "changed_paths": [
+     "scripts/generate-saml-cert.mjs"
+    ]
+   },
+   {
+    "fp": "scripts/oidc-conformance.mjs-token-json-stdout",
+    "verdict": "confirmed",
+    "paths": [
+     "scripts/oidc-conformance.mjs",
+     "src/routes/token.ts"
+    ],
+    "changed_paths": [
+     "scripts/oidc-conformance.mjs",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "scripts/oidc-suite-setup.mjs-suite-config-file-mode",
+    "verdict": "confirmed",
+    "paths": [
+     ".gitignore",
+     "scripts/oidc-suite-setup.mjs"
+    ],
+    "changed_paths": [
+     ".gitignore",
+     "scripts/oidc-suite-setup.mjs"
+    ]
+   },
+   {
+    "fp": "services.users.identity-field-admission",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0001_schema.sql",
+     "src/api/users.ts",
+     "src/lib/directory-import.ts",
+     "src/lib/email.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/routes/token.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/api/users.ts",
+     "src/lib/directory-import.ts",
+     "src/lib/email.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/routes/token.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "setup.runsSetup-domain-field-cross-area-write",
+    "verdict": "confirmed",
+    "paths": [
+     "docs/api.md",
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/services/setup.ts"
+    ],
+    "changed_paths": [
+     "docs/api.md",
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts",
+     "src/services/setup.ts"
+    ]
+   },
+   {
+    "fp": "signing-keys:env-jwk-republished-with-private-members",
+    "verdict": "confirmed",
+    "paths": [
+     "scripts/generate-keypair.mjs",
+     "src/lib/jwt.ts",
+     "src/lib/signing-keys.ts",
+     "src/routes/discovery.ts"
+    ],
+    "changed_paths": [
+     "src/lib/jwt.ts",
+     "src/lib/signing-keys.ts",
+     "src/routes/discovery.ts"
+    ]
+   },
+   {
+    "fp": "sp-metadata.fetchSpMetadata.body-unbounded",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/saml/authn-request.ts",
+     "src/lib/saml/sp-metadata.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/sp-metadata.ts"
+    ]
+   },
+   {
+    "fp": "sp-metadata.fetchSpMetadata.redirect-follow",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/lib/saml/sp-metadata.ts"
+    ],
+    "changed_paths": [
+     "src/lib/saml/sp-metadata.ts"
+    ]
+   },
+   {
+    "fp": "sp-metadata.refreshSpMetadata.unsigned-rewrite",
+    "verdict": "confirmed",
+    "paths": [
+     "src/index.ts",
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/routes/saml.ts",
+     "test/w1h27-tofu.test.ts"
+    ],
+    "changed_paths": [
+     "src/index.ts",
+     "src/lib/saml/post-form.ts",
+     "src/lib/saml/sp-metadata.ts",
+     "src/routes/saml.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/admin-roles.ts:requiredPermission:/admin:overview-ungated",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/monitoring.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/middleware.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts",
+     "src/services/monitoring.ts",
+     "test/w2h01-overview.test.ts"
+    ],
+    "changed_paths": [
+     "src/api/monitoring.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/middleware.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts",
+     "src/services/monitoring.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/cleanup.ts:rate_limits-fixed-7d-purge-vs-unbounded-window",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/settings.ts",
+     "src/index.ts",
+     "src/lib/cleanup.ts",
+     "src/lib/rate-limit.ts",
+     "src/routes/admin.ts",
+     "test/w1h26-ratelimit-purge.test.ts"
+    ],
+    "changed_paths": [
+     "src/api/settings.ts",
+     "src/index.ts",
+     "src/lib/cleanup.ts",
+     "src/lib/rate-limit.ts",
+     "src/routes/admin.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/directory-import.ts:importDirectory:role-group-definition-unchecked",
+    "verdict": "confirmed",
+    "paths": [
+     "docs/api.md",
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "docs/api.md",
+     "src/lib/admin-roles.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/directory-import.ts:replaceExistingDirectory:builtin-groups-deleted",
+    "verdict": "confirmed",
+    "paths": [
+     "docs/api.md",
+     "migrations/0004_dynamic_groups.sql",
+     "scripts/generate-test-directory.mjs",
+     "src/lib/admin-roles.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ],
+    "changed_paths": [
+     "docs/api.md",
+     "src/lib/admin-roles.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/admin.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/directory-import.ts:role-membership-static-members-only",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "src/lib/db.ts",
+     "src/lib/directory-import.ts",
+     "src/routes/api.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/email.ts:sendEmail:verbatim-recipient-and-header-fields",
+    "verdict": "needs_validation",
+    "paths": [
+     "src/lib/account-email.ts",
+     "src/lib/email-templates.ts",
+     "src/lib/email.ts",
+     "src/routes/scim-server.ts",
+     "src/services/users.ts",
+     "test/w1h28-probe.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/email.ts",
+     "src/routes/scim-server.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/scim-client.ts:testScimConnection:downstream-body-returned",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts",
+     "test/v11-scim-confirm.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/settings.ts:setScimConfig:scim-endpoint-stored-unvalidated",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/index.ts",
+     "src/lib/permissions.ts",
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts"
+    ],
+    "changed_paths": [
+     "src/index.ts",
+     "src/lib/permissions.ts",
+     "src/lib/scim-client.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/step-up.ts:SENSITIVE-allowlist-incomplete",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/middleware.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/recovery.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/lib/middleware.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/recovery.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/step-up.ts:isSensitive-digit-regex-vs-Number-coercion",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "src/lib/turnstile.ts:expectedHostname-issuer-only",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/brands.ts",
+     "src/lib/login-views.ts",
+     "src/lib/security-headers.ts",
+     "src/lib/turnstile.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts"
+    ],
+    "changed_paths": [
+     "src/lib/login-views.ts",
+     "src/lib/security-headers.ts",
+     "src/lib/turnstile.ts",
+     "src/routes/login.ts",
+     "src/routes/recovery.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/account.ts:password-change-no-session-rotation",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/sessions.ts",
+     "src/routes/account.ts",
+     "src/routes/recovery.ts"
+    ],
+    "changed_paths": [
+     "src/lib/sessions.ts",
+     "src/routes/account.ts",
+     "src/routes/recovery.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/api.ts:post-api-v1-setup:settings-write-reaches-domains-and-lifecycle",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/email.ts",
+     "src/lib/issuer.ts",
+     "src/lib/permissions.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts",
+     "src/services/setup.ts",
+     "test/api-parity.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/lib/domains.ts",
+     "src/lib/email.ts",
+     "src/lib/permissions.ts",
+     "src/lib/settings.ts",
+     "src/routes/api.ts",
+     "src/services/setup.ts",
+     "test/api-parity.test.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/introspect.ts:revoke-refresh-spares-grant-access-tokens",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/sessions.ts",
+     "src/routes/introspect.ts",
+     "src/routes/token.ts",
+     "src/routes/userinfo.ts"
+    ],
+    "changed_paths": [
+     "src/lib/sessions.ts",
+     "src/routes/introspect.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/login.ts:stored-hash-format-bypasses-dummy-equalization",
+    "verdict": "confirmed",
+    "paths": [
+     "CHANGELOG.md",
+     "migrations/0001_schema.sql",
+     "src/lib/db.ts",
+     "src/lib/password.ts",
+     "src/routes/login.ts"
+    ],
+    "changed_paths": [
+     "CHANGELOG.md",
+     "src/lib/db.ts",
+     "src/lib/password.ts",
+     "src/routes/login.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/scim-server.ts:admin-guard-name-only",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0023_admin_roles_custom.sql",
+     "src/lib/admin-roles.ts",
+     "src/routes/scim-server.ts",
+     "src/services/context.ts",
+     "src/services/guards.ts"
+    ],
+    "changed_paths": [
+     "src/lib/admin-roles.ts",
+     "src/routes/scim-server.ts",
+     "src/services/context.ts",
+     "src/services/guards.ts"
+    ]
+   },
+   {
+    "fp": "src/routes/token.ts:refresh-grant-no-signin-recheck",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/permissions.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts",
+     "src/routes/token.ts"
+    ],
+    "changed_paths": [
+     "src/lib/permissions.ts",
+     "src/routes/authorize.ts",
+     "src/routes/login.ts",
+     "src/routes/saml.ts",
+     "src/routes/token.ts"
+    ]
+   },
+   {
+    "fp": "src/services/users.ts:assertMayAssignGroups-rule-membership-bypass",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/users.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/groups.ts",
+     "src/lib/schemas.ts",
+     "src/services/groups.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/api/users.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/db.ts",
+     "src/lib/schemas.ts",
+     "src/services/groups.ts",
+     "src/services/guards.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "src/services/users.ts:revokeUserAppAccess-pending-auth-codes",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/sessions.ts",
+     "src/routes/admin.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts",
+     "src/services/users.ts",
+     "test/w1h47.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/sessions.ts",
+     "src/routes/admin.ts",
+     "src/routes/authorize.ts",
+     "src/routes/token.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "src/services/users.ts:unvalidated-upn-domain-recovery-recipient",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/account-email.ts",
+     "src/lib/email.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/services/users.ts",
+     "test/w1h47.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/email.ts",
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/routes/scim-server.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "step-up-missing-admin-scim-subpaths",
+    "verdict": "confirmed",
+    "paths": [
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/services/scim-sync.ts",
+     "test/scim-scope.test.ts"
+    ],
+    "changed_paths": [
+     "src/lib/step-up.ts",
+     "src/routes/admin.ts",
+     "src/services/scim-sync.ts",
+     "test/scim-scope.test.ts"
+    ]
+   }
+  ]
+ },
+ "run-2": {
+  "same": [],
+  "changed": [
+   {
+    "fp": "flareid.admin-roles:ldap-pages-missing-area",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/ldap.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/middleware.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts"
+    ],
+    "changed_paths": [
+     "src/api/ldap.ts",
+     "src/lib/admin-roles.ts",
+     "src/lib/middleware.ts",
+     "src/lib/permissions.ts",
+     "src/routes/admin.ts"
+    ]
+   },
+   {
+    "fp": "flareid/ldap/bind.ts:single-format-dummy-verify-enumerates-legacy-accounts",
+    "verdict": "confirmed",
+    "paths": [
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts",
+     "src/lib/password.ts",
+     "src/routes/login.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts",
+     "src/routes/login.ts"
+    ]
+   },
+   {
+    "fp": "flareid/ldap/connection.ts:bound-principal-not-revalidated",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts"
+    ]
+   },
+   {
+    "fp": "flareid/ldap/connection.ts:failed-bind-retains-principal",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/connection.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/connection.ts"
+    ]
+   },
+   {
+    "fp": "flareid/ldap/connection.ts:password-modify-stale-password-hash",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts",
+     "src/routes/account.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts",
+     "src/routes/account.ts"
+    ]
+   },
+   {
+    "fp": "flareid/ldap/connection.ts:settings-snapshot-ignores-ldap-disable",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/bind.ts",
+     "src/ldap/connection.ts"
+    ]
+   },
+   {
+    "fp": "flareid/src/lib/schemas.ts:schema-attr-names-no-ldap-reservation",
+    "verdict": "confirmed",
+    "paths": [
+     "src/api/groups.ts",
+     "src/ldap/entries.ts",
+     "src/lib/jwt.ts",
+     "src/lib/schemas.ts",
+     "src/routes/api.ts",
+     "src/services/users.ts"
+    ],
+    "changed_paths": [
+     "src/api/groups.ts",
+     "src/ldap/entries.ts",
+     "src/lib/jwt.ts",
+     "src/lib/schemas.ts",
+     "src/routes/api.ts",
+     "src/services/users.ts"
+    ]
+   },
+   {
+    "fp": "flareid:ldap:connection.ts:framereader-quadratic-buffer-accumulation",
+    "verdict": "confirmed",
+    "paths": [
+     "src/ldap/connection.ts",
+     "src/ldap/index.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/connection.ts"
+    ]
+   },
+   {
+    "fp": "flareid:ldap:protocol.ts:criticality-decoded-but-never-enforced",
+    "verdict": "confirmed",
+    "paths": [
+     "src/ldap/connection.ts",
+     "src/ldap/protocol.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/connection.ts"
+    ]
+   },
+   {
+    "fp": "ldap.compare.userbound.missing-peritem",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/connection.ts",
+     "src/ldap/search.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/connection.ts",
+     "src/ldap/search.ts"
+    ]
+   },
+   {
+    "fp": "ldap.filter.eval-amplification",
+    "verdict": "confirmed",
+    "paths": [
+     "src/ldap/entries.ts",
+     "src/ldap/filter.ts",
+     "src/ldap/protocol.ts",
+     "src/ldap/search.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/entries.ts",
+     "src/ldap/filter.ts",
+     "src/ldap/search.ts"
+    ]
+   },
+   {
+    "fp": "ldap.search.userbound.all-groups",
+    "verdict": "confirmed",
+    "paths": [
+     "LDAP.md",
+     "src/ldap/connection.ts",
+     "src/ldap/directory.ts",
+     "src/ldap/search.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/connection.ts",
+     "src/ldap/search.ts"
+    ]
+   },
+   {
+    "fp": "src/ldap/apps.ts:writeLdapApp-update-default-widen",
+    "verdict": "confirmed",
+    "paths": [
+     "migrations/0030_ldap.sql",
+     "src/api/ldap.ts",
+     "src/ldap/apps.ts",
+     "src/ldap/bind.ts"
+    ],
+    "changed_paths": [
+     "src/api/ldap.ts",
+     "src/ldap/apps.ts",
+     "src/ldap/bind.ts"
+    ]
+   },
+   {
+    "fp": "src/ldap/entries.ts:custom-attr-empty-collision",
+    "verdict": "confirmed",
+    "paths": [
+     "src/ldap/entries.ts",
+     "src/ldap/filter.ts",
+     "src/lib/jwt.ts",
+     "src/lib/schemas.ts",
+     "src/routes/account.ts"
+    ],
+    "changed_paths": [
+     "src/ldap/entries.ts",
+     "src/ldap/filter.ts",
+     "src/lib/jwt.ts",
+     "src/lib/schemas.ts",
+     "src/routes/account.ts"
+    ]
+   }
+  ]
+ }
+}
