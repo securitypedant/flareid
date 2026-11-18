@@ -54,6 +54,9 @@ export default defineConfig({
   ],
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
+    // CI runners are slower than a dev machine; the 5s default has flaked on
+    // seeding-heavy tests (access, scim-group-delta).
+    testTimeout: 15000,
     // e2e/ holds the Docker/Playwright drivers, which run outside the Workers
     // runtime (and import playwright, which is not a dependency).
     exclude: ["e2e/**", "node_modules/**"],
