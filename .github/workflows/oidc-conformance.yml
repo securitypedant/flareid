@@ -58,6 +58,8 @@ jobs:
         run: |
           # All nine OP profiles a code-only OP can be certified for; the four
           # implicit/hybrid profiles need response_types FlareID does not issue.
+          # The suite's export writes into this dir but does not create it.
+          mkdir -p "$GITHUB_WORKSPACE/conformance-results"
           python3 run-test-plan.py \
             --expected-failures-file "$GITHUB_WORKSPACE/conformance/expected-failures.json" \
             --expected-skips-file "$GITHUB_WORKSPACE/conformance/expected-skips.json" \
@@ -73,13 +75,16 @@ jobs:
             "oidcc-session-management-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
 
       - name: Scrub shared secrets from the suite exports
+        id: scrub
         if: always()
         env:
           CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
         run: node conformance/redact-exports.mjs conformance-results conformance/suite-config.json
 
+      # Never upload unscrubbed exports: if the scrub step failed or never ran,
+      # the artifact step is skipped rather than publishing secrets.
       - name: Keep the suite's exported results
-        if: always()
+        if: always() && steps.scrub.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: conformance-results

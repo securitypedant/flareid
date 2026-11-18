@@ -9,13 +9,20 @@
 //
 //   node conformance/redact-exports.mjs <export-dir> <suite-config.json>
 
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [dir, configPath] = process.argv.slice(2);
 if (!dir || !configPath) {
   console.error("usage: redact-exports.mjs <export-dir> <suite-config.json>");
   process.exit(2);
+}
+// A missing export dir means the suite produced nothing to scrub (e.g. the
+// run died before its first export) — succeed so the upload gate stays safe:
+// `if-no-files-found: ignore` then simply uploads nothing.
+if (!existsSync(dir)) {
+  console.log(`no export dir at ${dir} - nothing to scrub`);
+  process.exit(0);
 }
 
 // Collect every value stored under a secret-looking key anywhere in the
