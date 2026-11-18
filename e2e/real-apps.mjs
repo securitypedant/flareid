@@ -30,9 +30,13 @@ async function api(path, key, { method = "GET", body } = {}) {
 }
 
 async function apiKey() {
-  // Reuse a saved key when the instance is already set up.
+  // Reuse a saved key when the instance is already set up and the key still
+  // works; a wiped local D1 leaves a saved-but-revoked key, so verify cheaply.
   const saved = join(STATE, "lab-key.json");
-  try { return JSON.parse(readFileSync(saved, "utf8")).key; } catch { /* fresh */ }
+  try {
+    const key = JSON.parse(readFileSync(saved, "utf8")).key;
+    if ((await fetch(`${BASE}/api/v1/users`, { headers: { Authorization: `Bearer ${key}` } })).ok) return key;
+  } catch { /* fresh */ }
   const minted = await api("/api-keys", BOOTSTRAP, { method: "POST", body: { name: "e2e-lab", scopes: ["*"] } });
   await api("/setup", minted.token, {
     method: "POST",
@@ -110,7 +114,7 @@ writeFileSync(join(STATE, "Caddyfile"), `{
 }
 https://localhost:8443 {
 	tls internal
-	reverse_proxy simplesamlphp:80
+	reverse_proxy simplesamlphp:8080
 }
 `);
 writeFileSync(join(STATE, "simplesamlphp", "authsources.php"), `<?php

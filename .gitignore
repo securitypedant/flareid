@@ -21,3 +21,4 @@ openid.net.env
 *.env
 .env*
 !.env.example
+e2e/state/

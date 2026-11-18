@@ -19,8 +19,24 @@ services:
       dockerfile: e2e/Dockerfile
     environment:
       BOOTSTRAP_TOKEN: e2e-bootstrap-token
+      # The issuer must resolve from both the browser and the app containers:
+      # host.docker.internal does (Docker Desktop resolves it on the host too).
+      ISSUER_URL: http://${FLAREID_HOST:-host.docker.internal}:8787
+      # Lab-only: the app containers reach the IdP over the docker network on
+      # plain http. Production never sets this.
+      ALLOW_PLAINTEXT_HTTP: "1"
+      # Pinned so sealed secrets in the persistent .wrangler volume survive
+      # recreates (entrypoint would otherwise mint a fresh KEK each boot).
+      KEY_ENCRYPTION_KEY: "${LAB_KEK:-t53oJcJmluRpk0zGlId894/DWXuZYipXNPd2OE2BXDYg/hSokLjQJsGfLlaNJw/e}"
     ports:
       - "8787:8787"
+    # Keep wrangler's local D1/KV across recreates so seeded data (and the
+    # pinned issuer) survive secret/config changes.
+    volumes:
+      - flareid-state:/app/.wrangler
+      # Lab SAML signing material; regenerable via scripts/generate-saml-cert.mjs
+      - ./state/saml-cert.pem:/run/secrets/saml-cert.pem:ro
+      - ./state/saml-key.pem:/run/secrets/saml-key.pem:ro
     # Apps reach the IdP by name; the browser reaches it on localhost. Both
     # must agree on the issuer, so apps are configured with
     # http://host.docker.internal:8787 unless FLAREID_ISSUER overrides it.
@@ -32,14 +48,16 @@ services:
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
     env_file: [./state/oauth2-proxy.env]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - --provider=oidc
-      - --oidc-issuer-url=http://flareid:8787
+      - --oidc-issuer-url=http://${FLAREID_HOST:-host.docker.internal}:8787
       - --upstream=http://whoami
       - --http-address=0.0.0.0:4180
       - --redirect-url=http://localhost:4180/oauth2/callback
       - --email-domain=*
-      - --cookie-secret=e2e-cookie-secret-0123456789abcdef
+      - --cookie-secret=e2e-cookie-secret-0123456789abcd
       - --cookie-secure=false
       - --scope=openid email profile groups
       - --pass-host-header=false
@@ -56,36 +74,45 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
       GF_AUTH_GENERIC_OAUTH_NAME: FlareID
-      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://localhost:8787/authorize
-      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://flareid:8787/token
-      GF_AUTH_GENERIC_OAUTH_API_URL: http://flareid:8787/userinfo
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://${FLAREID_HOST:-host.docker.internal}:8787/authorize
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://${FLAREID_HOST:-host.docker.internal}:8787/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: http://${FLAREID_HOST:-host.docker.internal}:8787/userinfo
       GF_AUTH_GENERIC_OAUTH_SCOPES: openid email profile groups
       GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: contains(groups[*], 'Grafana Admins') && 'Admin' || 'Viewer'
       GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
     ports: ["3000:3000"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on: [flareid]
 
+  # BookStack hard-requires an https:// OIDC issuer in code. For the http lab
+  # this needs a one-time in-container patch after each recreate:
+  #   docker exec flareid-lab-bookstack-1 sed -i 's|https://|http://|' \
+  #     /app/www/app/Access/Oidc/OidcProviderSettings.php
   bookstack:
-    image: lscr.io/linuxserver/bookstack:24.12
+    image: lscr.io/linuxserver/bookstack:24.12.1
     env_file: [./state/bookstack.env]
     environment:
       PUID: "1000"
       PGID: "1000"
       APP_URL: http://localhost:6875
+      APP_KEY: "${BOOKSTACK_APP_KEY:-base64:nkWWyTfb7zNciHQ3Ia+Dt7g8ZoQhMYNL3jQjkQmPSjg=}"
       DB_HOST: bookstack-db
       DB_PORT: 3306
-      DB_USER: bookstack
-      DB_PASS: bookstack
+      DB_USERNAME: bookstack
+      DB_PASSWORD: bookstack
       DB_DATABASE: bookstackapp
       AUTH_METHOD: oidc
       AUTH_AUTO_INITIATE: "false"
-      OIDC_ISSUER: http://flareid:8787
+      OIDC_ISSUER: http://${FLAREID_HOST:-host.docker.internal}:8787
       OIDC_ISSUER_DISCOVER: "true"
       OIDC_DISPLAY_NAME_CLAIMS: name
       OIDC_GROUPS_CLAIM: groups
       OIDC_USER_TO_GROUPS: "true"
       OIDC_REMOVE_FROM_GROUPS: "true"
     ports: ["6875:80"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on: [flareid, bookstack-db]
 
   bookstack-db:
@@ -107,12 +134,17 @@ services:
       - caddy-data:/data
     depends_on: [flareid, simplesamlphp]
 
+  # The image's SP.php uses deprecated "${var}" interpolation that breaks the
+  # ACS under PHP 8.2. One-time patch after each recreate:
+  #   docker exec flareid-lab-simplesamlphp-1 perl -pi -e 's/\$\{state\[/{\$state[/g' \
+  #     /var/www/simplesamlphp/modules/saml/lib/Auth/Source/SP.php
   simplesamlphp:
-    image: kenchan0130/simplesamlphp:v1.19.7-1
+    image: kenchan0130/simplesamlphp:1.19.7
     profiles: ["saml"]
     # Config is generated by e2e/real-apps.mjs into e2e/state/simplesamlphp/.
     volumes:
       - ./state/simplesamlphp/authsources.php:/var/www/simplesamlphp/config/authsources.php:ro
+      - ./state/simplesamlphp/config.php:/var/www/simplesamlphp/config/config.php:ro
       - ./state/simplesamlphp/saml20-idp-remote.php:/var/www/simplesamlphp/metadata/saml20-idp-remote.php:ro
       - ./state/simplesamlphp/flareid-signing.pem:/var/www/simplesamlphp/cert/flareid-signing.pem:ro
     depends_on: [flareid]
@@ -179,3 +211,4 @@ services:
 
 volumes:
   caddy-data:
+  flareid-state:

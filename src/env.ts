@@ -10,6 +10,12 @@ export interface Env {
    */
   ISSUER_URL: string;
   /**
+   * DANGEROUS dev-only escape hatch: allow plain-http requests on non-localhost
+   * hosts (a private docker network in e2e). Never set in production - it
+   * re-opens the http downgrade path for passwords and bearer keys.
+   */
+  ALLOW_PLAINTEXT_HTTP?: string;
+  /**
    * Optional: an RS256 keypair to import as the first signing key (with
    * SIGNING_KEY_ID as its kid) instead of generating one. Signing keys live
    * in D1 (lib/signing-keys.ts); these are read only while D1 has no RS256 key.

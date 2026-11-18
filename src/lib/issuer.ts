@@ -66,15 +66,18 @@ export function forgetStoredIssuer(): void {
 export async function withResolvedIssuer(env: Env, request: Request): Promise<Env | Response> {
   // Plain http is refused once any issuer exists, not only while one is being
   // resolved: a workers.dev deployment still accepts http on its default name,
-  // and passwords and bearer keys must never ride it.
-  if (!acceptableOrigin(request.url)) {
+  // and passwords and bearer keys must never ride it. ALLOW_PLAINTEXT_HTTP is
+  // the e2e-lab escape hatch for docker-internal http.
+  if (!acceptableOrigin(request.url) && !env.ALLOW_PLAINTEXT_HTTP) {
     return new Response("FlareID only answers over HTTPS. Open this address with https:// instead.", {
       status: 400,
       headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" },
     });
   }
   if (env.ISSUER_URL) return env;
-  const issuer = (await storedIssuer(env)) ?? acceptableOrigin(request.url);
+  // With the lab escape hatch the request's own http origin is an acceptable
+  // issuer too - the compose network has no TLS to pin.
+  const issuer = (await storedIssuer(env)) ?? acceptableOrigin(request.url) ?? (env.ALLOW_PLAINTEXT_HTTP ? new URL(request.url).origin : null);
   if (!issuer) {
     return new Response("FlareID only answers over HTTPS. Open this address with https:// instead.", {
       status: 400,
