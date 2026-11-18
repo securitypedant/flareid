@@ -45,12 +45,41 @@ app.use("*", securityHeaders);
 
 // A declared body that can never be legitimate is refused before the
 // request parser buffers it. Directory-import bundles are the largest
-// honest payloads and sit far under this; chunked bodies without
-// Content-Length still land, but the per-route caps govern those.
+// honest payloads and sit far under this.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 app.use("*", async (c, next) => {
-  const declared = Number(c.req.header("content-length") ?? 0);
+  const declared = Number(c.req.header("content-length") ?? -1);
   if (declared > MAX_BODY_BYTES) return c.text("Request body too large.", 413);
+  if (declared === -1 && c.req.raw.body) {
+    // No declared length (chunked): buffer up to the cap here, then hand
+    // handlers a replayable body. Without this the same ceiling that stops
+    // oversized Content-Length uploads wouldn't apply at all - the isolate
+    // would buffer an unbounded stream.
+    const reader = c.req.raw.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BODY_BYTES) {
+          await reader.cancel();
+          return c.text("Request body too large.", 413);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    c.req.raw = new Request(c.req.raw, { body });
+  }
   await next();
 });
 

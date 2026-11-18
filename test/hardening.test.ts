@@ -165,6 +165,7 @@ describe("shared signals", () => {
     const set = await new SignJWT({ events: { [SSF_EVENTS["caep.session-revoked"]]: { subject: { format: "email", email: upn } } } })
       .setProtectedHeader({ alg: "RS256", kid: "tx1" })
       .setIssuer("https://tx.example.com")
+      .setAudience(BASE)
       .setIssuedAt()
       .setJti(crypto.randomUUID())
       .sign(privateKey);
@@ -178,6 +179,7 @@ describe("shared signals", () => {
     const flag = await new SignJWT({ events: { ["https://schemas.openid.net/secevent/risc/event-type/credential-compromise"]: { subject: { format: "email", email: upn } } } })
       .setProtectedHeader({ alg: "RS256", kid: "tx1" })
       .setIssuer("https://tx.example.com")
+      .setAudience(BASE)
       .setIssuedAt()
       .setJti(crypto.randomUUID())
       .sign(privateKey);
@@ -207,5 +209,31 @@ describe("shared signals", () => {
       .setIssuedAt()
       .sign(evil);
     expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: forged })).status).toBe(401);
+  });
+
+  it("rejects a SET whose aud is not this receiver, and a replayed jti", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey, "mia");
+    const upn = (await env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())!.upn;
+    await createSession(env, userId, ["pwd"], new Request(BASE));
+    await apiCall("/api/v1/ssf/transmitters", { token: apiKey, body: { name: "CF", issuer: "https://tx.example.com", jwks_url: "https://tx.example.com/jwks.json" } });
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = { ...(await exportJWK(publicKey)), kid: "tx1" };
+    stubHosts(() => Response.json({ keys: [jwk] }), "tx.example.com");
+
+    const set = () => new SignJWT({ events: { [SSF_EVENTS["caep.session-revoked"]]: { subject: { format: "email", email: upn } } } })
+      .setProtectedHeader({ alg: "RS256", kid: "tx1" })
+      .setIssuer("https://tx.example.com")
+      .setIssuedAt();
+
+    // A SET minted for another receiver is refused even though it verifies.
+    const foreign = await set().setAudience("https://someone-else.example.com").setJti(crypto.randomUUID()).sign(privateKey);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: foreign })).status).toBe(401);
+    expect(await env.DB.prepare("SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first()).toBeTruthy();
+
+    // Delivered once: the same bytes replayed are refused by jti dedupe.
+    const once = await set().setAudience(BASE).setJti(crypto.randomUUID()).sign(privateKey);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: once })).status).toBe(202);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: once })).status).toBe(401);
   });
 });

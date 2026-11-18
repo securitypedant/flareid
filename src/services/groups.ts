@@ -78,6 +78,7 @@ export async function updateGroup(ctx: ServiceCtx, id: number, input: GroupInput
   const current = await getGroupById(ctx.env, id);
   if (!current) throw new ServiceError(404, "Not found");
   await assertMayTouchGroup(ctx, id);
+  if (current.system) throw new ServiceError(400, `"${current.name}" is a system group and cannot be edited.`);
   checkName(input, current.name);
   await assertRuleAllowed(ctx.env, input.rule);
   if (await ctx.env.DB.prepare("SELECT id FROM groups WHERE name = ? AND id != ?").bind(input.name, id).first()) {

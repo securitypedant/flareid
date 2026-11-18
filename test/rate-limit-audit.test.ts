@@ -63,12 +63,14 @@ describe("edge flood control", () => {
     expect(failed?.n).toBe(0);
   });
 
-  it("leaves routes outside its groups alone", async () => {
+  it("charges unmatched routes the default api budget", async () => {
+    // A whitelist would let a new anonymous route run uncharged - the default
+    // group is the coverage guarantee, so even a metadata read is counted.
     const no = { limit: async () => ({ success: false }) };
     const ctx = createExecutionContext();
     const res = await worker.fetch(new Request(`${BASE}/.well-known/openid-configuration`), { ...env, AUTH_LIMITER: no, API_LIMITER: no } as typeof env, ctx);
     await waitOnExecutionContext(ctx);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(429);
   });
 });
 

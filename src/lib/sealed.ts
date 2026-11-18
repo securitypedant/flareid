@@ -39,3 +39,25 @@ export async function unsealText(env: Env, sealed: string): Promise<string | nul
     return null;
   }
 }
+
+/** Seals when a KEK is configured; plaintext otherwise, so a deployment without key material keeps working. */
+export async function sealMaybe(env: Env, value: string): Promise<string> {
+  // Empty stays empty - a cleared credential would otherwise store a sealed
+  // blob that reads back as a secret.
+  if (!value) return value;
+  // Idempotent: an already-sealed value (a merged "keep the stored secret"
+  // update carries the stored ciphertext through) is left untouched rather
+  // than sealed a second time.
+  if (value.startsWith("v1.") && (await unsealText(env, value)) !== null) return value;
+  return (await sealText(env, value)) ?? value;
+}
+
+/**
+ * Reads a column that may hold either a sealed `v1.` blob or a plaintext value
+ * written before sealing reached it - a lazy migration: the next write seals.
+ */
+export async function unsealMaybe(env: Env, value: string | null | undefined): Promise<string | null> {
+  if (!value) return null;
+  if (!value.startsWith("v1.")) return value;
+  return unsealText(env, value);
+}

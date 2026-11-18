@@ -1,4 +1,5 @@
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
+import { markConsumed } from "../lib/one-shot.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { authPage, loginAppearance, msg, renderAuthMessage, requestLocale, type AuthMessage } from "../lib/login-views.js";
@@ -71,6 +72,7 @@ oidcSession.get("/consent/:id", async (c) => {
 oidcSession.post("/consent/:id", async (c) => {
   const found = await loadConsent(c);
   if (!found) return renderAuthMessage(c, 400, REQUEST_EXPIRED);
+  if (!(await markConsumed(c.env, `consent:${found.id}`))) return renderAuthMessage(c, 400, REQUEST_EXPIRED);
   await c.env.SESSIONS_KV.delete(`consent:${found.id}`);
   const { request, userId, amr, sid } = found.pending;
   const decision = String((await c.req.parseBody()).decision ?? "");
@@ -99,7 +101,7 @@ oidcSession.post("/consent/:id", async (c) => {
 oidcSession.get("/check_session", async (c) => {
   const session = await getSession(c.req.raw, c.env);
   const sid = session ? await oidcSid(session.id) : "";
-  const script = `var OP_SID=${JSON.stringify(sid)};
+  const script = `var OP_SID=document.body.getAttribute("data-sid")||"";
 window.addEventListener("message",function(e){
  var p=String(e.data).split(" "),cid=p[0],st=(p[1]||"").split("."),salt=st[1];
  function reply(m){if(e.source&&e.origin!=="null")e.source.postMessage(m,e.origin);}
@@ -111,7 +113,7 @@ window.addEventListener("message",function(e){
  }).catch(function(){reply("error");});
 });`;
   c.header("X-FlareID-Frame-Ancestors", "*");
-  return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body>${scriptTag(script)}</body></html>`);
+  return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body data-sid="${escapeHtml(sid)}">${scriptTag(script)}</body></html>`);
 });
 
 // ---------- RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0) ----------
@@ -155,9 +157,13 @@ async function resolveLogout(c: Context<{ Bindings: Env }>, req: LogoutRequest) 
 
 async function signOut(c: Context<{ Bindings: Env }>, redirect: string | null, clientName?: string) {
   const session = await getSession(c.req.raw, c.env);
+  if (session) {
+    // Back-channel first: notifySessionRevoked reads session_clients, which
+    // frontchannelTargets then consumes (and deletes) for the iframe page.
+    await revokeSession(c.env, session.id);
+  }
   const targets = session ? await frontchannelTargets(c.env, session.id) : [];
   if (session) {
-    await revokeSession(c.env, session.id);
     await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.rp_initiated", clientName, { frontchannel: targets.length }, c.req.raw);
   }
   c.header("Set-Cookie", clearSessionCookie());

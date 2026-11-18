@@ -4,6 +4,7 @@ import { resolveGroupMemberUserIds, parseRule, userMatchesRule } from "./groups.
 import { enabledScimTargets, getScimTarget, targetGroupScimId, targetUserScimId, type ScimScope, type ScimTarget } from "./scim-targets.js";
 import { validateScimEndpoint } from "./settings.js";
 import { timed, recordEvent } from "./metrics.js";
+import { unsealMaybe } from "./sealed.js";
 import type { GroupRow, UserRow } from "./types.js";
 
 const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
@@ -58,7 +59,8 @@ async function pace(target: ScimTarget): Promise<void> {
 }
 
 async function scimFetch(env: Env, target: ScimTarget, path: string, init: RequestInit): Promise<Response> {
-  const { endpoint, secret } = target;
+  const { endpoint } = target;
+  const secret = await unsealMaybe(env, target.secret);
   if (!endpoint || !secret) throw new Error(`SCIM target "${target.name}" has no endpoint or secret`);
   const problem = validateScimEndpoint(endpoint);
   if (problem) throw new Error(problem);

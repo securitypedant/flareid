@@ -1,0 +1,2515 @@
+[
+  {
+    "coverage_id": "%2Fapi%2Fv1%2F%2A%20permission%20scopes%20vs%20actions::%2Fapi%2Fv1%2F%2A::src%2Fapi%2F%2A%2Csrc%2Froutes%2Fapi.ts%2Csrc%2Flib%2Fapi-auth.ts%2Capi-keys.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "/api/v1/* permission scopes vs actions",
+      "boundary": "/api/v1/*",
+      "subsystem": "src/api/*,src/routes/api.ts,src/lib/api-auth.ts,api-keys.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "/api/v1/* permission scopes vs actions",
+    "boundary": "/api/v1/*",
+    "subsystem": "src/api/*,src/routes/api.ts,src/lib/api-auth.ts,api-keys.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/api",
+      "src/routes/api.ts",
+      "src/lib/api-auth.ts",
+      "src/lib/api-keys.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-admin-api",
+    "reviewed_paths": [
+      "src/api",
+      "src/routes/api.ts",
+      "src/lib/api-auth.ts",
+      "src/lib/api-keys.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-admin-api",
+        "reviewed_paths": [
+          "src/api",
+          "src/routes/api.ts",
+          "src/lib/api-auth.ts",
+          "src/lib/api-keys.ts"
+        ],
+        "invariant": "/api/v1/* permission scopes vs actions",
+        "method": "source",
+        "result": "Unit u-admin-api covered in wave 1 by h-admin-api; verdict file agents/h-admin-api/scratch/units/u-admin-api.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-admin-api"
+  },
+  {
+    "coverage_id": "API%20readJson%20non-validation%20drift::API-key%20-%3E%20unvalidated%20JSON::src%2Fapi%2Fopenapi.ts%20readJson%20consumers%20across%20src%2Fapi%2F%2A::Union%2C%20enum%2C%20and%20default%20confusion",
+    "canonical_refs": {
+      "surface": "API readJson non-validation drift",
+      "boundary": "API-key -> unvalidated JSON",
+      "subsystem": "src/api/openapi.ts readJson consumers across src/api/*",
+      "attack_class": "Union, enum, and default confusion"
+    },
+    "surface": "API readJson non-validation drift",
+    "boundary": "API-key -> unvalidated JSON",
+    "subsystem": "src/api/openapi.ts readJson consumers across src/api/*",
+    "attack_class": "Union, enum, and default confusion",
+    "starting_paths": [
+      "src/api/openapi.ts",
+      "src/api"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#framing",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#framing"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/api/openapi.ts",
+      "src/api"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/api/openapi.ts",
+          "src/api"
+        ],
+        "invariant": "API readJson non-validation drift",
+        "method": "source",
+        "result": "Unit u-api-schema-drift covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-api-schema-drift.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-api-schema-drift"
+  },
+  {
+    "coverage_id": "Access%20governance%3A%20requests%2C%20campaigns%2C%20group%20managers::%2Faccount%20access%20requests%20%2B%20%2Fadmin%20reviews::src%2Flib%2Faccess.ts%2Clib%2Fgroup-managers.ts%2Clib%2Fgroups.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Access governance: requests, campaigns, group managers",
+      "boundary": "/account access requests + /admin reviews",
+      "subsystem": "src/lib/access.ts,lib/group-managers.ts,lib/groups.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "Access governance: requests, campaigns, group managers",
+    "boundary": "/account access requests + /admin reviews",
+    "subsystem": "src/lib/access.ts,lib/group-managers.ts,lib/groups.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/lib/access.ts",
+      "src/lib/group-managers.ts",
+      "src/lib/groups.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-admin-api",
+    "reviewed_paths": [
+      "src/lib/access.ts",
+      "src/lib/group-managers.ts",
+      "src/lib/groups.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-admin-api",
+        "reviewed_paths": [
+          "src/lib/access.ts",
+          "src/lib/group-managers.ts",
+          "src/lib/groups.ts"
+        ],
+        "invariant": "Access governance: requests, campaigns, group managers",
+        "method": "source",
+        "result": "Unit u-access-gov covered in wave 1 by h-admin-api; verdict file agents/h-admin-api/scratch/units/u-access-gov.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-access-gov"
+  },
+  {
+    "coverage_id": "Admin%20console%20%2Fadmin%2F%2A%20~130%20routes::%2Fadmin%2F%2A::src%2Froutes%2Fadmin.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Admin console /admin/* ~130 routes",
+      "boundary": "/admin/*",
+      "subsystem": "src/routes/admin.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "Admin console /admin/* ~130 routes",
+    "boundary": "/admin/*",
+    "subsystem": "src/routes/admin.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/routes/admin.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-admin-api",
+    "reviewed_paths": [
+      "src/routes/admin.ts",
+      "src/services/branding.ts",
+      "src/services/monitoring.ts",
+      "src/services/platform.ts",
+      "src/services/context.ts",
+      "src/services/guards.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-admin-api",
+        "reviewed_paths": [
+          "src/routes/admin.ts",
+          "src/services/branding.ts",
+          "src/services/monitoring.ts",
+          "src/services/platform.ts",
+          "src/services/context.ts",
+          "src/services/guards.ts"
+        ],
+        "invariant": "Admin console /admin/* ~130 routes",
+        "method": "source",
+        "result": "Unit u-admin-console covered in wave 1 by h-admin-api; verdict file agents/h-admin-api/scratch/units/u-admin-console.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-admin-console"
+  },
+  {
+    "coverage_id": "Admin-tier%20unbounded%20work::credentialed%20-%3E%20resource%20use::src%2Flib%2Fmetrics.ts%2Csrc%2Fservices%2Fmonitoring.ts%2Cexport%2Fimport%20loops::Unbounded%20buffering%20and%20cardinality",
+    "canonical_refs": {
+      "surface": "Admin-tier unbounded work",
+      "boundary": "credentialed -> resource use",
+      "subsystem": "src/lib/metrics.ts,src/services/monitoring.ts,export/import loops",
+      "attack_class": "Unbounded buffering and cardinality"
+    },
+    "surface": "Admin-tier unbounded work",
+    "boundary": "credentialed -> resource use",
+    "subsystem": "src/lib/metrics.ts,src/services/monitoring.ts,export/import loops",
+    "attack_class": "Unbounded buffering and cardinality",
+    "starting_paths": [
+      "src/lib/metrics.ts",
+      "src/services/monitoring.ts"
+    ],
+    "ordinary_attack_class_block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#resource-accumulation",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#resource-accumulation"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/lib/metrics.ts",
+      "src/services/monitoring.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/lib/metrics.ts",
+          "src/services/monitoring.ts"
+        ],
+        "invariant": "Admin-tier unbounded work",
+        "method": "source",
+        "result": "Unit u-admin-tier-dos covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-admin-tier-dos.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-admin-tier-dos"
+  },
+  {
+    "coverage_id": "Audit%20log%3A%20chain%20integrity%2C%20verify%20endpoint%2C%20export%20formats::GET%20%2Fapi%2Fv1%2Faudit%2Fverify%7Cexport%2C%2Fadmin%2Faudit%2A::src%2Flib%2Faudit.ts%2Croutes%2Fapi.ts%2Capi%2F%2A%2Croutes%2Fadmin.ts::Search%2C%20cache%2C%20and%20index%20ACL%20drift",
+    "canonical_refs": {
+      "surface": "Audit log: chain integrity, verify endpoint, export formats",
+      "boundary": "GET /api/v1/audit/verify|export,/admin/audit*",
+      "subsystem": "src/lib/audit.ts,routes/api.ts,api/*,routes/admin.ts",
+      "attack_class": "Search, cache, and index ACL drift"
+    },
+    "surface": "Audit log: chain integrity, verify endpoint, export formats",
+    "boundary": "GET /api/v1/audit/verify|export,/admin/audit*",
+    "subsystem": "src/lib/audit.ts,routes/api.ts,api/*,routes/admin.ts",
+    "attack_class": "Search, cache, and index ACL drift",
+    "starting_paths": [
+      "src/lib/audit.ts",
+      "src/api/monitoring.ts",
+      "src/routes/admin.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#derived-data",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#derived-data"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-admin-api",
+    "reviewed_paths": [
+      "src/lib/audit.ts",
+      "src/api/monitoring.ts",
+      "src/routes/admin.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-admin-api",
+        "reviewed_paths": [
+          "src/lib/audit.ts",
+          "src/api/monitoring.ts",
+          "src/routes/admin.ts"
+        ],
+        "invariant": "Audit log: chain integrity, verify endpoint, export formats",
+        "method": "source",
+        "result": "Unit u-audit-chain covered in wave 1 by h-admin-api; verdict file agents/h-admin-api/scratch/units/u-audit-chain.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-audit-chain"
+  },
+  {
+    "coverage_id": "Authorization%20endpoint%3A%20params%2C%20redirect_uri%2C%20response_mode%2C%20PKCE%2C%20claims%2C%20form_post::GET%7CPOST%20%2Fauthorize::src%2Froutes%2Fauthorize.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Authorization endpoint: params, redirect_uri, response_mode, PKCE, claims, form_post",
+      "boundary": "GET|POST /authorize",
+      "subsystem": "src/routes/authorize.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Authorization endpoint: params, redirect_uri, response_mode, PKCE, claims, form_post",
+    "boundary": "GET|POST /authorize",
+    "subsystem": "src/routes/authorize.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/authorize.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/authorize.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/authorize.ts"
+        ],
+        "invariant": "Authorization endpoint: params, redirect_uri, response_mode, PKCE, claims, form_post",
+        "method": "source",
+        "result": "Unit u-authz-ep covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-authz-ep.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-authz-ep"
+  },
+  {
+    "coverage_id": "Backup%20export%2Frestore%20%2B%20R2%20snapshots::GET%20%2Fapi%2Fv1%2Fbackup%2C%20POST%20%2Fapi%2Fv1%2Fbackup%2Frestore%2C%20cron%20R2::src%2Flib%2Fbackup.ts%2Capi%2Fbackup.ts::Export%20and%20backup%20scope%20expansion",
+    "canonical_refs": {
+      "surface": "Backup export/restore + R2 snapshots",
+      "boundary": "GET /api/v1/backup, POST /api/v1/backup/restore, cron R2",
+      "subsystem": "src/lib/backup.ts,api/backup.ts",
+      "attack_class": "Export and backup scope expansion"
+    },
+    "surface": "Backup export/restore + R2 snapshots",
+    "boundary": "GET /api/v1/backup, POST /api/v1/backup/restore, cron R2",
+    "subsystem": "src/lib/backup.ts,api/backup.ts",
+    "attack_class": "Export and backup scope expansion",
+    "starting_paths": [
+      "src/lib/backup.ts",
+      "src/api/backup.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-newproto",
+    "reviewed_paths": [
+      "src/lib/backup.ts",
+      "src/api/backup.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-newproto",
+        "reviewed_paths": [
+          "src/lib/backup.ts",
+          "src/api/backup.ts"
+        ],
+        "invariant": "Backup export/restore + R2 snapshots",
+        "method": "source",
+        "result": "Unit u-backup covered in wave 1 by h-newproto; verdict file agents/h-newproto/scratch/units/u-backup.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-backup"
+  },
+  {
+    "coverage_id": "Builtin%2Fsystem%20group%20rename%2Bdelete%20protection::admin%2FSCIM%2Fimport%20writers%20-%3E%20system%20groups::src%2Flib%2Fgroups.ts%2Cservices%2Fguards.ts%2Cdirectory-import.ts%2Cscim-server.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Builtin/system group rename+delete protection",
+      "boundary": "admin/SCIM/import writers -> system groups",
+      "subsystem": "src/lib/groups.ts,services/guards.ts,directory-import.ts,scim-server.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "Builtin/system group rename+delete protection",
+    "boundary": "admin/SCIM/import writers -> system groups",
+    "subsystem": "src/lib/groups.ts,services/guards.ts,directory-import.ts,scim-server.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/lib/groups.ts",
+      "src/services/guards.ts",
+      "src/lib/directory-import.ts",
+      "src/routes/scim-server.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/lib/groups.ts",
+      "src/services/guards.ts",
+      "src/lib/directory-import.ts",
+      "src/routes/scim-server.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/lib/groups.ts",
+          "src/services/guards.ts",
+          "src/lib/directory-import.ts",
+          "src/routes/scim-server.ts"
+        ],
+        "invariant": "Builtin/system group rename+delete protection",
+        "method": "source",
+        "result": "Unit u-group-rename-protect covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-group-rename-protect.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-group-rename-protect"
+  },
+  {
+    "coverage_id": "CI%20workflows%2C%20scripts%2C%20e2e%20rig%2C%20conformance%20pipeline::.github%2Fworkflows%2F%2A%2Cscripts%2F%2A%2Ce2e%2F%2A%2Cconformance%2F%2A::repo%20tooling::Untrusted%20code%20in%20a%20privileged%20workflow",
+    "canonical_refs": {
+      "surface": "CI workflows, scripts, e2e rig, conformance pipeline",
+      "boundary": ".github/workflows/*,scripts/*,e2e/*,conformance/*",
+      "subsystem": "repo tooling",
+      "attack_class": "Untrusted code in a privileged workflow"
+    },
+    "surface": "CI workflows, scripts, e2e rig, conformance pipeline",
+    "boundary": ".github/workflows/*,scripts/*,e2e/*,conformance/*",
+    "subsystem": "repo tooling",
+    "attack_class": "Untrusted code in a privileged workflow",
+    "starting_paths": [
+      ".github/workflows",
+      "scripts",
+      "e2e",
+      "conformance"
+    ],
+    "ordinary_attack_class_block": "SUPPLY-CHAIN-AND-RELEASE.md#ci",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#ci"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-infra",
+    "reviewed_paths": [
+      ".github/workflows",
+      "scripts",
+      "e2e",
+      "conformance"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-infra",
+        "reviewed_paths": [
+          ".github/workflows",
+          "scripts",
+          "e2e",
+          "conformance"
+        ],
+        "invariant": "CI workflows, scripts, e2e rig, conformance pipeline",
+        "method": "source",
+        "result": "Unit u-infra-ci covered in wave 1 by h-infra; verdict file agents/h-infra/scratch/units/u-infra-ci.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-infra-ci"
+  },
+  {
+    "coverage_id": "Claims%2Fconsent%2FJWT%20issuance%3A%20oidc.ts%2C%20jwt.ts%2C%20signing-keys%2C%20sealed::internal%20libs::src%2Flib%2F%7Boidc%2Cjwt%2Csigning-keys%2Csealed%2Cconsent%2A%7D.ts::JWT%20verification%20and%20claim%20binding",
+    "canonical_refs": {
+      "surface": "Claims/consent/JWT issuance: oidc.ts, jwt.ts, signing-keys, sealed",
+      "boundary": "internal libs",
+      "subsystem": "src/lib/{oidc,jwt,signing-keys,sealed,consent*}.ts",
+      "attack_class": "JWT verification and claim binding"
+    },
+    "surface": "Claims/consent/JWT issuance: oidc.ts, jwt.ts, signing-keys, sealed",
+    "boundary": "internal libs",
+    "subsystem": "src/lib/{oidc,jwt,signing-keys,sealed,consent*}.ts",
+    "attack_class": "JWT verification and claim binding",
+    "starting_paths": [
+      "src/lib/oidc.ts",
+      "src/lib/jwt.ts",
+      "src/lib/signing-keys.ts",
+      "src/lib/sealed.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-adv",
+    "reviewed_paths": [
+      "src/lib/oidc.ts",
+      "src/lib/jwt.ts",
+      "src/lib/signing-keys.ts",
+      "src/lib/sealed.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-adv",
+        "reviewed_paths": [
+          "src/lib/oidc.ts",
+          "src/lib/jwt.ts",
+          "src/lib/signing-keys.ts",
+          "src/lib/sealed.ts"
+        ],
+        "invariant": "Claims/consent/JWT issuance: oidc.ts, jwt.ts, signing-keys, sealed",
+        "method": "source",
+        "result": "Unit u-oidc-core-lib covered in wave 1 by h-oidc-adv; verdict file agents/h-oidc-adv/scratch/units/u-oidc-core-lib.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-oidc-core-lib"
+  },
+  {
+    "coverage_id": "Client%20authentication%3A%20oauth-client-auth.ts%20private_key_jwt%20%2B%20jwks_uri::internal%20%2B%20outbound%20JWKS%20fetch::src%2Flib%2Foauth-client-auth.ts::JWT%20verification%20and%20claim%20binding",
+    "canonical_refs": {
+      "surface": "Client authentication: oauth-client-auth.ts private_key_jwt + jwks_uri",
+      "boundary": "internal + outbound JWKS fetch",
+      "subsystem": "src/lib/oauth-client-auth.ts",
+      "attack_class": "JWT verification and claim binding"
+    },
+    "surface": "Client authentication: oauth-client-auth.ts private_key_jwt + jwks_uri",
+    "boundary": "internal + outbound JWKS fetch",
+    "subsystem": "src/lib/oauth-client-auth.ts",
+    "attack_class": "JWT verification and claim binding",
+    "starting_paths": [
+      "src/lib/oauth-client-auth.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-adv",
+    "reviewed_paths": [
+      "src/lib/oauth-client-auth.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-adv",
+        "reviewed_paths": [
+          "src/lib/oauth-client-auth.ts"
+        ],
+        "invariant": "Client authentication: oauth-client-auth.ts private_key_jwt + jwks_uri",
+        "method": "source",
+        "result": "Unit u-client-auth-lib covered in wave 1 by h-oidc-adv; verdict file agents/h-oidc-adv/scratch/units/u-client-auth-lib.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-client-auth-lib"
+  },
+  {
+    "coverage_id": "Cloudflare%20One%3A%20Access%20JWT%20gate%2C%20posture%2C%20risk%20watchlist%2C%20list%20sync::%2Fadmin%2F%2A%20gate%20%2B%20%2Flogin%20posture%20%2B%20cron%20%2B%20%2Fapi%2Fv1%2Fcfone%2A::src%2Flib%2Fcfone.ts%2Capi%2Fcfone.ts%2Croutes%2Fadmin.ts%2Cindex.ts%28cron%29::JWT%20verification%20and%20claim%20binding",
+    "canonical_refs": {
+      "surface": "Cloudflare One: Access JWT gate, posture, risk watchlist, list sync",
+      "boundary": "/admin/* gate + /login posture + cron + /api/v1/cfone*",
+      "subsystem": "src/lib/cfone.ts,api/cfone.ts,routes/admin.ts,index.ts(cron)",
+      "attack_class": "JWT verification and claim binding"
+    },
+    "surface": "Cloudflare One: Access JWT gate, posture, risk watchlist, list sync",
+    "boundary": "/admin/* gate + /login posture + cron + /api/v1/cfone*",
+    "subsystem": "src/lib/cfone.ts,api/cfone.ts,routes/admin.ts,index.ts(cron)",
+    "attack_class": "JWT verification and claim binding",
+    "starting_paths": [
+      "src/lib/cfone.ts",
+      "src/api/cfone.ts",
+      "src/routes/admin.ts",
+      "src/index.ts"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#workload-identity",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#workload-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-newproto",
+    "reviewed_paths": [
+      "src/lib/cfone.ts",
+      "src/api/cfone.ts",
+      "src/routes/admin.ts",
+      "src/index.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-newproto",
+        "reviewed_paths": [
+          "src/lib/cfone.ts",
+          "src/api/cfone.ts",
+          "src/routes/admin.ts",
+          "src/index.ts"
+        ],
+        "invariant": "Cloudflare One: Access JWT gate, posture, risk watchlist, list sync",
+        "method": "source",
+        "result": "Unit u-cfone covered in wave 1 by h-newproto; verdict file agents/h-newproto/scratch/units/u-cfone.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-cfone"
+  },
+  {
+    "coverage_id": "Cron%20fan-out%20and%20failure%20modes::scheduled%28%29%20-%3E%207%20waitUntil%20jobs::src%2Findex.ts%3A139-195::Detached%20work%20after%20cancellation",
+    "canonical_refs": {
+      "surface": "Cron fan-out and failure modes",
+      "boundary": "scheduled() -> 7 waitUntil jobs",
+      "subsystem": "src/index.ts:139-195",
+      "attack_class": "Detached work after cancellation"
+    },
+    "surface": "Cron fan-out and failure modes",
+    "boundary": "scheduled() -> 7 waitUntil jobs",
+    "subsystem": "src/index.ts:139-195",
+    "attack_class": "Detached work after cancellation",
+    "starting_paths": [
+      "src/index.ts"
+    ],
+    "ordinary_attack_class_block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#resource-accumulation",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#resource-accumulation"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-edge-misc",
+    "reviewed_paths": [
+      "src/index.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-edge-misc",
+        "reviewed_paths": [
+          "src/index.ts"
+        ],
+        "invariant": "Cron fan-out and failure modes",
+        "method": "source",
+        "result": "Unit u-cron-batch covered in wave 2 by h2-edge-misc; verdict file agents/h2-edge-misc/scratch/units/u-cron-batch.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-cron-batch"
+  },
+  {
+    "coverage_id": "Device%20authorization%20flow%20%28RFC%208628%29::%2Fdevice_authorization%2C%2Fdevice%2C%2Fdevice%2Fapprove::src%2Froutes%2Fdevice.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Device authorization flow (RFC 8628)",
+      "boundary": "/device_authorization,/device,/device/approve",
+      "subsystem": "src/routes/device.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Device authorization flow (RFC 8628)",
+    "boundary": "/device_authorization,/device,/device/approve",
+    "subsystem": "src/routes/device.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/device.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/device.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/device.ts"
+        ],
+        "invariant": "Device authorization flow (RFC 8628)",
+        "method": "source",
+        "result": "Unit u-device-flow covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-device-flow.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-device-flow"
+  },
+  {
+    "coverage_id": "Directory%20import%3A%20CSV%2FJSON%20bulk%20writes::POST%20%2Fadmin%2Fdirectory-import%2A%2C%2Fapi%2Fv1%2Fdirectory%2Fimport::src%2Flib%2Fdirectory-import.ts%2Cservices%2Fusers.ts::Import%20and%20restore%20authority%20expansion",
+    "canonical_refs": {
+      "surface": "Directory import: CSV/JSON bulk writes",
+      "boundary": "POST /admin/directory-import*,/api/v1/directory/import",
+      "subsystem": "src/lib/directory-import.ts,services/users.ts",
+      "attack_class": "Import and restore authority expansion"
+    },
+    "surface": "Directory import: CSV/JSON bulk writes",
+    "boundary": "POST /admin/directory-import*,/api/v1/directory/import",
+    "subsystem": "src/lib/directory-import.ts,services/users.ts",
+    "attack_class": "Import and restore authority expansion",
+    "starting_paths": [
+      "src/lib/directory-import.ts",
+      "src/services/users.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-scim-fed",
+    "reviewed_paths": [
+      "src/lib/directory-import.ts",
+      "src/services/users.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-scim-fed",
+        "reviewed_paths": [
+          "src/lib/directory-import.ts",
+          "src/services/users.ts"
+        ],
+        "invariant": "Directory import: CSV/JSON bulk writes",
+        "method": "source",
+        "result": "Unit u-dir-import covered in wave 1 by h-scim-fed; verdict file agents/h-scim-fed/scratch/units/u-dir-import.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-dir-import"
+  },
+  {
+    "coverage_id": "Dynamic%20client%20registration%20RFC%207591%2F7592::POST%7CGET%7CPUT%7CDELETE%20%2Fconnect%2Fregister%5B%2F%3Aid%5D::src%2Froutes%2Fregistration.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Dynamic client registration RFC 7591/7592",
+      "boundary": "POST|GET|PUT|DELETE /connect/register[/:id]",
+      "subsystem": "src/routes/registration.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Dynamic client registration RFC 7591/7592",
+    "boundary": "POST|GET|PUT|DELETE /connect/register[/:id]",
+    "subsystem": "src/routes/registration.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/registration.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/registration.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/registration.ts"
+        ],
+        "invariant": "Dynamic client registration RFC 7591/7592",
+        "method": "source",
+        "result": "Unit u-dcr covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-dcr.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-dcr"
+  },
+  {
+    "coverage_id": "Email%20pipeline%3A%20send%2C%20templates%2C%20notifications::operator%2Fuser%20data%20-%3E%20outbound%20email::src%2Flib%2F%7Bemail%2Caccount-email%2Cemail-templates%2Cnotifications%2Cbreached-passwords%2Cturnstile%7D.ts::Response-header%20injection",
+    "canonical_refs": {
+      "surface": "Email pipeline: send, templates, notifications",
+      "boundary": "operator/user data -> outbound email",
+      "subsystem": "src/lib/{email,account-email,email-templates,notifications,breached-passwords,turnstile}.ts",
+      "attack_class": "Response-header injection"
+    },
+    "surface": "Email pipeline: send, templates, notifications",
+    "boundary": "operator/user data -> outbound email",
+    "subsystem": "src/lib/{email,account-email,email-templates,notifications,breached-passwords,turnstile}.ts",
+    "attack_class": "Response-header injection",
+    "starting_paths": [
+      "src/lib/email.ts",
+      "src/lib/account-email.ts",
+      "src/lib/email-templates.ts",
+      "src/lib/notifications.ts",
+      "src/lib/breached-passwords.ts",
+      "src/lib/turnstile.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#http-framing",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#http-framing"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-render-email",
+    "reviewed_paths": [
+      "src/lib/email.ts",
+      "src/lib/account-email.ts",
+      "src/lib/email-templates.ts",
+      "src/lib/notifications.ts",
+      "src/lib/breached-passwords.ts",
+      "src/lib/turnstile.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-render-email",
+        "reviewed_paths": [
+          "src/lib/email.ts",
+          "src/lib/account-email.ts",
+          "src/lib/email-templates.ts",
+          "src/lib/notifications.ts",
+          "src/lib/breached-passwords.ts",
+          "src/lib/turnstile.ts"
+        ],
+        "invariant": "Email pipeline: send, templates, notifications",
+        "method": "source",
+        "result": "Unit u-email-pipeline covered in wave 2 by h2-render-email; verdict file agents/h2-render-email/scratch/units/u-email-pipeline.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-email-pipeline"
+  },
+  {
+    "coverage_id": "First-run%20setup%20%2B%20break-glass%20recovery::%2Fsetup%2C%2Fapi%2Fv1%2Fsetup%2C%2Fapi%2Fv1%2Frecovery%2Fadmin-reset::src%2Froutes%2Fsetup.ts%2Cservices%2Fsetup.ts%2Croutes%2Fapi.ts::Import%20and%20restore%20authority%20expansion",
+    "canonical_refs": {
+      "surface": "First-run setup + break-glass recovery",
+      "boundary": "/setup,/api/v1/setup,/api/v1/recovery/admin-reset",
+      "subsystem": "src/routes/setup.ts,services/setup.ts,routes/api.ts",
+      "attack_class": "Import and restore authority expansion"
+    },
+    "surface": "First-run setup + break-glass recovery",
+    "boundary": "/setup,/api/v1/setup,/api/v1/recovery/admin-reset",
+    "subsystem": "src/routes/setup.ts,services/setup.ts,routes/api.ts",
+    "attack_class": "Import and restore authority expansion",
+    "starting_paths": [
+      "src/routes/setup.ts",
+      "src/services/setup.ts",
+      "src/routes/api.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#export-backup"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-admin-api",
+    "reviewed_paths": [
+      "src/routes/setup.ts",
+      "src/services/setup.ts",
+      "src/routes/api.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-admin-api",
+        "reviewed_paths": [
+          "src/routes/setup.ts",
+          "src/services/setup.ts",
+          "src/routes/api.ts"
+        ],
+        "invariant": "First-run setup + break-glass recovery",
+        "method": "source",
+        "result": "Unit u-setup-recovery covered in wave 1 by h-admin-api; verdict file agents/h-admin-api/scratch/units/u-setup-recovery.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-setup-recovery"
+  },
+  {
+    "coverage_id": "Inbound%20SCIM%20server%20%2Fscim%2Fv2::%2Fscim%2Fv2%2F%2A::src%2Froutes%2Fscim-server.ts%2Clib%2Fscim-mapping.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Inbound SCIM server /scim/v2",
+      "boundary": "/scim/v2/*",
+      "subsystem": "src/routes/scim-server.ts,lib/scim-mapping.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "Inbound SCIM server /scim/v2",
+    "boundary": "/scim/v2/*",
+    "subsystem": "src/routes/scim-server.ts,lib/scim-mapping.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/routes/scim-server.ts",
+      "src/lib/scim-mapping.ts",
+      "src/lib/photos.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-scim-fed",
+    "reviewed_paths": [
+      "src/routes/scim-server.ts",
+      "src/lib/scim-mapping.ts",
+      "src/lib/photos.ts",
+      "src/lib/schemas.ts",
+      "src/lib/user-emails.ts",
+      "src/services/users.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-scim-fed",
+        "reviewed_paths": [
+          "src/routes/scim-server.ts",
+          "src/lib/scim-mapping.ts",
+          "src/lib/photos.ts",
+          "src/lib/schemas.ts",
+          "src/lib/user-emails.ts",
+          "src/services/users.ts"
+        ],
+        "invariant": "Inbound SCIM server /scim/v2",
+        "method": "source",
+        "result": "Unit u-scim-in covered in wave 1 by h-scim-fed; verdict file agents/h-scim-fed/scratch/units/u-scim-in.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-scim-in"
+  },
+  {
+    "coverage_id": "Inbound%20federation%3A%20upstream%20OIDC%20%2B%20SAML%20IdPs::%2Flogin%2Ffederated%2F%3Aid%2C%2Ffederation%2Foidc%2Fcallback%2C%2Ffederation%2Fsaml%2Facs%2F%3Aid::src%2Froutes%2Ffederation.ts%2Clib%2Ffederation.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Inbound federation: upstream OIDC + SAML IdPs",
+      "boundary": "/login/federated/:id,/federation/oidc/callback,/federation/saml/acs/:id",
+      "subsystem": "src/routes/federation.ts,lib/federation.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Inbound federation: upstream OIDC + SAML IdPs",
+    "boundary": "/login/federated/:id,/federation/oidc/callback,/federation/saml/acs/:id",
+    "subsystem": "src/routes/federation.ts,lib/federation.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/federation.ts",
+      "src/lib/federation.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-scim-fed",
+    "reviewed_paths": [
+      "src/routes/federation.ts",
+      "src/lib/federation.ts",
+      "src/lib/user-emails.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-scim-fed",
+        "reviewed_paths": [
+          "src/routes/federation.ts",
+          "src/lib/federation.ts",
+          "src/lib/user-emails.ts"
+        ],
+        "invariant": "Inbound federation: upstream OIDC + SAML IdPs",
+        "method": "source",
+        "result": "Unit u-federation covered in wave 1 by h-scim-fed; verdict file agents/h-scim-fed/scratch/units/u-federation.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-federation"
+  },
+  {
+    "coverage_id": "Introspect%2C%20revoke%2C%20userinfo%20endpoints::POST%20%2Fintrospect%7C%2Frevoke%2C%20GET%7CPOST%20%2Fuserinfo::src%2Froutes%2Fintrospect.ts%2Cuserinfo.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Introspect, revoke, userinfo endpoints",
+      "boundary": "POST /introspect|/revoke, GET|POST /userinfo",
+      "subsystem": "src/routes/introspect.ts,userinfo.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Introspect, revoke, userinfo endpoints",
+    "boundary": "POST /introspect|/revoke, GET|POST /userinfo",
+    "subsystem": "src/routes/introspect.ts,userinfo.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/introspect.ts",
+      "src/routes/userinfo.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/introspect.ts",
+      "src/routes/userinfo.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/introspect.ts",
+          "src/routes/userinfo.ts"
+        ],
+        "invariant": "Introspect, revoke, userinfo endpoints",
+        "method": "source",
+        "result": "Unit u-token-aux covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-token-aux.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-token-aux"
+  },
+  {
+    "coverage_id": "Issuer%20resolution%20%2B%20discovery%20docs::anonymous%20-%3E%20issuer%20trust::src%2Flib%2Fissuer.ts%2Csrc%2Froutes%2Fdiscovery.ts%2Csrc%2Fversion.ts::Host%20and%20forwarded-header%20trust",
+    "canonical_refs": {
+      "surface": "Issuer resolution + discovery docs",
+      "boundary": "anonymous -> issuer trust",
+      "subsystem": "src/lib/issuer.ts,src/routes/discovery.ts,src/version.ts",
+      "attack_class": "Host and forwarded-header trust"
+    },
+    "surface": "Issuer resolution + discovery docs",
+    "boundary": "anonymous -> issuer trust",
+    "subsystem": "src/lib/issuer.ts,src/routes/discovery.ts,src/version.ts",
+    "attack_class": "Host and forwarded-header trust",
+    "starting_paths": [
+      "src/lib/issuer.ts",
+      "src/routes/discovery.ts",
+      "src/version.ts"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#ingress",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#ingress"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-edge-misc",
+    "reviewed_paths": [
+      "src/lib/issuer.ts",
+      "src/routes/discovery.ts",
+      "src/version.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-edge-misc",
+        "reviewed_paths": [
+          "src/lib/issuer.ts",
+          "src/routes/discovery.ts",
+          "src/version.ts"
+        ],
+        "invariant": "Issuer resolution + discovery docs",
+        "method": "source",
+        "result": "Unit u-issuer-discovery covered in wave 2 by h2-edge-misc; verdict file agents/h2-edge-misc/scratch/units/u-issuer-discovery.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-issuer-discovery"
+  },
+  {
+    "coverage_id": "KV%20get-%3Edelete%20one-shot%20replay::KV%20eventual%20consistency::src%2Flib%2Fstep-up.ts%2Cfederation.ts%2Cpasskeys%2Cauthorize-state%2Cemail-otp::Callback%20and%20reply-correlation%20confusion",
+    "canonical_refs": {
+      "surface": "KV get->delete one-shot replay",
+      "boundary": "KV eventual consistency",
+      "subsystem": "src/lib/step-up.ts,federation.ts,passkeys,authorize-state,email-otp",
+      "attack_class": "Callback and reply-correlation confusion"
+    },
+    "surface": "KV get->delete one-shot replay",
+    "boundary": "KV eventual consistency",
+    "subsystem": "src/lib/step-up.ts,federation.ts,passkeys,authorize-state,email-otp",
+    "attack_class": "Callback and reply-correlation confusion",
+    "starting_paths": [
+      "src/lib/step-up.ts",
+      "src/lib/federation.ts",
+      "src/lib/passkeys.ts",
+      "src/lib/authorize-state.ts",
+      "src/lib/email-otp.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/lib/step-up.ts",
+      "src/lib/federation.ts",
+      "src/lib/passkeys.ts",
+      "src/lib/authorize-state.ts",
+      "src/lib/email-otp.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/lib/step-up.ts",
+          "src/lib/federation.ts",
+          "src/lib/passkeys.ts",
+          "src/lib/authorize-state.ts",
+          "src/lib/email-otp.ts"
+        ],
+        "invariant": "KV get->delete one-shot replay",
+        "method": "source",
+        "result": "Unit u-stepup-race covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-stepup-race.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-stepup-race"
+  },
+  {
+    "coverage_id": "LDAP%20app%20configuration%20lifecycle%20%28admin%2FAPI%29::%2Fadmin%2Fldap%2A%2C%2Fapi%2Fv1%2Fldap%2A::src%2Fapi%2Fldap.ts%2Cldap%2F%7Bapps%2Csettings%7D.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "LDAP app configuration lifecycle (admin/API)",
+      "boundary": "/admin/ldap*,/api/v1/ldap*",
+      "subsystem": "src/api/ldap.ts,ldap/{apps,settings}.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "LDAP app configuration lifecycle (admin/API)",
+    "boundary": "/admin/ldap*,/api/v1/ldap*",
+    "subsystem": "src/api/ldap.ts,ldap/{apps,settings}.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/api/ldap.ts",
+      "src/ldap/apps.ts",
+      "src/ldap/settings.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-ldap",
+    "reviewed_paths": [
+      "src/api/ldap.ts",
+      "src/ldap/apps.ts",
+      "src/ldap/settings.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-ldap",
+        "reviewed_paths": [
+          "src/api/ldap.ts",
+          "src/ldap/apps.ts",
+          "src/ldap/settings.ts"
+        ],
+        "invariant": "LDAP app configuration lifecycle (admin/API)",
+        "method": "source",
+        "result": "Unit u-ldap-apps covered in wave 1 by h-ldap; verdict file agents/h-ldap/scratch/units/u-ldap-apps.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ldap-apps"
+  },
+  {
+    "coverage_id": "LDAP%20authn%2Fauthz%3A%20binds%2C%20search%2C%20compare%2C%20password-modify::LDAP%20ops%20post-bind::src%2Fldap%2F%7Bbind%2Csearch%2Cfilter%2Ccompare%2A%2Cdn%2Cdirectory%2Centries%2Cad%2Capps%7D.ts::Peer%20identity%20to%20application-principal%20confusion",
+    "canonical_refs": {
+      "surface": "LDAP authn/authz: binds, search, compare, password-modify",
+      "boundary": "LDAP ops post-bind",
+      "subsystem": "src/ldap/{bind,search,filter,compare*,dn,directory,entries,ad,apps}.ts",
+      "attack_class": "Peer identity to application-principal confusion"
+    },
+    "surface": "LDAP authn/authz: binds, search, compare, password-modify",
+    "boundary": "LDAP ops post-bind",
+    "subsystem": "src/ldap/{bind,search,filter,compare*,dn,directory,entries,ad,apps}.ts",
+    "attack_class": "Peer identity to application-principal confusion",
+    "starting_paths": [
+      "src/ldap/bind.ts",
+      "src/ldap/search.ts",
+      "src/ldap/filter.ts",
+      "src/ldap/dn.ts",
+      "src/ldap/directory.ts",
+      "src/ldap/entries.ts",
+      "src/ldap/ad.ts",
+      "src/ldap/apps.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-ldap",
+    "reviewed_paths": [
+      "src/ldap/bind.ts",
+      "src/ldap/search.ts",
+      "src/ldap/filter.ts",
+      "src/ldap/dn.ts",
+      "src/ldap/directory.ts",
+      "src/ldap/entries.ts",
+      "src/ldap/ad.ts",
+      "src/ldap/apps.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-ldap",
+        "reviewed_paths": [
+          "src/ldap/bind.ts",
+          "src/ldap/search.ts",
+          "src/ldap/filter.ts",
+          "src/ldap/dn.ts",
+          "src/ldap/directory.ts",
+          "src/ldap/entries.ts",
+          "src/ldap/ad.ts",
+          "src/ldap/apps.ts"
+        ],
+        "invariant": "LDAP authn/authz: binds, search, compare, password-modify",
+        "method": "source",
+        "result": "Unit u-ldap-authz covered in wave 1 by h-ldap; verdict file agents/h-ldap/scratch/units/u-ldap-authz.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ldap-authz"
+  },
+  {
+    "coverage_id": "LDAP%20dn%2Fad%2Fentries%20emit%20paths::bound%20principal%20-%3E%20directory%20data::src%2Fldap%2F%7Bdn%2Cad%2Centries%7D.ts::Per-item%20and%20streaming%20authorization%20gaps",
+    "canonical_refs": {
+      "surface": "LDAP dn/ad/entries emit paths",
+      "boundary": "bound principal -> directory data",
+      "subsystem": "src/ldap/{dn,ad,entries}.ts",
+      "attack_class": "Per-item and streaming authorization gaps"
+    },
+    "surface": "LDAP dn/ad/entries emit paths",
+    "boundary": "bound principal -> directory data",
+    "subsystem": "src/ldap/{dn,ad,entries}.ts",
+    "attack_class": "Per-item and streaming authorization gaps",
+    "starting_paths": [
+      "src/ldap/dn.ts",
+      "src/ldap/ad.ts",
+      "src/ldap/entries.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/ldap/dn.ts",
+      "src/ldap/ad.ts",
+      "src/ldap/entries.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/ldap/dn.ts",
+          "src/ldap/ad.ts",
+          "src/ldap/entries.ts"
+        ],
+        "invariant": "LDAP dn/ad/entries emit paths",
+        "method": "source",
+        "result": "Unit u-ldap-dn-ad covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-ldap-dn-ad.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ldap-dn-ad"
+  },
+  {
+    "coverage_id": "LDAP%20wire%20surface%3A%20framing%2C%20BER%20decode%2C%20message%20dispatch::TCP%20via%20Spectrum%20connect%28%29::src%2Fldap%2F%7Bindex%2Cconnection%2Cber%2Cprotocol%7D.ts::Message%20boundary%20and%20canonicalization%20disagreement",
+    "canonical_refs": {
+      "surface": "LDAP wire surface: framing, BER decode, message dispatch",
+      "boundary": "TCP via Spectrum connect()",
+      "subsystem": "src/ldap/{index,connection,ber,protocol}.ts",
+      "attack_class": "Message boundary and canonicalization disagreement"
+    },
+    "surface": "LDAP wire surface: framing, BER decode, message dispatch",
+    "boundary": "TCP via Spectrum connect()",
+    "subsystem": "src/ldap/{index,connection,ber,protocol}.ts",
+    "attack_class": "Message boundary and canonicalization disagreement",
+    "starting_paths": [
+      "src/ldap/index.ts",
+      "src/ldap/connection.ts",
+      "src/ldap/ber.ts",
+      "src/ldap/protocol.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#framing",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#framing"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-ldap",
+    "reviewed_paths": [
+      "src/ldap/index.ts",
+      "src/ldap/connection.ts",
+      "src/ldap/ber.ts",
+      "src/ldap/protocol.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-ldap",
+        "reviewed_paths": [
+          "src/ldap/index.ts",
+          "src/ldap/connection.ts",
+          "src/ldap/ber.ts",
+          "src/ldap/protocol.ts"
+        ],
+        "invariant": "LDAP wire surface: framing, BER decode, message dispatch",
+        "method": "source",
+        "result": "Unit u-ldap-wire covered in wave 1 by h-ldap; verdict file agents/h-ldap/scratch/units/u-ldap-wire.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ldap-wire"
+  },
+  {
+    "coverage_id": "Login%20surface%3A%20password%2C%20MFA%20steps%2C%20passkey%20assertion%2C%20policy%20eval::%2Flogin%2A%2C%2Flogout::src%2Froutes%2Flogin.ts::Session%20fixation%20and%20invalidation",
+    "canonical_refs": {
+      "surface": "Login surface: password, MFA steps, passkey assertion, policy eval",
+      "boundary": "/login*,/logout",
+      "subsystem": "src/routes/login.ts",
+      "attack_class": "Session fixation and invalidation"
+    },
+    "surface": "Login surface: password, MFA steps, passkey assertion, policy eval",
+    "boundary": "/login*,/logout",
+    "subsystem": "src/routes/login.ts",
+    "attack_class": "Session fixation and invalidation",
+    "starting_paths": [
+      "src/routes/login.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-authn",
+    "reviewed_paths": [
+      "src/routes/login.ts",
+      "src/lib/password.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-authn",
+        "reviewed_paths": [
+          "src/routes/login.ts",
+          "src/lib/password.ts"
+        ],
+        "invariant": "Login surface: password, MFA steps, passkey assertion, policy eval",
+        "method": "source",
+        "result": "Unit u-login covered in wave 1 by h-authn; verdict file agents/h-authn/scratch/units/u-login.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-login"
+  },
+  {
+    "coverage_id": "Obvious-things%20sweep%3A%20secrets%2C%20debug%2C%20CORS%2C%20cookies%2C%20error%20leaks::whole%20repo::repo-wide::Cookie%20scope%20and%20transport",
+    "canonical_refs": {
+      "surface": "Obvious-things sweep: secrets, debug, CORS, cookies, error leaks",
+      "boundary": "whole repo",
+      "subsystem": "repo-wide",
+      "attack_class": "Cookie scope and transport"
+    },
+    "surface": "Obvious-things sweep: secrets, debug, CORS, cookies, error leaks",
+    "boundary": "whole repo",
+    "subsystem": "repo-wide",
+    "attack_class": "Cookie scope and transport",
+    "starting_paths": [
+      "src",
+      "scripts",
+      "e2e",
+      ".github/workflows"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-wildcard",
+    "reviewed_paths": [
+      "src",
+      "scripts",
+      "e2e",
+      ".github/workflows"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-wildcard",
+        "reviewed_paths": [
+          "src",
+          "scripts",
+          "e2e",
+          ".github/workflows"
+        ],
+        "invariant": "Obvious-things sweep: secrets, debug, CORS, cookies, error leaks",
+        "method": "source",
+        "result": "Unit u-obvious covered in wave 1 by h-wildcard; verdict file agents/h-wildcard/scratch/units/u-obvious.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-obvious"
+  },
+  {
+    "coverage_id": "Outbound%20SCIM%20provisioning%3A%20client%2C%20targets%2C%20outbox::cron%20%2B%20API-set%20targets::src%2Flib%2F%7Bscim-client%2Cscim-targets%7D.ts%2Cservices%2Fscim-sync.ts::Untrusted%20producer%20treated%20as%20control%20plane",
+    "canonical_refs": {
+      "surface": "Outbound SCIM provisioning: client, targets, outbox",
+      "boundary": "cron + API-set targets",
+      "subsystem": "src/lib/{scim-client,scim-targets}.ts,services/scim-sync.ts",
+      "attack_class": "Untrusted producer treated as control plane"
+    },
+    "surface": "Outbound SCIM provisioning: client, targets, outbox",
+    "boundary": "cron + API-set targets",
+    "subsystem": "src/lib/{scim-client,scim-targets}.ts,services/scim-sync.ts",
+    "attack_class": "Untrusted producer treated as control plane",
+    "starting_paths": [
+      "src/lib/scim-client.ts",
+      "src/lib/scim-targets.ts",
+      "src/services/scim-sync.ts"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#ingress",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#ingress"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-scim-fed",
+    "reviewed_paths": [
+      "src/lib/scim-client.ts",
+      "src/lib/scim-targets.ts",
+      "src/services/scim-sync.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-scim-fed",
+        "reviewed_paths": [
+          "src/lib/scim-client.ts",
+          "src/lib/scim-targets.ts",
+          "src/services/scim-sync.ts"
+        ],
+        "invariant": "Outbound SCIM provisioning: client, targets, outbox",
+        "method": "source",
+        "result": "Unit u-scim-out covered in wave 1 by h-scim-fed; verdict file agents/h-scim-fed/scratch/units/u-scim-out.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-scim-out"
+  },
+  {
+    "coverage_id": "Plaintext%20secret%20parity%20vs%20sealed.ts::at-rest%20secret%20storage::migrations%2F%2A.sql%20secret%20columns%20vs%20src%2Flib%2Fsealed.ts%20consumers::Configuration%20and%20secret%20lifecycle",
+    "canonical_refs": {
+      "surface": "Plaintext secret parity vs sealed.ts",
+      "boundary": "at-rest secret storage",
+      "subsystem": "migrations/*.sql secret columns vs src/lib/sealed.ts consumers",
+      "attack_class": "Configuration and secret lifecycle"
+    },
+    "surface": "Plaintext secret parity vs sealed.ts",
+    "boundary": "at-rest secret storage",
+    "subsystem": "migrations/*.sql secret columns vs src/lib/sealed.ts consumers",
+    "attack_class": "Configuration and secret lifecycle",
+    "starting_paths": [
+      "migrations",
+      "src/lib/sealed.ts",
+      "src/lib/scim-targets.ts",
+      "src/lib/cfone.ts"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#configuration",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#configuration"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "migrations",
+      "src/lib/sealed.ts",
+      "src/lib/scim-targets.ts",
+      "src/lib/cfone.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "migrations",
+          "src/lib/sealed.ts",
+          "src/lib/scim-targets.ts",
+          "src/lib/cfone.ts"
+        ],
+        "invariant": "Plaintext secret parity vs sealed.ts",
+        "method": "source",
+        "result": "Unit u-secret-parity covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-secret-parity.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-secret-parity"
+  },
+  {
+    "coverage_id": "Public%20misc%3A%20brand-assets%2C%20well-known%2C%20monitoring::anonymous::src%2Froutes%2Fbrand-assets.ts%2Csrc%2Fapi%2Fmonitoring.ts%2Csrc%2Fservices%2F%7Bmonitoring%2Ccontext%7D.ts::Pre-authentication%20work%20imbalance",
+    "canonical_refs": {
+      "surface": "Public misc: brand-assets, well-known, monitoring",
+      "boundary": "anonymous",
+      "subsystem": "src/routes/brand-assets.ts,src/api/monitoring.ts,src/services/{monitoring,context}.ts",
+      "attack_class": "Pre-authentication work imbalance"
+    },
+    "surface": "Public misc: brand-assets, well-known, monitoring",
+    "boundary": "anonymous",
+    "subsystem": "src/routes/brand-assets.ts,src/api/monitoring.ts,src/services/{monitoring,context}.ts",
+    "attack_class": "Pre-authentication work imbalance",
+    "starting_paths": [
+      "src/routes/brand-assets.ts",
+      "src/api/monitoring.ts",
+      "src/services/monitoring.ts",
+      "src/services/context.ts"
+    ],
+    "ordinary_attack_class_block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#quota",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#quota"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-edge-misc",
+    "reviewed_paths": [
+      "src/routes/brand-assets.ts",
+      "src/api/monitoring.ts",
+      "src/services/monitoring.ts",
+      "src/services/context.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-edge-misc",
+        "reviewed_paths": [
+          "src/routes/brand-assets.ts",
+          "src/api/monitoring.ts",
+          "src/services/monitoring.ts",
+          "src/services/context.ts"
+        ],
+        "invariant": "Public misc: brand-assets, well-known, monitoring",
+        "method": "source",
+        "result": "Unit u-public-misc covered in wave 2 by h2-edge-misc; verdict file agents/h2-edge-misc/scratch/units/u-public-misc.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-public-misc"
+  },
+  {
+    "coverage_id": "RP-initiated%20logout%2C%20session%20mgmt%20iframe%2C%203rd-party-init%2C%20frontchannel::%2Foidc%2Flogout%2A%2C%2Fcheck_session%2C%2Foidc%2Finit-login::src%2Froutes%2Foidc-session.ts%2Clib%2Ffrontchannel.ts%2Clib%2Fbackchannel.ts::postMessage%20origin%20and%20source%20trust",
+    "canonical_refs": {
+      "surface": "RP-initiated logout, session mgmt iframe, 3rd-party-init, frontchannel",
+      "boundary": "/oidc/logout*,/check_session,/oidc/init-login",
+      "subsystem": "src/routes/oidc-session.ts,lib/frontchannel.ts,lib/backchannel.ts",
+      "attack_class": "postMessage origin and source trust"
+    },
+    "surface": "RP-initiated logout, session mgmt iframe, 3rd-party-init, frontchannel",
+    "boundary": "/oidc/logout*,/check_session,/oidc/init-login",
+    "subsystem": "src/routes/oidc-session.ts,lib/frontchannel.ts,lib/backchannel.ts",
+    "attack_class": "postMessage origin and source trust",
+    "starting_paths": [
+      "src/routes/oidc-session.ts",
+      "src/lib/frontchannel.ts",
+      "src/lib/backchannel.ts"
+    ],
+    "ordinary_attack_class_block": "CLIENT-SIDE.md#cross-origin-messaging",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#cross-origin-messaging"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/oidc-session.ts",
+      "src/lib/frontchannel.ts",
+      "src/lib/backchannel.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/oidc-session.ts",
+          "src/lib/frontchannel.ts",
+          "src/lib/backchannel.ts"
+        ],
+        "invariant": "RP-initiated logout, session mgmt iframe, 3rd-party-init, frontchannel",
+        "method": "source",
+        "result": "Unit u-oidc-session covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-oidc-session.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-oidc-session"
+  },
+  {
+    "coverage_id": "Rate%20limiting%2C%20body%20caps%2C%20unbounded%20queries%2C%20DoS::cross-cutting::src%2Flib%2F%7Bedge-limit%2Crate-limit%2Ccleanup%7D.ts%2Cindex.ts%2Call%20handlers::Pre-authentication%20work%20imbalance",
+    "canonical_refs": {
+      "surface": "Rate limiting, body caps, unbounded queries, DoS",
+      "boundary": "cross-cutting",
+      "subsystem": "src/lib/{edge-limit,rate-limit,cleanup}.ts,index.ts,all handlers",
+      "attack_class": "Pre-authentication work imbalance"
+    },
+    "surface": "Rate limiting, body caps, unbounded queries, DoS",
+    "boundary": "cross-cutting",
+    "subsystem": "src/lib/{edge-limit,rate-limit,cleanup}.ts,index.ts,all handlers",
+    "attack_class": "Pre-authentication work imbalance",
+    "starting_paths": [
+      "src/lib/edge-limit.ts",
+      "src/lib/rate-limit.ts",
+      "src/lib/cleanup.ts",
+      "src/lib/metrics.ts",
+      "src/index.ts"
+    ],
+    "ordinary_attack_class_block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#quota",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#quota"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-ratelimit",
+    "reviewed_paths": [
+      "src/lib/edge-limit.ts",
+      "src/lib/rate-limit.ts",
+      "src/lib/cleanup.ts",
+      "src/lib/metrics.ts",
+      "src/index.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-ratelimit",
+        "reviewed_paths": [
+          "src/lib/edge-limit.ts",
+          "src/lib/rate-limit.ts",
+          "src/lib/cleanup.ts",
+          "src/lib/metrics.ts",
+          "src/index.ts"
+        ],
+        "invariant": "Rate limiting, body caps, unbounded queries, DoS",
+        "method": "source",
+        "result": "Unit u-ratelimit covered in wave 1 by h-ratelimit; verdict file agents/h-ratelimit/scratch/units/u-ratelimit.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ratelimit"
+  },
+  {
+    "coverage_id": "Recovery%2Finvite%20token%20lifecycle::%2Fforgot-password%2C%2Freset-password%2F%3Atoken%2C%2Finvite%2F%3Atoken::src%2Froutes%2Frecovery.ts%2Clib%2Faccount-tokens.ts::Session%20fixation%20and%20invalidation",
+    "canonical_refs": {
+      "surface": "Recovery/invite token lifecycle",
+      "boundary": "/forgot-password,/reset-password/:token,/invite/:token",
+      "subsystem": "src/routes/recovery.ts,lib/account-tokens.ts",
+      "attack_class": "Session fixation and invalidation"
+    },
+    "surface": "Recovery/invite token lifecycle",
+    "boundary": "/forgot-password,/reset-password/:token,/invite/:token",
+    "subsystem": "src/routes/recovery.ts,lib/account-tokens.ts",
+    "attack_class": "Session fixation and invalidation",
+    "starting_paths": [
+      "src/routes/recovery.ts",
+      "src/lib/account-tokens.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-authn",
+    "reviewed_paths": [
+      "src/routes/recovery.ts",
+      "src/lib/account-tokens.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-authn",
+        "reviewed_paths": [
+          "src/routes/recovery.ts",
+          "src/lib/account-tokens.ts"
+        ],
+        "invariant": "Recovery/invite token lifecycle",
+        "method": "source",
+        "result": "Unit u-recovery covered in wave 1 by h-authn; verdict file agents/h-authn/scratch/units/u-recovery.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-recovery"
+  },
+  {
+    "coverage_id": "Rendering%3A%20i18n%2C%20html%2C%20login%20views%2C%20domains%2C%20brands::request%20params%20-%3E%20HTML%2Flocale::src%2Flib%2F%7Bi18n%2Chtml%2Clogin-views%2Cdomains%2Cbrands%7D.ts%2Clocales%2F%2Cservices%2Fbranding.ts::DOM-based%20XSS",
+    "canonical_refs": {
+      "surface": "Rendering: i18n, html, login views, domains, brands",
+      "boundary": "request params -> HTML/locale",
+      "subsystem": "src/lib/{i18n,html,login-views,domains,brands}.ts,locales/,services/branding.ts",
+      "attack_class": "DOM-based XSS"
+    },
+    "surface": "Rendering: i18n, html, login views, domains, brands",
+    "boundary": "request params -> HTML/locale",
+    "subsystem": "src/lib/{i18n,html,login-views,domains,brands}.ts,locales/,services/branding.ts",
+    "attack_class": "DOM-based XSS",
+    "starting_paths": [
+      "src/lib/i18n.ts",
+      "src/lib/html.ts",
+      "src/lib/login-views.ts",
+      "src/lib/domains.ts",
+      "src/lib/brands.ts",
+      "src/services/branding.ts",
+      "locales"
+    ],
+    "ordinary_attack_class_block": "CLIENT-SIDE.md#dom",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#dom"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-render-email",
+    "reviewed_paths": [
+      "src/lib/i18n.ts",
+      "src/lib/html.ts",
+      "src/lib/login-views.ts",
+      "src/lib/domains.ts",
+      "src/lib/brands.ts",
+      "src/services/branding.ts",
+      "locales",
+      "src/lib/types.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-render-email",
+        "reviewed_paths": [
+          "src/lib/i18n.ts",
+          "src/lib/html.ts",
+          "src/lib/login-views.ts",
+          "src/lib/domains.ts",
+          "src/lib/brands.ts",
+          "src/services/branding.ts",
+          "locales",
+          "src/lib/types.ts"
+        ],
+        "invariant": "Rendering: i18n, html, login views, domains, brands",
+        "method": "source",
+        "result": "Unit u-render-i18n covered in wave 2 by h2-render-email; verdict file agents/h2-render-email/scratch/units/u-render-i18n.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-render-i18n"
+  },
+  {
+    "coverage_id": "SAML%20SSO%20inbound%3A%20AuthnRequest%20parse%2C%20redirect%20sig%2C%20ACS%2C%20replay::%2Fsaml%2Fsso%2C%2Fsaml%2Fcomplete::src%2Froutes%2Fsaml.ts%2Clib%2Fsaml%2Fauthn-request.ts::Envelope%20and%20payload%20identity%20mismatch",
+    "canonical_refs": {
+      "surface": "SAML SSO inbound: AuthnRequest parse, redirect sig, ACS, replay",
+      "boundary": "/saml/sso,/saml/complete",
+      "subsystem": "src/routes/saml.ts,lib/saml/authn-request.ts",
+      "attack_class": "Envelope and payload identity mismatch"
+    },
+    "surface": "SAML SSO inbound: AuthnRequest parse, redirect sig, ACS, replay",
+    "boundary": "/saml/sso,/saml/complete",
+    "subsystem": "src/routes/saml.ts,lib/saml/authn-request.ts",
+    "attack_class": "Envelope and payload identity mismatch",
+    "starting_paths": [
+      "src/routes/saml.ts",
+      "src/lib/saml/authn-request.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#framing",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#framing"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-saml",
+    "reviewed_paths": [
+      "src/routes/saml.ts",
+      "src/lib/saml/authn-request.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-saml",
+        "reviewed_paths": [
+          "src/routes/saml.ts",
+          "src/lib/saml/authn-request.ts"
+        ],
+        "invariant": "SAML SSO inbound: AuthnRequest parse, redirect sig, ACS, replay",
+        "method": "source",
+        "result": "Unit u-saml-sso covered in wave 1 by h-saml; verdict file agents/h-saml/scratch/units/u-saml-sso.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-saml-sso"
+  },
+  {
+    "coverage_id": "SAML%20assertion%20issuance%3A%20messages%2C%20sign%2C%20encrypt%2C%20post-form%2C%20SLO::internal%20%2B%20%2Fsaml%2Fslo::src%2Flib%2Fsaml%2F%7Bmessages%2Csign%2Cencrypt%2Cmetadata%2Cattributes%2Cpost-form%7D.ts%2Croutes%2Fsaml-slo.ts::Envelope%20and%20payload%20identity%20mismatch",
+    "canonical_refs": {
+      "surface": "SAML assertion issuance: messages, sign, encrypt, post-form, SLO",
+      "boundary": "internal + /saml/slo",
+      "subsystem": "src/lib/saml/{messages,sign,encrypt,metadata,attributes,post-form}.ts,routes/saml-slo.ts",
+      "attack_class": "Envelope and payload identity mismatch"
+    },
+    "surface": "SAML assertion issuance: messages, sign, encrypt, post-form, SLO",
+    "boundary": "internal + /saml/slo",
+    "subsystem": "src/lib/saml/{messages,sign,encrypt,metadata,attributes,post-form}.ts,routes/saml-slo.ts",
+    "attack_class": "Envelope and payload identity mismatch",
+    "starting_paths": [
+      "src/lib/saml/messages.ts",
+      "src/lib/saml/sign.ts",
+      "src/lib/saml/encrypt.ts",
+      "src/lib/saml/metadata.ts",
+      "src/lib/saml/attributes.ts",
+      "src/lib/saml/post-form.ts",
+      "src/routes/saml-slo.ts"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#framing",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#framing"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-saml",
+    "reviewed_paths": [
+      "src/lib/saml/messages.ts",
+      "src/lib/saml/sign.ts",
+      "src/lib/saml/encrypt.ts",
+      "src/lib/saml/metadata.ts",
+      "src/lib/saml/attributes.ts",
+      "src/lib/saml/post-form.ts",
+      "src/routes/saml-slo.ts",
+      "src/lib/saml/xml.ts",
+      "src/lib/saml/x509.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-saml",
+        "reviewed_paths": [
+          "src/lib/saml/messages.ts",
+          "src/lib/saml/sign.ts",
+          "src/lib/saml/encrypt.ts",
+          "src/lib/saml/metadata.ts",
+          "src/lib/saml/attributes.ts",
+          "src/lib/saml/post-form.ts",
+          "src/routes/saml-slo.ts",
+          "src/lib/saml/xml.ts",
+          "src/lib/saml/x509.ts"
+        ],
+        "invariant": "SAML assertion issuance: messages, sign, encrypt, post-form, SLO",
+        "method": "source",
+        "result": "Unit u-saml-out covered in wave 1 by h-saml; verdict file agents/h-saml/scratch/units/u-saml-out.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-saml-out"
+  },
+  {
+    "coverage_id": "SP%20metadata%20ingest%3A%20paste%2C%20API%20import%2C%20URL%20fetch%2C%20cron%20refresh::admin%20paste%2C%20%2Fapi%2Fv1%2Fsaml%2Fsps%2Fimport-metadata%2C%20metadata_url%2C%20cron::src%2Flib%2Fsaml%2Fsp-metadata.ts%2Cservice-providers.ts%2Croutes%2Fapi.ts::Untrusted%20producer%20treated%20as%20control%20plane",
+    "canonical_refs": {
+      "surface": "SP metadata ingest: paste, API import, URL fetch, cron refresh",
+      "boundary": "admin paste, /api/v1/saml/sps/import-metadata, metadata_url, cron",
+      "subsystem": "src/lib/saml/sp-metadata.ts,service-providers.ts,routes/api.ts",
+      "attack_class": "Untrusted producer treated as control plane"
+    },
+    "surface": "SP metadata ingest: paste, API import, URL fetch, cron refresh",
+    "boundary": "admin paste, /api/v1/saml/sps/import-metadata, metadata_url, cron",
+    "subsystem": "src/lib/saml/sp-metadata.ts,service-providers.ts,routes/api.ts",
+    "attack_class": "Untrusted producer treated as control plane",
+    "starting_paths": [
+      "src/lib/saml/sp-metadata.ts",
+      "src/lib/saml/service-providers.ts",
+      "src/routes/api.ts"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#ingress",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#ingress"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-saml",
+    "reviewed_paths": [
+      "src/lib/saml/sp-metadata.ts",
+      "src/lib/saml/service-providers.ts",
+      "src/routes/api.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-saml",
+        "reviewed_paths": [
+          "src/lib/saml/sp-metadata.ts",
+          "src/lib/saml/service-providers.ts",
+          "src/routes/api.ts"
+        ],
+        "invariant": "SP metadata ingest: paste, API import, URL fetch, cron refresh",
+        "method": "source",
+        "result": "Unit u-saml-metadata covered in wave 1 by h-saml; verdict file agents/h-saml/scratch/units/u-saml-metadata.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-saml-metadata"
+  },
+  {
+    "coverage_id": "SSF%3A%20receiver%20verify%20%2B%20transmitter%20%2B%20streams%20%2B%20outbox%20drain::POST%20%2Fssf%2Freceive%2C%2F.well-known%2Fssf-configuration%2C%2Fapi%2Fv1%2Fssf%2F%2A::src%2Froutes%2Fssf.ts%2Clib%2Fssf.ts%2Capi%2Fssf.ts::JWT%20verification%20and%20claim%20binding",
+    "canonical_refs": {
+      "surface": "SSF: receiver verify + transmitter + streams + outbox drain",
+      "boundary": "POST /ssf/receive,/.well-known/ssf-configuration,/api/v1/ssf/*",
+      "subsystem": "src/routes/ssf.ts,lib/ssf.ts,api/ssf.ts",
+      "attack_class": "JWT verification and claim binding"
+    },
+    "surface": "SSF: receiver verify + transmitter + streams + outbox drain",
+    "boundary": "POST /ssf/receive,/.well-known/ssf-configuration,/api/v1/ssf/*",
+    "subsystem": "src/routes/ssf.ts,lib/ssf.ts,api/ssf.ts",
+    "attack_class": "JWT verification and claim binding",
+    "starting_paths": [
+      "src/routes/ssf.ts",
+      "src/lib/ssf.ts",
+      "src/api/ssf.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-newproto",
+    "reviewed_paths": [
+      "src/routes/ssf.ts",
+      "src/lib/ssf.ts",
+      "src/api/ssf.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-newproto",
+        "reviewed_paths": [
+          "src/routes/ssf.ts",
+          "src/lib/ssf.ts",
+          "src/api/ssf.ts"
+        ],
+        "invariant": "SSF: receiver verify + transmitter + streams + outbox drain",
+        "method": "source",
+        "result": "Unit u-ssf covered in wave 1 by h-newproto; verdict file agents/h-newproto/scratch/units/u-ssf.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-ssf"
+  },
+  {
+    "coverage_id": "Sealed%20login%20flows%2C%20consent%20objects%2C%20authorize-state%20crypto::internal::src%2Flib%2Fauthorize-state.ts::Message%20boundary%20and%20canonicalization%20disagreement",
+    "canonical_refs": {
+      "surface": "Sealed login flows, consent objects, authorize-state crypto",
+      "boundary": "internal",
+      "subsystem": "src/lib/authorize-state.ts",
+      "attack_class": "Message boundary and canonicalization disagreement"
+    },
+    "surface": "Sealed login flows, consent objects, authorize-state crypto",
+    "boundary": "internal",
+    "subsystem": "src/lib/authorize-state.ts",
+    "attack_class": "Message boundary and canonicalization disagreement",
+    "starting_paths": [
+      "src/lib/authorize-state.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-adv",
+    "reviewed_paths": [
+      "src/lib/authorize-state.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-adv",
+        "reviewed_paths": [
+          "src/lib/authorize-state.ts"
+        ],
+        "invariant": "Sealed login flows, consent objects, authorize-state crypto",
+        "method": "source",
+        "result": "Unit u-flow-sealing covered in wave 1 by h-oidc-adv; verdict file agents/h-oidc-adv/scratch/units/u-flow-sealing.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-flow-sealing"
+  },
+  {
+    "coverage_id": "Second%20factors%3A%20TOTP%2C%20passkeys%2C%20backup%20codes%2C%20email%20OTP%2C%20security%20questions::%2Flogin%2Fmfa%2A%20%2B%20%2Faccount%20factor%20routes::src%2Flib%2F%7Btotp%2Cpasskeys%2Cbackup-codes%2Cemail-otp%2Csecurity-questions%2Cmfa-enrollment%2Cadmin-mfa%7D.ts::Session%20fixation%20and%20invalidation",
+    "canonical_refs": {
+      "surface": "Second factors: TOTP, passkeys, backup codes, email OTP, security questions",
+      "boundary": "/login/mfa* + /account factor routes",
+      "subsystem": "src/lib/{totp,passkeys,backup-codes,email-otp,security-questions,mfa-enrollment,admin-mfa}.ts",
+      "attack_class": "Session fixation and invalidation"
+    },
+    "surface": "Second factors: TOTP, passkeys, backup codes, email OTP, security questions",
+    "boundary": "/login/mfa* + /account factor routes",
+    "subsystem": "src/lib/{totp,passkeys,backup-codes,email-otp,security-questions,mfa-enrollment,admin-mfa}.ts",
+    "attack_class": "Session fixation and invalidation",
+    "starting_paths": [
+      "src/lib/totp.ts",
+      "src/lib/passkeys.ts",
+      "src/lib/backup-codes.ts",
+      "src/lib/email-otp.ts",
+      "src/lib/security-questions.ts",
+      "src/lib/mfa-enrollment.ts",
+      "src/lib/admin-mfa.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-authn",
+    "reviewed_paths": [
+      "src/lib/totp.ts",
+      "src/lib/passkeys.ts",
+      "src/lib/backup-codes.ts",
+      "src/lib/email-otp.ts",
+      "src/lib/security-questions.ts",
+      "src/lib/mfa-enrollment.ts",
+      "src/lib/admin-mfa.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-authn",
+        "reviewed_paths": [
+          "src/lib/totp.ts",
+          "src/lib/passkeys.ts",
+          "src/lib/backup-codes.ts",
+          "src/lib/email-otp.ts",
+          "src/lib/security-questions.ts",
+          "src/lib/mfa-enrollment.ts",
+          "src/lib/admin-mfa.ts"
+        ],
+        "invariant": "Second factors: TOTP, passkeys, backup codes, email OTP, security questions",
+        "method": "source",
+        "result": "Unit u-factors covered in wave 1 by h-authn; verdict file agents/h-authn/scratch/units/u-factors.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-factors"
+  },
+  {
+    "coverage_id": "Self-service%20%2Faccount%2F%2A%20authority::%2Faccount%2F%2A%20~40%20routes::src%2Froutes%2Faccount.ts::Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Self-service /account/* authority",
+      "boundary": "/account/* ~40 routes",
+      "subsystem": "src/routes/account.ts",
+      "attack_class": "Missing tenant or owner enforcement"
+    },
+    "surface": "Self-service /account/* authority",
+    "boundary": "/account/* ~40 routes",
+    "subsystem": "src/routes/account.ts",
+    "attack_class": "Missing tenant or owner enforcement",
+    "starting_paths": [
+      "src/routes/account.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-authn",
+    "reviewed_paths": [
+      "src/routes/account.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-authn",
+        "reviewed_paths": [
+          "src/routes/account.ts"
+        ],
+        "invariant": "Self-service /account/* authority",
+        "method": "source",
+        "result": "Unit u-account covered in wave 1 by h-authn; verdict file agents/h-authn/scratch/units/u-account.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-account"
+  },
+  {
+    "coverage_id": "Sessions%2C%20middleware%2C%20auth-policy%2C%20step-up::cross-cutting%20middleware::src%2Flib%2F%7Bsessions%2Cmiddleware%2Cauth-policy%2Cstep-up%2Ctrusted-devices%7D.ts::Session%20fixation%20and%20invalidation",
+    "canonical_refs": {
+      "surface": "Sessions, middleware, auth-policy, step-up",
+      "boundary": "cross-cutting middleware",
+      "subsystem": "src/lib/{sessions,middleware,auth-policy,step-up,trusted-devices}.ts",
+      "attack_class": "Session fixation and invalidation"
+    },
+    "surface": "Sessions, middleware, auth-policy, step-up",
+    "boundary": "cross-cutting middleware",
+    "subsystem": "src/lib/{sessions,middleware,auth-policy,step-up,trusted-devices}.ts",
+    "attack_class": "Session fixation and invalidation",
+    "starting_paths": [
+      "src/lib/sessions.ts",
+      "src/lib/middleware.ts",
+      "src/lib/auth-policy.ts",
+      "src/lib/step-up.ts",
+      "src/lib/trusted-devices.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#browser-session",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#browser-session"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-authn",
+    "reviewed_paths": [
+      "src/lib/sessions.ts",
+      "src/lib/middleware.ts",
+      "src/lib/auth-policy.ts",
+      "src/lib/step-up.ts",
+      "src/lib/trusted-devices.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-authn",
+        "reviewed_paths": [
+          "src/lib/sessions.ts",
+          "src/lib/middleware.ts",
+          "src/lib/auth-policy.ts",
+          "src/lib/step-up.ts",
+          "src/lib/trusted-devices.ts"
+        ],
+        "invariant": "Sessions, middleware, auth-policy, step-up",
+        "method": "source",
+        "result": "Unit u-session-mw covered in wave 1 by h-authn; verdict file agents/h-authn/scratch/units/u-session-mw.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-session-mw"
+  },
+  {
+    "coverage_id": "Token%20endpoint%3A%20client%20auth%2C%20all%20four%20grants%2C%20rotation%2Freuse%20revocation::POST%20%2Ftoken::src%2Froutes%2Ftoken.ts::OAuth%2FOIDC%20request%20and%20callback%20binding",
+    "canonical_refs": {
+      "surface": "Token endpoint: client auth, all four grants, rotation/reuse revocation",
+      "boundary": "POST /token",
+      "subsystem": "src/routes/token.ts",
+      "attack_class": "OAuth/OIDC request and callback binding"
+    },
+    "surface": "Token endpoint: client auth, all four grants, rotation/reuse revocation",
+    "boundary": "POST /token",
+    "subsystem": "src/routes/token.ts",
+    "attack_class": "OAuth/OIDC request and callback binding",
+    "starting_paths": [
+      "src/routes/token.ts"
+    ],
+    "ordinary_attack_class_block": "WEB-PROTOCOL-AND-AUTH.md#federated-identity",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#federated-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-oidc-edge",
+    "reviewed_paths": [
+      "src/routes/token.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-oidc-edge",
+        "reviewed_paths": [
+          "src/routes/token.ts"
+        ],
+        "invariant": "Token endpoint: client auth, all four grants, rotation/reuse revocation",
+        "method": "source",
+        "result": "Unit u-token-ep covered in wave 1 by h-oidc-edge; verdict file agents/h-oidc-edge/scratch/units/u-token-ep.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-token-ep"
+  },
+  {
+    "coverage_id": "Wildcard%20sweep%3A%20feature%20interactions%2C%20half-finished%20code%2C%20git%20history::whole%20repo::src%2F%2A::Per-item%20and%20streaming%20authorization%20gaps",
+    "canonical_refs": {
+      "surface": "Wildcard sweep: feature interactions, half-finished code, git history",
+      "boundary": "whole repo",
+      "subsystem": "src/*",
+      "attack_class": "Per-item and streaming authorization gaps"
+    },
+    "surface": "Wildcard sweep: feature interactions, half-finished code, git history",
+    "boundary": "whole repo",
+    "subsystem": "src/*",
+    "attack_class": "Per-item and streaming authorization gaps",
+    "starting_paths": [
+      "src"
+    ],
+    "ordinary_attack_class_block": "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#rpc-identity"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-wildcard",
+    "reviewed_paths": [
+      "src",
+      "src/lib/types.ts",
+      "src/version.ts",
+      "src/lib/login-views.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-wildcard",
+        "reviewed_paths": [
+          "src",
+          "src/lib/types.ts",
+          "src/version.ts",
+          "src/lib/login-views.ts"
+        ],
+        "invariant": "Wildcard sweep: feature interactions, half-finished code, git history",
+        "method": "source",
+        "result": "Unit u-wildcard covered in wave 1 by h-wildcard; verdict file agents/h-wildcard/scratch/units/u-wildcard.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-wildcard"
+  },
+  {
+    "coverage_id": "user_emails%20vs%20users.upn%20uniqueness%20collision::alias%20-%3E%20LIMIT-1%20resolvers::src%2Flib%2Fuser-emails.ts%2Cssf.ts%2Cfederation.ts%2Cusers%20services::Composite-key%20and%20namespace%20collision",
+    "canonical_refs": {
+      "surface": "user_emails vs users.upn uniqueness collision",
+      "boundary": "alias -> LIMIT-1 resolvers",
+      "subsystem": "src/lib/user-emails.ts,ssf.ts,federation.ts,users services",
+      "attack_class": "Composite-key and namespace collision"
+    },
+    "surface": "user_emails vs users.upn uniqueness collision",
+    "boundary": "alias -> LIMIT-1 resolvers",
+    "subsystem": "src/lib/user-emails.ts,ssf.ts,federation.ts,users services",
+    "attack_class": "Composite-key and namespace collision",
+    "starting_paths": [
+      "src/lib/user-emails.ts",
+      "src/lib/ssf.ts",
+      "src/lib/federation.ts",
+      "src/services/users.ts"
+    ],
+    "ordinary_attack_class_block": "DATA-ISOLATION-AND-LIFECYCLE.md#tenant",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#tenant"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 2,
+    "status": "covered",
+    "agent_id": "h2-consistency",
+    "reviewed_paths": [
+      "src/lib/user-emails.ts",
+      "src/lib/ssf.ts",
+      "src/lib/federation.ts",
+      "src/services/users.ts"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h2-consistency",
+        "reviewed_paths": [
+          "src/lib/user-emails.ts",
+          "src/lib/ssf.ts",
+          "src/lib/federation.ts",
+          "src/services/users.ts"
+        ],
+        "invariant": "user_emails vs users.upn uniqueness collision",
+        "method": "source",
+        "result": "Unit u-identity-collision covered in wave 2 by h2-consistency; verdict file agents/h2-consistency/scratch/units/u-identity-collision.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-identity-collision"
+  },
+  {
+    "coverage_id": "wrangler.jsonc%2C%20.dev.vars%2C%20migrations%2C%20package-lock%2C%20dependencies::deployment%20config%20%2B%20deps::wrangler%2A.jsonc%2Cmigrations%2F%2A%2Cpackage%2A.json%2C.dev.vars%2A::Configuration%20and%20secret%20lifecycle",
+    "canonical_refs": {
+      "surface": "wrangler.jsonc, .dev.vars, migrations, package-lock, dependencies",
+      "boundary": "deployment config + deps",
+      "subsystem": "wrangler*.jsonc,migrations/*,package*.json,.dev.vars*",
+      "attack_class": "Configuration and secret lifecycle"
+    },
+    "surface": "wrangler.jsonc, .dev.vars, migrations, package-lock, dependencies",
+    "boundary": "deployment config + deps",
+    "subsystem": "wrangler*.jsonc,migrations/*,package*.json,.dev.vars*",
+    "attack_class": "Configuration and secret lifecycle",
+    "starting_paths": [
+      "wrangler.jsonc",
+      "wrangler.test.jsonc",
+      ".dev.vars.example",
+      "migrations",
+      "package.json",
+      "package-lock.json"
+    ],
+    "ordinary_attack_class_block": "CLOUD-AND-DEPLOYMENT.md#configuration",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#configuration"
+    ],
+    "excluded_blocks": [],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-infra",
+    "reviewed_paths": [
+      "wrangler.jsonc",
+      "wrangler.test.jsonc",
+      ".dev.vars.example",
+      "migrations",
+      "package.json",
+      "package-lock.json",
+      "test/tsconfig.json",
+      "tsconfig.json"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-infra",
+        "reviewed_paths": [
+          "wrangler.jsonc",
+          "wrangler.test.jsonc",
+          ".dev.vars.example",
+          "migrations",
+          "package.json",
+          "package-lock.json",
+          "test/tsconfig.json",
+          "tsconfig.json"
+        ],
+        "invariant": "wrangler.jsonc, .dev.vars, migrations, package-lock, dependencies",
+        "method": "source",
+        "result": "Unit u-infra-config covered in wave 1 by h-infra; verdict file agents/h-infra/scratch/units/u-infra-config.md",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "unit_label": "u-infra-config"
+  }
+]

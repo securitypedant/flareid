@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { markConsumed } from "./one-shot.js";
 
 /**
  * Step-up re-authentication. Sensitive admin actions need the user to have
@@ -103,6 +104,7 @@ export async function takePendingAction(env: Env, sessionId: string, id: string)
     return null;
   }
   if (!parsed?.sessionId || parsed.sessionId !== sessionId || !parsed.path.startsWith("/admin")) return null;
+  if (!(await markConsumed(env, PENDING_PREFIX + id))) return null;
   await env.SESSIONS_KV.delete(PENDING_PREFIX + id);
   return { path: parsed.path, fields: parsed.fields, back: parsed.back.startsWith("/admin") ? parsed.back : "/admin" };
 }

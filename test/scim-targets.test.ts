@@ -8,6 +8,7 @@ import { createSession } from "../src/lib/sessions.js";
 import { createScimTarget, listScimTargets, getScimTarget, updateScimTarget, deleteScimTarget } from "../src/lib/scim-targets.js";
 import { getScimConfig, setScimConfig, getScimTuning, setScimTuning } from "../src/lib/settings.js";
 import { pushUser } from "../src/lib/scim-client.js";
+import { unsealMaybe } from "../src/lib/sealed.js";
 import type { UserRow } from "../src/lib/types.js";
 
 beforeEach(resetDatabase);
@@ -137,7 +138,7 @@ describe("multi-target SCIM", () => {
     const t = await makeTarget("Access", ENDPOINT_A);
     // Blank secret keeps the stored one; clearing the endpoint drops it.
     await updateScimTarget(env, t.id, { secret: "" });
-    expect((await getScimTarget(env, t.id))!.secret).toBe("x".repeat(24));
+    expect(await unsealMaybe(env, (await getScimTarget(env, t.id))!.secret)).toBe("x".repeat(24));
     await updateScimTarget(env, t.id, { endpoint: "" });
     const cleared = (await getScimTarget(env, t.id))!;
     expect(cleared.endpoint).toBe("");
@@ -204,7 +205,7 @@ describe("multi-target SCIM", () => {
     await apiCall("/api/v1/scim/targets", { token: apiKey, body: { name: "Workspace", endpoint: ENDPOINT_B, secret: "tok-2" } });
     expect((await apiCall("/api/v1/scim/targets", { token: apiKey })).body.targets).toHaveLength(2);
     expect((await getScimTarget(env, id))!.name).toBe("Access EU");
-    expect((await getScimTarget(env, id))!.secret).toBe("tok-1");
+    expect(await unsealMaybe(env, (await getScimTarget(env, id))!.secret)).toBe("tok-1");
 
     expect((await apiCall(`/api/v1/scim/targets/${id}`, { token: apiKey, method: "DELETE" })).status).toBe(200);
     expect(await getScimTarget(env, id)).toBeNull();

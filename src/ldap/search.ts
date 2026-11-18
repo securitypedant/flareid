@@ -254,14 +254,28 @@ export async function executeCompare(ctx: SearchCtx, op: Extract<Operation, { ki
   } catch {
     return { code: RC.invalidDNSyntax, matchedDn: "" };
   }
-  const candidates = await candidateEntries(ctx);
-  const target = candidates.find((e) => {
+  // Build only the entry the DN names - materialising the whole view for one
+  // compare is O(directory) work per request.
+  const hits = (dn: string): boolean => {
     try {
-      return dnEquals(parseDn(e.dn), rdns);
+      return dnEquals(parseDn(dn), rdns);
     } catch {
       return false;
     }
-  });
+  };
+  const { settings, app } = ctx;
+  let target: EvalEntry | null = null;
+  for (const e of containerEntries(app, settings)) {
+    if (hits(e.dn)) { target = e; break; }
+  }
+  for (const u of ctx.view.users) {
+    if (target || !hits(USER_RDN(u.username, app.slug, settings.baseDn))) continue;
+    target = await userEntry(u, ctx.view, app, settings);
+  }
+  for (const g of ctx.view.groups) {
+    if (target || !hits(GROUP_RDN(g.name, app.slug, settings.baseDn))) continue;
+    target = await groupEntry(g, ctx.view, app, settings);
+  }
   if (!target) return { code: RC.noSuchObject, matchedDn: "" };
   // Same authorisation as an equality filter (LDAP.md sections 10 + 11): a
   // user-bound compare may target only the bound user's own entry and the
@@ -292,11 +306,4 @@ export async function executeCompare(ctx: SearchCtx, op: Extract<Operation, { ki
   return { code: ok ? RC.compareTrue : RC.compareFalse, matchedDn: "" };
 }
 
-async function candidateEntries(ctx: SearchCtx): Promise<EvalEntry[]> {
-  const { settings, app } = ctx;
-  if (!app) return [];
-  const out: EvalEntry[] = containerEntries(app, settings);
-  for (const u of ctx.view.users) out.push(await userEntry(u, ctx.view, app, settings));
-  for (const g of ctx.view.groups) out.push(await groupEntry(g, ctx.view, app, settings));
-  return out;
-}
+

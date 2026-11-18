@@ -42,13 +42,21 @@ export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family
 // schema-defined *inputs* the address/phone claims are assembled from
 // (addressClaim above), so schemas have to be able to declare them.
 
+const ADDRESS_MEMBERS = new Set(["formatted", "street_address", "locality", "region", "postal_code", "country"]);
+
 /** The OIDC `address` claim (Core 5.1.1): a JSON object, assembled from the schema attributes that hold it. */
 function addressClaim(attrs: Record<string, string> | undefined): Record<string, string> | undefined {
   if (!attrs) return undefined;
   if (attrs.address) {
     try {
       const parsed: unknown = JSON.parse(attrs.address);
-      if (parsed && typeof parsed === "object") return parsed as Record<string, string>;
+      if (parsed && typeof parsed === "object") {
+        const members = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>)
+            .filter(([k, v]) => ADDRESS_MEMBERS.has(k) && typeof v === "string")
+        );
+        return Object.keys(members).length ? (members as Record<string, string>) : undefined;
+      }
     } catch {
       return { formatted: attrs.address };
     }
@@ -68,7 +76,9 @@ export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
       preferred_username: claims.username,
     });
   }
-  if (release.has("email")) Object.assign(attributes, { email: claims.email, email_verified: true });
+  // No verification state exists for addresses, so no email_verified is
+  // asserted: claiming true would attest to a check that never ran.
+  if (release.has("email")) Object.assign(attributes, { email: claims.email });
   if (release.has("address")) {
     const address = addressClaim(claims.customAttributes);
     if (address) attributes.address = address;
@@ -76,7 +86,8 @@ export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
   if (release.has("phone")) {
     const number = claims.customAttributes?.phone_number ?? claims.customAttributes?.phone;
     if (number) attributes.phone_number = number;
-    if (claims.customAttributes?.phone_number_verified !== undefined) attributes.phone_number_verified = claims.customAttributes.phone_number_verified === "true";
+    // phone_number_verified is deliberately never emitted: it would come from
+    // a self-service attribute, which is not verification.
   }
   if (release.has("groups")) attributes.groups = claims.groups;
   if (release.has("hr")) Object.assign(attributes, { job_title: claims.jobTitle, department: claims.department, manager: claims.managerEmail });

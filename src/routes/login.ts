@@ -19,6 +19,7 @@ import { turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { timed } from "../lib/metrics.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
+import { unsealMaybe } from "../lib/sealed.js";
 import {
   deleteLoginFlow,
   deletePendingMfa,
@@ -39,7 +40,7 @@ import { samlPostForm } from "../lib/saml/post-form.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
-import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt } from "../lib/rate-limit.js";
+import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt, recordRateAttempt } from "../lib/rate-limit.js";
 import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { isDeviceTrusted, trustDevice } from "../lib/trusted-devices.js";
 
@@ -287,7 +288,7 @@ login.post("/login", async (c) => {
   const rateKey = loginRateKey(upn, user);
 
   if (await recordLoginAttempt(c.env, rateKey, ip)) {
-    await logAudit(c.env, null, "login.rate_limited", upn, { ip }, c.req.raw);
+    await logAudit(c.env, null, "login.rate_limited", user ? user.upn : upn.trim().toLowerCase(), { ip }, c.req.raw);
     return sendLoginForm(c, flowId, appearance, msg("common.tooManyAttempts"));
   }
 
@@ -308,16 +309,14 @@ login.post("/login", async (c) => {
   }
 
   if (!valid || !user) {
-    await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
+    await logAudit(c.env, null, "login.failed", user ? user.upn : upn.trim().toLowerCase(), { ip }, c.req.raw);
     // A burst of failed sign-ins against one account lands it on the risk
     // watchlist for 24h; the flag feeds SCIM group sync and CF One lists.
-    if (user) {
-      const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
-      const fails = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'login.failed' AND target = ? AND at > ?").bind(user.upn, oneHourAgo).first<{ n: number }>())?.n ?? 0;
-      if (fails >= 10) {
-        const { flagUser } = await import("../lib/cfone.js");
-        await flagUser(c.env, user.id, `${fails} failed sign-in attempts in the last hour`, "auto:fails", 24);
-      }
+    // Counted in rate_limits, not audit_log - the audit scan grew with the
+    // same attacker-supplied rows it was measuring.
+    if (user && (await recordRateAttempt(c.env, `login:fails:${user.upn}`, 9, 60))) {
+      const { flagUser } = await import("../lib/cfone.js");
+      await flagUser(c.env, user.id, "10+ failed sign-in attempts in the last hour", "auto:fails", 24);
     }
     return sendLoginForm(c, flowId, appearance, fieldMsg("login.error.credentials"));
   }
@@ -482,7 +481,7 @@ login.post("/login/mfa", async (c) => {
   let amr = ["pwd", "mfa"];
   // A code inside its window that was already accepted is a replay, and counts
   // as a failure - the claim only lands while the stored counter is lower.
-  const counter = await matchTotpCounter(user.totp_secret, code);
+  const counter = await matchTotpCounter((await unsealMaybe(c.env, user.totp_secret)) ?? "", code);
   if (counter === null || !(await claimTotpCounter(c.env, user.id, counter))) {
     const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
     if (!validBackupCode) {

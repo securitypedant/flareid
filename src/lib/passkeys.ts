@@ -8,6 +8,7 @@ import {
 } from "@simplewebauthn/server";
 import type { Env } from "../env.js";
 import { sha256Hex } from "./tokens.js";
+import { claimOnce } from "./one-shot.js";
 
 /**
  * WebAuthn / passkeys. The relying party is the issuer's host; challenges live
@@ -76,9 +77,8 @@ export async function registrationOptions(env: Env, sessionId: string, user: { i
 /** Verifies a registration response and stores the credential. Returns an error message, or null. */
 export async function finishRegistration(env: Env, sessionId: string, userId: number, response: RegistrationResponseJSON, name: string): Promise<string | null> {
   const key = await challengeKey(`reg:${sessionId}`);
-  const expectedChallenge = await env.SESSIONS_KV.get(key);
+  const expectedChallenge = await claimOnce(env, key);
   if (!expectedChallenge) return "The registration expired. Please try again.";
-  await env.SESSIONS_KV.delete(key);
   let verification;
   try {
     verification = await verifyRegistrationResponse({ response, expectedChallenge, expectedOrigin: rpOrigin(env), expectedRPID: rpId(env), requireUserVerification: true });
@@ -110,9 +110,8 @@ export async function authenticationOptions(env: Env, attemptId: string, forUser
 /** Verifies a sign-in assertion. Returns the user id it proves, or null. */
 export async function finishAuthentication(env: Env, attemptId: string, response: AuthenticationResponseJSON): Promise<number | null> {
   const key = await challengeKey(`auth:${attemptId}`);
-  const expectedChallenge = await env.SESSIONS_KV.get(key);
+  const expectedChallenge = await claimOnce(env, key);
   if (!expectedChallenge) return null;
-  await env.SESSIONS_KV.delete(key);
   const row = await env.DB.prepare("SELECT * FROM webauthn_credentials WHERE id = ?").bind(response.id).first<PasskeyRow>();
   if (!row) return null;
   try {

@@ -7,3 +7,11 @@ coverage
 dist
 .saml-key.pem
 .saml-cert.pem
+*.env
+.env*
+!.env.example
+openid.net.env
+conformance/suite-config.json
+conformance-results/
+e2e/state/
+test-data/

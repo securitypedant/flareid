@@ -188,7 +188,37 @@ export function defineRoute(spec: RouteSpec, handler: ApiHandler): void {
 
   const middleware: MiddlewareHandler<ApiEnv>[] = [];
   if (spec.permission) middleware.push(requireScope(spec.permission) as MiddlewareHandler<ApiEnv>);
-  if (spec.body) middleware.push(assumeJson);
+  if (spec.body) {
+    middleware.push(assumeJson);
+    // The declared schema is enforced, not only documented: readJson in the
+    // handler re-reads Hono's cached parse, so this costs one zod pass.
+    middleware.push(async (c, next) => {
+      // Read the body once: absent means {} (schemas whose fields are all
+      // optional stay optional); non-empty non-JSON is a 400. The handler's
+      // own c.req.json() still parses the untouched original request.
+      const text = await c.req.raw.clone().text();
+      let input: unknown;
+      if (text.trim() === "") input = {};
+      else {
+        try { input = JSON.parse(text); }
+        catch { throw new ImportValidationError("Request body must be valid JSON."); }
+      }
+      const parsed = spec.body!.safeParse(input);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const where = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+        throw new ImportValidationError(`Request body failed validation: ${where}${issue?.message ?? "invalid shape"}.`);
+      }
+      return next();
+    });
+  }
+  if (spec.query) {
+    middleware.push(async (c, next) => {
+      const parsed = spec.query!.safeParse(c.req.query());
+      if (!parsed.success) throw new ImportValidationError(`Query failed validation: ${parsed.error.issues[0]?.message ?? "invalid shape"}.`);
+      return next();
+    });
+  }
 
   const route = createRoute({
     method: spec.method,

@@ -164,6 +164,7 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
   let bound: Bound = { kind: "anonymous" };
   let app: LdapAppRow | null = null; // sticky app attribution across binds
   let ops = 0;
+  let failedBinds = 0;
   const opCounts: Record<string, number> = {};
   const resultCodes: Record<string, number> = {};
   let lastActivity = Date.now();
@@ -295,6 +296,13 @@ export async function handleLdapConnection(readable: ReadableStream<Uint8Array>,
           void audit({ id: null, upn: op.name.slice(0, 128) }, action, app?.slug ?? undefined, { reason: out.reason }, app?.slug ?? null);
           await send(message(msg.id, bindResponse(RC.invalidCredentials, AD_BAD_CREDENTIALS)));
           track("bind", RC.invalidCredentials);
+          // A connection gets a few credential tries, then is cut (section 14):
+          // the counter is cumulative - a correct password is no reason to
+          // forgive a guessing loop that happened to get one right.
+          if (++failedBinds >= 5) {
+            await send(noticeOfDisconnection(RC.unwillingToPerform, "too many failed binds"));
+            break;
+          }
         }
         continue;
       }

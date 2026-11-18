@@ -4,6 +4,7 @@ import { getSetting, setSetting } from "./settings.js";
 import { resolveGroupMemberUserIds } from "./groups.js";
 import type { GroupRow } from "./types.js";
 import { timed, recordEvent } from "./metrics.js";
+import { sealMaybe, unsealMaybe } from "./sealed.js";
 
 /**
  * Cloudflare One (Zero Trust) integrations.
@@ -57,7 +58,7 @@ export async function getCfOne(env: Env): Promise<CfOneConfig | null> {
   const { results } = await env.DB.prepare("SELECT key, value FROM idp_settings WHERE key LIKE 'cfone.%'").all<{ key: string; value: string }>();
   const s = new Map(results.map((r) => [r.key, r.value]));
   const accountId = (s.get("cfone.account_id") ?? "").trim();
-  const apiToken = (s.get("cfone.api_token") ?? "").trim();
+  const apiToken = ((await unsealMaybe(env, s.get("cfone.api_token"))) ?? "").trim();
   const config = accountId ? { accountId, apiToken, team: (s.get("cfone.team") ?? "").trim(), accessAud: (s.get("cfone.access_aud") ?? "").trim() } : null;
   cfOneCache.set("c", { config, at: Date.now() });
   return config;
@@ -71,7 +72,7 @@ export async function saveCfOne(env: Env, input: { accountId: string; apiToken?:
     ["cfone.access_aud", input.accessAud],
   ];
   // An empty token keeps the stored one, like the SCIM target secret.
-  if (input.apiToken) pairs.push(["cfone.api_token", input.apiToken]);
+  if (input.apiToken) pairs.push(["cfone.api_token", await sealMaybe(env, input.apiToken)]);
   await env.DB.batch(pairs.map(([k, v]) => env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(k, v, now)));
   cfOneCache.delete("c");
 }
@@ -352,7 +353,10 @@ export async function flagUser(env: Env, userId: number, reason: string, source:
   const already = await env.DB.prepare("SELECT 1 AS x FROM user_watch WHERE user_id = ?").bind(userId).first();
   await env.DB.prepare(
     `INSERT INTO user_watch (user_id, reason, source, flagged_at, expires_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET reason = excluded.reason, source = excluded.source, expires_at = excluded.expires_at`
+     ON CONFLICT(user_id) DO UPDATE SET
+       reason = CASE WHEN user_watch.expires_at IS NULL AND user_watch.source = 'manual' AND (excluded.expires_at IS NOT NULL OR excluded.source != 'manual') THEN user_watch.reason ELSE excluded.reason END,
+       source = CASE WHEN user_watch.expires_at IS NULL AND user_watch.source = 'manual' AND (excluded.expires_at IS NOT NULL OR excluded.source != 'manual') THEN user_watch.source ELSE excluded.source END,
+       expires_at = CASE WHEN user_watch.expires_at IS NULL AND user_watch.source = 'manual' AND (excluded.expires_at IS NOT NULL OR excluded.source != 'manual') THEN user_watch.expires_at ELSE excluded.expires_at END`
   )
     .bind(userId, reason, source, new Date().toISOString(), ttlHours ? new Date(Date.now() + ttlHours * 3600_000).toISOString() : null)
     .run();

@@ -51,8 +51,17 @@ function validRedirectUri(u: string): boolean {
   }
 }
 
+/** Storage bounds for self-service rows: registered documents feed a per-request JSON.parse and live forever otherwise. */
+const MAX_REDIRECT_URIS = 32;
+const MAX_URI_CHARS = 2048;
+const MAX_JWKS_CHARS = 65_536;
+const MAX_DYNAMIC_CLIENTS = 5000;
+
 function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok: false; message: string } {
   const uris = (body.redirect_uris ?? []).map((u) => String(u).trim()).filter(Boolean);
+  if (uris.length > MAX_REDIRECT_URIS || uris.some((u) => u.length > MAX_URI_CHARS)) {
+    return { ok: false, message: `redirect_uris is limited to ${MAX_REDIRECT_URIS} entries of ${MAX_URI_CHARS} characters.` };
+  }
   if (!isUpdate || body.redirect_uris !== undefined) {
     if (uris.length === 0) return { ok: false, message: "redirect_uris is required and must be non-empty." };
     const bad = uris.find((u) => !validRedirectUri(u));
@@ -81,6 +90,9 @@ function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok:
     const keys = body.jwks?.keys;
     if (!body.jwks || typeof body.jwks !== "object" || !Array.isArray(keys) || keys.length === 0) {
       return { ok: false, message: "jwks must be a JSON Web Key Set object with a non-empty keys array." };
+    }
+    if (JSON.stringify(body.jwks).length > MAX_JWKS_CHARS) {
+      return { ok: false, message: `jwks is limited to ${MAX_JWKS_CHARS} characters when serialised.` };
     }
   }
   if (body.id_token_signed_response_alg !== undefined && !isIdTokenAlg(body.id_token_signed_response_alg)) {
@@ -111,6 +123,8 @@ function clientBody(env: Env, row: OAuthClientRow, opts: { secret?: string; regi
     ...(row.initiate_login_uri ? { initiate_login_uri: row.initiate_login_uri } : {}),
     ...(row.jwks ? { jwks: JSON.parse(row.jwks) } : {}),
     ...(row.jwks_uri ? { jwks_uri: row.jwks_uri } : {}),
+    ...(row.grant_types ? { grant_types: JSON.parse(row.grant_types) } : {}),
+    ...(row.registered_scope ? { scope: row.registered_scope } : {}),
   };
 }
 
@@ -125,17 +139,20 @@ registration.post("/connect/register", async (c) => {
   const ok = validate(body, false);
   if (!ok.ok) return c.json(metadataError(ok.message), 400);
 
+  const dynamics = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM oauth_clients WHERE registration_token_hash IS NOT NULL AND registration_token_hash != ''").first<{ n: number }>())?.n ?? 0;
+  if (dynamics >= MAX_DYNAMIC_CLIENTS) return c.json(metadataError("Dynamic client registration is at capacity."), 503);
+
   const authMethod = body.token_endpoint_auth_method ?? "client_secret_basic";
   const isPublic = authMethod === "none";
   const clientId = `flareid_${randomToken(8)}`;
   const clientSecret = isPublic ? "" : randomToken(24);
   const registrationToken = randomToken(24);
-  const name = String(body.client_name ?? "").trim() || clientId;
+  const name = String(body.client_name ?? "").trim().slice(0, 200) || clientId;
 
   await c.env.DB.prepare(
     `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris,
-      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg)
-     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
+      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg, grant_types, registered_scope)
+     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       clientId,
@@ -151,7 +168,9 @@ registration.post("/connect/register", async (c) => {
       await sha256Hex(registrationToken),
       body.jwks ? JSON.stringify(body.jwks) : null,
       validFrontchannelUri(body.jwks_uri ?? "") || null,
-      body.id_token_signed_response_alg ?? "RS256"
+      body.id_token_signed_response_alg ?? "RS256",
+      body.grant_types ? JSON.stringify([...new Set(body.grant_types)]) : null,
+      body.scope !== undefined ? body.scope.trim().slice(0, 512) : null
     )
     .run();
 
@@ -203,12 +222,14 @@ registration.put("/connect/register/:client_id", async (c) => {
   const alg = body.id_token_signed_response_alg !== undefined ? body.id_token_signed_response_alg : client.id_token_signed_response_alg;
   const name = body.client_name !== undefined ? String(body.client_name).trim() || client.name : client.name;
   const isPublic = body.token_endpoint_auth_method !== undefined ? body.token_endpoint_auth_method === "none" : client.client_type === "public";
+  const grantTypes = body.grant_types !== undefined ? JSON.stringify([...new Set(body.grant_types)]) : client.grant_types;
+  const registeredScope = body.scope !== undefined ? body.scope.trim().slice(0, 512) : client.registered_scope;
 
   await c.env.DB.prepare(
     `UPDATE oauth_clients SET name = ?, redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, backchannel_logout_uri = ?,
-       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ? WHERE id = ?`
+       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ?, grant_types = ?, registered_scope = ? WHERE id = ?`
   )
-    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", client.id)
+    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", grantTypes, registeredScope, client.id)
     .run();
 
   const updated = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(client.id).first<OAuthClientRow>();

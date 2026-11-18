@@ -1,0 +1,40 @@
+{
+  "run_id": "run-3",
+  "repo": "/Users/simon/Data/dev/flareid",
+  "target": "/Users/simon/Data/dev/flareid",
+  "source_ref": "0972885351591bd926e23ad14e61d729ed62065c",
+  "profile": "deep",
+  "scope_paths": [
+    "."
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "ATTACK-CLASSES.md",
+    "WEB-PROTOCOL-AND-AUTH.md",
+    "PROTOCOLS-RPC-AND-MESSAGING.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "CLOUD-AND-DEPLOYMENT.md",
+    "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md",
+    "CLIENT-SIDE.md"
+  ],
+  "prior_run_paths": [
+    "../run-1",
+    "../run-2"
+  ],
+  "shared_file_owners": {
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "architecture.md": "parent"
+  },
+  "run_status": "complete",
+  "agents": {
+    "recon": 4,
+    "hunters_w1": 11,
+    "hunters_w2": 3,
+    "critics": 2,
+    "verifiers": 4
+  },
+  "notes": "Both prior refs are ancestors; all 97 prior records cite changed source so all became revalidation leads (prior_covered_changed_source). Local execution bounded to env -i + sandbox-exec deny-network or docker --network none; scratch promotion via promote.py."
+}

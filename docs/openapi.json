@@ -12510,7 +12510,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "directory:read",
+        "x-permission": "ldap:read",
         "responses": {
           "200": {
             "description": "Success.",
@@ -12568,7 +12568,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "clients:write",
+        "x-permission": "ldap:write",
         "requestBody": {
           "required": true,
           "content": {
@@ -12695,7 +12695,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "clients:write",
+        "x-permission": "ldap:write",
         "parameters": [
           {
             "schema": {
@@ -12786,7 +12786,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "clients:write",
+        "x-permission": "ldap:write",
         "parameters": [
           {
             "schema": {
@@ -12875,7 +12875,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "clients:write",
+        "x-permission": "ldap:write",
         "parameters": [
           {
             "schema": {
@@ -12953,7 +12953,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "directory:read",
+        "x-permission": "ldap:read",
         "responses": {
           "200": {
             "description": "Success.",
@@ -13008,7 +13008,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "settings:write",
+        "x-permission": "ldap:write",
         "requestBody": {
           "required": true,
           "content": {

@@ -1,6 +1,6 @@
 import { z } from "@hono/zod-openapi";
-import { ServiceError } from "../services/context.js";
-import { apiCtx } from "../services/context.js";
+import { apiCtx, ServiceError } from "../services/context.js";
+import { assertMayTouchUser } from "../services/guards.js";
 import { enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchlist } from "../lib/cfone.js";
 import { logAudit } from "../lib/audit.js";
 import { auditActor } from "../lib/api-auth.js";
@@ -113,6 +113,7 @@ defineRoute(
   async (c) => {
     const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(param(c, "username").toLowerCase()).first<UserRow>();
     if (!user) return notFound(c, `No user "${param(c, "username").toLowerCase()}".`);
+    await assertMayTouchUser(apiCtx(c), user.id);
     const body = await readJson<{ reason?: string; ttl_hours?: number }>(c);
     if (!body.reason?.trim()) throw new ServiceError(400, "A reason is required.");
     await flagUser(c.env, user.id, body.reason.trim().slice(0, 300), "manual", Math.max(0, body.ttl_hours ?? 0));
@@ -134,6 +135,7 @@ defineRoute(
   async (c) => {
     const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(param(c, "username").toLowerCase()).first<UserRow>();
     if (!user) return notFound(c, `No user "${param(c, "username").toLowerCase()}".`);
+    await assertMayTouchUser(apiCtx(c), user.id);
     await unflagUser(c.env, user.id);
     await logAudit(c.env, auditActor(c.get("apiActor")), "cfone.user_unflagged", user.upn, undefined, c.req.raw);
     return c.json({ ok: true, watched: false });

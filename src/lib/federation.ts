@@ -9,6 +9,8 @@ import { getUserByLoginIdentifier } from "./db.js";
 import { domainExists } from "./domains.js";
 import { getUserByAnyEmail } from "./user-emails.js";
 import { randomToken } from "./tokens.js";
+import { sealMaybe, unsealMaybe } from "./sealed.js";
+import { claimOnce } from "./one-shot.js";
 import type { UserRow } from "./types.js";
 
 /**
@@ -98,7 +100,7 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
     const config: OidcIdpConfig = {
       issuer,
       client_id: cfg.client_id!.trim(),
-      client_secret: cfg.client_secret ?? "",
+      client_secret: cfg.client_secret ? await sealMaybe(env, cfg.client_secret) : "",
       ...(cfg.scopes?.trim() ? { scopes: cfg.scopes.trim() } : {}),
     };
     return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, created_at: "", updated_at: "" };
@@ -173,9 +175,7 @@ export async function storeFedState(env: Env, state: FedState): Promise<string> 
 
 /** One-shot: a callback state is consumed, never replayed. */
 export async function takeFedState(env: Env, key: string): Promise<FedState | null> {
-  const kvKey = `fed:${key}`;
-  const raw = await env.SESSIONS_KV.get(kvKey);
-  if (raw) await env.SESSIONS_KV.delete(kvKey);
+  const raw = await claimOnce(env, `fed:${key}`);
   return raw ? (JSON.parse(raw) as FedState) : null;
 }
 
@@ -190,13 +190,22 @@ interface OidcMetadata {
   jwks_uri: string;
 }
 
-/** The provider's discovery document, cached in KV for an hour. */
+/** The provider's discovery document, cached in KV for an hour - failures for one minute, so a stalling or down upstream doesn't get re-fetched by every anonymous sign-in attempt. */
 export async function oidcMetadata(env: Env, issuer: string): Promise<OidcMetadata> {
   const kvKey = `fed:meta:${issuer}`;
   const cached = await env.SESSIONS_KV.get(kvKey);
+  if (cached === "!") throw new FederationError("The provider's discovery document could not be fetched (upstream error).");
   if (cached) return JSON.parse(cached) as OidcMetadata;
-  const res = await fetch(`${issuer}/.well-known/openid-configuration`);
-  if (!res.ok) throw new FederationError(`The provider's discovery document could not be fetched (HTTP ${res.status}).`);
+  let res: Response | null = null;
+  try {
+    res = await fetch(`${issuer}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(10_000), redirect: "error" });
+  } catch {
+    // res stays null - timeout or network failure, negative-cached below.
+  }
+  if (!res || !res.ok) {
+    await env.SESSIONS_KV.put(kvKey, "!", { expirationTtl: 60 });
+    throw new FederationError(`The provider's discovery document could not be fetched (${res ? `HTTP ${res.status}` : "timed out"}).`);
+  }
   const meta = (await res.json()) as Partial<OidcMetadata>;
   if (!meta.authorization_endpoint || !meta.token_endpoint || !meta.jwks_uri) throw new FederationError("The provider's discovery document is missing endpoints.");
   const out: OidcMetadata = {
@@ -241,22 +250,24 @@ export async function pkcePair(): Promise<{ verifier: string; challenge: string 
 
 /** Exchange the code and verify the id_token; returns its claims. */
 export async function oidcExchange(env: Env, meta: OidcMetadata, cfg: OidcIdpConfig, code: string, callbackUrl: string, verifier: string, expectedNonce: string): Promise<JWTPayload> {
+  const clientSecret = await unsealMaybe(env, cfg.client_secret);
   const res = await fetch(meta.token_endpoint, {
     method: "POST",
+    signal: AbortSignal.timeout(10_000),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
       redirect_uri: callbackUrl,
       client_id: cfg.client_id,
-      ...(cfg.client_secret ? { client_secret: cfg.client_secret } : {}),
+      ...(clientSecret ? { client_secret: clientSecret } : {}),
       code_verifier: verifier,
     }),
   });
   if (!res.ok) throw new FederationError(`The code exchange failed (HTTP ${res.status}).`);
   const tokens = (await res.json()) as { id_token?: string; error?: string };
   if (!tokens.id_token) throw new FederationError(`The provider did not return an id_token${tokens.error ? ` (${tokens.error})` : ""}.`);
-  const { payload } = await jwtVerify(tokens.id_token, createRemoteJWKSet(new URL(meta.jwks_uri)), {
+  const { payload } = await jwtVerify(tokens.id_token, createRemoteJWKSet(new URL(meta.jwks_uri), { timeoutDuration: 10_000 }), {
     issuer: meta.issuer,
     audience: cfg.client_id,
   });
@@ -545,9 +556,18 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
     .bind(upn, candidate, profile.displayName || upn, profile.givenName, profile.familyName, `fed-${idp.id}-${randomToken(8)}`, schemaId, t, t)
     .first<{ id: number }>();
   const userId = inserted!.id;
-  if (profile.email) {
-    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, ?, 'work', 1, ?)").bind(userId, profile.email, t).run();
-    await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(profile.email, userId).run();
+  const jitEmail = (profile.email ?? "").trim().toLowerCase();
+  if (jitEmail) {
+    // The claimed address is unverified and must never collide with another
+    // account's identifiers; a collision means adoption failed to match, not
+    // that this account should claim the spelling.
+    const clash = await env.DB.prepare(
+      "SELECT 1 FROM users WHERE (upn = ? OR username = ? OR email = ?) AND id != ? UNION SELECT 1 FROM user_emails WHERE email = ? AND user_id != ?"
+    ).bind(jitEmail, jitEmail, jitEmail, userId, jitEmail, userId).first();
+    if (!clash) {
+      await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, ?, 'work', 1, ?)").bind(userId, jitEmail, t).run();
+      await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(jitEmail, userId).run();
+    }
   }
   await linkIdentity(env, idp.id, profile, userId);
   return (await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>())!;

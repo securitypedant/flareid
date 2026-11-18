@@ -1,3 +1,4 @@
+import { canSignIn } from "../lib/admin-roles.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
@@ -41,7 +42,7 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
   }
 
   const user = await getUserById(c.env, row.user_id);
-  if (!user || user.status !== "active") return invalidToken(c);
+  if (!user || user.status !== "active" || !(await canSignIn(c.env, user.id))) return invalidToken(c);
 
   const groups = await getUserGroupNames(c.env, user.id);
   const managerEmail = await getManagerEmail(c.env, user.manager_external_id);

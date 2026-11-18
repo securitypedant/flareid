@@ -79,14 +79,38 @@ export async function applyInboundPhoto(env: Env, userId: number, value: string)
   }
   if (!value.startsWith("https://")) return false;
   try {
-    const res = await fetch(value, { cf: { cacheTtl: 0 } });
+    // redirect:'manual' keeps the verified https URL the only origin we
+    // dereference - a provisioner-supplied URL must not be able to redirect
+    // us onto cleartext or a different host.
+    const res = await fetch(value, {
+      cf: { cacheTtl: 0 },
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!res.ok) return false;
     const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_PHOTO_BYTES) return false;
-    const sniffed = sniffImageType(buf);
+    const declared = Number(res.headers.get("content-length") ?? 0);
+    if (declared > MAX_PHOTO_BYTES) { await res.body?.cancel(); return false; }
+    // Stream with an early-abort cap instead of buffering then measuring:
+    // an unbounded body would otherwise sit in isolate memory first.
+    const body = res.body;
+    if (!body) return false;
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value: chunk } = await reader.read();
+      if (done) break;
+      size += chunk.byteLength;
+      if (size > MAX_PHOTO_BYTES) { await reader.cancel(); return false; }
+      chunks.push(chunk);
+    }
+    const buf = new Uint8Array(size);
+    let off = 0;
+    for (const chunk of chunks) { buf.set(chunk, off); off += chunk.byteLength; }
+    const sniffed = sniffImageType(buf.buffer);
     if (!sniffed || !type.startsWith("image/")) return false;
-    await setUserPhoto(env, userId, buf, sniffed);
+    await setUserPhoto(env, userId, buf.buffer, sniffed);
     return true;
   } catch {
     return false;

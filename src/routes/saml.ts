@@ -1,4 +1,5 @@
 import { canSignIn } from "../lib/admin-roles.js";
+import { isConsumed, markConsumed } from "../lib/one-shot.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
@@ -52,8 +53,9 @@ export async function issueSamlResponse(
   // receipt made every anonymous AuthnRequest a KV write. An ID that has already
   // been answered gets nothing new to post (null), even if it verifies.
   const replayKey = `saml:req:${sp.id}:${request.requestId}`;
-  if (await env.SESSIONS_KV.get(replayKey)) return null;
-  await env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: REQUEST_ID_TTL_SECONDS });
+  // The marker is an atomic D1 claim - the KV get+put it replaces raced by
+  // minutes of propagation time, and its row outlives REQUEST_ID_TTL anyway.
+  if (!(await markConsumed(env, replayKey))) return null;
   const xml = await buildSignedResponse(env, {
     sp,
     user,
@@ -138,7 +140,7 @@ saml.get("/saml/sso", async (c) => {
   // is a read; the ID is marked used when the response is issued.
   // Single-use per service provider: one SP's request IDs must not burn
   // another's namespace (SLO keys are namespaced the same way).
-  if (await c.env.SESSIONS_KV.get(`saml:req:${sp.id}:${request.id}`)) {
+  if (await isConsumed(c.env, `saml:req:${sp.id}:${request.id}`)) {
     await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "replayed_request_id" }, c.req.raw);
     return renderAuthMessage(c, 400, ALREADY_ANSWERED);
   }

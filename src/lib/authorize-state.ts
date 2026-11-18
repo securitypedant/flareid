@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { randomToken } from "./tokens.js";
+import { isPlaceholderSecret } from "./api-auth.js";
 
 export interface PendingAuthorizeRequest {
   clientId: string;
@@ -111,7 +112,10 @@ const SEALED_PREFIX = "s.";
 
 async function flowSealKey(env: Env): Promise<CryptoKey | null> {
   // KEY_ENCRYPTION_KEY last: a Deploy to Cloudflare install has only that one.
-  const material = env.SIGNING_KEY_PKCS8 || env.COOKIE_ENCRYPTION_KEY || env.KEY_ENCRYPTION_KEY;
+  // The first non-empty candidate wins, but a shipped placeholder value is no
+  // better than unset - a "replace-me-..." string is a guessable MAC key, so
+  // it neither qualifies nor shadows a better candidate below it.
+  const material = [env.SIGNING_KEY_PKCS8, env.COOKIE_ENCRYPTION_KEY, env.KEY_ENCRYPTION_KEY].find((v) => v && !isPlaceholderSecret(v));
   // A placeholder-length secret would make sealed flows forgeable; refuse it
   // so deployments fall back to KV flows rather than a guessable MAC key.
   if (!material || material.length < 32) return null;

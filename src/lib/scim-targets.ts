@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { sealMaybe } from "./sealed.js";
 
 /** A literal host (IP or name) on an address the provisioning Bearer must never be sent to. */
 function isLocalAddress(host: string): boolean {
@@ -184,7 +185,7 @@ export async function createScimTarget(env: Env, raw: ScimTargetInput): Promise<
     .bind(
       input.name,
       input.endpoint,
-      input.secret.trim(),
+      await sealMaybe(env, input.secret.trim()),
       input.scope.mode,
       JSON.stringify(input.scope.groupIds),
       input.paceMs,
@@ -225,7 +226,7 @@ export async function updateScimTarget(env: Env, id: number, raw: Partial<ScimTa
     .bind(
       merged.name,
       merged.endpoint,
-      merged.secret.trim(),
+      await sealMaybe(env, merged.secret.trim()),
       merged.scope.mode,
       JSON.stringify(merged.scope.groupIds),
       merged.paceMs,

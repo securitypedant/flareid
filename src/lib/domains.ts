@@ -28,9 +28,24 @@ export async function getDefaultDomain(env: Env): Promise<string> {
   return any?.domain ?? "example.com";
 }
 
+/**
+ * A managed domain is a DNS name: labels of letters, digits and hyphens, at
+ * least two labels, ending in an alphabetic (or punycode) TLD. The consumers
+ * assume this - brand resolution suffix-matches on it, UPNs embed it after
+ * "@", and deleteDomain's LIKE uses it literally - so "com", "a,b" or a
+ * wildcard are not domains, they're capture/escape bugs.
+ */
+const DOMAIN_NAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,63})$/;
+
+export function isValidDomain(domain: string): boolean {
+  return domain.length >= 3 && domain.length <= 253 && DOMAIN_NAME_RE.test(domain);
+}
+
 export async function addDomain(env: Env, domain: string): Promise<void> {
+  const d = domain.trim().toLowerCase();
+  if (!isValidDomain(d)) throw new Error(`"${d}" is not a valid DNS domain name.`);
   await env.DB.prepare("INSERT INTO domains (domain, is_default, created_at) VALUES (?, 0, ?)")
-    .bind(domain.trim().toLowerCase(), new Date().toISOString())
+    .bind(d, new Date().toISOString())
     .run();
 }
 

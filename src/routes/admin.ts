@@ -20,7 +20,7 @@ import { adminHelp } from "../docs/help.js";
 import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
-import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { listUserEmails, setUserEmails } from "../lib/user-emails.js";
 import {
   getDefaultPassword,
@@ -90,6 +90,8 @@ import {
 } from "../lib/schemas.js";
 
 import { audit, consoleCtx, ServiceError } from "../services/context.js";
+import { assertMayTouchUser } from "../services/guards.js";
+import { unsealMaybe } from "../lib/sealed.js";
 import { scimConfigured, applyScimScope } from "../services/scim-sync.js";
 import {
   createUser,
@@ -322,7 +324,7 @@ admin.post("/admin/reauth", async (c) => {
   if (!(await verifyPassword(String(body.password ?? "").slice(0, 1024), user))) return fail("That password is not right.");
   if (user.mfa_enabled) {
     const code = String(body.code ?? "").slice(0, 12);
-    const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+    const counter = user.totp_secret ? await matchTotpCounter((await unsealMaybe(c.env, user.totp_secret)) ?? "", code) : null;
     const ok = (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) || (await verifyAndConsumeBackupCode(c.env, user.id, code));
     if (!ok) return fail("That code is not right.");
   }
@@ -926,6 +928,7 @@ admin.get("/admin/setup", async (c) => {
       c,
       "Welcome to FlareID",
       `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <p class="sub">Before anyone else can sign in, confirm the basics below. You can change all of this later from Admin → Domains / Security.</p>
         <form method="POST" action="/admin/setup" ${confirmAttrs(
@@ -971,6 +974,7 @@ admin.post("/admin/setup", async (c) => {
   const removeSampleData = body.sample_data === "remove";
 
   if (domain) {
+    if (!isValidDomain(domain)) return c.redirect("/admin/setup?error=" + encodeURIComponent(`"${domain}" is not a valid DNS domain name.`), 302);
     const existing = await listDomains(c.env);
     if (!existing.some((d) => d.domain === domain)) {
       await addDomain(c.env, domain);
@@ -3214,6 +3218,7 @@ admin.post(`${CFONE}/watch`, async (c) => {
   const reason = String(body.reason ?? "").trim().slice(0, 300);
   const ttl = Math.max(0, Number(body.ttl_hours ?? 0) || 0);
   if (!userId || !reason) return c.redirect(`${CFONE}?error=${encodeURIComponent("Pick a person and give a reason.")}`, 302);
+  await assertMayTouchUser(consoleCtx(c), userId);
   await flagUser(c.env, userId, reason, "manual", ttl);
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_flagged", upn, { reason });
@@ -3222,6 +3227,7 @@ admin.post(`${CFONE}/watch`, async (c) => {
 
 admin.post(`${CFONE}/watch/:uid/remove`, async (c) => {
   const userId = Number(c.req.param("uid"));
+  await assertMayTouchUser(consoleCtx(c), userId);
   await unflagUser(c.env, userId);
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_unflagged", upn);
@@ -4811,6 +4817,7 @@ admin.post("/admin/domains", async (c) => {
   const body = await c.req.parseBody();
   const domain = String(body.domain ?? "").trim().toLowerCase();
   if (domain) {
+    if (!isValidDomain(domain)) return c.redirect("/admin/domains?error=" + encodeURIComponent(`"${domain}" is not a valid DNS domain name.`), 302);
     await addDomain(c.env, domain);
     await logAudit(c.env, c.get("user"), "domain.added", domain, undefined, c.req.raw);
   }

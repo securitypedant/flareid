@@ -46,11 +46,15 @@ export function spAttributeMap(sp: SamlServiceProviderRow): Record<string, strin
  * otherwise the sole registered endpoint.
  */
 export function resolveAcsUrl(sp: SamlServiceProviderRow, requested: string | null): string | null {
-  if (requested) return requested;
+  // Re-check the scheme at use time: writes require https, but rows written
+  // before that rule (or edited outside it) must not redirect a bearer
+  // assertion to cleartext or a non-URL scheme.
+  const https = (u: string | null | undefined) => (u && u.startsWith("https://") ? u : null);
+  if (requested) return https(requested);
   // The default must also be a registered ACS - writes enforce membership,
   // and the read-side check keeps a stale or hand-edited row from
   // redirecting assertions somewhere the allowlist never approved.
   const registered = spAcsUrls(sp);
-  if (sp.default_acs_url && registered.includes(sp.default_acs_url)) return sp.default_acs_url;
-  return registered[0] || null;
+  if (sp.default_acs_url && registered.includes(sp.default_acs_url)) return https(sp.default_acs_url);
+  return registered.find((u) => u.startsWith("https://")) ?? null;
 }

@@ -33,7 +33,12 @@ function routeGroup(method: string, path: string): Group | null {
   if (method === "POST" && (path === "/forgot-password" || path.startsWith("/reset-password") || path.startsWith("/invite/"))) return "auth";
   if (path === "/forgot-password" || path.startsWith("/reset-password/") || path.startsWith("/invite/")) return "auth";
   if (path === "/logout" || path.startsWith("/oidc/logout") || path === "/saml/slo" || path.startsWith("/consent/")) return "auth";
-  return null;
+  if (path === "/device_authorization" || path.startsWith("/device")) return "api";
+  if (path === "/ssf/receive") return "api";
+  if (path.startsWith("/federation/")) return "auth";
+  // Everything else anonymous still carries a budget: a whitelist here means a
+  // new public route silently runs uncharged, which is how this list drifted.
+  return "api";
 }
 
 /**
@@ -71,7 +76,15 @@ export const edgeRateLimit: MiddlewareHandler<{ Bindings: Env }> = async (c, nex
   if (!group || !limiter) return next();
 
   const ip = getClientIp(c.req.raw);
-  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(ip)}${await clientDimension(c.env, c.req.raw, path)}` });
+  const dimension = await clientDimension(c.env, c.req.raw, path);
+  if (dimension) {
+    // The per-client budget rides alongside the per-IP one, not instead of it:
+    // an open registry can mint unlimited valid client_ids, so a keyed budget
+    // alone is a fresh allowance per id.
+    const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(ip)}${dimension}` });
+    if (!success) return limited(c, group);
+  }
+  const { success } = await limiter.limit({ key: `${group}:${rateLimitAddress(ip)}` });
   if (!success) return limited(c, group);
   // The coarser aggregate for IPv6: one binding means one rate, so a /48
   // holder rotating /64s inside its allocation meets the same budget - while

@@ -23,9 +23,13 @@ async function verifyClientAssertion(env: Env, client: OAuthClientRow, assertion
       return false;
     }
   } else if (client.jwks_uri) {
+    // Bound the getter cache: each entry is a distinct caller-registered https
+    // endpoint this isolate will fetch, so the map's size bounds the SSRF
+    // reach an anonymous request can give the worker.
+    if (remoteJwks.size >= 500) remoteJwks.clear();
     let jwks = remoteJwks.get(client.jwks_uri);
     if (!jwks) {
-      jwks = createRemoteJWKSet(new URL(client.jwks_uri));
+      jwks = createRemoteJWKSet(new URL(client.jwks_uri), { timeoutDuration: 10_000 });
       remoteJwks.set(client.jwks_uri, jwks);
     }
     keySet = jwks;
@@ -37,9 +41,17 @@ async function verifyClientAssertion(env: Env, client: OAuthClientRow, assertion
       issuer: client.client_id,
       subject: client.client_id,
       audience: [env.ISSUER_URL, `${env.ISSUER_URL}/token`],
+      // RFC 7523 section 3: assertions must expire and carry a unique jti;
+      // without them a captured assertion is replayable forever.
+      requiredClaims: ["exp", "iat", "jti"],
+      maxTokenAge: "5m",
     };
-    await jwtVerify(assertion, keySet, opts);
-    return true;
+    const { payload } = await jwtVerify(assertion, keySet, opts);
+    const jtiSeen = await env.DB.prepare(
+      `INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?)
+       ON CONFLICT(key) DO UPDATE SET count = count + 1 RETURNING count`
+    ).bind(`pkjwt:${client.client_id}:${String(payload.jti)}`, Date.now()).first<{ count: number }>();
+    return (jtiSeen?.count ?? 1) === 1;
   } catch {
     return false;
   }

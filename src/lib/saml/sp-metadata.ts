@@ -219,12 +219,15 @@ async function afterUpsert(env: import("../../env.js").Env, id: number, meta: Pa
  * endpoint must be https. Non-security fields (NameID format, subject-id
  * preference, validity bookkeeping) still track the document.
  */
+/** A publisher could otherwise grow signing_certs one entry per refresh, unbounded. */
+const MAX_SIGNING_CERTS = 16;
+
 export async function refreshSpMetadata(env: import("../../env.js").Env): Promise<{ refreshed: number; failed: number }> {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { results } = await env.DB.prepare(
-    "SELECT * FROM saml_service_providers WHERE metadata_url IS NOT NULL AND metadata_url != '' AND (metadata_last_refreshed_at IS NULL OR metadata_last_refreshed_at < ? OR (metadata_valid_until IS NOT NULL AND metadata_valid_until < ?)) LIMIT 5"
+    "SELECT * FROM saml_service_providers WHERE metadata_url IS NOT NULL AND metadata_url != '' AND (metadata_last_refreshed_at IS NULL OR metadata_last_refreshed_at < ?) LIMIT 5"
   )
-    .bind(dayAgo, new Date().toISOString())
+    .bind(dayAgo)
     .all<{
       id: number;
       entity_id: string;
@@ -250,7 +253,7 @@ export async function refreshSpMetadata(env: import("../../env.js").Env): Promis
       const httpsOnly = (u: string | null) => (u && u.startsWith("https://") ? u : null);
       const merged = {
         acsUrls: storedAcs.filter((u) => meta.acsUrls.includes(u)), // an endpoint the publisher withdrew stops being offered; it is never re-pointed
-        certs: [...new Set([...storedCerts, ...meta.signingCerts])],
+        certs: [...new Set([...storedCerts, ...meta.signingCerts])].slice(-MAX_SIGNING_CERTS),
         wantSigned: sp.want_authn_requests_signed === 1 || (meta.wantAuthnRequestsSigned && meta.signingCerts.length > 0),
         sloUrl: httpsOnly(sp.slo_url) ?? httpsOnly(meta.sloUrl),
         encryptionCert: sp.encryption_cert ?? meta.encryptionCert,

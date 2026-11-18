@@ -72,6 +72,9 @@ export async function readSpanStats(env: Env, hours = 24): Promise<SpanStats[] |
       method: "POST",
       headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
       body: sql,
+      // Admin-reporting queries only - bound the wait so a stalled AE API
+      // can't pin the request open.
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return null;
     const body = (await res.json()) as { data?: Record<string, string | number>[] };
@@ -98,6 +101,9 @@ export async function readEventCounts(env: Env, minutes = 30): Promise<{ name: s
       method: "POST",
       headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
       body: sql,
+      // Admin-reporting queries only - bound the wait so a stalled AE API
+      // can't pin the request open.
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return null;
     const body = (await res.json()) as { data?: Record<string, string | number>[] };
@@ -173,6 +179,9 @@ export async function readPerformance(env: Env, hours = 24): Promise<Performance
       method: "POST",
       headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
       body: sql,
+      // Admin-reporting queries only - bound the wait so a stalled AE API
+      // can't pin the request open.
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return { configured: true, ok: false, error: `Analytics Engine answered ${res.status}` };
     const body = (await res.json()) as { data?: Record<string, string | number>[] };
@@ -216,6 +225,9 @@ export async function readPerformanceSeries(env: Env, hours: number, bucketMinut
       method: "POST",
       headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
       body: sql,
+      // Admin-reporting queries only - bound the wait so a stalled AE API
+      // can't pin the request open.
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return { configured: true, ok: false, error: `Analytics Engine answered ${res.status}` };
     const body = (await res.json()) as { data?: Record<string, string | number>[] };

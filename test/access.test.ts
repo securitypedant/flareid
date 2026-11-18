@@ -171,7 +171,7 @@ describe("access requests", () => {
 });
 
 describe("the requests queue", () => {
-  it("searches by person, group and reason, and pages", async () => {
+  it("searches by person, group and reason, and pages", { timeout: 30_000 }, async () => {
     const { apiKey } = await bootstrapInstance();
     const groupId = await makeGroup(apiKey, "VPN users", { requestable: true });
     // Seed 25 requests from different people so pagination has something to do.

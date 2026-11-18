@@ -1998,13 +1998,13 @@ The read-only LDAP interface: app registrations and directory settings.
 
 | Method | Path | Permission | Summary |
 |---|---|---|---|
-| `GET` | `/api/v1/ldap/apps` | `directory:read` | List LDAP apps |
-| `POST` | `/api/v1/ldap/apps` | `clients:write` | Create or update an LDAP app (upsert by slug) |
-| `POST` | `/api/v1/ldap/apps/{slug}/rotate` | `clients:write` | Rotate an app's bind secret |
-| `POST` | `/api/v1/ldap/apps/{slug}/reveal` | `clients:write` | Reveal an app's current bind secret |
-| `DELETE` | `/api/v1/ldap/apps/{slug}` | `clients:write` | Revoke an LDAP app |
-| `GET` | `/api/v1/ldap/settings` | `directory:read` | Read the LDAP settings |
-| `POST` | `/api/v1/ldap/settings` | `settings:write` | Update the LDAP settings |
+| `GET` | `/api/v1/ldap/apps` | `ldap:read` | List LDAP apps |
+| `POST` | `/api/v1/ldap/apps` | `ldap:write` | Create or update an LDAP app (upsert by slug) |
+| `POST` | `/api/v1/ldap/apps/{slug}/rotate` | `ldap:write` | Rotate an app's bind secret |
+| `POST` | `/api/v1/ldap/apps/{slug}/reveal` | `ldap:write` | Reveal an app's current bind secret |
+| `DELETE` | `/api/v1/ldap/apps/{slug}` | `ldap:write` | Revoke an LDAP app |
+| `GET` | `/api/v1/ldap/settings` | `ldap:read` | Read the LDAP settings |
+| `POST` | `/api/v1/ldap/settings` | `ldap:write` | Update the LDAP settings |
 
 ### `GET /api/v1/ldap/apps`
 
@@ -2012,7 +2012,7 @@ List LDAP apps.
 
 Secrets are never returned - only the prefix for identification.
 
-Permission: `directory:read`
+Permission: `ldap:read`
 
 Response `200`:
 
@@ -2026,7 +2026,7 @@ Create or update an LDAP app (upsert by slug).
 
 Idempotent: the same body re-applied updates the app. The `secret` field appears only on create; rotate to get a new one.
 
-Permission: `clients:write`
+Permission: `ldap:write`
 
 Request body:
 
@@ -2049,7 +2049,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Rotate an app's bind secret.
 
-Permission: `clients:write`
+Permission: `ldap:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
@@ -2070,7 +2070,7 @@ Reveal an app's current bind secret.
 
 Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.
 
-Permission: `clients:write`
+Permission: `ldap:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
@@ -2092,7 +2092,7 @@ Revoke an LDAP app.
 
 Sets revoked_at; binds and searches fail immediately. Idempotent.
 
-Permission: `clients:write`
+Permission: `ldap:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
@@ -2112,7 +2112,7 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 Read the LDAP settings.
 
-Permission: `directory:read`
+Permission: `ldap:read`
 
 Response `200`:
 
@@ -2141,7 +2141,7 @@ Update the LDAP settings.
 
 Only the fields sent change. `enabled: true` also generates the domain SID and GUID namespace on first use.
 
-Permission: `settings:write`
+Permission: `ldap:write`
 
 Request body:
 

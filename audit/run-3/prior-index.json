@@ -1,0 +1,794 @@
+{
+ "oidc": [
+  {
+   "fp": "account.ts/apps-revoke-missing-auth_codes-delete",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Revoking a connected app leaves unexchanged authorization codes redeemable at /token",
+   "run": "run-1",
+   "root_cause": "The per-app revocation batch in src/routes/account.ts:557-566 covers access_tokens, refresh_tokens and oauth_consents but omits `DELETE FROM auth_codes WHERE user_id = ? AND client_id = ?`, while the /token code exchange (src/routes/token.ts:41-99) trusts any live, unclaimed auth_codes row without c"
+  },
+  {
+   "fp": "authorize-state:flowSealKey-placeholder-secret-shadowing",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "Sealed login-flow HMAC key silently derives from whichever optional secret is set first, with no placeholder/weak-secret refusal",
+   "run": "run-1",
+   "root_cause": "flowSealKey has no isPlaceholderSecret/entropy refusal and lets the first non-empty of SIGNING_KEY_PKCS8/COOKIE_ENCRYPTION_KEY shadow the required KEY_ENCRYPTION_KEY, so a deployed weak or placeholder value makes the login-flow HMAC computable by an outsider while the rest of the pipeline treats sea"
+  },
+  {
+   "fp": "flareid/edge-limit/attacker-controlled-client-dimension",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Edge API rate limiter accepts an attacker-chosen client_id as a quota dimension - one IP gets unlimited budgets on /token, /introspect and /revoke",
+   "run": "run-1",
+   "root_cause": "clientDimension() mixes unauthenticated input into the quota key before any credential check, so the dimension that was added to isolate legitimate clients behind shared egress instead lets the caller choose its own budget; there is no per-IP base charge alongside the per-client key."
+  },
+  {
+   "fp": "flareid:admin-clients:create-update:no-step-up",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "OIDC client create and redirect-URI update bypass the step-up re-authentication that guards rotate-secret and delete",
+   "run": "run-1",
+   "root_cause": "The SENSITIVE regex list in src/lib/step-up.ts matches only /^\\/admin\\/clients\\/\\d+\\/(rotate-secret|delete)$/ for the OIDC-client surface. POST /admin/clients and POST /admin/clients/:id are absent, so isSensitive() returns false and the step-up middleware (admin.ts:174-180) calls next() instead of "
+  },
+  {
+   "fp": "flareid:index.ts:unbounded-anonymous-request-body-buffering",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "No request-size bound anywhere in the Worker: anonymous bodies are fully buffered in isolate memory before any cap runs",
+   "run": "run-1",
+   "root_cause": "Request-body size is bounded only by the platform's upstream request limit, which is not visible or declared in the repository; the Worker buffers each body in full at least once (twice on the OAuth machine endpoints via clone + parseBody) before the earliest handler-level field cap is evaluated."
+  },
+  {
+   "fp": "flareid:middleware-mfa-gate-login-redirect-loop",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Second-factor 'sign in again' gate traps affected users in an infinite redirect loop, locking them out until session expiry",
+   "run": "run-1",
+   "root_cause": "GET /login (src/routes/login.ts:125-126) short-circuits to `next` for any request carrying a valid session without considering whether that session satisfies the current authentication policy, while requireSession (src/lib/middleware.ts:56-57) redirects insufficient sessions to /login without revoki"
+  },
+  {
+   "fp": "github/workflows/oidc-conformance.yml-conformance-results-artifact-credentials",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "Uploaded conformance-results artifact may contain live client secrets, the seeded user password, and tokens",
+   "run": "run-1",
+   "root_cause": "The entire suite export directory is persisted as a workflow artifact without a scrub step, so any credentials or tokens present in the exported test logs become durable, downloadable artifacts."
+  },
+  {
+   "fp": "github/workflows/oidc-conformance.yml-git-clone-mutable-tag-with-job-secrets",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Conformance workflow clones a third-party suite by mutable tag and executes it with CONFORMANCE_TOKEN and FLAREID_CONFORMANCE_API_KEY in the job environment",
+   "run": "run-1",
+   "root_cause": "The suite is fetched by mutable git tag rather than an immutable commit SHA, and secrets are declared at job level instead of step level, so tag-moved third-party code executes with both secrets in its environment."
+  },
+  {
+   "fp": "github/workflows/oidc-conformance.yml-unpinned-pip-deps-with-job-secrets",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Unpinned 'pip install httpx pyparsing' resolves newest PyPI release each run inside the secret-bearing job",
+   "run": "run-1",
+   "root_cause": "The pip install in a secret-bearing job is neither version-pinned nor integrity-bound, so registry-resolved code executes with repository secrets in its environment; the secrets are additionally scoped job-wide rather than step-wide."
+  },
+  {
+   "fp": "gitignore.conformance-results-export-dir",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "conformance-results/ export directory is not git-ignored while the repo's own CI writes OIDF suite exports into the checkout there",
+   "run": "run-1",
+   "root_cause": ".gitignore enumerates individual generated secret files (conformance/suite-config.json) but misses the conformance-results/ export directory that the repository's own workflow generates inside the checkout, leaving a gap between the intended ignore coverage and the tool-generated artifacts that may "
+  },
+  {
+   "fp": "oidc-consent-scope-keyed-vs-claims-param-release",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "OIDC `claims` parameter bypasses user consent: claim groups released that were never shown on the consent screen",
+   "run": "run-1",
+   "root_cause": "Consent is keyed on the requested scope token set (oauth_consents.scope, hasConsent subset check at authorize.ts:48), while the actual release set is claim groups computed by effectiveClaimGroups(client, scope, claimGroups) (oidc.ts:54-58). The `claims` request parameter contributes claim groups tha"
+  },
+  {
+   "fp": "oidc.ts:hasConsent-scope-only-vs-claims-groups",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "OIDC `claims` request parameter bypasses user consent for untrusted clients",
+   "run": "run-1",
+   "root_cause": "oauth_consents models consent as a flat set of scope strings: hasConsent (oidc.ts:155-160) checks requested scope tokens subset-of stored scope tokens, and recordConsent (oidc.ts:162-170) persists only request.scope. The release decision (effectiveClaimGroups, oidc.ts:54-58) is a strict superset - s"
+  },
+  {
+   "fp": "oidc:hasConsent-scope-only-claims-param-release",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "OIDC claims= parameter releases claim groups the user never consented to (consent recorded by scope only)",
+   "run": "run-1",
+   "root_cause": "Consent is keyed solely on the scope string. recordConsent stores request.scope verbatim (oidc.ts:162-170, called from oidc-session.ts:83) and hasConsent checks a scope subset (oidc.ts:155-160), while the released claim set is effectiveClaimGroups(client, scope, claimGroups) = scope groups UNION cla"
+  },
+  {
+   "fp": "scripts/oidc-conformance.mjs-token-json-stdout",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "oidc-conformance.mjs prints the live access_token (and authorization code) to stdout in PASS detail lines",
+   "run": "run-1",
+   "root_cause": "check(id, ok, detail) prints `detail` unconditionally (scripts/oidc-conformance.mjs:29-32), and callers pass response bodies and redirect URLs that embed live credential values rather than redacted or structural detail."
+  },
+  {
+   "fp": "scripts/oidc-suite-setup.mjs-suite-config-file-mode",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "oidc-suite-setup.mjs writes suite-config.json (live client secrets + user password) with world-readable 0644 mode",
+   "run": "run-1",
+   "root_cause": "writeFileSync(new URL(\"../conformance/suite-config.json\", import.meta.url), ...) at scripts/oidc-suite-setup.mjs:109 omits a restrictive mode on a file that aggregates live credentials."
+  },
+  {
+   "fp": "signing-keys:env-jwk-republished-with-private-members",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Operator-supplied signing JWKs are republished verbatim at /jwks.json, including private members",
+   "run": "run-1",
+   "root_cause": "src/lib/signing-keys.ts treats operator-provided JWK JSON as trusted-to-be-public and republishes it verbatim: line 74 spreads JSON.parse(env.SIGNING_PUBLIC_JWK) into the stored public_jwk (via the spread at line 58), line 108 spreads JSON.parse(env.SIGNING_PUBLIC_JWK_PREVIOUS) into the JWKS respons"
+  },
+  {
+   "fp": "src/routes/introspect.ts:revoke-refresh-spares-grant-access-tokens",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "POST /revoke of a refresh token leaves the grant's access tokens usable at /userinfo for up to 10 minutes",
+   "run": "run-1",
+   "root_cause": "The /revoke batch (src/routes/introspect.ts:90-97) contains only DELETE FROM access_tokens WHERE token_hash = ? AND client_id = ? (the single presented token) and the refresh-family UPDATE. It never deletes access_tokens belonging to the revoked grant. The schema provides the grant linkage used else"
+  },
+  {
+   "fp": "src/services/users.ts:revokeUserAppAccess-pending-auth-codes",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Revoking a user's app access leaves unredeemed authorization codes live, so tokens can still be minted after revocation",
+   "run": "run-1",
+   "root_cause": "revokeUserAppAccess applies the per-(user, client) revocation batch to access_tokens and refresh_tokens only, omitting the auth_codes table that the equivalent user-wide revocation treats as in-scope."
+  }
+ ],
+ "saml": [
+  {
+   "fp": "account.ts:profile-clear:in-operator-inherited-proto",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Clearing a user-editable attribute named 'constructor' silently keeps the old value (inherited-prototype 'in' check)",
+   "run": "run-1",
+   "root_cause": "src/routes/account.ts:508 uses the `in` operator (`a.name in columns`) to test whether an attribute name is column-mapped; `in` consults the prototype chain, so the one regex-valid attribute name that is also an inherited Object.prototype property ('constructor') is misclassified as column-mapped an"
+  },
+  {
+   "fp": "logAudit-unbounded-details-user-agent",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "logAudit bounds only `target` - anonymous callers plant tens-of-KB `details` and `user_agent` strings in the audit log",
+   "run": "run-1",
+   "root_cause": "src/lib/audit.ts applies `target.slice(0, 256)` (line 27) but binds `JSON.stringify(details)` (line 28) and `request?.headers.get(\"User-Agent\")` (line 30) verbatim - there is no shared size cap on stored audit fields, and anonymous surfaces (src/routes/saml.ts:121 acs, src/routes/login.ts:264-277, s"
+  },
+  {
+   "fp": "saml-sp.endpoint-url-scheme-unvalidated",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "ACS/SLO endpoint schemes are not validated on any SP registration path - http:// bearer-assertion delivery is allowlisted",
+   "run": "run-1",
+   "root_cause": "URL scheme validation was written for metadata_url and slo_url but never for the assertion-consumer endpoints the schema declares https-only; the metadata parser's /^https?:\\/\\// filter explicitly admits http, and the form/API writers do not parse the values as URLs at all."
+  },
+  {
+   "fp": "saml-transient-nameid-sessionindex-shared-across-sps",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "SAML transient NameID and SessionIndex are sha256(session id) - the identical pseudonym is issued to every service provider",
+   "run": "run-1",
+   "root_cause": "sessionIdentifiers (src/lib/saml/messages.ts:60-63) computes sha256Hex(sessionId) with no per-SP input; nameId() (messages.ts:82-83) returns it as the transient NameID and buildAssertion (messages.ts:92) embeds the same value as SessionIndex, for every SP. The only matching consumer is the SLO handl"
+  },
+  {
+   "fp": "saml.ts:default-acs-url-bypasses-allowlist-and-scheme",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "default_acs_url becomes the auto-POST assertion target without allowlist or scheme validation",
+   "run": "run-1",
+   "root_cause": "The stored default delivery URL is emitted into the auto-submit form without re-validating it at use time, and no write path applies the scheme/membership validation the stated exact-match-allowlist control implies; metadata import additionally skips the URL filter for the default and SLO endpoints."
+  },
+  {
+   "fp": "saml.ts:request-id-replay-key-global-across-sps",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "AuthnRequest single-use replay key is global across service providers",
+   "run": "run-1",
+   "root_cause": "The KV replay key `saml:req:${request.id}` omits the resolved service-provider identity, treating an issuer-scoped identifier as globally unique; both the pre-login read check (saml.ts:139) and the issue-time mark (saml.ts:54-56, keyed on request.requestId which is request.id copied into PendingSaml"
+  },
+  {
+   "fp": "saml.ts:saml-complete-missing-signin-recheck",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "/saml/complete issues a signed assertion without re-checking the signin permission",
+   "run": "run-1",
+   "root_cause": "The /saml/complete handler (and the resumeLoginFlow binding path feeding it) omit the canSignIn re-check that both sibling assertion-issuance paths apply, so a bound resume flow remains a valid authorization to mint an assertion after the underlying signin permission is gone - a stale-authorization "
+  },
+  {
+   "fp": "scim.scimFetch.no-scheme-gate.cleartext-bearer",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "SCIM endpoint accepts http:// - the provisioning bearer secret is transmitted in cleartext",
+   "run": "run-1",
+   "root_cause": "No scheme validation on the stored SCIM endpoint; scimFetch attaches credentials regardless of URL scheme."
+  },
+  {
+   "fp": "scim.scimFetch.no-timeout.head-of-line-block",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "scimFetch has no timeout - one stalled remote response head-of-line blocks the entire sync and pins the cursor",
+   "run": "run-1",
+   "root_cause": "fetch() in scimFetch has no timeout or cancellation bound, and the sync loop commits the cursor only after all SYNC_BATCH pushes finish, coupling forward progress to every remote response arriving."
+  },
+  {
+   "fp": "sp-metadata.fetchSpMetadata.body-unbounded",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "fetchSpMetadata buffers the entire metadata response before the 256 KB cap is enforced",
+   "run": "run-1",
+   "root_cause": "Size enforcement happens on the fully buffered string after res.text(), not on the response stream; no Content-Length check or streaming byte cap is applied to the fetch."
+  },
+  {
+   "fp": "sp-metadata.fetchSpMetadata.redirect-follow",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "https-only metadata fetch follows redirects, so the scheme and publisher-identity checks apply only to the first URL",
+   "run": "run-1",
+   "root_cause": "The https enforcement is applied to the request URL only; redirect:'follow' (the fetch default, never overridden) lets the effective origin and scheme change between the check and the bytes parsed."
+  },
+  {
+   "fp": "sp-metadata.refreshSpMetadata.unsigned-rewrite",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Scheduled SP-metadata refresh silently rewrites the SAML trust configuration from unsigned remote content",
+   "run": "run-1",
+   "root_cause": "refreshSpMetadata treats an unsigned remote document as fully authoritative: entityID is pinned but every security-relevant field is overwritten unconditionally, and per-field safety (require signed requests, encryption enabled, registered ACS/SLO endpoints) is recomputed from the attacker's input r"
+  },
+  {
+   "fp": "src/routes/token.ts:refresh-grant-no-signin-recheck",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Refresh grant keeps minting app credentials after the user's signin permission is revoked",
+   "run": "run-1",
+   "root_cause": "The refresh_token branch of POST /token re-validates only users.status before issuing credentials; it never calls canSignIn(), the role-based gate enforced at every other credential-issuing transition (login, /authorize SSO reuse, SAML SSO). Combined with rotation that re-extends the family's 30-day"
+  }
+ ],
+ "scim": [
+  {
+   "fp": "admin-console:idp-settings-secret-echo:read-roles",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Admin console renders stored credentials (SCIM secret, shared default password) into pages readable by *:read delegated roles",
+   "run": "run-1",
+   "root_cause": "Console GET pages reuse the edit form for display and populate it with the stored credential value (value=\"${escapeHtml(config.secret)}\" at admin.ts:2430; value=\"${escapeHtml(defaultPassword)}\" at admin.ts:3503). The permission gate (requireAdmin -> canAccess -> requiredPermission -> '<area>:read' f"
+  },
+  {
+   "fp": "scim-server:admin-role-boundary-vs-name-only-guard",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "SCIM directory:write key can modify admin-role groups and accounts \u2014 the 'admin scope' gate only knows the literal 'Super Admins' name",
+   "run": "run-1",
+   "root_cause": "scim-server.ts guards privileged directory writes by comparing groups.name to the constant SUPER_ADMINS_GROUP and by querying explicit group_members for that name only, instead of delegating to the role-based checks (accessFor().isAdmin for user targets, adminRoleGroupIds()/adminRoleGroupNames() for"
+  },
+  {
+   "fp": "scim-server:admin-role-guard-literal-super-admins-only",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "SCIM directory:write key grants admin roles through user attribute writes (dynamic admin-role groups) and can act on non-super admin accounts",
+   "run": "run-1",
+   "root_cause": "scim-server.ts implements the 'no admin-role changes below an admin key' boundary with name-literal checks (isSuperAdmin() on the 'Super Admins' group, group.name === SUPER_ADMINS_GROUP) instead of the access model's accessFor().isAdmin / adminRoleGroupIds, and performs no check that a user attribut"
+  },
+  {
+   "fp": "scim-sync-concurrent-orphaned-remote-user",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Overlapping SCIM syncs create untracked duplicate remote users that are never deprovisioned",
+   "run": "run-1",
+   "root_cause": "createScimUser (scim-client.ts:116-124) links unconditionally: 'UPDATE users SET scim_id = ? WHERE id = ?' succeeds for both racing creators, so the changes===0 guard that queues a deprovision (line 123) never fires for a double-create - only for a real local delete."
+  },
+  {
+   "fp": "scim.endpoint.unvalidated-host.outbound-ssrf",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Stored SCIM endpoint is fetched with no host validation or redirect guard - the Bearer credential follows cross-origin redirects and downstream bodies flow back to the scim:write caller",
+   "run": "run-1",
+   "root_cause": "The stored endpoint is never validated for scheme, host, or resolved address before being used as a credentialed fetch base; there is no redirect policy (default 'follow' forwards the Authorization header cross-origin, verified locally) and no response-size bound, so the stored config fully controls"
+  },
+  {
+   "fp": "scim.pushGroup.member-remote-id-rotation.stale-member",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Group membership delta forgets a member's previous remote id - the stale remote member reference is never removed",
+   "run": "run-1",
+   "root_cause": "Delta tracking keys membership by local user_id rather than by remote reference: a rotated scim_id is treated as an add-only change, the old remote id is neither removed remotely nor retained in scim_group_members, so the stale remote reference becomes permanently unmanaged."
+  },
+  {
+   "fp": "scim.syncAll.no-single-flight.duplicate-remote-provision",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Concurrent full SCIM syncs double-provision remote users/groups and orphan the first-created remote object",
+   "run": "run-1",
+   "root_cause": "No mutual exclusion around syncAll plus a non-atomic, non-idempotent create-then-link sequence: the remote POST is committed before the local scim_id link, and the link UPDATE has no guard (e.g. WHERE scim_id IS NULL) and no compensation for the overwritten remote id."
+  },
+  {
+   "fp": "services.users.identity-field-admission",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "User create/update admits arbitrary UPNs: unconfigured external domains and non-address values that sibling writers reject",
+   "run": "run-1",
+   "root_cause": "createUser/updateUserProfile in src/services/users.ts validate only non-emptiness of username/domain (lines 58-63, 144-147) and uniqueness of username alone (lines 72, 164); they never enforce the UPN local-part charset or configured-domain membership that the SCIM endpoint (scim-server.ts:297-301) "
+  },
+  {
+   "fp": "src/lib/email.ts:sendEmail:verbatim-recipient-and-header-fields",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "Unvalidated recipient and header fields reach the send_email binding verbatim (CR/LF and multi-address values persist via SCIM and lax validation)",
+   "run": "run-1",
+   "root_cause": "sendEmail (email.ts:62-79) trusts upstream write-path validation for `to`, `from.name`, and `subject`, but (a) the SCIM users write path performs no email-format validation at all (scim-server.ts:263-265), (b) isEmailAddress permits header/list-significant characters anyway, (c) the subject sanitiza"
+  },
+  {
+   "fp": "src/lib/scim-client.ts:testScimConnection:downstream-body-returned",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "SCIM connection test returns the downstream response body, giving a delegated-scope caller an arbitrary-URL read-out primitive",
+   "run": "run-1",
+   "root_cause": "testScimConnection echoes the downstream response body into the API response with no cap, while the fetch destination is a verbatim-stored, caller-controlled endpoint; together these turn a health check into an arbitrary-URL response-disclosure primitive for a non-admin scope."
+  },
+  {
+   "fp": "src/lib/settings.ts:setScimConfig:scim-endpoint-stored-unvalidated",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Unvalidated SCIM endpoint lets a delegated scim:write holder export the entire directory to an arbitrary URL",
+   "run": "run-1",
+   "root_cause": "setScimConfig (src/lib/settings.ts:47-52) persists scim_endpoint with no URL validation - not even an https:// requirement - while every consumer of that stored value (scimFetch, used by pushUser/pushGroup/syncAll/testScimConnection/drainScimDeprovisionQueue) trusts it as the destination for Bearer-"
+  },
+  {
+   "fp": "src/routes/scim-server.ts:admin-guard-name-only",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "SCIM server protects only the group literally named 'Super Admins'; a non-admin directory:write key can grant/revoke admin roles, mutate admin accounts, and delete admin-role groups",
+   "run": "run-1",
+   "root_cause": "The SCIM route layer implements the 'no administrative changes without an admin-scoped key' invariant as literal string comparisons against the group name 'Super Admins' (scim-server.ts isSuperAdmin/loadGroup/guardNewName/memberIds/memberStatements) instead of the authorization model every other wri"
+  },
+  {
+   "fp": "src/services/users.ts:unvalidated-upn-domain-recovery-recipient",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "UPN domain re-point plus non-step-up send-reset/invite emails a credential link to an attacker-controlled domain",
+   "run": "run-1",
+   "root_cause": "Trust-boundary mismatch: the service trusts the 'domain' form field the UI constrains to the domains table (updateUserProfile src/services/users.ts:145-147, createUser line 59-63), while recovery delivery trusts user.upn as 'the user's own address' (recipientFor, src/lib/email.ts:49). Combined with "
+  },
+  {
+   "fp": "step-up-missing-admin-scim-subpaths",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Step-up re-authentication missing for /admin/scim/scope (and /test, /sync)",
+   "run": "run-1",
+   "root_cause": "step-up.ts:19 lists /^\\/admin\\/scim$/ - the trailing $ excludes the destructive sub-paths, unlike sibling patterns such as /^\\/admin\\/security(\\/|$)/ which cover whole areas."
+  }
+ ],
+ "admin-api": [
+  {
+   "fp": "api-v1-audit-limit-unbounded-negative",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "GET /api/v1/audit accepts negative `limit` values, bypassing the documented 500-row cap (SQLite `LIMIT -1` is unlimited)",
+   "run": "run-1",
+   "root_cause": "src/api/monitoring.ts:99 computes `Math.min(Number(c.req.query(\"limit\") ?? 100) || 100, 500)` - `|| 100` only replaces falsy values and `Math.min` only caps the top; no `Math.max(1, ...)` floors the value, so negatives flow through to `LIMIT ?` in src/services/monitoring.ts:88 where SQLite interpret"
+  },
+  {
+   "fp": "email.ts:sendEmail:unescaped-from-name-crlf",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "CR/LF in email From name (and subject) forwarded verbatim to the send_email binding",
+   "run": "run-1",
+   "root_cause": "setEmailSettings (email.ts:29-34) applies no control-character validation to from_name, and sendEmail (email.ts:62-79) hands from.name (and subject) to env.EMAIL.send without sanitizing CR/LF; the same gap lets app_name reach the test-email subject raw and retain \\r through renderEmail's subject fil"
+  },
+  {
+   "fp": "flareid.admin-security-default-password-disclosure",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Admin Security page renders the stored default password to any role holding security:read",
+   "run": "run-1",
+   "root_cause": "routes/admin.ts GET /admin/security loads getDefaultPassword(env) (:3479) and interpolates it into the editable form field at :3503 instead of rendering the field write-only the way the Turnstile secret is rendered at :3556; no code path redacts it for read-only viewers because the page has a single"
+  },
+  {
+   "fp": "flareid.branding.patch.unbounded-name-subtitle",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Default-brand PATCH accepts unbounded app_name/login_subtitle that every page response re-emits ~4x until manually corrected",
+   "run": "run-1",
+   "root_cause": "Missing length validation on the default-brand write path: PATCH /api/v1/branding (src/api/settings.ts:211-228) -> saveAppName/saveLoginSubtitle (src/services/settings.ts:264-273) -> setAppName/setLoginSubtitle -> setSetting store the raw value with no bound, while the APP_NAME_MAX/SUBTITLE_MAX cons"
+  },
+  {
+   "fp": "flareid.default-password-apply-skips-breach-check",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Default-password save and mass apply-to-all bypass the breached-password policy",
+   "run": "run-1",
+   "root_cause": "applyDefaultPasswordToAll and saveDefaultPassword (services/settings.ts:118-134) and applyDefaultPasswordToAllUsers (lib/settings.ts:180-188) never invoke breachedPasswordError/newPasswordError, unlike every other admin-chosen-password path."
+  },
+  {
+   "fp": "flareid.email.subject.cr-injection-via-branding-fields",
+   "verdict": "needs_validation",
+   "severity": null,
+   "title": "CR/LF-tolerant brand fields reach outbound email subjects: renderEmail strips \\n but retains \\r before the send_email binding",
+   "run": "run-1",
+   "root_cause": "No control-character validation on stored brand/email fields combined with incomplete sanitisation at the header boundary: renderEmail's subject filter removes \\n but not \\r, and sendTestEmail performs no filtering; the last code owned by FlareID hands the value to env.EMAIL.send unsanitised."
+  },
+  {
+   "fp": "flareid:admin-domains-set-default-missing-existence-check",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Console set-default accepts a nonexistent domain id and leaves the instance with zero default domains",
+   "run": "run-1",
+   "root_cause": "src/routes/admin.ts:3428-3433 omits the existence check its API twin performs before calling setDefaultDomain; setDefaultDomain's clear-then-set batch silently succeeds when the id matches nothing."
+  },
+  {
+   "fp": "flareid:lib-domains-deleteDomain-check-then-act",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "deleteDomain's last-domain and in-use refusals are check-then-act across awaited statements; concurrent mutations defeat them",
+   "run": "run-1",
+   "root_cause": "src/lib/domains.ts deleteDomain performs SELECT-then-DELETE as independent awaited D1 statements with no transaction, conditional DELETE, or re-check; callers (services/platform.ts removeDomain, admin.ts:3443, api/applications.ts:223-231) add no serialization either."
+  },
+  {
+   "fp": "migrations-0019-0023-name-keyed-role-group-binding",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Upgrade silently grants admin roles to members of pre-existing groups named 'Directory Admins', 'Application Admins' or 'Auditors'",
+   "run": "run-1",
+   "root_cause": "0019's INSERT OR IGNORE cannot distinguish a group FlareID created for role-binding from a pre-existing operator group with the same name, and 0023 binds roles by that ambiguous name; the migrations claim ownership of names that may already exist in customer data, below the layer that guards interac"
+  },
+  {
+   "fp": "setup.runsSetup-domain-field-cross-area-write",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "settings:write API key adds and defaults a UPN domain via POST /api/v1/setup, crossing into the domains permission area",
+   "run": "run-1",
+   "root_cause": "runSetup applies body.domain (addDomain + setDefaultDomain, src/services/setup.ts:114-121) for every caller admitted by the route's 'settings:write' requireScope; there is no per-field permission check for the Domains-area write, while the codebase already uses exactly such checks (ctx.privileged) f"
+  },
+  {
+   "fp": "src/lib/cleanup.ts:rate_limits-fixed-7d-purge-vs-unbounded-window",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Hourly cleanup resets sign-in lockout counters after 7 days even when a longer rate-limit window is configured",
+   "run": "run-1",
+   "root_cause": "The rate_limits purge horizon is a fixed constant (7 days) while the window it protects is operator-configurable and unbounded; the two layers disagree whenever rate_limit_window_minutes > 10080 because neither the zod schema, setRateLimitPolicy, nor saveRateLimit enforces an upper bound that the pu"
+  },
+  {
+   "fp": "src/routes/api.ts:post-api-v1-setup:settings-write-reaches-domains-and-lifecycle",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "POST /api/v1/setup lets a settings:write-scoped key add and default domains - and latch setup completion - effects gated by domains:write and Super Admin everywhere else",
+   "run": "run-1",
+   "root_cause": "runSetup() performs per-field privilege checks only for body.admin and body.admin_mfa===false (src/services/setup.ts:97-111); the domain branch (setup.ts:114) and the complete branch (setup.ts:224) execute for any caller that passed the route's single settings:write scope check, so the endpoint's ef"
+  },
+  {
+   "fp": "src/services/users.ts:assertMayAssignGroups-rule-membership-bypass",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "users:write principals can grant admin roles by writing attributes that match a dynamic admin-role group's rule",
+   "run": "run-1",
+   "root_cause": "assertMayAssignGroups (src/services/guards.ts) validates only explicitly supplied group ids, and createUser/updateUserProfile (src/services/users.ts) pre-filter that list through staticOnly() which drops dynamic groups; rule-derived membership is resolved later at read time by getUserGroupNames/dyna"
+  }
+ ],
+ "authn": [
+  {
+   "fp": "auth-policy-write-missing-usable-factor-guard",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Policy writes can require a second factor while none exists, stranding covered users at an empty forced-enrolment page",
+   "run": "run-1",
+   "root_cause": "The 'mfa policy implies at least one usable factor' invariant is checked only in saveFactor (the factor-disable path); createPolicy, updatePolicy and saveRequireMfa/setMfaRequired write requirement='mfa' without verifying that any factor is enabled, so the state the guard exists to prevent is reacha"
+  },
+  {
+   "fp": "flareid/rate-limit/ipv6-64-prefix-budget-rotation",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "IPv6 /64 bucketing lets a prefix-holding attacker mint unlimited per-source budgets for login spray, recovery, setup and edge limiting",
+   "run": "run-1",
+   "root_cause": "The quota-accounting dimension for source identity is the /64 prefix; IPv6 addressing makes source prefixes cheap and plentiful, so the dimension is attacker-scalable rather than attacker-fixed the way an IPv4 address is."
+  },
+  {
+   "fp": "flareid:account-mfa-passkey-enrolled:cross-session-claim",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "/account/mfa/passkey-enrolled upgrades any session on credential recency, not the session that ran the ceremony",
+   "run": "run-1",
+   "root_cause": "src/routes/account.ts:770-772 tests only recency of ANY registration by the user (created_at > now-10min), with no binding between the claiming session and the session whose challenge was consumed in finishRegistration."
+  },
+  {
+   "fp": "flareid:account-passkeys:mfa-gate-exemption",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Low-assurance sessions exempted from the second-factor gate can still add and delete passkeys",
+   "run": "run-1",
+   "root_cause": "src/lib/middleware.ts:52-58 skips secondFactorGate for every path starting with /account/passkeys, for both gate verdicts ('enrol' AND 'login') and both lifecycle directions (register AND remove). The exemption exists only so a user with no second factor can complete forced enrolment; nothing restri"
+  },
+  {
+   "fp": "flareid:account-passkeys:no-step-up",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Passkey enrol and remove require only session possession - no fresh authentication or factor proof",
+   "run": "run-1",
+   "root_cause": "POST /account/passkeys (src/routes/account.ts:596-603) and POST /account/passkeys/:id/remove (src/routes/account.ts:605-610) perform credential lifecycle changes gated only by requireSession + account:write + csrfProtection, with no fresh-authentication or factor-possession check equivalent to stepU"
+  },
+  {
+   "fp": "flareid:admin-domains-apply-to-all-missing-super-gate",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Console 'apply domain to all users' lacks the Super Admin gate: a domains:write admin can rewrite every UPN and redirect Super Admin recovery mail",
+   "run": "run-1",
+   "root_cause": "The console handler at src/routes/admin.ts:3453-3474 performs the mass UPN rewrite with no isSuperAdmin check; authorization falls back to canAccess's path-prefix map (/admin/domains -> domains:write, src/lib/admin-roles.ts:80,98-103). The compensating non-super guard (src/routes/admin.ts:153-171) i"
+  },
+  {
+   "fp": "flareid:login-passkey:factor-disabled-not-enforced",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Disabled passkey factor still fully authenticates and enrols",
+   "run": "run-1",
+   "root_cause": "No passkey endpoint consults isFactorEnabled('passkey'): login.ts:323-358 and 361-397 and account.ts:591-609 call authenticationOptions/finishAuthentication/registrationOptions/finishRegistration unconditionally; the flag is only consumed when building the pages."
+  },
+  {
+   "fp": "login-mfa-accepts-disabled-totp-factor",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "POST /login/mfa accepts TOTP and backup codes while the TOTP factor is administratively disabled",
+   "run": "run-1",
+   "root_cause": "Offer-layer/verify-layer asymmetry: secondStepFactors gates the rendered form on isFactorEnabled('totp'), but POST /login/mfa re-validates only credential state (user.totp_secret), never the factor's enabled state, so the off switch removes the button without removing the acceptance path."
+  },
+  {
+   "fp": "migrations-0022-name-keyed-mfa-policy-binding",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Migration 0022 binds the Super-Admins MFA policy by mutable name; a renamed or deleted policy silently leaves administrators without a required second factor after upgrade",
+   "run": "run-1",
+   "root_cause": "Migration 0022 treats a mutable display string (auth_policies.name, editable and deletable through supported admin actions) as the stable identity of the shipped MFA policy, so the binding INSERT and the priority UPDATE silently match zero rows when the name no longer matches."
+  },
+  {
+   "fp": "recovery.ts:acceptPassword-reset-retains-webauthn_credentials",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Password reset leaves enrolled passkeys working - an attacker-registered passkey survives the compromise response and re-authenticates with no password",
+   "run": "run-1",
+   "root_cause": "The reset path's revocation set is incomplete: revokeAllSessionsForUser + revokeTokensForUser clear sessions, OAuth tokens, auth codes and link tokens, but no statement removes webauthn_credentials, and no downstream check (finishAuthentication, createSession) invalidates credentials enrolled before"
+  },
+  {
+   "fp": "requireSession:mfa-enrolment-exemption-covers-login-gate",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Session told to re-authenticate (secondFactorGate 'login') can instead enrol a new factor and self-upgrade amr to bypass the MFA gate",
+   "run": "run-1",
+   "root_cause": "requireSession's MFA-gate exemption is keyed on the URL prefix (/account/mfa, /account/passkeys) rather than the gate outcome: it lets gate='login' sessions reach enrolment endpoints whose completion handlers unconditionally rewrite the session's amr to include 'mfa'/'hwk'/'kba'/'otp', so the sessio"
+  },
+  {
+   "fp": "scim-secret-rendered-to-read-only-admin",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Stored SCIM bearer secret rendered into the SCIM page for read-only admins",
+   "run": "run-1",
+   "root_cause": "admin.ts:2430 emits value=\"${escapeHtml(config.secret)}\" from getScimConfig (settings.ts:42-45 returns the plaintext scim_secret from idp_settings) to every viewer whose role satisfies the GET permission scim:read (admin-roles.ts:72,98-103,106-113), with no distinction between read and write holders"
+  },
+  {
+   "fp": "src/lib/admin-roles.ts:requiredPermission:/admin:overview-ungated",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Admin console overview discloses audit-derived user PII to any admin role with no monitoring permission",
+   "run": "run-1",
+   "root_cause": "requiredPermission (src/lib/admin-roles.ts) maps console paths to permission areas by prefix, and no PATH_AREAS entry covers the bare \"/admin\" overview path. The function returns null, which canAccess treats as 'open to any admin' for GET/HEAD. The /admin handler then calls overviewStats and renders"
+  },
+  {
+   "fp": "src/lib/step-up.ts:SENSITIVE-allowlist-incomplete",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Step-up allowlist omits account-lifecycle and trust-anchor POSTs: a stale admin session can mint and activate a new Super Admin without re-authenticating",
+   "run": "run-1",
+   "root_cause": "The SENSITIVE regex list in src/lib/step-up.ts enumerates a subset of sensitive routes by name instead of covering every POST that changes credentials, privileged membership, or RP/SP trust anchors; the step-up middleware (src/routes/admin.ts:174-180) therefore never engages on the unlisted routes."
+  },
+  {
+   "fp": "src/lib/step-up.ts:isSensitive-digit-regex-vs-Number-coercion",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Step-up re-authentication bypass via non-digit user id in admin paths (e.g. /admin/users/+2/reset-password)",
+   "run": "run-1",
+   "root_cause": "Normalization disagreement between two parsers of the same path segment: isSensitive() and the non-super middleware classify c.req.path with \\d+ regexes, while the handler resolves the target with Number(param), whose accepted grammar is a superset (signs, hex, exponent, whitespace). Any single-segm"
+  },
+  {
+   "fp": "src/lib/turnstile.ts:expectedHostname-issuer-only",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Turnstile hostname pin accepts only ISSUER_URL, refusing password sign-in on other hostnames the deployment legitimately serves",
+   "run": "run-1",
+   "root_cause": "expectedHostname (src/lib/turnstile.ts:81-87) returns a single hostname derived from ISSUER_URL and verifyTurnstileToken requires exact equality with result.hostname (src/lib/turnstile.ts:123-124), while the set of hostnames on which the IdP legitimately serves authentication pages is larger - any h"
+  },
+  {
+   "fp": "src/routes/account.ts:password-change-no-session-rotation",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Password change keeps the compromised session id alive, so a stolen copy of the session cookie survives the revocation",
+   "run": "run-1",
+   "root_cause": "revokeAllSessionsForUser(env, user.id, c.get(\"sessionId\")) exempts the current session row (sessions.ts:180 `AND id != ?`) and the handler never mints or returns a replacement session id, so every copy of the old cookie value remains a valid credential after the password is changed."
+  },
+  {
+   "fp": "src/routes/login.ts:stored-hash-format-bypasses-dummy-equalization",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Legacy PBKDF2 password hashes bypass the unknown-user timing equalization on POST /login, restoring an account-existence oracle",
+   "run": "run-1",
+   "root_cause": "The equalization substitutes the dummy hash only when there is no usable stored hash (login.ts:273: user && status==='active' && !hash.startsWith('!')). It assumes every usable stored hash costs the same as the dummy, but verifyPassword (password.ts:94-104) prices the verify by the STORED format: $s"
+  },
+  {
+   "fp": "flareid.admin-roles:ldap-pages-missing-area",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "LDAP console pages missing from PATH_AREAS: any admin role can read LDAP settings, app policy and secret prefixes; all LDAP writes fail closed to Super Admin only",
+   "run": "run-2",
+   "root_cause": "LDAP console routes were added without a corresponding entry in PATH_AREAS (src/lib/admin-roles.ts:67-91) or a 'ldap' key in AREAS (src/lib/permissions.ts:8-25), so requiredPermission() falls through to null and canAccess() applies its null-branch semantics: read for any isAdmin, write denied below "
+  }
+ ],
+ "import": [
+  {
+   "fp": "directory-import.admin-role-group-rule-unguarded",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Non-admin directory import can rewrite an admin-role group's rule (and description), granting the role to rule-matching users",
+   "run": "run-1",
+   "root_cause": "importDirectory enforces its admin-role protections only on the `users` section of a bundle (src/lib/directory-import.ts:287-310); the `groups` section's existing-group UPDATE path (directory-import.ts:358-378) writes `rule` and `description` without consulting adminRoleGroupIds/adminRoleGroupNames,"
+  },
+  {
+   "fp": "directory-import.rolegroup-rule-privilege-bypass",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Non-admin directory import writes dynamic membership rules onto admin role groups, granting admin roles to chosen users",
+   "run": "run-1",
+   "root_cause": "importDirectory's privilege gate (the !opts.allowPrivileged branch, src/lib/directory-import.ts:287-310) enforces the admin-role boundary only on bundle.users[] - super_admin flags, user.groups[] membership in role groups, and overwrite of existing role members - while the bundle.groups[] upsert pat"
+  },
+  {
+   "fp": "flareid:admin-role-group:dynamic-membership-guard-bypass",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Non-Super-Admin directory admins can grant (and seize) admin roles through dynamic group attribute matching",
+   "run": "run-1",
+   "root_cause": "The 'who holds an admin role' invariant is enforced only on explicit group_members writes, while effective membership is computed as explicit rows PLUS rule-matched dynamic groups. Attribute-writing paths (updateUserProfile, createUser, importDirectory) and the import's protected-principal queries ("
+  },
+  {
+   "fp": "src/lib/directory-import.ts:importDirectory:role-group-definition-unchecked",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Directory import lets a non-admin import:write caller turn any non-'Super Admins' admin role group into a dynamic group and seize its role",
+   "run": "run-1",
+   "root_cause": "The unprivileged-import guard enumerates only the three user-level grants (super_admin flag, role-group membership listing, admin-username overwrite) and never authorizes bundle.groups definitions; the group rule validator special-cases SUPER_ADMINS_GROUP by literal name instead of checking membersh"
+  },
+  {
+   "fp": "src/lib/directory-import.ts:replaceExistingDirectory:builtin-groups-deleted",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Directory reset/replace and the console 'remove sample data' wipe delete an 'All Employees' group although the setup UI and API docs promise it is kept",
+   "run": "run-1",
+   "root_cause": "The reset/wipe keep-list is adminRoleGroupNames() only; a group named 'All Employees' is not a role group and falls into the deleted set, disagreeing with the UI-, doc-, and comment-stated contract that still names it as kept. The operator-facing text was never updated when migration 0004 ended the "
+  },
+  {
+   "fp": "src/lib/directory-import.ts:role-membership-static-members-only",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "Import treats admin-role membership as static group_members only: a non-admin caller can overwrite, password-reset or delete administrators whose role is dynamic",
+   "run": "run-1",
+   "root_cause": "The import's administrator computation queries group_members only, inconsistent with the codebase's own canonical role resolution (accessFor/dynamicGroupNamesForUser) which evaluates dynamic-group rules."
+  }
+ ],
+ "supply": [
+  {
+   "fp": "scripts/generate-saml-cert.mjs-out-dir-key-mode",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "generate-saml-cert.mjs --out-dir writes the SAML signing private key world-readable (0644)",
+   "run": "run-1",
+   "root_cause": "writeFileSync(resolve(outDir, \".saml-key.pem\"), keyPem) at scripts/generate-saml-cert.mjs:61 omits the { mode: 0o600 } option that the sibling branch uses at line 67."
+  }
+ ],
+ "ldap": [
+  {
+   "fp": "flareid/ldap/bind.ts:single-format-dummy-verify-enumerates-legacy-accounts",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "LDAP simple bind verifies only one hash format on failure, so wall time reveals which usable accounts still carry legacy PBKDF2-format hashes",
+   "run": "run-2",
+   "root_cause": "bind.ts performs a single verifyPassword whose cost is a function of the stored row's hash format (PBKDF2 ~7 ms vs scrypt ~113 ms) and substitutes a dummy hash of only the configured format for unknown or unusable users; unlike login.ts it never runs the complementary-format dummy verify, so respons"
+  },
+  {
+   "fp": "flareid/ldap/connection.ts:bound-principal-not-revalidated",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Bound LDAP principal is never re-validated: revoked apps and disabled users keep full access for the connection's lifetime",
+   "run": "run-2",
+   "root_cause": "Op dispatch at connection.ts:186-266 passes the bind-time `bound`/`app` straight to handleSearch (line 221), searchCtx/compare (line 225), WhoAmI (lines 241-247) and handlePasswordModify (line 237); searchCtx (280-285) derives the view from `bound`/`stickyApp` without re-fetching either row, ldap_en"
+  },
+  {
+   "fp": "flareid/ldap/connection.ts:failed-bind-retains-principal",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Failed LDAP bind retains the previous authenticated principal instead of resetting to anonymous",
+   "run": "run-2",
+   "root_cause": "The bind-op handler treats `bound` as write-on-success-only state: src/ldap/connection.ts:196-209 assigns `bound = out.bound` and `app = out.app` inside `if (out.ok)`, while the `else` failure branch (210-216) only audits and replies invalidCredentials. There is no `bound = { kind: \"anonymous\" }` (o"
+  },
+  {
+   "fp": "flareid/ldap/connection.ts:password-modify-stale-password-hash",
+   "verdict": "confirmed",
+   "severity": "high",
+   "title": "LDAP Password Modify verifies oldPasswd against the bind-time UserRow snapshot, so a still-bound connection bypasses an external password rotation and re-takes the account",
+   "run": "run-2",
+   "root_cause": "`bound` is a write-once snapshot and handlePasswordModify trusts `bound.user.password_hash`/`password_salt`/`password_iterations` (connection.ts:431, 471) instead of re-reading the users row. This is a concrete instance of the missing \u00a79 re-validation: no op on the connection re-checks bound-user st"
+  },
+  {
+   "fp": "flareid/ldap/connection.ts:settings-snapshot-ignores-ldap-disable",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "LDAP settings snapshotted once per connection: disabling LDAP, retiring the base DN or tightening bind policy never reaches in-flight connections",
+   "run": "run-2",
+   "root_cause": "getLdapSettings is awaited once at connection open (connection.ts:122) and the resulting immutable snapshot is reused for the whole session; no code path in src/ldap/ ever re-reads it (verified by grep: the only call site is connection.ts:122), so ldap_enabled, base/baseDn, unscopedBindApp, idleTime"
+  },
+  {
+   "fp": "flareid/src/lib/schemas.ts:schema-attr-names-no-ldap-reservation",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Schema attribute definitions accept every LDAP-emitted attribute name: no LDAP namespace reservation at the write-side choke point",
+   "run": "run-2",
+   "root_cause": "saveSchemaAttributes validates attribute names only against RESERVED_CLAIM_NAMES (JWT claims) and the lowercase-identifier regex; it has no reservation for the LDAP attribute vocabulary that src/ldap/entries.ts emits, so colliding names are accepted into schema_attributes and then flow as custom_att"
+  },
+  {
+   "fp": "flareid:ldap:connection.ts:framereader-quadratic-buffer-accumulation",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Pre-auth O(n^2/chunk) buffer accumulation in LDAP FrameReader lets a peer inflate per-frame CPU ~1000x by dribbling TCP segments",
+   "run": "run-2",
+   "root_cause": "FrameReader.next() (src/ldap/connection.ts:83) does this.buf = concat(this.buf, value) per read() \u2014 a fresh allocation and full copy of the pending buffer for every inbound chunk \u2014 instead of appending to a chunked buffer list or a preallocated 64KB region, so accumulation cost is quadratic in frame"
+  },
+  {
+   "fp": "flareid:ldap:protocol.ts:criticality-decoded-but-never-enforced",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "LDAP control criticality is decoded but never enforced; unknown critical controls execute instead of returning unavailableCriticalExtension",
+   "run": "run-2",
+   "root_cause": "Control criticality is parsed at protocol.ts:189 into Control.critical but the dispatcher (connection.ts) contains no criticality check anywhere: consumers select controls by OID only, malformed critical control values fall into parse-failure catch blocks that treat the control as absent, and RC.una"
+  },
+  {
+   "fp": "ldap.compare.userbound.missing-peritem",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "User-bound LDAP compare performs no per-target scoping, giving any bound user a boolean oracle over every entry in the app branch",
+   "run": "run-2",
+   "root_cause": "search.ts:231-266 \u2014 executeCompare never branches on ctx.bound.kind === \"user\": after the `bound.kind === \"anonymous\" || !ctx.app` guard (line 233) it resolves op.entry against all candidateEntries (DN equality, lines 240-248) and compares the attribute, omitting the own-DN/own-group-DN test and red"
+  },
+  {
+   "fp": "ldap.filter.eval-amplification",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "LDAP DN-attribute filter evaluation re-parses every stored DN per assertion node; non-matching searches bypass the time-limit deadline",
+   "run": "run-2",
+   "root_cause": "matchEquality's DN_ATTRS branch (src/ldap/filter.ts:205-208) re-derives the parsed form of every stored DN value for every filter node \u2014 safeDn(encode(v)) and parseDn(v) both run per value, and no parsed-DN cache exists per entry \u2014 multiplying evaluation cost by (filter nodes) x (stored values). Com"
+  },
+  {
+   "fp": "ldap.search.userbound.all-groups",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "User-bound LDAP search exposes every group entry in the app branch and falsifies membership to self",
+   "run": "run-2",
+   "root_cause": "search.ts:137 \u2014 isOwnGroup is computed as `userGroups.get(user.id).length > 0 && dn.includes(',ou=groups,')`: group membership is tested only for non-emptiness, not against the specific group entry; every DN under ou=groups passes once the user has any group."
+  },
+  {
+   "fp": "src/ldap/apps.ts:writeLdapApp-update-default-widen",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "title": "Partial upsert in POST /api/v1/ldap/apps resets LDAP app policy to create defaults: bind groups silently widen to all users and otp_required downgrades to otp_if_enrolled",
+   "run": "run-2",
+   "root_cause": "writeLdapApp computes userGroupIds/exposedGroupIds/mfaMode/includeDisabled with create-time defaulting (?? [], ?? 'otp_if_enrolled', ? 1 : 0) before branching on `existing`, and the update branch reuses those defaulted values verbatim; the API route encodes 'field not sent' as 'key absent on input',"
+  },
+  {
+   "fp": "src/ldap/entries.ts:custom-attr-empty-collision",
+   "verdict": "confirmed",
+   "severity": "low",
+   "title": "Schema custom attributes can forge unpopulated reserved LDAP attributes (memberOf, member, memberUid) on user entries",
+   "run": "run-2",
+   "root_cause": "The collision check in userEntry tests only whether the target attribute is already populated on this entry (attrs.has(k.toLowerCase())), not whether the name belongs to the reserved LDAP attribute vocabulary, and the schema-attribute namespace (lowercase, underscore-allowed) is not disjoint from th"
+  }
+ ]
+}

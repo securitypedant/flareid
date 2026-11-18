@@ -6,6 +6,11 @@ may break things.
 
 ## [Unreleased]
 
+**Migration `0043_client_grant_types.sql`** - `oauth_clients.grant_types` and
+`oauth_clients.registered_scope`, persisting the RFC 7591 `grant_types` and
+`scope` metadata dynamic clients register, enforced at `/token` (NULL keeps
+the old "every grant" behaviour for admin-created rows).
+
 **Migration `0034_scim_targets.sql`** - `scim_targets` (one row per downstream
 SCIM server) plus the per-target link tables `scim_user_links` /
 `scim_group_links`; the existing single-target settings and `scim_id` columns
@@ -318,6 +323,49 @@ third-party-initiated login and dynamic client registration.
 - **Authorization responses identify the issuer (RFC 9207).** Success and
   error redirects from `/authorize` (query and `form_post`) now carry
   `iss`, which the OIDF conformance suite requires.
+
+- **The medium- and low-severity audit backlog is remediated.** The follow-up
+  sweep from the third codebase-wide security audit:
+
+  - Replay and one-shot hardening: `private_key_jwt` client assertions must
+    carry `exp`/`iat`/`jti` and a seen jti is refused (RFC 7523); inbound SSF
+    SETs need an `aud` naming this receiver, a fresh `iat`, and an unseen
+    `jti`; KV get-then-delete one-shots (SAML/OIDC states, passkey and
+    enrolment challenges, step-up actions, consent, device codes) now claim
+    atomically in D1 so a replay inside KV's propagation window gets nothing.
+  - Secret parity: `cfone.api_token`, `scim_targets.secret`,
+    `upstream_idps` client secrets, LDAP service secrets and TOTP seeds seal
+    at rest like the other credentials - out of backup bundles and snapshots.
+  - Guard coverage: Cloudflare One watch actions pass `assertMayTouchUser`;
+    system groups refuse SCIM/directory-import writes; the LDAP HTTP API
+    checks the `ldap` permission area (not legacy scopes), `userinfo` and
+    `introspect` honour the sign-in permission, and IdP/user-email writes
+    reject alias/UPN collisions.
+  - Session hygiene: browser logout notifies back-channel clients before the
+    front-channel pass deletes `session_clients`, and device-grant approvals
+    record their `session_clients` row so revocation reaches them.
+  - Denial-of-service surface: edge rate limiting covers the previously
+    unlisted auth-adjacent routes and charges the client dimension by a hash
+    (DCR can no longer mint fresh client_ids to reset it), IPv6 `/48`
+    rate-limit keys refund on failure, failed-login counting no longer
+    scans the audit table, LDAP binds pad the timing gap and cap open
+    connections, photo fetch redirects/timeouts/streaming are bounded, SAML
+    SP metadata cert growth is capped, and API bodies are validated against
+    their declared schemas.
+
+- **The deferred validation items are resolved.** Placeholder secrets can no
+  longer serve as the login-flow HMAC key; the conformance-export scrub
+  catches base64/urlencoded/HTTP-Basic renderings of secrets, not only the
+  literal strings; upstream IdP discovery and token-exchange fetches (and the
+  jose remote-JWKS fetches behind them) carry timeouts, and discovery failures
+  negative-cache for a minute; request bodies without Content-Length are
+  buffered under the same 4 MiB ceiling as declared ones; managed domains must
+  be syntactic DNS names (a suffix like "com" can no longer capture brand
+  resolution or escape the delete-time LIKE); Analytics Engine queries time
+  out instead of pinning admin pages; SAML ACS/SLO URLs are https-checked
+  again at use time; and dynamically registered clients keep the grants and
+  scope they declared (new `oauth_clients.grant_types`/`registered_scope`
+  columns).
 
 ## [4.0.0] - 2026-11-17
 
