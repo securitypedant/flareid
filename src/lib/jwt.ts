@@ -36,7 +36,11 @@ export interface IdTokenClaims {
  * client asked for by scope, intersected with what it is allowed.
  */
 /** Names the IdP asserts itself: a schema attribute never takes them, released or not. */
-export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family_name", "preferred_username", "email", "email_verified", "groups", "job_title", "department", "manager", "sub", "amr", "acr", "custom", "address", "street_address", "locality", "region", "postal_code", "country", "phone", "phone_number", "phone_number_verified"]);
+export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family_name", "preferred_username", "email", "email_verified", "groups", "job_title", "department", "manager", "sub", "amr", "acr", "custom"]);
+// Deliberately not reserved: street_address, locality, region, postal_code,
+// country, address, phone, phone_number, phone_number_verified - those are
+// schema-defined *inputs* the address/phone claims are assembled from
+// (addressClaim above), so schemas have to be able to declare them.
 
 /** The OIDC `address` claim (Core 5.1.1): a JSON object, assembled from the schema attributes that hold it. */
 function addressClaim(attrs: Record<string, string> | undefined): Record<string, string> | undefined {

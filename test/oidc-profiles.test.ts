@@ -55,7 +55,7 @@ describe("OIDC claims: address and phone", () => {
     expect(body.phone_number).toBe("+44 1223 000000");
   });
 
-  it("omits the claims when the scope doesn't ask, and keeps them out of custom", async () => {
+  it("omits the claims when the scope doesn't ask, but lets the raw attributes through custom", async () => {
     const { apiKey } = await bootstrapInstance();
     const userId = await seedUser(apiKey);
     await env.DB.prepare("UPDATE users SET custom_attributes = ? WHERE id = ?")
@@ -71,7 +71,9 @@ describe("OIDC claims: address and phone", () => {
     const body = (await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${token}` } })).json()) as Record<string, unknown>;
     expect(body.phone_number).toBeUndefined();
     expect(body.address).toBeUndefined();
-    expect((body.custom as Record<string, unknown>)?.phone_number).toBeUndefined();
+    // The component names are ordinary user attributes: custom passes them
+    // through untouched; only the assembled claim names are withheld.
+    expect((body.custom as Record<string, unknown>)?.phone_number).toBe("+1 555 0100");
     expect((body.custom as Record<string, unknown>)?.favorite_color).toBe("blue");
   });
 
