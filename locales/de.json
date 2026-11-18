@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Zu viele Versuche. Bitte warten Sie einige Minuten, bevor Sie es erneut versuchen.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " und ",
-
     "login.title": "Anmelden",
     "login.heading": "Bei {appName} anmelden",
     "login.defaultSubtitle": "Melden Sie sich an, um fortzufahren.",
@@ -38,10 +37,8 @@
     "login.error.credentials": "Benutzername/UPN oder Passwort ist falsch.",
     "login.error.passkey": "Mit diesem Passkey konnten Sie nicht angemeldet werden.",
     "login.error.setupIncomplete": "Die Ersteinrichtung von FlareID ist noch nicht abgeschlossen. Derzeit können sich nur Administratoren anmelden.",
-
     "turnstile.label": "Sicherheitsprüfung",
     "turnstile.failed": "Bitte schließen Sie die Prüfung ab und versuchen Sie es erneut.",
-
     "mfa.title": "Zwei-Faktor-Authentifizierung",
     "mfa.heading": "Bestätigung in zwei Schritten",
     "mfa.totp.intro": "Geben Sie den 6-stelligen Code aus Ihrer Authenticator-App ein oder einen Ihrer Backup-Codes, falls Sie keinen Zugriff mehr auf die App haben.",
@@ -73,7 +70,6 @@
     "mfa.error.kbaWrong": "Mindestens eine Antwort war nicht richtig. Bitte versuchen Sie es erneut.",
     "mfa.notSetUp.title": "Die Bestätigung in zwei Schritten ist nicht eingerichtet",
     "mfa.notSetUp.message": "Für dieses Konto ist kein Authenticator mehr registriert. Starten Sie die Anmeldung erneut; wenn das wieder passiert, wenden Sie sich an Ihren Administrator.",
-
     "msg.expired.title": "Diese Anmeldung ist abgelaufen",
     "msg.expired.message": "Zu Ihrer Sicherheit laufen Anmeldeversuche nach einigen Minuten ab. Kehren Sie zu der App zurück, bei der Sie sich anmelden wollten, und beginnen Sie erneut, oder melden Sie sich unten bei Ihrem Konto an.",
     "msg.notReady.title": "Noch nicht bereit",
@@ -102,7 +98,6 @@
     "msg.passwordChanged.message": "Ihr neues Passwort ist gesetzt, und alle anderen Sitzungen wurden abgemeldet.",
     "msg.accountReady.title": "Ihr Konto ist bereit",
     "msg.accountReady.message": "Ihr Passwort ist gesetzt und Ihr Konto ist aktiv.",
-
     "consent.title": "Zugriff erlauben?",
     "consent.heading": "{client} möchte Sie anmelden",
     "consent.asking": "Die App fordert von {appName} Folgendes an:",
@@ -116,7 +111,6 @@
     "consent.cancel": "Abbrechen",
     "consent.allow": "Erlauben",
     "consent.withdraw": "Sie können dies jederzeit unter My account → Connected apps widerrufen.",
-
     "device.title": "Gerät verbinden",
     "device.heading": "Gerät verbinden",
     "device.intro": "Geben Sie den auf Ihrem Gerät angezeigten Code ein.",
@@ -134,7 +128,6 @@
     "device.approvedMessage": "Sie können jetzt zu {client} zurückkehren.",
     "device.deniedTitle": "Zugriff verweigert",
     "device.deniedMessage": "{client} wurde über Ihre Ablehnung informiert.",
-
     "logout.title": "Abmelden?",
     "logout.askedBy": "{client} möchte Sie von {appName} abmelden.",
     "logout.confirm": "Möchten Sie sich von {appName} abmelden?",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Sie werden von {count} verbundenen Apps abgemeldet...",
     "logout.progress.frame": "Abmeldung",
     "logout.progress.done": "Sie wurden abgemeldet.",
-
     "recovery.forgot.title": "Passwort zurücksetzen",
     "recovery.forgot.intro": "Geben Sie Ihren Benutzernamen oder Ihre E-Mail-Adresse ein. Wenn die Angabe zu einem Konto passt, senden wir Ihnen einen Link, mit dem Sie ein neues Passwort wählen können.",
     "recovery.forgot.identifier": "Benutzername oder E-Mail-Adresse",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Willkommen, {name}",
     "recovery.invite.intro": "Wählen Sie ein Passwort für {upn}, um Ihr Konto zu aktivieren.",
     "recovery.choose.title": "Passwort wählen",
-
     "password.new": "Neues Passwort",
     "password.confirmNew": "Neues Passwort bestätigen",
     "password.save": "Passwort speichern",
@@ -177,7 +168,6 @@
     "password.error.symbol": "Das Passwort muss ein Sonderzeichen enthalten.",
     "password.error.breached.one": "Dieses Passwort ist {count}-mal in einem Datenleck aufgetaucht; wählen Sie ein anderes.",
     "password.error.breached.other": "Dieses Passwort ist {count}-mal in Datenlecks aufgetaucht; wählen Sie ein anderes.",
-
     "setup.complete.title": "Die Einrichtung ist abgeschlossen",
     "setup.complete.message": "Dieser Identitätsanbieter wurde bereits eingerichtet. Melden Sie sich mit dem damals erstellten Administratorkonto an.",
     "setup.secrets.title": "Für die Einrichtung wird zuerst ein Secret benötigt",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Geben Sie die primäre Domain für Benutzerkonten ein.",
     "setup.error.username": "Geben Sie einen Benutzernamen für den Administrator ein.",
     "setup.error.password": "Wählen Sie ein Passwort für den Administrator.",
-    "setup.error.mismatch": "Die Passwörter stimmen nicht überein."
+    "setup.error.mismatch": "Die Passwörter stimmen nicht überein.",
+    "login.error.device_cert": "Dieses Konto muss sich von einem verwalteten Gerät anmelden. Verbinden Sie sich mit dem WARP-Client und versuchen Sie es erneut.",
+    "login.error.risk": "Anmeldung blockiert: Die aktuelle Risikostufe dieses Kontos liegt über dem, was seine Anmelderichtlinie erlaubt. Fragen Sie einen Administrator."
   }
 }

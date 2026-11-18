@@ -26,6 +26,10 @@ export interface AuthPolicyRow {
   priority: number;
   is_default: number;
   created_at: string;
+  /** When set, sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth). */
+  device_cert: number;
+  /** Max tolerated Cloudflare ZT risk level: '' (no check), 'low' or 'medium'. */
+  max_risk: string;
 }
 
 export const FACTORS = [

@@ -11,6 +11,7 @@ import "../api/applications.js";
 import "../api/settings.js";
 import "../api/monitoring.js";
 import "../api/ldap.js";
+import "../api/cfone.js";
 import { auditActor, bootstrapTokenValid } from "../lib/api-auth.js";
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, type DirectoryBundle } from "../lib/directory-import.js";

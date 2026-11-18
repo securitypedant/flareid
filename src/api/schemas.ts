@@ -78,6 +78,7 @@ export const GroupSchema = z
     member_count: z.number(),
     explicit_member_count: z.number(),
     requestable: z.boolean().openapi({ description: "Whether people may ask for membership on My account (static groups only)." }),
+    cf_list_sync: z.boolean().openapi({ description: "Member emails are kept in a Cloudflare One gateway list." }),
   })
   .passthrough()
   .openapi("Group");

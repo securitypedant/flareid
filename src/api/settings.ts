@@ -659,11 +659,11 @@ defineRoute(
 // ---------------------------------------------------------------------------
 
 const PolicySchema = z
-  .object({ id: z.number(), name: z.string(), description: z.string(), requirement: z.enum(["password", "mfa"]), priority: z.number(), is_default: z.boolean(), groups: z.array(z.string()) })
+  .object({ id: z.number(), name: z.string(), description: z.string(), requirement: z.enum(["password", "mfa"]), priority: z.number(), is_default: z.boolean(), groups: z.array(z.string()), device_cert: z.boolean(), max_risk: z.string() })
   .openapi("AuthPolicy");
 
 async function policiesJson(env: Env) {
-  return (await listPolicies(env)).map((p) => ({ id: p.id, name: p.name, description: p.description, requirement: p.requirement, priority: p.priority, is_default: p.is_default === 1, groups: p.groups.map((g) => g.name) }));
+  return (await listPolicies(env)).map((p) => ({ id: p.id, name: p.name, description: p.description, requirement: p.requirement, priority: p.priority, is_default: p.is_default === 1, groups: p.groups.map((g) => g.name), device_cert: p.device_cert === 1, max_risk: p.max_risk }));
 }
 
 const PolicyWrite = {
@@ -671,6 +671,8 @@ const PolicyWrite = {
   requirement: z.enum(["password", "mfa"]).optional().openapi({ description: "Password alone, or password plus a second factor; a passkey satisfies either." }),
   priority: z.number().int().optional().openapi({ description: "1-1000; lower wins when several policies match." }),
   groups: z.array(z.string()).optional().openapi({ description: "Group names the policy applies to." }),
+  device_cert: z.boolean().optional().openapi({ description: "Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth) - the zone must enforce mTLS." }),
+  max_risk: z.enum(["", "low", "medium"]).optional().openapi({ description: "Deny sign-in when the user's Cloudflare ZT risk score is above this level; empty checks nothing." }),
 };
 
 defineRoute(
@@ -681,8 +683,8 @@ defineRoute(
 defineRoute(
   { method: "post", path: "/api/v1/security/policies", tag: "Security", permission: "security:write", summary: "Create an authentication policy", body: z.object({ name: z.string(), ...PolicyWrite }), status: 201, response: PolicySchema },
   async (c) => {
-    const body = await readJson<{ name: string; description?: string; requirement?: string; priority?: number; groups?: string[] }>(c);
-    const id = await createPolicy(apiCtx(c), normalizePolicy({ ...body, groupIds: await groupIdsByName(c.env, body.groups ?? []) }));
+    const body = await readJson<{ name: string; description?: string; requirement?: string; priority?: number; groups?: string[]; device_cert?: boolean; max_risk?: string }>(c);
+    const id = await createPolicy(apiCtx(c), normalizePolicy({ ...body, deviceCert: body.device_cert, maxRisk: body.max_risk, groupIds: await groupIdsByName(c.env, body.groups ?? []) }));
     return c.json((await policiesJson(c.env)).find((p) => p.id === id), 201);
   }
 );
@@ -704,7 +706,7 @@ defineRoute(
     const id = Number(param(c, "id"));
     const current = (await policiesJson(c.env)).find((p) => p.id === id);
     if (!current) return notFound(c, `No policy with id ${id}.`);
-    const body = await readJson<{ name?: string; description?: string; requirement?: string; priority?: number; groups?: string[]; make_default?: boolean }>(c);
+    const body = await readJson<{ name?: string; description?: string; requirement?: string; priority?: number; groups?: string[]; make_default?: boolean; device_cert?: boolean; max_risk?: string }>(c);
     await updatePolicy(
       apiCtx(c),
       id,
@@ -715,6 +717,8 @@ defineRoute(
         priority: body.priority ?? current.priority,
         groupIds: await groupIdsByName(c.env, body.groups ?? current.groups),
         makeDefault: body.make_default,
+        deviceCert: body.device_cert ?? current.device_cert,
+        maxRisk: body.max_risk ?? current.max_risk,
       })
     );
     return c.json((await policiesJson(c.env)).find((p) => p.id === id));

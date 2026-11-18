@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Trop de tentatives. Veuillez patienter quelques minutes avant de réessayer.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " et ",
-
     "login.title": "Connexion",
     "login.heading": "Se connecter à {appName}",
     "login.defaultSubtitle": "Connectez-vous pour continuer.",
@@ -31,17 +30,15 @@
     "login.passkeyFailed": "La connexion par clé d'accès a été annulée ou a échoué.",
     "login.or": "ou",
     "login.federatedWith": "Continuer avec {name}",
-    "login.forgotPassword": "Mot de passe oublié\u00a0?",
+    "login.forgotPassword": "Mot de passe oublié ?",
     "login.previewDefault": "Aperçu de la marque par défaut. Vous êtes déjà connecté.",
-    "login.previewNamed": "Aperçu de la marque «\u00a0{name}\u00a0». Vous êtes déjà connecté.",
+    "login.previewNamed": "Aperçu de la marque « {name} ». Vous êtes déjà connecté.",
     "login.error.denied": "Ce compte n'est pas autorisé à se connecter. Contactez un administrateur.",
     "login.error.credentials": "Nom d'utilisateur/UPN ou mot de passe incorrect.",
     "login.error.passkey": "Cette clé d'accès n'a pas permis de vous connecter.",
     "login.error.setupIncomplete": "La configuration initiale de FlareID n'est pas terminée. Seuls les administrateurs peuvent se connecter pour le moment.",
-
     "turnstile.label": "Vérification de sécurité",
     "turnstile.failed": "Veuillez effectuer la vérification et réessayer.",
-
     "mfa.title": "Authentification à deux facteurs",
     "mfa.heading": "Validation en deux étapes",
     "mfa.totp.intro": "Saisissez le code à 6 chiffres de votre application d'authentification, ou l'un de vos codes de secours si vous n'y avez plus accès.",
@@ -72,8 +69,7 @@
     "mfa.error.kbaUnavailable": "Les questions de sécurité ne sont pas disponibles pour ce compte pour le moment.",
     "mfa.error.kbaWrong": "Une ou plusieurs réponses sont incorrectes. Veuillez réessayer.",
     "mfa.notSetUp.title": "La validation en deux étapes n'est pas configurée",
-    "mfa.notSetUp.message": "Ce compte n'a plus d'application d'authentification enregistrée. Recommencez la connexion\u00a0; si le problème persiste, contactez votre administrateur.",
-
+    "mfa.notSetUp.message": "Ce compte n'a plus d'application d'authentification enregistrée. Recommencez la connexion ; si le problème persiste, contactez votre administrateur.",
     "msg.expired.title": "Cette connexion a expiré",
     "msg.expired.message": "Pour votre sécurité, les tentatives de connexion expirent au bout de quelques minutes. Revenez à l'application à laquelle vous vous connectiez et recommencez, ou connectez-vous à votre compte ci-dessous.",
     "msg.notReady.title": "Pas encore prêt",
@@ -102,10 +98,9 @@
     "msg.passwordChanged.message": "Votre nouveau mot de passe est enregistré et toutes les autres sessions ont été déconnectées.",
     "msg.accountReady.title": "Votre compte est prêt",
     "msg.accountReady.message": "Votre mot de passe est défini et votre compte est actif.",
-
-    "consent.title": "Autoriser l'accès\u00a0?",
+    "consent.title": "Autoriser l'accès ?",
     "consent.heading": "{client} souhaite vous connecter",
-    "consent.asking": "L'application demande à {appName}\u00a0:",
+    "consent.asking": "L'application demande à {appName} :",
     "consent.identifier": "L'identifiant de votre compte",
     "consent.claims.email": "Adresse e-mail",
     "consent.claims.profile": "Nom et nom d'utilisateur",
@@ -116,7 +111,6 @@
     "consent.cancel": "Annuler",
     "consent.allow": "Autoriser",
     "consent.withdraw": "Vous pouvez retirer cette autorisation à tout moment depuis My account → Connected apps.",
-
     "device.title": "Connecter un appareil",
     "device.heading": "Connecter un appareil",
     "device.intro": "Saisissez le code affiché sur votre appareil.",
@@ -134,10 +128,9 @@
     "device.approvedMessage": "Vous pouvez retourner sur {client}.",
     "device.deniedTitle": "Accès refusé",
     "device.deniedMessage": "{client} a été informé de votre refus.",
-
-    "logout.title": "Se déconnecter\u00a0?",
+    "logout.title": "Se déconnecter ?",
     "logout.askedBy": "{client} a demandé à vous déconnecter de {appName}.",
-    "logout.confirm": "Voulez-vous vous déconnecter de {appName}\u00a0?",
+    "logout.confirm": "Voulez-vous vous déconnecter de {appName} ?",
     "logout.submit": "Se déconnecter",
     "logout.stay": "Rester connecté",
     "logout.progress.title": "Déconnexion",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Déconnexion de {count} applications connectées...",
     "logout.progress.frame": "Déconnexion",
     "logout.progress.done": "Vous avez été déconnecté.",
-
     "recovery.forgot.title": "Réinitialiser votre mot de passe",
     "recovery.forgot.intro": "Saisissez votre nom d'utilisateur ou votre adresse e-mail. S'il correspond à un compte, nous vous enverrons un lien pour choisir un nouveau mot de passe.",
     "recovery.forgot.identifier": "Nom d'utilisateur ou adresse e-mail",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Bienvenue, {name}",
     "recovery.invite.intro": "Choisissez un mot de passe pour {upn} afin d'activer votre compte.",
     "recovery.choose.title": "Choisissez un mot de passe",
-
     "password.new": "Nouveau mot de passe",
     "password.confirmNew": "Confirmez le nouveau mot de passe",
     "password.save": "Enregistrer le mot de passe",
@@ -175,16 +166,15 @@
     "password.error.lowercase": "Le mot de passe doit contenir une lettre minuscule.",
     "password.error.number": "Le mot de passe doit contenir un chiffre.",
     "password.error.symbol": "Le mot de passe doit contenir un symbole.",
-    "password.error.breached.one": "Ce mot de passe est apparu {count} fois dans une fuite de données\u00a0; choisissez-en un autre.",
-    "password.error.breached.other": "Ce mot de passe est apparu {count} fois dans des fuites de données\u00a0; choisissez-en un autre.",
-
+    "password.error.breached.one": "Ce mot de passe est apparu {count} fois dans une fuite de données ; choisissez-en un autre.",
+    "password.error.breached.other": "Ce mot de passe est apparu {count} fois dans des fuites de données ; choisissez-en un autre.",
     "setup.complete.title": "La configuration est terminée",
     "setup.complete.message": "Ce fournisseur d'identité a déjà été configuré. Connectez-vous avec le compte administrateur créé à ce moment-là.",
     "setup.secrets.title": "La configuration nécessite d'abord un secret",
-    "setup.secrets.intro": "Définissez-les comme secrets du Worker, puis rechargez cette page\u00a0:",
+    "setup.secrets.intro": "Définissez-les comme secrets du Worker, puis rechargez cette page :",
     "setup.secrets.bootstrap": "{name} - une longue chaîne aléatoire, par exemple la sortie de {command}. Vous la saisissez sur cette page.",
-    "setup.secrets.kek": "{name} - par exemple la sortie de {command}. Elle chiffre les clés de signature des jetons\u00a0; ne la modifiez jamais par la suite.",
-    "setup.secrets.where": "Dans le tableau de bord Cloudflare\u00a0: {workers} → ce Worker → {settings} → {variables} → {add}, type {secret}. Ou depuis une copie du dépôt\u00a0: {command}.",
+    "setup.secrets.kek": "{name} - par exemple la sortie de {command}. Elle chiffre les clés de signature des jetons ; ne la modifiez jamais par la suite.",
+    "setup.secrets.where": "Dans le tableau de bord Cloudflare : {workers} → ce Worker → {settings} → {variables} → {add}, type {secret}. Ou depuis une copie du dépôt : {command}.",
     "setup.form.title": "Configuration initiale",
     "setup.form.heading": "Configurer {appName}",
     "setup.form.intro": "Créez le premier administrateur. Vous avez besoin du secret {token} défini lors du déploiement.",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Saisissez le domaine principal des comptes utilisateur.",
     "setup.error.username": "Saisissez un nom d'utilisateur pour l'administrateur.",
     "setup.error.password": "Choisissez un mot de passe pour l'administrateur.",
-    "setup.error.mismatch": "Les mots de passe ne correspondent pas."
+    "setup.error.mismatch": "Les mots de passe ne correspondent pas.",
+    "login.error.device_cert": "Ce compte doit se connecter depuis un appareil géré. Connectez-vous avec le client WARP et réessayez.",
+    "login.error.risk": "Connexion bloquée : le niveau de risque actuel de ce compte dépasse ce que sa politique autorise. Demandez à un administrateur."
   }
 }

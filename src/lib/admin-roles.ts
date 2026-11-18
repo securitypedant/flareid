@@ -79,6 +79,7 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/federation", "federation"],
   ["/admin/integrations/email", "email"],
   ["/admin/email", "email"],
+  ["/admin/integrations/cf-one", "cfone"],
   ["/admin/users/import", "import"],
   ["/admin/groups/import", "import"],
   ["/admin/users", "users"],
@@ -135,7 +136,7 @@ export function visibleSections(access: Access): Set<string> {
   if (can("groups")) s.add("groups");
   if (can("domains")) s.add("domains");
   if (can("schemas")) s.add("schemas");
-  if (can("oidc") || can("saml") || can("scim") || can("ldap") || can("email") || can("api_keys")) s.add("integrations");
+  if (can("oidc") || can("saml") || can("scim") || can("ldap") || can("email") || can("cfone") || can("api_keys")) s.add("integrations");
   if (can("branding")) s.add("branding");
   if (can("security") || can("roles") || can("signing_keys")) s.add("security");
   if (can("audit")) s.add("audit");

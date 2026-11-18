@@ -37,6 +37,8 @@ export interface GroupInput {
   custom: Record<string, string>;
   /** Whether people may ask for membership on My account (static groups only). */
   requestable: boolean;
+  /** Keep the member emails in a Cloudflare One gateway list (needs the connection configured). */
+  cfListSync: boolean;
 }
 
 function checkName(input: GroupInput, existingName: string | null): void {
@@ -55,8 +57,8 @@ export async function createGroup(ctx: ServiceCtx, input: GroupInput, memberIds:
   if (await ctx.env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(input.name).first()) {
     throw new ServiceError(409, `A group named "${input.name}" already exists.`);
   }
-  const result = await ctx.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes, requestable) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(input.name, input.description || null, input.rule, input.schemaId, JSON.stringify(input.custom), input.requestable && !input.rule ? 1 : 0)
+  const result = await ctx.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes, requestable, cf_list_sync) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(input.name, input.description || null, input.rule, input.schemaId, JSON.stringify(input.custom), input.requestable && !input.rule ? 1 : 0, input.cfListSync ? 1 : 0)
     .run();
   const id = Number(result.meta.last_row_id);
   if (memberIds.length > 0) {
@@ -94,13 +96,14 @@ export async function updateGroup(ctx: ServiceCtx, id: number, input: GroupInput
   const members = input.rule ? [] : (memberIds ?? before.map((b) => b.user_id));
 
   await ctx.env.DB.batch([
-    ctx.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ?, requestable = ? WHERE id = ?").bind(
+    ctx.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ?, requestable = ?, cf_list_sync = ? WHERE id = ?").bind(
       input.name,
       input.description || null,
       input.rule,
       input.schemaId,
       JSON.stringify(input.custom),
       input.requestable && !input.rule ? 1 : 0,
+      input.cfListSync && !current.system ? 1 : 0,
       id
     ),
     // A dynamic group holds no explicit rows; a static one holds exactly this set.
@@ -144,6 +147,7 @@ export async function deleteGroup(ctx: ServiceCtx, id: number): Promise<GroupRow
   const group = await getGroupById(ctx.env, id);
   if (!group) throw new ServiceError(404, "Not found");
   if (group.name === SUPER_ADMINS_GROUP) throw new ServiceError(400, `The ${SUPER_ADMINS_GROUP} group cannot be deleted.`);
+  if (group.system) throw new ServiceError(400, `"${group.name}" is a system group and cannot be deleted.`);
   await assertMayTouchGroup(ctx, id);
   const { results: members } = await ctx.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
   // Local first with the remote id queued in the same batch, as for users.
@@ -167,6 +171,7 @@ export async function addGroupMembers(ctx: ServiceCtx, id: number, userIds: numb
   const group = await getGroupById(ctx.env, id);
   if (!group) throw new ServiceError(404, "Not found");
   if (group.rule) throw new ServiceError(400, "Members of a dynamic group follow its rule.");
+  if (group.system) throw new ServiceError(400, `Membership of "${group.name}" is maintained automatically; it cannot be edited.`);
   await assertMayTouchGroup(ctx, id);
   if (userIds.length === 0) return 0;
   const results = await ctx.env.DB.batch(userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
@@ -182,6 +187,7 @@ export async function addGroupMembers(ctx: ServiceCtx, id: number, userIds: numb
 export async function removeGroupMember(ctx: ServiceCtx, id: number, uid: number): Promise<void> {
   const group = await getGroupById(ctx.env, id);
   if (!group || group.rule) throw new ServiceError(400, "Members of a dynamic group follow its rule.");
+  if (group.system) throw new ServiceError(400, `Membership of "${group.name}" is maintained automatically; it cannot be edited.`);
   if (group.name === SUPER_ADMINS_GROUP && uid === ctx.selfId) throw new ServiceError(400, "You cannot remove yourself from Super Admins.");
   await assertMayTouchGroup(ctx, id);
   const user = await ctx.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
@@ -198,6 +204,7 @@ export async function addGroupManagers(ctx: ServiceCtx, id: number, userIds: num
   const group = await getGroupById(ctx.env, id);
   if (!group) throw new ServiceError(404, "Not found");
   if (group.rule) throw new ServiceError(400, "A dynamic group's membership follows its rule - there is nothing to delegate.");
+  if (group.system) throw new ServiceError(400, `"${group.name}" is a system group; it takes no managers.`);
   // A role group's members are an admin grant - delegated management must
   // never reach it, so naming managers there is refused even for Super Admin.
   if ((await adminRoleGroupIds(ctx.env)).has(id)) throw new ServiceError(400, "An admin role group can't have managers - its membership grants an admin role.");
@@ -259,8 +266,8 @@ async function bulkEditableGroups(ctx: ServiceCtx, ids: number[]): Promise<{ edi
   const unique = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
   if (!unique.length) return { editable: [], skipped: [] };
   const { results } = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(unique)).all<GroupRow>();
-  const skipped = results.filter((g) => g.rule).map((g) => g.name);
-  let editable = results.filter((g) => !g.rule);
+  const skipped = results.filter((g) => g.rule || g.system).map((g) => g.name);
+  let editable = results.filter((g) => !g.rule && !g.system);
   if (!ctx.privileged) {
     const protectedIds = await adminRoleGroupIds(ctx.env);
     skipped.push(...editable.filter((g) => protectedIds.has(g.id)).map((g) => g.name));

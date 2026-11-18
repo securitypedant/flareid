@@ -53,7 +53,7 @@ export async function requestableGroups(env: Env, userId: number, search = "", l
   const like = `%${search.replace(/[%_]/g, (m) => `\\${m}`)}%`;
   return (
     await env.DB.prepare(
-      `SELECT * FROM groups WHERE requestable = 1 AND (rule IS NULL OR rule = '')
+      `SELECT * FROM groups WHERE requestable = 1 AND (rule IS NULL OR rule = '') AND (system IS NULL OR system = '')
         AND id NOT IN (SELECT group_id FROM group_members WHERE user_id = ?)
         AND id NOT IN (SELECT group_id FROM access_requests WHERE user_id = ? AND status = 'pending')
         AND id NOT IN (SELECT group_id FROM group_managers WHERE user_id = ?)
@@ -132,6 +132,7 @@ export async function requestAccess(ctx: ServiceCtx, groupId: number, reason: st
   const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(groupId).first<GroupRow>();
   if (!group) throw new ServiceError(404, "That group does not exist.");
   if (group.rule) throw new ServiceError(400, `"${group.name}" assigns members by rule - its membership cannot be requested.`);
+  if (group.system) throw new ServiceError(400, `"${group.name}" is maintained by the system - its membership cannot be requested.`);
   if (!group.requestable) throw new ServiceError(400, `"${group.name}" is not open to requests.`);
   if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first()) {
     throw new ServiceError(409, `You are already a member of "${group.name}".`);

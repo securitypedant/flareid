@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Muitas tentativas. Aguarde alguns minutos antes de tentar novamente.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " e ",
-
     "login.title": "Entrar",
     "login.heading": "Entre no {appName}",
     "login.defaultSubtitle": "Entre para continuar.",
@@ -38,10 +37,8 @@
     "login.error.credentials": "Nome de usuário/UPN ou senha incorretos.",
     "login.error.passkey": "Não foi possível entrar com essa chave de acesso.",
     "login.error.setupIncomplete": "O FlareID ainda não concluiu a configuração inicial. Somente administradores podem entrar agora.",
-
     "turnstile.label": "Verificação de segurança",
     "turnstile.failed": "Conclua a verificação e tente novamente.",
-
     "mfa.title": "Autenticação de dois fatores",
     "mfa.heading": "Verificação em duas etapas",
     "mfa.totp.intro": "Digite o código de 6 dígitos do seu app autenticador, ou um dos seus códigos de backup se você perdeu o acesso a ele.",
@@ -73,7 +70,6 @@
     "mfa.error.kbaWrong": "Uma ou mais respostas estavam incorretas. Tente novamente.",
     "mfa.notSetUp.title": "A verificação em duas etapas não está configurada",
     "mfa.notSetUp.message": "Esta conta não tem mais um autenticador registrado. Comece o login novamente; se continuar acontecendo, peça ajuda ao seu administrador.",
-
     "msg.expired.title": "Este login expirou",
     "msg.expired.message": "Para sua segurança, as tentativas de login expiram após alguns minutos. Volte ao app em que você estava entrando e comece de novo, ou entre na sua conta abaixo.",
     "msg.notReady.title": "Ainda não está pronto",
@@ -102,7 +98,6 @@
     "msg.passwordChanged.message": "Sua nova senha está definida e todas as outras sessões foram encerradas.",
     "msg.accountReady.title": "Sua conta está pronta",
     "msg.accountReady.message": "Sua senha está definida e sua conta está ativa.",
-
     "consent.title": "Permitir acesso?",
     "consent.heading": "{client} quer fazer seu login",
     "consent.asking": "Ele está pedindo ao {appName}:",
@@ -116,7 +111,6 @@
     "consent.cancel": "Cancelar",
     "consent.allow": "Permitir",
     "consent.withdraw": "Você pode revogar isso a qualquer momento em Minha conta → Apps conectados.",
-
     "device.title": "Conectar um dispositivo",
     "device.heading": "Conectar um dispositivo",
     "device.intro": "Digite o código exibido no seu dispositivo.",
@@ -134,7 +128,6 @@
     "device.approvedMessage": "Agora você pode voltar ao {client}.",
     "device.deniedTitle": "Acesso negado",
     "device.deniedMessage": "O {client} foi informado da sua recusa.",
-
     "logout.title": "Sair?",
     "logout.askedBy": "{client} pediu para encerrar sua sessão no {appName}.",
     "logout.confirm": "Deseja sair do {appName}?",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Encerrando sua sessão em {count} apps conectados...",
     "logout.progress.frame": "Logout",
     "logout.progress.done": "Sua sessão foi encerrada.",
-
     "recovery.forgot.title": "Redefina sua senha",
     "recovery.forgot.intro": "Digite seu nome de usuário ou e-mail. Se corresponder a uma conta, enviaremos um link para escolher uma nova senha.",
     "recovery.forgot.identifier": "Nome de usuário ou e-mail",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Boas-vindas, {name}",
     "recovery.invite.intro": "Escolha uma senha para {upn} para ativar sua conta.",
     "recovery.choose.title": "Escolha uma senha",
-
     "password.new": "Nova senha",
     "password.confirmNew": "Confirmar nova senha",
     "password.save": "Salvar senha",
@@ -177,7 +168,6 @@
     "password.error.symbol": "A senha deve conter um símbolo.",
     "password.error.breached.one": "Esta senha apareceu em um vazamento de dados {count} vez; escolha outra.",
     "password.error.breached.other": "Esta senha apareceu em um vazamento de dados {count} vezes; escolha outra.",
-
     "setup.complete.title": "A configuração está concluída",
     "setup.complete.message": "Este provedor de identidade já foi configurado. Entre com a conta de administrador criada naquela ocasião.",
     "setup.secrets.title": "A configuração precisa primeiro de um segredo",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Digite o domínio principal das contas de usuário.",
     "setup.error.username": "Digite um nome de usuário para o administrador.",
     "setup.error.password": "Escolha uma senha para o administrador.",
-    "setup.error.mismatch": "As senhas não coincidem."
+    "setup.error.mismatch": "As senhas não coincidem.",
+    "login.error.device_cert": "Esta conta precisa entrar a partir de um dispositivo gerenciado. Conecte-se com o cliente WARP e tente novamente.",
+    "login.error.risk": "Login bloqueado: o nível de risco atual desta conta está acima do que a política de entrada permite. Peça a um administrador."
   }
 }

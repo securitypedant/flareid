@@ -20,10 +20,16 @@ export interface PolicyInput {
   priority: number;
   groupIds: number[];
   makeDefault: boolean;
+  /** Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth). */
+  deviceCert: boolean;
+  /** Max tolerated Cloudflare ZT risk level ('' = no check). */
+  maxRisk: string;
 }
 
+const RISK_CAPS = new Set(["", "low", "medium"]);
+
 /** Normalises raw input the same way for a form and a JSON body. */
-export function normalizePolicy(raw: { name?: unknown; description?: unknown; requirement?: unknown; priority?: unknown; groupIds?: unknown[]; makeDefault?: unknown }): PolicyInput {
+export function normalizePolicy(raw: { name?: unknown; description?: unknown; requirement?: unknown; priority?: unknown; groupIds?: unknown[]; makeDefault?: unknown; deviceCert?: unknown; maxRisk?: unknown }): PolicyInput {
   const name = String(raw.name ?? "").trim().slice(0, 80);
   if (!name) throw new ServiceError(400, "A policy name is required.");
   return {
@@ -33,6 +39,8 @@ export function normalizePolicy(raw: { name?: unknown; description?: unknown; re
     priority: Math.min(1000, Math.max(1, Math.floor(Number(raw.priority)) || 100)),
     groupIds: (raw.groupIds ?? []).map(Number).filter(Boolean),
     makeDefault: Boolean(raw.makeDefault),
+    deviceCert: Boolean(raw.deviceCert),
+    maxRisk: RISK_CAPS.has(String(raw.maxRisk ?? "")) ? String(raw.maxRisk) : "",
   };
 }
 
@@ -69,8 +77,8 @@ async function assertFactorsExistForMfa(ctx: ServiceCtx): Promise<void> {
 export async function createPolicy(ctx: ServiceCtx, f: PolicyInput): Promise<number> {
   const before = await adminsWithoutMfaPolicy(ctx.env);
   if (await ctx.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ?").bind(f.name).first()) throw new ServiceError(400, "A policy with that name already exists.");
-  const row = await ctx.env.DB.prepare("INSERT INTO auth_policies (name, description, requirement, priority, is_default, created_at) VALUES (?, ?, ?, ?, 0, ?) RETURNING id")
-    .bind(f.name, f.description, f.requirement, f.priority, new Date().toISOString())
+  const row = await ctx.env.DB.prepare("INSERT INTO auth_policies (name, description, requirement, priority, is_default, device_cert, max_risk, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?) RETURNING id")
+    .bind(f.name, f.description, f.requirement, f.priority, f.deviceCert ? 1 : 0, f.maxRisk, new Date().toISOString())
     .first<{ id: number }>();
   await savePolicyGroups(ctx, row!.id, f.groupIds);
   try {
@@ -84,14 +92,14 @@ export async function createPolicy(ctx: ServiceCtx, f: PolicyInput): Promise<num
 }
 
 export async function updatePolicy(ctx: ServiceCtx, id: number, f: PolicyInput): Promise<void> {
-  const current = await ctx.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string; description: string; requirement: string; priority: number }>();
+  const current = await ctx.env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(id).first<{ is_default: number; name: string; description: string; requirement: string; priority: number; device_cert: number; max_risk: string }>();
   if (!current) throw new ServiceError(404, "Not found");
   const before = await adminsWithoutMfaPolicy(ctx.env);
   if (await ctx.env.DB.prepare("SELECT 1 FROM auth_policies WHERE name = ? AND id != ?").bind(f.name, id).first()) throw new ServiceError(400, "A policy with that name already exists.");
   // Captured so a refused write leaves nothing behind.
   const beforeGroups = (await ctx.env.DB.prepare("SELECT group_id FROM auth_policy_groups WHERE policy_id = ?").bind(id).all<{ group_id: number }>()).results.map((g) => g.group_id);
   const beforeDefault = (await ctx.env.DB.prepare("SELECT id FROM auth_policies WHERE is_default = 1").first<{ id: number }>())?.id ?? 0;
-  await ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, id).run();
+  await ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ?, device_cert = ?, max_risk = ? WHERE id = ?").bind(f.name, f.description, f.requirement, f.priority, f.deviceCert ? 1 : 0, f.maxRisk, id).run();
   await savePolicyGroups(ctx, id, f.groupIds);
   if (!current.is_default && f.makeDefault) {
     await ctx.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(id).run();
@@ -100,7 +108,7 @@ export async function updatePolicy(ctx: ServiceCtx, id: number, f: PolicyInput):
     if (f.requirement === "mfa") await assertFactorsExistForMfa(ctx);
   } catch (e) {
     await ctx.env.DB.batch([
-      ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ?, is_default = ? WHERE id = ?").bind(current.name, current.description, current.requirement, current.priority, current.is_default, id),
+      ctx.env.DB.prepare("UPDATE auth_policies SET name = ?, description = ?, requirement = ?, priority = ?, is_default = ?, device_cert = ?, max_risk = ? WHERE id = ?").bind(current.name, current.description, current.requirement, current.priority, current.is_default, current.device_cert, current.max_risk, id),
       ctx.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id),
       ctx.env.DB.prepare("INSERT OR IGNORE INTO auth_policy_groups (policy_id, group_id) SELECT ?, g.id FROM groups g WHERE g.id IN (SELECT value FROM json_each(?))").bind(id, JSON.stringify(beforeGroups)),
       ctx.env.DB.prepare("UPDATE auth_policies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END").bind(beforeDefault),

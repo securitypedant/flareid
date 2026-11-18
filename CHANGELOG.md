@@ -26,8 +26,40 @@ access requests and membership reviews.
 people who run a static group's members and requests without holding
 `groups:write`) and `user_photos` (profile image bytes, uploaded on My
 account or written by inbound provisioning).
+**Migration `0040_cloudflare_one.sql`** - `auth_policies.device_cert` and
+`auth_policies.max_risk` (the posture conditions below), `groups.system`
+and `groups.cf_list_sync`, and the `user_watch` / `cf_lists` tables behind
+the risk watchlist and gateway-list sync.
 
 ### Added
+
+- **Cloudflare One integrations** (Integrations → Cloudflare One, a new
+  `cfone` permission area, and `/api/v1/integrations/cloudflare-one`).
+  One connection - account id, a Zero Trust API token, and optionally the
+  team name + Access application AUD - feeds four things:
+
+  - *Access JWT for the admin plane*: once a team and AUD are set, every
+    console request must carry a valid Access JWT (`Cf-Access-Jwt-Assertion`
+    or the `CF_Authorization` cookie) verified against the team's JWKS -
+    reaching the Worker origin directly stops working, exactly as a
+    service-token bypass would want it not to.
+  - *Sign-in posture on authentication policies*: a policy can now require
+    a verified WARP device certificate (`request.cf.tlsClientAuth`, when
+    the zone enforces mTLS) and cap the user's Cloudflare ZT risk score
+    (`zt_risk_scoring`). Posture failures deny sign-in with their own
+    messages; an unconfigured or failing risk API never blocks anyone.
+  - *The risk watchlist*: a system group whose membership code maintains
+    (`user_watch`) - flag people from the Cloudflare One page, the user
+    page, or `PUT|DELETE /api/v1/users/{username}/watch`, and failed
+    sign-in bursts (10+/h) flag them automatically for 24h. The group
+    syncs downstream like any group, so a SCIM target or a Cloudflare
+    email list sees it.
+  - *Reusable list sync*: the scheduled job full-replaces gateway lists -
+    watchlist, deprovisioned users, managed domains, source IPs with
+    repeated recent sign-in failures, and any group's member emails via
+    its own "Sync member emails" switch (`cf_list_sync`, also on
+    `PATCH /api/v1/groups/{id}`). A remotely deleted list recreates
+    itself on the next run.
 
 - **Delegated group management.** An admin can name managers on any static
   group (a card on its console page, `POST|DELETE

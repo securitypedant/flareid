@@ -195,6 +195,8 @@
     "setup.error.domain": "请输入用户账户的主域名。",
     "setup.error.username": "请输入管理员的用户名。",
     "setup.error.password": "请为管理员设置密码。",
-    "setup.error.mismatch": "两次输入的密码不一致。"
+    "setup.error.mismatch": "两次输入的密码不一致。",
+    "login.error.device_cert": "此账户需从受管理的设备登录。请用 WARP 客户端连接后重试。",
+    "login.error.risk": "登录被拦截：该账户当前风险等级超过了其登录策略允许的范围。请联系管理员。"
   }
 }

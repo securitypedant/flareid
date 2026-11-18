@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Troppi tentativi. Attendi qualche minuto prima di riprovare.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " e ",
-
     "login.title": "Accedi",
     "login.heading": "Accedi a {appName}",
     "login.defaultSubtitle": "Accedi per continuare.",
@@ -38,10 +37,8 @@
     "login.error.credentials": "Nome utente/UPN o password errati.",
     "login.error.passkey": "Impossibile accedere con quella passkey.",
     "login.error.setupIncomplete": "FlareID non ha ancora completato la configurazione iniziale. Al momento possono accedere solo gli amministratori.",
-
     "turnstile.label": "Controllo di sicurezza",
     "turnstile.failed": "Completa il controllo e riprova.",
-
     "mfa.title": "Autenticazione a due fattori",
     "mfa.heading": "Verifica in due passaggi",
     "mfa.totp.intro": "Inserisci il codice a 6 cifre della tua app di autenticazione, oppure uno dei tuoi codici di backup se hai perso l'accesso.",
@@ -73,7 +70,6 @@
     "mfa.error.kbaWrong": "Una o più risposte erano errate. Riprova.",
     "mfa.notSetUp.title": "La verifica in due passaggi non è configurata",
     "mfa.notSetUp.message": "Questo account non ha più un autenticatore registrato. Ricomincia l'accesso; se continua a succedere, chiedi al tuo amministratore.",
-
     "msg.expired.title": "Questo accesso è scaduto",
     "msg.expired.message": "Per la tua sicurezza, i tentativi di accesso scadono dopo pochi minuti. Torna all'app in cui stavi accedendo e ricomincia, oppure accedi al tuo account qui sotto.",
     "msg.notReady.title": "Non ancora pronto",
@@ -102,7 +98,6 @@
     "msg.passwordChanged.message": "La tua nuova password è impostata e tutte le altre sessioni sono state disconnesse.",
     "msg.accountReady.title": "Il tuo account è pronto",
     "msg.accountReady.message": "La tua password è impostata e il tuo account è attivo.",
-
     "consent.title": "Consentire l'accesso?",
     "consent.heading": "{client} vuole farti accedere",
     "consent.asking": "Sta chiedendo a {appName}:",
@@ -116,7 +111,6 @@
     "consent.cancel": "Annulla",
     "consent.allow": "Consenti",
     "consent.withdraw": "Puoi revocarlo in qualsiasi momento da Il mio account → App connesse.",
-
     "device.title": "Collega un dispositivo",
     "device.heading": "Collega un dispositivo",
     "device.intro": "Inserisci il codice mostrato sul tuo dispositivo.",
@@ -134,7 +128,6 @@
     "device.approvedMessage": "Ora puoi tornare a {client}.",
     "device.deniedTitle": "Accesso negato",
     "device.deniedMessage": "{client} è stato informato del tuo rifiuto.",
-
     "logout.title": "Uscire?",
     "logout.askedBy": "{client} ha chiesto di disconnetterti da {appName}.",
     "logout.confirm": "Vuoi uscire da {appName}?",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Disconnessione da {count} app connesse in corso...",
     "logout.progress.frame": "Disconnessione",
     "logout.progress.done": "Sei stato disconnesso.",
-
     "recovery.forgot.title": "Reimposta la password",
     "recovery.forgot.intro": "Inserisci il tuo nome utente o la tua email. Se corrisponde a un account, invieremo un link per scegliere una nuova password.",
     "recovery.forgot.identifier": "Nome utente o email",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Ciao, {name}",
     "recovery.invite.intro": "Scegli una password per {upn} per attivare il tuo account.",
     "recovery.choose.title": "Scegli una password",
-
     "password.new": "Nuova password",
     "password.confirmNew": "Conferma nuova password",
     "password.save": "Salva password",
@@ -177,7 +168,6 @@
     "password.error.symbol": "La password deve contenere un simbolo.",
     "password.error.breached.one": "Questa password è apparsa in una violazione di dati {count} volta; sceglierne un'altra.",
     "password.error.breached.other": "Questa password è apparsa in una violazione di dati {count} volte; sceglierne un'altra.",
-
     "setup.complete.title": "Configurazione completata",
     "setup.complete.message": "Questo identity provider è già stato configurato. Accedi con l'account amministratore creato in quell'occasione.",
     "setup.secrets.title": "La configurazione richiede prima un segreto",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Inserisci il dominio principale degli account utente.",
     "setup.error.username": "Inserisci un nome utente per l'amministratore.",
     "setup.error.password": "Scegli una password per l'amministratore.",
-    "setup.error.mismatch": "Le password non coincidono."
+    "setup.error.mismatch": "Le password non coincidono.",
+    "login.error.device_cert": "Questo account deve accedere da un dispositivo gestito. Connettiti con il client WARP e riprova.",
+    "login.error.risk": "Accesso bloccato: il livello di rischio attuale di questo account supera quanto consentito dalla sua politica di accesso. Chiedi a un amministratore."
   }
 }

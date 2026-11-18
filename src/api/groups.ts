@@ -19,8 +19,8 @@ import { GroupSchema, IdParam, MemberSchema, RuleSchema, StringMap } from "./sch
 export async function groupJson(env: Env, g: GroupRow) {
   const schemaName = g.schema_id ? (await env.DB.prepare("SELECT name FROM schemas WHERE id = ?").bind(g.schema_id).first<{ name: string }>())?.name ?? null : null;
   const explicit = (await env.DB.prepare("SELECT COUNT(*) AS n FROM group_members WHERE group_id = ?").bind(g.id).first<{ n: number }>())?.n ?? 0;
-  const { custom_attributes, scim_id: _scim, requestable, ...rest } = g;
-  return { ...rest, requestable: Boolean(requestable), schema_name: schemaName, attributes: parseCustomAttributes(custom_attributes), member_count: (await resolveGroupMemberUserIds(env, g)).length, explicit_member_count: explicit };
+  const { custom_attributes, scim_id: _scim, requestable, cf_list_sync, ...rest } = g;
+  return { ...rest, requestable: Boolean(requestable), cf_list_sync: Boolean(cf_list_sync), schema_name: schemaName, attributes: parseCustomAttributes(custom_attributes), member_count: (await resolveGroupMemberUserIds(env, g)).length, explicit_member_count: explicit };
 }
 
 async function groupFor(c: ApiContext): Promise<GroupRow | null> {
@@ -58,6 +58,7 @@ async function schemaAndCustom(env: Env, body: { schema_id?: number; schema?: st
 const GroupWrite = {
   description: z.string().optional(),
   requestable: z.boolean().optional().openapi({ description: "Whether people may ask for membership on My account; only a static group can be." }),
+  cf_list_sync: z.boolean().optional().openapi({ description: "Keep the member emails in a Cloudflare One gateway list (the Cloudflare One connection must be configured)." }),
   schema_id: z.number().int().optional(),
   schema: z.string().optional().openapi({ description: "The group schema, by name (alternative to schema_id)." }),
   attributes: StringMap.optional().openapi({ description: "Group schema attribute values; on PATCH, merged into the current ones." }),
@@ -77,10 +78,10 @@ defineRoute(
     response: z.object({ ok: z.literal(true), id: z.number(), name: z.string() }),
   },
   async (c) => {
-    const body = await readJson<{ name: string; description?: string; rule?: unknown; members?: string[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; requestable?: boolean }>(c);
+    const body = await readJson<{ name: string; description?: string; rule?: unknown; members?: string[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; requestable?: boolean; cf_list_sync?: boolean }>(c);
     const { schemaId, custom } = await schemaAndCustom(c.env, body, null);
     const name = String(body.name).trim();
-    const id = await createGroup(apiCtx(c), { name, description: String(body.description ?? "").trim(), rule: body.rule ? JSON.stringify(body.rule) : "", schemaId, custom, requestable: body.requestable === true }, await userIds(c.env, body.members ?? []));
+    const id = await createGroup(apiCtx(c), { name, description: String(body.description ?? "").trim(), rule: body.rule ? JSON.stringify(body.rule) : "", schemaId, custom, requestable: body.requestable === true, cfListSync: body.cf_list_sync === true }, await userIds(c.env, body.members ?? []));
     return c.json({ ok: true, id, name }, 201);
   }
 );
@@ -132,7 +133,7 @@ defineRoute(
   async (c) => {
     const group = await groupFor(c);
     if (!group) return noGroup(c);
-    const body = await readJson<{ name?: string; description?: string; rule?: unknown; schema_id?: number; schema?: string; attributes?: Record<string, string>; requestable?: boolean }>(c);
+    const body = await readJson<{ name?: string; description?: string; rule?: unknown; schema_id?: number; schema?: string; attributes?: Record<string, string>; requestable?: boolean; cf_list_sync?: boolean }>(c);
     if (body.rule !== undefined) {
       if (group.rule && !body.rule) throw new ServiceError(400, `A dynamic group becomes static only through POST /api/v1/groups/${group.id}/freeze, which keeps its current members.`);
       if (!group.rule && body.rule) throw new ServiceError(400, "A static group cannot become dynamic; create a dynamic group instead.");
@@ -145,6 +146,7 @@ defineRoute(
       schemaId,
       custom,
       requestable: body.requestable ?? Boolean(group.requestable),
+      cfListSync: body.cf_list_sync ?? Boolean(group.cf_list_sync),
     });
     return c.json(await groupJson(c.env, (await getGroupById(c.env, group.id))!));
   }

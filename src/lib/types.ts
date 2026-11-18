@@ -69,6 +69,10 @@ export interface GroupRow {
   custom_attributes: string; // JSON object of schema attribute values
   /** Whether people may ask for membership on My account (static groups only). */
   requestable: number;
+  /** '' for ordinary groups; 'watchlist' for the risk watchlist - membership maintained by code. */
+  system: string;
+  /** Whether member emails sync to a Cloudflare One gateway list (cf_lists 'group:{id}'). */
+  cf_list_sync: number;
 }
 
 export interface OAuthClientRow {

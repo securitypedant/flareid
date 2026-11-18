@@ -1,6 +1,7 @@
 import { errorResponse } from "./lib/html.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
+import { getCfOne, sweepWatchlist, syncLists } from "./lib/cfone.js";
 import { handleLdapConnection } from "./ldap/index.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
@@ -153,6 +154,21 @@ export default {
         (r) => r.removed + r.failed > 0 && console.log(JSON.stringify({ event: "scim_deprovision", ...r })),
         (err) => console.error(JSON.stringify({ event: "scim_deprovision_failed", error: String(err) }))
       )
+    );
+    // Cloudflare One: drop lapsed watchlist flags, then push the enabled
+    // gateway-list syncs. Off entirely until the connection is configured.
+    ctx.waitUntil(
+      sweepWatchlist(env)
+        .then(async (swept) => {
+          const config = await getCfOne(env);
+          if (!config?.apiToken) return { swept, synced: 0, failed: 0 };
+          const r = await syncLists(env, config);
+          return { swept, synced: r.synced.length, failed: Object.keys(r.failed).length };
+        })
+        .then(
+          (r) => (r.swept > 0 || r.synced > 0 || r.failed > 0) && console.log(JSON.stringify({ event: "cfone_sync", ...r })),
+          (err) => console.error(JSON.stringify({ event: "cfone_sync_failed", error: String(err) }))
+        )
     );
   },
 } satisfies ExportedHandler<Env>;

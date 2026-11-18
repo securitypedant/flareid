@@ -808,6 +808,33 @@ items; each pending item is decided with:
 `"revoke"` removes the member immediately. `POST .../{id}/close` ends the
 review; items still pending keep their membership and count as unreviewed.
 
+### `GET|PUT /integrations/cloudflare-one`, `POST /integrations/cloudflare-one/sync`
+
+Scope: `cfone:read` (GET) / `cfone:write` (writes).
+
+The Cloudflare One (Zero Trust) connection: `account_id` plus an API token
+with Zero Trust Edit, and optionally the `team` name and `access_aud` of the
+Access application protecting the admin console (set both and every console
+request must carry that application's JWT). `PUT` takes
+`{ "account_id", "api_token"?, "team"?, "access_aud"?, "lists"? }` where
+`lists` names the gateway-list syncs to run (`watchlist`, `deprovisioned`,
+`managed-domains`, `auth-fail-ips`); the token is write-only and never
+returned, `api_token_set` reports it. Clearing `account_id` disconnects.
+`POST .../sync` runs the sync immediately (the scheduled job runs it anyway)
+and answers with the synced and failed list keys. A group's own email list
+is its `cf_list_sync` flag on `PATCH /groups/{id}`.
+
+### `PUT|DELETE /users/{username}/watch`
+
+Scope: `cfone:write`.
+
+The risk watchlist: `PUT` with `{ "reason", "ttl_hours"? }` flags a user
+(`ttl_hours` 0 or absent keeps the flag until cleared), `DELETE` removes
+them. Membership lives in the `Risk watchlist` system group, so it syncs to
+SCIM targets and Cloudflare One lists like any group; a burst of failed
+sign-ins flags someone automatically for 24h. A policy's `max_risk` cap and
+a user page's Cloudflare risk readout use the same connection.
+
 ### `POST /api-keys`
 
 Scope: `admin`.

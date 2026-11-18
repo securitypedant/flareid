@@ -20,6 +20,7 @@ API version 4.0.0.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
 - [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
 - [Federation](#federation) - Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
+- [Cloudflare One](#cloudflare-one) - The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist.
 - [Email](#email) - Outbound email settings and templates.
 - [API keys](#api-keys) - Bearer tokens for this API.
 - [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
@@ -532,6 +533,7 @@ Request body:
 | `members` | string[] | no | Usernames, for a static group. |
 | `description` | string | no |  |
 | `requestable` | boolean | no | Whether people may ask for membership on My account; only a static group can be. |
+| `cf_list_sync` | boolean | no | Keep the member emails in a Cloudflare One gateway list (the Cloudflare One connection must be configured). |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The group schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Group schema attribute values; on PATCH, merged into the current ones. |
@@ -601,6 +603,7 @@ Request body:
 | `rule` | GroupRule | no | A dynamic group's membership rule: every condition must hold. |
 | `description` | string | no |  |
 | `requestable` | boolean | no | Whether people may ask for membership on My account; only a static group can be. |
+| `cf_list_sync` | boolean | no | Keep the member emails in a Cloudflare One gateway list (the Cloudflare One connection must be configured). |
 | `schema_id` | integer | no |  |
 | `schema` | string | no | The group schema, by name (alternative to schema_id). |
 | `attributes` | map of string | no | Group schema attribute values; on PATCH, merged into the current ones. |
@@ -621,6 +624,7 @@ Response `200`:
 | `member_count` | number | yes |  |
 | `explicit_member_count` | number | yes |  |
 | `requestable` | boolean | yes | Whether people may ask for membership on My account (static groups only). |
+| `cf_list_sync` | boolean | yes | Member emails are kept in a Cloudflare One gateway list. |
 
 Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
@@ -2307,6 +2311,141 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
+## Cloudflare One
+
+The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/integrations/cloudflare-one` | `cfone:read` | Read the Cloudflare One connection and sync status |
+| `PUT` | `/api/v1/integrations/cloudflare-one` | `cfone:write` | Configure the Cloudflare One connection |
+| `POST` | `/api/v1/integrations/cloudflare-one/sync` | `cfone:write` | Run the list sync now |
+| `PUT` | `/api/v1/users/{username}/watch` | `cfone:write` | Flag a user on the risk watchlist |
+| `DELETE` | `/api/v1/users/{username}/watch` | `cfone:write` | Clear a user from the risk watchlist |
+
+### `GET /api/v1/integrations/cloudflare-one`
+
+Read the Cloudflare One connection and sync status.
+
+Permission: `cfone:read`
+
+Response `200`:
+
+`CloudflareOne`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `configured` | boolean | yes |  |
+| `account_id` | string | yes | The Cloudflare account Zero Trust lives in. |
+| `team` | string | yes | Zero Trust team name - the Access tenant https://{team}.cloudflareaccess.com. |
+| `access_aud` | string | yes | AUD tag of the Access application protecting the admin console; empty disables the JWT check. |
+| `api_token_set` | boolean | yes | Whether an API token is stored; the token itself is never returned. |
+| `lists` | string[] | yes | The list syncs that run (see /sync for per-group syncs). |
+| `list_status` | object[] | yes |  |
+| `watchlist` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/integrations/cloudflare-one`
+
+Configure the Cloudflare One connection.
+
+An empty `api_token` keeps the stored one; `lists` names the reusable-list syncs to run (watchlist, deprovisioned, managed-domains, auth-fail-ips). Clearing `account_id` disconnects and stops the Access-JWT check.
+
+Permission: `cfone:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `account_id` | string | yes | Empty disconnects. |
+| `api_token` | string | no | Zero Trust Read/Write token; omit to keep the stored one. |
+| `team` | string | no |  |
+| `access_aud` | string | no |  |
+| `lists` | "watchlist" \| "deprovisioned" \| "managed-domains" \| "auth-fail-ips"[] | no |  |
+
+Response `200`:
+
+`CloudflareOne`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `configured` | boolean | yes |  |
+| `account_id` | string | yes | The Cloudflare account Zero Trust lives in. |
+| `team` | string | yes | Zero Trust team name - the Access tenant https://{team}.cloudflareaccess.com. |
+| `access_aud` | string | yes | AUD tag of the Access application protecting the admin console; empty disables the JWT check. |
+| `api_token_set` | boolean | yes | Whether an API token is stored; the token itself is never returned. |
+| `lists` | string[] | yes | The list syncs that run (see /sync for per-group syncs). |
+| `list_status` | object[] | yes |  |
+| `watchlist` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/integrations/cloudflare-one/sync`
+
+Run the list sync now.
+
+Also runs the watchlist sweep (lapsed flags drop out). The scheduled job does the same on its own cadence.
+
+Permission: `cfone:write`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `synced` | string[] | yes |  |
+| `failed` | map of string | yes |  |
+| `swept` | number | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/users/{username}/watch`
+
+Flag a user on the risk watchlist.
+
+The watchlist is a system group whose member emails Cloudflare One can consume (list sync or a SCIM target). `ttl_hours` 0 means the flag stays until cleared.
+
+Permission: `cfone:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | string | yes |  |
+| `ttl_hours` | number | no |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `watched` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/users/{username}/watch`
+
+Clear a user from the risk watchlist.
+
+Permission: `cfone:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `watched` | false | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
 ## Email
 
 Outbound email settings and templates.
@@ -3329,6 +3468,8 @@ Request body:
 | `requirement` | "password" \| "mfa" | no | Password alone, or password plus a second factor; a passkey satisfies either. |
 | `priority` | integer | no | 1-1000; lower wins when several policies match. |
 | `groups` | string[] | no | Group names the policy applies to. |
+| `device_cert` | boolean | no | Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth) - the zone must enforce mTLS. |
+| `max_risk` | "" \| "low" \| "medium" | no | Deny sign-in when the user's Cloudflare ZT risk score is above this level; empty checks nothing. |
 
 Response `201`:
 
@@ -3343,6 +3484,8 @@ Response `201`:
 | `priority` | number | yes |  |
 | `is_default` | boolean | yes |  |
 | `groups` | string[] | yes |  |
+| `device_cert` | boolean | yes |  |
+| `max_risk` | string | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -3368,6 +3511,8 @@ Request body:
 | `requirement` | "password" \| "mfa" | no | Password alone, or password plus a second factor; a passkey satisfies either. |
 | `priority` | integer | no | 1-1000; lower wins when several policies match. |
 | `groups` | string[] | no | Group names the policy applies to. |
+| `device_cert` | boolean | no | Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth) - the zone must enforce mTLS. |
+| `max_risk` | "" \| "low" \| "medium" | no | Deny sign-in when the user's Cloudflare ZT risk score is above this level; empty checks nothing. |
 
 Response `200`:
 
@@ -3382,6 +3527,8 @@ Response `200`:
 | `priority` | number | yes |  |
 | `is_default` | boolean | yes |  |
 | `groups` | string[] | yes |  |
+| `device_cert` | boolean | yes |  |
+| `max_risk` | string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 

@@ -65,6 +65,10 @@
       "description": "Inbound federation: upstream identity providers people sign in through (FlareID as the relying party)."
     },
     {
+      "name": "Cloudflare One",
+      "description": "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist."
+    },
+    {
       "name": "Email",
       "description": "Outbound email settings and templates."
     },
@@ -462,6 +466,10 @@
           "requestable": {
             "type": "boolean",
             "description": "Whether people may ask for membership on My account (static groups only)."
+          },
+          "cf_list_sync": {
+            "type": "boolean",
+            "description": "Member emails are kept in a Cloudflare One gateway list."
           }
         },
         "required": [
@@ -474,7 +482,8 @@
           "attributes",
           "member_count",
           "explicit_member_count",
-          "requestable"
+          "requestable",
+          "cf_list_sync"
         ],
         "additionalProperties": {}
       },
@@ -1363,6 +1372,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "device_cert": {
+            "type": "boolean"
+          },
+          "max_risk": {
+            "type": "string"
           }
         },
         "required": [
@@ -1372,7 +1387,9 @@
           "requirement",
           "priority",
           "is_default",
-          "groups"
+          "groups",
+          "device_cert",
+          "max_risk"
         ]
       },
       "Factor": {
@@ -1851,6 +1868,117 @@
           "posix_home",
           "idle_timeout_minutes",
           "otp_rebind_seconds"
+        ]
+      },
+      "CloudflareOne": {
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "The Cloudflare account Zero Trust lives in."
+          },
+          "team": {
+            "type": "string",
+            "description": "Zero Trust team name - the Access tenant https://{team}.cloudflareaccess.com."
+          },
+          "access_aud": {
+            "type": "string",
+            "description": "AUD tag of the Access application protecting the admin console; empty disables the JWT check."
+          },
+          "api_token_set": {
+            "type": "boolean",
+            "description": "Whether an API token is stored; the token itself is never returned."
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The list syncs that run (see /sync for per-group syncs)."
+          },
+          "list_status": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "cf_list_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "item_count": {
+                  "type": "number"
+                },
+                "synced_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "key",
+                "cf_list_id",
+                "kind",
+                "item_count",
+                "synced_at"
+              ]
+            }
+          },
+          "watchlist": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "user_id": {
+                  "type": "number"
+                },
+                "upn": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "flagged_at": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "user_id",
+                "upn",
+                "reason",
+                "source",
+                "flagged_at",
+                "expires_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "configured",
+          "account_id",
+          "team",
+          "access_aud",
+          "api_token_set",
+          "lists",
+          "list_status",
+          "watchlist"
         ]
       },
       "ImportResult": {
@@ -3488,6 +3616,10 @@
                     "type": "boolean",
                     "description": "Whether people may ask for membership on My account; only a static group can be."
                   },
+                  "cf_list_sync": {
+                    "type": "boolean",
+                    "description": "Keep the member emails in a Cloudflare One gateway list (the Cloudflare One connection must be configured)."
+                  },
                   "schema_id": {
                     "type": "integer"
                   },
@@ -3844,6 +3976,10 @@
                   "requestable": {
                     "type": "boolean",
                     "description": "Whether people may ask for membership on My account; only a static group can be."
+                  },
+                  "cf_list_sync": {
+                    "type": "boolean",
+                    "description": "Keep the member emails in a Cloudflare One gateway list (the Cloudflare One connection must be configured)."
                   },
                   "schema_id": {
                     "type": "integer"
@@ -10301,6 +10437,19 @@
                       "type": "string"
                     },
                     "description": "Group names the policy applies to."
+                  },
+                  "device_cert": {
+                    "type": "boolean",
+                    "description": "Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth) - the zone must enforce mTLS."
+                  },
+                  "max_risk": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "low",
+                      "medium"
+                    ],
+                    "description": "Deny sign-in when the user's Cloudflare ZT risk score is above this level; empty checks nothing."
                   }
                 },
                 "required": [
@@ -10414,6 +10563,19 @@
                       "type": "string"
                     },
                     "description": "Group names the policy applies to."
+                  },
+                  "device_cert": {
+                    "type": "boolean",
+                    "description": "Sign-in needs a verified WARP device certificate (request.cf.tlsClientAuth) - the zone must enforce mTLS."
+                  },
+                  "max_risk": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "low",
+                      "medium"
+                    ],
+                    "description": "Deny sign-in when the user's Cloudflare ZT risk score is above this level; empty checks nothing."
                   }
                 }
               }
@@ -12634,6 +12796,449 @@
           },
           "403": {
             "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/cloudflare-one": {
+      "get": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Read the Cloudflare One connection and sync status",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudflareOne"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Configure the Cloudflare One connection",
+        "description": "An empty `api_token` keeps the stored one; `lists` names the reusable-list syncs to run (watchlist, deprovisioned, managed-domains, auth-fail-ips). Clearing `account_id` disconnects and stops the Access-JWT check.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "account_id": {
+                    "type": "string",
+                    "description": "Empty disconnects."
+                  },
+                  "api_token": {
+                    "type": "string",
+                    "description": "Zero Trust Read/Write token; omit to keep the stored one."
+                  },
+                  "team": {
+                    "type": "string"
+                  },
+                  "access_aud": {
+                    "type": "string"
+                  },
+                  "lists": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "watchlist",
+                        "deprovisioned",
+                        "managed-domains",
+                        "auth-fail-ips"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "account_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudflareOne"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/cloudflare-one/sync": {
+      "post": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Run the list sync now",
+        "description": "Also runs the watchlist sweep (lapsed flags drop out). The scheduled job does the same on its own cadence.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "synced": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "failed": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "swept": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "synced",
+                    "failed",
+                    "swept"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/watch": {
+      "put": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Flag a user on the risk watchlist",
+        "description": "The watchlist is a system group whose member emails Cloudflare One can consume (list sync or a SCIM target). `ttl_hours` 0 means the flag stays until cleared.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "ttl_hours": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "watched": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "watched"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Clear a user from the risk watchlist",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "watched": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "watched"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
             "content": {
               "application/json": {
                 "schema": {

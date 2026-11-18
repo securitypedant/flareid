@@ -13,7 +13,7 @@ import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permission
 import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts } from "../lib/metrics.js";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type Next } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
@@ -33,6 +33,7 @@ import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappin
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
+import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -86,7 +87,7 @@ import {
   type SchemaAttributeRow,
 } from "../lib/schemas.js";
 
-import { consoleCtx, ServiceError } from "../services/context.js";
+import { audit, consoleCtx, ServiceError } from "../services/context.js";
 import { scimConfigured, applyScimScope } from "../services/scim-sync.js";
 import {
   createUser,
@@ -154,8 +155,32 @@ admin.onError((err, c) => {
   return consoleError(c, "Something went wrong on our side. Try again; if it keeps happening, check the Worker logs.", 500);
 });
 
+/**
+ * When a Cloudflare One connection names a team + Access application AUD, the
+ * console must arrive through Access. The JWT in Cf-Access-Jwt-Assertion (or
+ * the CF_Authorization cookie) is verified against the team's JWKS; a request
+ * without it reached the origin directly and is refused before anything runs.
+ */
+admin.use("/admin", async (c, next) => accessGate(c, next));
+admin.use("/admin/*", async (c, next) => accessGate(c, next));
+
 admin.use("/admin", requireSession, requireAdmin);
 admin.use("/admin/*", requireSession, requireAdmin);
+
+/**
+ * When a Cloudflare One connection names a team + Access application AUD, the
+ * console must arrive through Access. The JWT in Cf-Access-Jwt-Assertion (or
+ * the CF_Authorization cookie) is verified against the team's JWKS; a request
+ * without it reached the origin directly and is refused before anything runs.
+ */
+async function accessGate(c: Context<{ Bindings: Env }>, next: Next) {
+  const config = await getCfOne(c.env);
+  if (config?.team && config.accessAud) {
+    const jwt = await accessJwtFor(config, c.req.raw);
+    if (!jwt) return consoleError(c, "This console requires Cloudflare Access. Open it through the Access-protected hostname.", 403);
+  }
+  await next();
+}
 
 /**
  * Below Super Admin, nobody can change who holds an admin role or act on an
@@ -444,6 +469,7 @@ const INTEGRATION_PAGES = [
   { key: "ldap", label: "LDAP" },
   { key: "federation", label: "Federation" },
   { key: "email", label: "Email" },
+  { key: "cf-one", label: "Cloudflare One" },
 ] as const;
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
 
@@ -1506,6 +1532,9 @@ admin.get("/admin/users/:id", async (c) => {
   const currentSchemaName = userSchemas.find((s) => s.id === currentSchemaId)?.name ?? "none";
   const mastered = new Set(await getMasteredFields(c.env));
   const masteredNote = ' <span class="muted" style="font-weight:400;">(mastered by provisioning)</span>';
+  const watch = await watchedUser(c.env, id);
+  const cfConfig = await getCfOne(c.env);
+  const risk = cfOneReady(cfConfig) ? await riskScoreFor(c.env, cfConfig!, user.upn) : null;
 
   const staticGroups = groups.filter((g) => !parseRule(g.rule));
   const dynamicGroups = dynamicGroupsFor(user, groups);
@@ -1678,6 +1707,23 @@ admin.get("/admin/users/:id", async (c) => {
             ${confirmAttrs("Every active session for this user will be signed out immediately.", { title: "Sign this user out everywhere?", action: "Sign out everywhere" })}>
             <button class="secondary" type="submit" ${sessions.length > 0 ? "" : "disabled"}>Sign out everywhere</button>
           </form>
+        </div>
+        <div class="sec-row">
+          <div>
+            <h3>Risk ${watch ? '<span class="badge badge-disabled">On watchlist</span>' : '<span class="badge badge-active">Not flagged</span>'}${risk ? ` <span class="badge badge-pending">Cloudflare risk: ${escapeHtml(risk.level)}</span>` : ""}</h3>
+            <p class="muted">${
+              watch
+                ? `${escapeHtml(watch.reason)} &middot; flagged ${ts(watch.flagged_at)} by ${escapeHtml(watch.source)}${watch.expires_at ? ` &middot; clears ${ts(watch.expires_at)}` : " until cleared"}.`
+                : risk
+                  ? `Cloudflare Zero Trust reports <strong>${escapeHtml(risk.level)}</strong>${risk.events.length ? ` (${risk.events.length} recent event${risk.events.length === 1 ? "" : "s"})` : ""}. Flagging puts them on the risk watchlist, syncable to Cloudflare One or SCIM.`
+                  : `The risk watchlist tightens inspection for flagged people via Cloudflare One or SCIM group sync. ${cfOneReady(cfConfig) ? "" : "Connect Cloudflare One under Integrations to also show their Zero Trust risk score here."}`
+            }</p>
+          </div>
+          ${
+            watch
+              ? `<form method="POST" action="/admin/users/${id}/unwatch"><button class="secondary" type="submit">Clear flag</button></form>`
+              : `<form method="POST" action="/admin/users/${id}/watch"><input type="hidden" name="reason" value="Flagged from the user page" /><button class="secondary" type="submit">Flag on watchlist</button></form>`
+          }
         </div>
       `)}
 
@@ -1868,6 +1914,25 @@ admin.post("/admin/users/:id/reset-password", async (c) => {
       crumbs
     )
   );
+});
+
+admin.post("/admin/users/:id/watch", async (c) => {
+  const id = Number(c.req.param("id"));
+  const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const reason = String((await c.req.parseBody()).reason ?? "").trim().slice(0, 300) || "Flagged manually";
+  await flagUser(c.env, id, reason, "manual");
+  await audit(consoleCtx(c), "cfone.user_flagged", user.upn, { reason });
+  return c.redirect(`/admin/users/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/users/:id/unwatch", async (c) => {
+  const id = Number(c.req.param("id"));
+  const user = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(id).first<{ upn: string }>();
+  if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  await unflagUser(c.env, id);
+  await audit(consoleCtx(c), "cfone.user_unflagged", user.upn);
+  return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });
 
 admin.post("/admin/users/:id/sessions/revoke-all", async (c) => {
@@ -2070,17 +2135,24 @@ async function groupFormHtml(c: { env: Env }, group: GroupRow | null, requestedS
         <div id="static-section" style="${isDynamic ? "display:none;" : ""}">
           ${
             group
-              ? `<label>Add members</label>
+              ? group.system
+                ? ""
+                : `<label>Add members</label>
                  ${remoteMultiSelect("add_user_ids", `/admin/users/lookup?not_in_group=${group.id}`, [], "Search people to add...")}
                  <p class="muted" style="margin-top:-8px;">Current members are listed below, where they can be removed.</p>`
               : remoteMultiSelect("user_ids", "/admin/users/lookup", [], "Search people...")
           }
-          <label style="display:flex; align-items:flex-start; gap:8px; font-weight:500; margin-top:14px;">
+          ${group?.system ? "" : `<label style="display:flex; align-items:flex-start; gap:8px; font-weight:500; margin-top:14px;">
             <input type="checkbox" name="requestable" value="1" ${group?.requestable ? "checked" : ""} style="width:auto; margin:3px 0 0;" />
             <span>People can request membership<br/><span class="muted" style="font-weight:400;">The group shows up under My account &rarr; Access requests, and an admin approves or denies each ask.</span></span>
-          </label>
+          </label>`}
         </div>
 
+        ${group?.system ? "" : `
+        <label style="display:flex; align-items:flex-start; gap:8px; font-weight:500; margin-top:14px;">
+          <input type="checkbox" name="cf_list_sync" value="1" ${group?.cf_list_sync ? "checked" : ""} style="width:auto; margin:3px 0 0;" />
+          <span>Sync member emails to a Cloudflare One list<br/><span class="muted" style="font-weight:400;">Kept in step by the scheduled sync while the Cloudflare One connection under Integrations is configured; usable in Gateway and Access policies.</span></span>
+        </label>`}
       `)}
 
       <div class="form-actions end" style="margin-bottom:18px;">
@@ -2129,7 +2201,8 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
   // Conform: only the schema's attributes are kept.
   const custom = Object.fromEntries(schemaAttrs.map((a) => [a.name, String(body[`attr_${a.name}`] ?? "").trim()]).filter(([, v]) => v));
   const requestable = !dynamic && String(body.requestable ?? "") === "1";
-  return { name, description, rule, userIds, addUserIds, schemaId, custom, requestable };
+  const cfListSync = String(body.cf_list_sync ?? "") === "1";
+  return { name, description, rule, userIds, addUserIds, schemaId, custom, requestable, cfListSync };
 }
 
 admin.get("/admin/groups", async (c) => {
@@ -2327,6 +2400,7 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
   return cardSection(`
     <div class="card-head">
       <h2>Members <span class="muted" style="font-weight:500;">(${total}${needle ? " matching" : ""})</span></h2>
+      ${group.system ? '<p class="muted" style="margin:0;">A system group - its membership is maintained automatically (see Integrations &rarr; Cloudflare One).</p>' : ""}
       <form method="GET" action="/admin/groups/${group.id}" class="inline-field" style="margin:0;">
         <input type="search" name="msearch" value="${escapeHtml(search)}" placeholder="Find a person by name or UPN" style="margin:0; width:280px;" />
         <button class="secondary" type="submit">Search</button>
@@ -2335,9 +2409,9 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
     </div>
     ${
       rows.length
-        ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th>${rule ? "" : "<th></th>"}</tr></thead><tbody>
+        ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th>${rule || group.system ? "" : "<th></th>"}</tr></thead><tbody>
             ${rows.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>${
-              rule ? "" : `<td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/members/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td>`
+              rule || group.system ? "" : `<td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/members/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td>`
             }</tr>`).join("")}
           </tbody></table>
           ${pages > 1 ? `<div class="row" style="justify-content:space-between; margin-top:12px;">
@@ -2422,7 +2496,7 @@ admin.get("/admin/groups/:id", async (c) => {
     layout(
       c,
       group.name,
-      `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}${await groupMembersPanel(c.env, group, msearch, mpage)}${rule ? "" : await groupManagersPanel(c.env, group)}`,
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}${await groupMembersPanel(c.env, group, msearch, mpage)}${rule || group.system ? "" : await groupManagersPanel(c.env, group)}`,
       [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }],
       undefined,
       rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'
@@ -2989,6 +3063,161 @@ admin.post("/admin/email", async (c) => {
 admin.post("/admin/email/test", async (c) => {
   const result = await sendTestEmail(consoleCtx(c), recipientFor(c.get("user")), c.get("appName"));
   return c.redirect(result.ok ? "/admin/integrations/email?test=sent" : `/admin/integrations/email?error=${encodeURIComponent(result.error)}`, 302);
+});
+
+// ---------- Cloudflare One ----------
+
+const CFONE = "/admin/integrations/cf-one";
+
+admin.get(CFONE, async (c) => {
+  const config = await getCfOne(c.env);
+  const enabled = await enabledListSyncs(c.env);
+  const status = await listSyncStatus(c.env);
+  const watched = await watchlist(c.env);
+  const statusByKey = new Map(status.map((s) => [s.key, s]));
+  const ready = cfOneReady(config);
+
+  return c.html(
+    layout(
+      c,
+      "Cloudflare One",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("synced") ? successBanner(`Sync ran: ${escapeHtml(c.req.query("synced")!)} list${c.req.query("synced") === "1" ? "" : "s"} updated${c.req.query("failed") ? `, ${escapeHtml(c.req.query("failed")!)} failed - see below` : ""}.`) : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error") ?? "")}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro("Connects this directory to Cloudflare One (Zero Trust). The API token needs <strong>Zero Trust: Edit</strong> on the account. Once the team name and an Access application's AUD are set, the admin console only answers requests that arrive through that Access application.")}
+        <form method="POST" action="${CFONE}">
+          <div class="field-row">
+            <div>
+              <label for="account_id">Account ID</label>
+              <input type="text" id="account_id" name="account_id" value="${escapeHtml(config?.accountId ?? "")}" placeholder="Cloudflare account id" />
+            </div>
+            <div>
+              <label for="api_token">API token</label>
+              <input type="password" id="api_token" name="api_token" value="" placeholder="${config?.apiToken ? "Stored - leave blank to keep" : "Zero Trust Edit token"}" autocomplete="off" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div>
+              <label for="team">Zero Trust team name</label>
+              <input type="text" id="team" name="team" value="${escapeHtml(config?.team ?? "")}" placeholder="yourteam" />
+              <p class="muted" style="margin:4px 0 0;">From <code>https://<strong>yourteam</strong>.cloudflareaccess.com</code>.</p>
+            </div>
+            <div>
+              <label for="access_aud">Access application AUD</label>
+              <input type="text" id="access_aud" name="access_aud" value="${escapeHtml(config?.accessAud ?? "")}" placeholder="Application protecting this console" />
+              <p class="muted" style="margin:4px 0 0;">With a team and AUD set, every console page verifies the Access JWT &mdash; open the console through Access before saving, or you could lock yourself out.</p>
+            </div>
+          </div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>List sync</h2>
+        <p class="muted">Keeps Cloudflare One gateway lists in step with the directory, so Gateway and Access policies can reference them. A group's own sync switch is on its page under Groups.</p>
+        ${
+          ready
+            ? `<form method="POST" action="${CFONE}">
+          <input type="hidden" name="connection" value="1" />
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+            ${LIST_SYNCS.map(
+              (l) => `<label style="display:flex; align-items:flex-start; gap:8px; font-weight:500;">
+                <input type="checkbox" name="list_${l.key}" value="1" ${enabled.has(l.key) ? "checked" : ""} style="width:auto; margin:3px 0 0;" />
+                <span>${escapeHtml(l.name)} <code class="muted">${l.kind}</code><br/><span class="muted" style="font-weight:400;">${escapeHtml(l.description)}${statusByKey.get(l.key) ? ` &middot; ${statusByKey.get(l.key)!.item_count} items, synced ${ts(statusByKey.get(l.key)!.synced_at ?? "")}` : ""}</span></span>
+              </label>`
+            ).join("")}
+          </div>
+          <div class="row" style="justify-content:flex-start; gap:10px;">
+            <button class="primary" type="submit">Save</button>
+            <button class="secondary" type="submit" formaction="${CFONE}/sync">Sync now</button>
+          </div>
+        </form>
+        ${status.filter((s) => s.key.startsWith("group:")).length ? `<p class="muted">Group lists synced: ${status.filter((s) => s.key.startsWith("group:")).map((s) => `<code>${escapeHtml(s.cf_list_id)}</code> (${s.item_count})`).join(" ")}</p>` : ""}`
+            : `<p class="muted">Set the account ID and API token above first - without the token there is nothing to push with.</p>`
+        }
+      `)}
+      ${cardSection(`
+        <h2>Risk watchlist</h2>
+        <p class="muted">Flagged people land in the <em>Risk watchlist</em> system group - sync its emails to a Cloudflare list, or to any SCIM target, to tighten their inspection. A burst of failed sign-ins flags someone automatically for 24h.</p>
+        ${
+          watched.length
+            ? `<table>
+                <thead><tr><th>Person</th><th>Reason</th><th>Source</th><th>Flagged</th><th>Until</th><th></th></tr></thead>
+                <tbody>${watched
+                  .map(
+                    (w) => `<tr>
+                      <td><a href="/admin/users/${w.user_id}">${escapeHtml(w.display_name || w.upn)}</a><br/><span class="muted">${escapeHtml(w.upn)}</span></td>
+                      <td>${escapeHtml(w.reason)}</td>
+                      <td class="muted">${escapeHtml(w.source)}</td>
+                      <td>${ts(w.flagged_at)}</td>
+                      <td class="muted">${w.expires_at ? ts(w.expires_at) : "until cleared"}</td>
+                      <td><form method="POST" action="${CFONE}/watch/${w.user_id}/remove"><button class="link-button" type="submit">Clear</button></form></td>
+                    </tr>`
+                  )
+                  .join("")}</tbody>
+              </table>`
+            : '<p class="muted">Nobody is flagged.</p>'
+        }
+        <form method="POST" action="${CFONE}/watch" style="margin-top:12px;">
+          <div class="field-row">
+            <div>${remoteMultiSelect("user_id", "/admin/users/lookup", [], "Person to flag...", true)}</div>
+            <div><input type="text" name="reason" placeholder="Reason - shown on the user page" maxlength="300" required /></div>
+            <div><input type="number" name="ttl_hours" min="0" placeholder="Hours (blank = until cleared)" style="width:200px;" /></div>
+          </div>
+          <button class="secondary" type="submit">Flag on watchlist</button>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "Cloudflare One" }]
+    )
+  );
+});
+
+admin.post(CFONE, async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  try {
+    await saveCfOne(c.env, {
+      accountId: String(body.account_id ?? "").trim(),
+      apiToken: String(body.api_token ?? "").trim() || undefined,
+      team: String(body.team ?? "").trim(),
+      accessAud: String(body.access_aud ?? "").trim(),
+    });
+    const lists = LIST_SYNCS.map((l) => l.key).filter((k) => body[`list_${k}`] === "1");
+    if (Object.keys(body).some((k) => k.startsWith("list_"))) await setEnabledListSyncs(c.env, lists);
+    await audit(consoleCtx(c), "cfone.configured", "cloudflare-one", { lists });
+  } catch (e) {
+    return c.redirect(`${CFONE}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  return c.redirect(`${CFONE}?saved=1`, 302);
+});
+
+admin.post(`${CFONE}/sync`, async (c) => {
+  const config = await getCfOne(c.env);
+  if (!config?.apiToken) return c.redirect(`${CFONE}?error=${encodeURIComponent("Set the account ID and API token first.")}`, 302);
+  const result = await syncLists(c.env, config);
+  await sweepWatchlist(c.env);
+  return c.redirect(`${CFONE}?synced=${result.synced.length}${Object.keys(result.failed).length ? `&failed=${Object.keys(result.failed).length}` : ""}`, 302);
+});
+
+admin.post(`${CFONE}/watch`, async (c) => {
+  const body = await c.req.parseBody();
+  const userId = Number(Array.isArray(body.user_id) ? body.user_id[0] : body.user_id);
+  const reason = String(body.reason ?? "").trim().slice(0, 300);
+  const ttl = Math.max(0, Number(body.ttl_hours ?? 0) || 0);
+  if (!userId || !reason) return c.redirect(`${CFONE}?error=${encodeURIComponent("Pick a person and give a reason.")}`, 302);
+  await flagUser(c.env, userId, reason, "manual", ttl);
+  const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
+  await audit(consoleCtx(c), "cfone.user_flagged", upn, { reason });
+  return c.redirect(`${CFONE}?saved=1`, 302);
+});
+
+admin.post(`${CFONE}/watch/:uid/remove`, async (c) => {
+  const userId = Number(c.req.param("uid"));
+  await unflagUser(c.env, userId);
+  const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
+  await audit(consoleCtx(c), "cfone.user_unflagged", upn);
+  return c.redirect(`${CFONE}?saved=1`, 302);
 });
 
 admin.get("/admin/integrations/oidc", async (c) => {
@@ -5289,7 +5518,7 @@ admin.get("/admin/security/policies", async (c) => {
   const row = (p: (typeof policies)[number]) => `
     <tr>
       <td><strong>${escapeHtml(p.name)}</strong>${p.is_default ? ' <span class="badge badge-active">Default</span>' : ""}<br /><span class="muted">${escapeHtml(p.description)}</span></td>
-      <td>${reqLabel(p.requirement)}</td>
+      <td>${reqLabel(p.requirement)}${p.device_cert ? '<br /><span class="badge badge-pending">WARP device cert</span>' : ""}${p.max_risk ? `<br /><span class="badge badge-pending">Risk cap: ${escapeHtml(p.max_risk)}</span>` : ""}</td>
       <td>${p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ")}${p.is_default ? `${p.groups.length ? " and " : ""}<span class="muted">everyone not matched by another policy</span>` : p.groups.length ? "" : '<span class="muted">No groups yet</span>'}</td>
       <td>${p.groups.length ? p.priority : "&mdash;"}</td>
       <td style="text-align:right;"><a href="/admin/security/policies/${p.id}">Edit</a></td>
@@ -5315,6 +5544,23 @@ admin.get("/admin/security/policies", async (c) => {
             <div><label for="p_req">Requires</label><select id="p_req" name="requirement"><option value="mfa">Password + second factor (or a passkey)</option><option value="password">Password (or a passkey)</option></select></div>
           </div>
           <label for="p_desc">Description</label><input type="text" id="p_desc" name="description" maxlength="200" />
+          <div class="field-row">
+            <div>
+              <label for="p_maxrisk">Cloudflare risk cap</label>
+              <select id="p_maxrisk" name="max_risk">
+                <option value="">No check</option>
+                <option value="low">Deny above low</option>
+                <option value="medium">Deny above medium</option>
+              </select>
+              <p class="muted" style="margin:4px 0 0;">Needs the Cloudflare One connection; an unconfigured or failing check does not block sign-in.</p>
+            </div>
+            <div>
+              <label for="p_devcert" style="display:flex; align-items:flex-start; gap:8px; font-weight:500;">
+                <input type="checkbox" id="p_devcert" name="device_cert" value="1" style="width:auto; margin:3px 0 0;" />
+                <span>Require a WARP device certificate<br/><span class="muted" style="font-weight:400;">Sign-in only proceeds when Cloudflare verified a client certificate on the request (mTLS must be enforced on the zone).</span></span>
+              </label>
+            </div>
+          </div>
           <label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="10" style="max-width:120px;" />
           ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set<number>(), "Search groups...")}
           <div class="form-actions end"><button class="primary" type="submit">Create policy</button></div>
@@ -5328,7 +5574,7 @@ admin.get("/admin/security/policies", async (c) => {
 async function readPolicyForm(c: { req: { parseBody: (o: { all: true }) => Promise<Record<string, unknown>> } }) {
   const body = await c.req.parseBody({ all: true });
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
-  return normalizePolicy({ ...body, groupIds: list(body.group_ids), makeDefault: body.make_default });
+  return normalizePolicy({ ...body, groupIds: list(body.group_ids), makeDefault: body.make_default, deviceCert: body.device_cert === "1", maxRisk: body.max_risk });
 }
 
 admin.post("/admin/security/policies", async (c) => {
@@ -5383,6 +5629,23 @@ admin.get("/admin/security/policies/:id", async (c) => {
           </div>
           <label for="p_desc">Description</label><input type="text" id="p_desc" name="description" maxlength="200" value="${escapeHtml(p.description)}" />
           ${p.is_default ? '<p class="muted">This is the default policy: it applies to everyone no other policy matches. It can also be assigned to groups, so they keep it if another policy becomes the default.</p>' : ""}
+          <div class="field-row">
+            <div>
+              <label for="p_maxrisk">Cloudflare risk cap</label>
+              <select id="p_maxrisk" name="max_risk">
+                <option value="" ${p.max_risk === "" ? "selected" : ""}>No check</option>
+                <option value="low" ${p.max_risk === "low" ? "selected" : ""}>Deny above low</option>
+                <option value="medium" ${p.max_risk === "medium" ? "selected" : ""}>Deny above medium</option>
+              </select>
+              <p class="muted" style="margin:4px 0 0;">Needs the Cloudflare One connection; an unconfigured or failing check does not block sign-in.</p>
+            </div>
+            <div>
+              <label for="p_devcert" style="display:flex; align-items:flex-start; gap:8px; font-weight:500;">
+                <input type="checkbox" id="p_devcert" name="device_cert" value="1" ${p.device_cert ? "checked" : ""} style="width:auto; margin:3px 0 0;" />
+                <span>Require a WARP device certificate<br/><span class="muted" style="font-weight:400;">Sign-in only proceeds when Cloudflare verified a client certificate on the request.</span></span>
+              </label>
+            </div>
+          </div>
           <label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="${p.priority}" style="max-width:120px;" />
           ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
           ${p.is_default ? "" : `<label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`}

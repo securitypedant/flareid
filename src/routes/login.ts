@@ -1,5 +1,6 @@
 import { canSignIn } from "../lib/admin-roles.js";
-import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey, isAdministrator } from "../lib/auth-policy.js";
+import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey, isAdministrator, policyForUser } from "../lib/auth-policy.js";
+import { deviceCertVerified, getCfOne, cfOneReady, riskScoreFor, riskAtMost } from "../lib/cfone.js";
 import { EMAIL_OTP_MINUTES, loginScope, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { challengeQuestions, KBA_MAX_ANSWER, userHasSecurityQuestions, verifyAnswers } from "../lib/security-questions.js";
 import type { UserRow } from "../lib/types.js";
@@ -9,7 +10,7 @@ import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js"
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { AUTH_MESSAGES, fieldMsg, loginAppearance, mfaForm, msg, renderAuthMessage, requestLocale, sendLoginForm, type MfaFactors } from "../lib/login-views.js";
-import { matchLocale, t } from "../lib/i18n.js";
+import { matchLocale, t, type MessageKey } from "../lib/i18n.js";
 import { brandFor, domainFromHint, type Brand } from "../lib/brands.js";
 import { accessFor } from "../lib/admin-roles.js";
 import { grants } from "../lib/permissions.js";
@@ -139,7 +140,8 @@ login.get("/login", async (c) => {
   const brandDomain = domainFromHint(c.req.query("domain")) ?? domainFromHint(c.req.query("login_hint"));
   const appearance = await loginAppearance(c, { domain: brandDomain });
   const flowId = await sealLoginFlow(c.env, { kind: "direct", next, ...(brandDomain ? { brandDomain } : {}), locale: appearance.locale });
-  const denied = c.req.query("denied") ? msg("login.error.denied") : undefined;
+  const deniedKey = { "1": "login.error.denied", device: "login.error.device_cert", risk: "login.error.risk" }[c.req.query("denied") ?? ""] as MessageKey | undefined;
+  const denied = deniedKey ? msg(deniedKey) : c.req.query("denied") ? msg("login.error.denied") : undefined;
   return sendLoginForm(c, flowId, appearance, denied);
 });
 
@@ -196,6 +198,29 @@ export async function completeLoginFlow(
 ): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
   // Roles decide whether this account may sign in at all (permission "signin").
   if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookie: clearSessionCookie() };
+
+  // Policy-level sign-in conditions, checked before any session is minted:
+  // a policy can require a verified WARP device certificate and/or cap the
+  // Cloudflare ZT risk level. Both deny rather than downgrade - there is no
+  // weaker session for someone who fails posture.
+  const policy = await policyForUser(env, userId);
+  if (policy?.device_cert && !deviceCertVerified(request)) {
+    await logAudit(env, null, "login.denied_device_cert", policy.name, { user_id: userId }, request);
+    return { outcome: { type: "redirect", to: "/login?denied=device" }, setCookie: clearSessionCookie() };
+  }
+  if (policy?.max_risk) {
+    const config = await getCfOne(env);
+    if (cfOneReady(config)) {
+      const userRow = await getUserById(env, userId);
+      const score = userRow?.upn ? await riskScoreFor(env, config!, userRow.upn) : null;
+      // Unknown score passes - a broken integration must not be an outage.
+      if (score && !riskAtMost(score.level, policy.max_risk)) {
+        await logAudit(env, { id: userId, upn: userRow!.upn }, "login.denied_risk", policy.name, { level: score.level, max: policy.max_risk }, request);
+        return { outcome: { type: "redirect", to: "/login?denied=risk" }, setCookie: clearSessionCookie() };
+      }
+    }
+  }
+
   const { sessionId, setCookie } = await createSession(env, userId, amr, request);
 
   // Until initial setup is complete, always land on the setup wizard -
@@ -284,6 +309,16 @@ login.post("/login", async (c) => {
 
   if (!valid || !user) {
     await logAudit(c.env, null, "login.failed", upn, { ip }, c.req.raw);
+    // A burst of failed sign-ins against one account lands it on the risk
+    // watchlist for 24h; the flag feeds SCIM group sync and CF One lists.
+    if (user) {
+      const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
+      const fails = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'login.failed' AND target = ? AND at > ?").bind(user.upn, oneHourAgo).first<{ n: number }>())?.n ?? 0;
+      if (fails >= 10) {
+        const { flagUser } = await import("../lib/cfone.js");
+        await flagUser(c.env, user.id, `${fails} failed sign-in attempts in the last hour`, "auto:fails", 24);
+      }
+    }
     return sendLoginForm(c, flowId, appearance, fieldMsg("login.error.credentials"));
   }
 

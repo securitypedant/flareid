@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Demasiados intentos. Espera unos minutos antes de volver a intentarlo.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " y ",
-
     "login.title": "Iniciar sesión",
     "login.heading": "Inicia sesión en {appName}",
     "login.defaultSubtitle": "Inicia sesión para continuar.",
@@ -38,10 +37,8 @@
     "login.error.credentials": "Nombre de usuario/UPN o contraseña incorrectos.",
     "login.error.passkey": "No se pudo iniciar sesión con esa llave de acceso.",
     "login.error.setupIncomplete": "FlareID aún no ha terminado la configuración inicial. Solo los administradores pueden iniciar sesión ahora mismo.",
-
     "turnstile.label": "Comprobación de seguridad",
     "turnstile.failed": "Completa la comprobación e inténtalo de nuevo.",
-
     "mfa.title": "Autenticación de dos factores",
     "mfa.heading": "Verificación en dos pasos",
     "mfa.totp.intro": "Introduce el código de 6 dígitos de tu aplicación de autenticación, o uno de tus códigos de respaldo si has perdido el acceso a ella.",
@@ -73,7 +70,6 @@
     "mfa.error.kbaWrong": "Una o más respuestas fueron incorrectas. Inténtalo de nuevo.",
     "mfa.notSetUp.title": "La verificación en dos pasos no está configurada",
     "mfa.notSetUp.message": "Esta cuenta ya no tiene un autenticador registrado. Vuelve a empezar el inicio de sesión; si sigue ocurriendo, pide ayuda a tu administrador.",
-
     "msg.expired.title": "Este inicio de sesión caducó",
     "msg.expired.message": "Por tu seguridad, los intentos de inicio de sesión caducan a los pocos minutos. Vuelve a la aplicación en la que iniciabas sesión y empieza de nuevo, o inicia sesión en tu cuenta aquí abajo.",
     "msg.notReady.title": "Aún no está listo",
@@ -102,7 +98,6 @@
     "msg.passwordChanged.message": "Tu nueva contraseña está lista y se cerraron todas las demás sesiones.",
     "msg.accountReady.title": "Tu cuenta está lista",
     "msg.accountReady.message": "Tu contraseña está configurada y tu cuenta está activa.",
-
     "consent.title": "¿Permitir el acceso?",
     "consent.heading": "{client} quiere iniciar tu sesión",
     "consent.asking": "Le está pidiendo a {appName}:",
@@ -116,7 +111,6 @@
     "consent.cancel": "Cancelar",
     "consent.allow": "Permitir",
     "consent.withdraw": "Puedes retirar este permiso en cualquier momento desde Mi cuenta → Aplicaciones conectadas.",
-
     "device.title": "Conectar un dispositivo",
     "device.heading": "Conectar un dispositivo",
     "device.intro": "Introduce el código que se muestra en tu dispositivo.",
@@ -134,7 +128,6 @@
     "device.approvedMessage": "Ya puedes volver a {client}.",
     "device.deniedTitle": "Acceso denegado",
     "device.deniedMessage": "Se ha informado a {client} de tu negativa.",
-
     "logout.title": "¿Cerrar sesión?",
     "logout.askedBy": "{client} pidió cerrar tu sesión en {appName}.",
     "logout.confirm": "¿Quieres cerrar sesión en {appName}?",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Cerrando tu sesión en {count} aplicaciones conectadas...",
     "logout.progress.frame": "Cierre de sesión",
     "logout.progress.done": "Se cerró tu sesión.",
-
     "recovery.forgot.title": "Restablece tu contraseña",
     "recovery.forgot.intro": "Introduce tu nombre de usuario o correo. Si coincide con una cuenta, enviaremos un enlace para elegir una contraseña nueva.",
     "recovery.forgot.identifier": "Nombre de usuario o correo",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Te damos la bienvenida, {name}",
     "recovery.invite.intro": "Elige una contraseña para {upn} para activar tu cuenta.",
     "recovery.choose.title": "Elige una contraseña",
-
     "password.new": "Contraseña nueva",
     "password.confirmNew": "Confirmar contraseña nueva",
     "password.save": "Guardar contraseña",
@@ -177,7 +168,6 @@
     "password.error.symbol": "La contraseña debe contener un símbolo.",
     "password.error.breached.one": "Esta contraseña apareció en una filtración de datos {count} vez; elige otra.",
     "password.error.breached.other": "Esta contraseña apareció en una filtración de datos {count} veces; elige otra.",
-
     "setup.complete.title": "La configuración está completa",
     "setup.complete.message": "Este proveedor de identidad ya está configurado. Inicia sesión con la cuenta de administrador que se creó entonces.",
     "setup.secrets.title": "La configuración necesita primero un secreto",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Introduce el dominio principal de las cuentas de usuario.",
     "setup.error.username": "Introduce un nombre de usuario para el administrador.",
     "setup.error.password": "Elige una contraseña para el administrador.",
-    "setup.error.mismatch": "Las contraseñas no coinciden."
+    "setup.error.mismatch": "Las contraseñas no coinciden.",
+    "login.error.device_cert": "Esta cuenta debe iniciar sesión desde un dispositivo administrado. Conéctate con el cliente WARP e inténtalo de nuevo.",
+    "login.error.risk": "Inicio de sesión bloqueado: el nivel de riesgo actual de esta cuenta supera lo que permite su política. Pregunta a un administrador."
   }
 }

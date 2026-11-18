@@ -85,6 +85,7 @@ export const TAGS = [
   { name: "SCIM", description: "Outbound SCIM provisioning (FlareID as a SCIM client)." },
   { name: "LDAP", description: "The read-only LDAP interface: app registrations and directory settings." },
   { name: "Federation", description: "Inbound federation: upstream identity providers people sign in through (FlareID as the relying party)." },
+  { name: "Cloudflare One", description: "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist." },
   { name: "Email", description: "Outbound email settings and templates." },
   { name: "API keys", description: "Bearer tokens for this API." },
   { name: "Branding", description: "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates." },

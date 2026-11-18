@@ -17,6 +17,7 @@ export const AREAS = [
   { key: "ldap", label: "LDAP apps", group: "Applications" },
   { key: "federation", label: "Federation", group: "Applications" },
   { key: "email", label: "Email", group: "Applications" },
+  { key: "cfone", label: "Cloudflare One", group: "Applications" },
   { key: "api_keys", label: "API keys", group: "Platform" },
   { key: "security", label: "Security settings and policies", group: "Platform" },
   { key: "branding", label: "Branding", group: "Platform" },

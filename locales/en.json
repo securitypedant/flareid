@@ -19,7 +19,6 @@
     "common.tooManyAttempts": "Too many attempts. Please wait a few minutes before trying again.",
     "common.listSeparator": ", ",
     "common.listFinalSeparator": " and ",
-
     "login.title": "Sign in",
     "login.heading": "Sign in to {appName}",
     "login.defaultSubtitle": "Sign in to continue.",
@@ -38,10 +37,8 @@
     "login.error.credentials": "Incorrect username/UPN or password.",
     "login.error.passkey": "That passkey could not sign you in.",
     "login.error.setupIncomplete": "FlareID hasn't finished initial setup yet. Only administrators can sign in right now.",
-
     "turnstile.label": "Security check",
     "turnstile.failed": "Please complete the check and try again.",
-
     "mfa.title": "Two-factor authentication",
     "mfa.heading": "Two-step verification",
     "mfa.totp.intro": "Enter the 6-digit code from your authenticator app, or one of your backup codes if you've lost access to it.",
@@ -73,7 +70,6 @@
     "mfa.error.kbaWrong": "One or more answers were not right. Please try again.",
     "mfa.notSetUp.title": "Two-step verification isn't set up",
     "mfa.notSetUp.message": "This account no longer has an authenticator enrolled. Start the sign-in again; if it keeps happening, ask your administrator.",
-
     "msg.expired.title": "This sign-in has expired",
     "msg.expired.message": "For your security, sign-in attempts time out after a few minutes. Go back to the app you were signing in to and start again, or sign in to your account below.",
     "msg.notReady.title": "Not ready yet",
@@ -102,7 +98,6 @@
     "msg.passwordChanged.message": "Your new password is set, and every other session has been signed out.",
     "msg.accountReady.title": "Your account is ready",
     "msg.accountReady.message": "Your password is set and your account is active.",
-
     "consent.title": "Allow access?",
     "consent.heading": "{client} wants to sign you in",
     "consent.asking": "It is asking {appName} for:",
@@ -116,7 +111,6 @@
     "consent.cancel": "Cancel",
     "consent.allow": "Allow",
     "consent.withdraw": "You can withdraw this any time from My account → Connected apps.",
-
     "device.title": "Connect a device",
     "device.heading": "Connect a device",
     "device.intro": "Enter the code shown on your device.",
@@ -134,7 +128,6 @@
     "device.approvedMessage": "You can go back to {client} now.",
     "device.deniedTitle": "Access denied",
     "device.deniedMessage": "{client} has been told you refused.",
-
     "logout.title": "Sign out?",
     "logout.askedBy": "{client} asked to sign you out of {appName}.",
     "logout.confirm": "Do you want to sign out of {appName}?",
@@ -146,7 +139,6 @@
     "logout.progress.apps.other": "Signing you out of {count} connected apps...",
     "logout.progress.frame": "Sign-out",
     "logout.progress.done": "You have been signed out.",
-
     "recovery.forgot.title": "Reset your password",
     "recovery.forgot.intro": "Enter your username or email. If it matches an account, we'll send a link to choose a new password.",
     "recovery.forgot.identifier": "Username or email",
@@ -159,7 +151,6 @@
     "recovery.invite.heading": "Welcome, {name}",
     "recovery.invite.intro": "Choose a password for {upn} to activate your account.",
     "recovery.choose.title": "Choose a password",
-
     "password.new": "New password",
     "password.confirmNew": "Confirm new password",
     "password.save": "Save password",
@@ -177,7 +168,6 @@
     "password.error.symbol": "Password must contain a symbol.",
     "password.error.breached.one": "This password has appeared in a data breach {count} time; choose another.",
     "password.error.breached.other": "This password has appeared in a data breach {count} times; choose another.",
-
     "setup.complete.title": "Setup is complete",
     "setup.complete.message": "This identity provider has already been set up. Sign in with the administrator account created then.",
     "setup.secrets.title": "Setup needs a secret first",
@@ -205,6 +195,8 @@
     "setup.error.domain": "Enter the primary domain for user accounts.",
     "setup.error.username": "Enter a username for the administrator.",
     "setup.error.password": "Choose a password for the administrator.",
-    "setup.error.mismatch": "The passwords do not match."
+    "setup.error.mismatch": "The passwords do not match.",
+    "login.error.device_cert": "This account must sign in from a managed device. Connect with the WARP client and try again.",
+    "login.error.risk": "Sign-in was blocked: this account's current risk level is above what its sign-in policy allows. Ask an administrator."
   }
 }

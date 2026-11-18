@@ -131,21 +131,27 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     static groups on My account, the Groups → Access queue deciding them
     through the same membership write an edit makes, campaigns snapshotting
     assigned members for keep-or-revoke review, and /api/v1/access/*)
-37. **Machine grants**: `client_credentials` service tokens (signed JWTs,
+~~37. **Machine grants**: `client_credentials` service tokens (signed JWTs,
     verified against `/jwks.json`) and the RFC 8628 device authorization
-    grant for keyboard-less clients.
-38. **Cloudflare One integrations**: pull the user risk score
+    grant for keyboard-less clients.~~ (done - /token accepts
+    grant_type=client_credentials and urn:ietf:params:oauth:grant-type:
+    device_code; /device_authorization + /device carry the user half)
+~~38. **Cloudflare One integrations**: pull the user risk score
     (`GET /accounts/{id}/zt_risk_scoring/{user_id}`, Zero Trust PII Read) into
     an auth-policy condition and the user page; push FlareID-side risk signals
     via SCIM groups (and Gateway email lists) that Access/Gateway policies
     consume; offer FlareID as a custom device-posture provider
     (`cf.tlsClientAuth` device-cert condition is the sibling item 8 from the
-    protocol work); verify the Access JWT for the admin plane.
+    protocol work); verify the Access JWT for the admin plane.~~ (done -
+    Integrations → Cloudflare One stores the connection; policies carry a
+    device-cert requirement and a risk cap; the Risk watchlist system group
+    feeds SCIM and list sync; /admin verifies the Access JWT when a team +
+    AUD are set)
 39. **Shared Signals Framework**: a transmitter for CAEP `session-revoked` and
     `credential-change` (universal logout to Okta/Entra/Google receivers), and
     the receiver scaffolding to consume Cloudflare's risk-score stream - which
     today is gated to the Okta-specific IdP integration.
-40. **Reusable list sync**: push FlareID data into Cloudflare One lists -
+~~40. **Reusable list sync**: push FlareID data into Cloudflare One lists -
     (a) group membership as email lists (org structure into Gateway DNS/HTTP
     policies, which cannot read SCIM groups), (b) FlareID-computed risk
     watchlist and deprovisioned users as email lists (tighter inspection /
@@ -153,7 +159,10 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     trusted-domain list (Email Security), and optionally (d) source IPs that
     repeatedly fail authentication as an IP list - the edge then drops that
     traffic before it reaches the IdP (thresholded and short-lived: CGNAT
-    makes a stale IP block list punitive to bystanders).
+    makes a stale IP block list punitive to bystanders).~~ (done - per-group
+    "Sync member emails" switch plus four built-in syncs on the Cloudflare
+    One page, pushed by the scheduled job with full-replace PUTs and a
+    self-heal for deleted lists; the watchlist flag has a 24h auto-expiry)
 
 ## Parked
 
