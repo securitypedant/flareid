@@ -5,6 +5,7 @@ import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { validateScimEndpoint, setScimConfig } from "../src/lib/settings.js";
 import { createSession } from "../src/lib/sessions.js";
+import { unsealMaybe } from "../src/lib/sealed.js";
 
 beforeEach(resetDatabase);
 const FORM = { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE };
@@ -79,11 +80,11 @@ describe("storing the SCIM endpoint", () => {
 
     const good = await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "tok-1" } });
     expect(good.status).toBe(200);
-    expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("tok-1");
+    expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret)).toBe("tok-1");
 
     // A blank secret keeps the stored one; clearing the endpoint removes it.
     await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "" } });
-    expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("tok-1");
+    expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret)).toBe("tok-1");
     await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "" } });
     expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("");
   });

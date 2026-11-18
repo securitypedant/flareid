@@ -396,6 +396,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
     throw e;
   }
   if (await c.env.DB.prepare("SELECT 1 FROM users WHERE upn = ? OR username = ?").bind(upn, local).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
+  if (await c.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ?").bind(upn).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
 
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
@@ -531,6 +532,7 @@ scimServer.delete("/scim/v2/Users/:id", requireScope("directory:write"), async (
 async function loadGroup(c: Context<{ Bindings: Env }>, write = false): Promise<GroupRow> {
   const group = await c.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(Number(c.req.param("id"))).first<GroupRow>();
   if (!group) throw new ScimError(404, "No such group.");
+  if (write && group.system) throw new ScimError(400, `"${group.name}" is a system group; it cannot be changed via SCIM.`);
   if (write && (group.name === SUPER_ADMINS_GROUP || (await adminRoleGroupIds(c.env)).has(group.id))) requireAdminFor(c, `Changing ${group.name}, an admin role group`);
   return group;
 }

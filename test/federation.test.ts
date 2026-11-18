@@ -7,6 +7,7 @@ import { TEST_SAML_IDP_CERT_PEM, TEST_SAML_IDP_KEY_PKCS8, TEST_SAML_SP_CERT_PEM,
 import { createUpstreamIdp, FederationError, getUpstreamIdp, profileFromClaims, resolveFederatedUser, verifySamlResponse, NoLocalAccount, type SamlIdpConfig } from "../src/lib/federation.js";
 import { sealLoginFlow } from "../src/lib/authorize-state.js";
 import { b64encode } from "../src/lib/saml/xml.js";
+import { unsealMaybe } from "../src/lib/sealed.js";
 
 beforeEach(resetDatabase);
 
@@ -193,7 +194,9 @@ describe("federation API", () => {
     expect(patched.status).toBe(200);
     const row = await getUpstreamIdp(env, idpId);
     expect(row?.enabled).toBe(0);
-    expect(row?.config).toContain('"client_secret":"shh"'); // merged, kept
+    // Sealed at rest; the kept secret unseals back to the original.
+    const mergedSecret = (JSON.parse(row!.config) as { client_secret?: string }).client_secret;
+    expect(await unsealMaybe(env, mergedSecret)).toBe("shh");
     const list = await apiCall("/api/v1/federation/idps", { token: apiKey });
     expect(list.body.idps).toHaveLength(1);
     const del = await apiCall(`/api/v1/federation/idps/${idpId}`, { token: apiKey, method: "DELETE" });

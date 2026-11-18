@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
+import { unsealMaybe } from "../src/lib/sealed.js";
 
 beforeEach(resetDatabase);
 const FORM = { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE };
@@ -45,11 +46,12 @@ describe("stored credentials are write-only in the console", () => {
 
     // Save with an unchanged endpoint and a blank secret field.
     await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "https://example.test/scim", secret: "" });
-    expect((await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret).toBe(SECRET);
+    // The kept credential unseals back to what was stored - the write seals it.
+    expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret)).toBe(SECRET);
 
-    // Rotating it stores the new one.
+    // Rotating it stores the new one - sealed at rest, like the other stored credentials.
     await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "https://example.test/scim", secret: "rotated-secret-1" });
-    expect((await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret).toBe("rotated-secret-1");
+    expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets WHERE id = ?").bind(target.id).first<{ secret: string }>())!.secret)).toBe("rotated-secret-1");
 
     // Clearing the endpoint removes the credential too.
     await post(`/admin/scim/targets/${target.id}`, admin, { name: "Default", endpoint: "", secret: "" });

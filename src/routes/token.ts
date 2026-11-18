@@ -215,6 +215,9 @@ token.post("/token", async (c) => {
     if (!user || user.status !== "active" || !(await canSignIn(c.env, user.id))) return c.json({ error: "invalid_grant" }, 400);
 
     const amr: string[] = JSON.parse(row.amr || '["pwd"]');
+    if (row.sid) {
+      await c.env.DB.prepare("INSERT OR IGNORE INTO session_clients (session_id, client_id, created_at) VALUES (?, ?, ?)").bind(row.sid, client.client_id, new Date().toISOString()).run();
+    }
     await logAudit(c.env, user, "oauth.device_token", client.name, { client_id: client.client_id }, c.req.raw);
     return issueTokenResponse(c.env, client, user.id, row.scope, amr, {
       authTime: row.auth_time ?? Math.floor(now / 1000),

@@ -1,3 +1,4 @@
+import { APP_NAME_MAX, SUBTITLE_MAX } from "../lib/brands.js";
 import { importDirectory, type ImportResult } from "../lib/directory-import.js";
 import { addDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -140,11 +141,15 @@ export async function runSetup(ctx: ServiceCtx, body: SetupInput, via: "api" | "
     applied.push(`new_user_password_mode=${body.new_user_password_mode}`);
   }
   if (body.app_name !== undefined) {
-    await setAppName(env, String(body.app_name));
+    const v = String(body.app_name);
+    if (v.length > APP_NAME_MAX) throw new ServiceError(400, `The app name can be at most ${APP_NAME_MAX} characters.`);
+    await setAppName(env, v);
     applied.push("app_name");
   }
   if (body.login_subtitle !== undefined) {
-    await setLoginSubtitle(env, String(body.login_subtitle));
+    const v = String(body.login_subtitle).trim();
+    if (v.length > SUBTITLE_MAX) throw new ServiceError(400, `The sign-in message can be at most ${SUBTITLE_MAX} characters.`);
+    await setLoginSubtitle(env, v);
     applied.push("login_subtitle");
   }
   if (body.login_gradient?.from && body.login_gradient?.to) {

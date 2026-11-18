@@ -64,6 +64,15 @@ export function forgetStoredIssuer(): void {
  * has neither a pinned nor a stored issuer.
  */
 export async function withResolvedIssuer(env: Env, request: Request): Promise<Env | Response> {
+  // Plain http is refused once any issuer exists, not only while one is being
+  // resolved: a workers.dev deployment still accepts http on its default name,
+  // and passwords and bearer keys must never ride it.
+  if (!acceptableOrigin(request.url)) {
+    return new Response("FlareID only answers over HTTPS. Open this address with https:// instead.", {
+      status: 400,
+      headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" },
+    });
+  }
   if (env.ISSUER_URL) return env;
   const issuer = (await storedIssuer(env)) ?? acceptableOrigin(request.url);
   if (!issuer) {

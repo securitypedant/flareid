@@ -239,7 +239,7 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   // Admins by dynamic membership have no group_members row to keep them - keep them too.
   const dynRules = await dynamicAdminRules(env);
   const doomed = dynRules.length ? doomedStatic.filter((u) => !dynRules.some((r) => userMatchesRule(u, r))) : doomedStatic;
-  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))").bind(keepGroups).all<GroupRow>();
+  const { results: doomedGroups } = await env.DB.prepare("SELECT * FROM groups WHERE name NOT IN (SELECT value FROM json_each(?)) AND system = ''").bind(keepGroups).all<GroupRow>();
 
   // The remote ids are queued in the same batch as the deletion: once the
   // rows (and their links) are gone, the queue is the only way to find these
@@ -253,7 +253,7 @@ async function replaceExistingDirectory(env: Env): Promise<{ users: UserRow[]; g
   await env.DB.batch([
     ...queue,
     ...(doomed.length > 0 ? deleteUserStatements(env, ...doomed.map((r) => r.id)) : []),
-    env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?))`).bind(keepGroups),
+    env.DB.prepare(`DELETE FROM groups WHERE name NOT IN (SELECT value FROM json_each(?)) AND system = ''`).bind(keepGroups),
   ]);
 
   // Returned so the caller knows remote DELETEs are queued: the linked rows

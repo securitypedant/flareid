@@ -107,7 +107,7 @@ async function settingsJson(env: Env) {
 }
 
 defineRoute(
-  { method: "get", path: "/api/v1/ldap/apps", tag: "LDAP", permission: "directory:read", summary: "List LDAP apps", description: "Secrets are never returned - only the prefix for identification.", response: z.array(AppSchema) },
+  { method: "get", path: "/api/v1/ldap/apps", tag: "LDAP", permission: "ldap:read", summary: "List LDAP apps", description: "Secrets are never returned - only the prefix for identification.", response: z.array(AppSchema) },
   async (c) => {
     const apps = await listLdapApps(c.env);
     return c.json(await Promise.all(apps.map((a) => appJson(c.env, a))));
@@ -119,7 +119,7 @@ defineRoute(
     method: "post",
     path: "/api/v1/ldap/apps",
     tag: "LDAP",
-    permission: "clients:write",
+    permission: "ldap:write",
     summary: "Create or update an LDAP app (upsert by slug)",
     description: "Idempotent: the same body re-applied updates the app. The `secret` field appears only on create; rotate to get a new one.",
     body: AppBody,
@@ -146,7 +146,7 @@ defineRoute(
 );
 
 defineRoute(
-  { method: "post", path: "/api/v1/ldap/apps/{slug}/rotate", tag: "LDAP", permission: "clients:write", summary: "Rotate an app's bind secret", response: z.object({ slug: z.string(), secret: z.string() }), errors: [404] },
+  { method: "post", path: "/api/v1/ldap/apps/{slug}/rotate", tag: "LDAP", permission: "ldap:write", summary: "Rotate an app's bind secret", response: z.object({ slug: z.string(), secret: z.string() }), errors: [404] },
   async (c) => {
     const app = await getLdapAppBySlug(c.env, param(c, "slug").toLowerCase());
     if (!app) throw new ServiceError(404, "No such LDAP app.");
@@ -157,7 +157,7 @@ defineRoute(
 );
 
 defineRoute(
-  { method: "post", path: "/api/v1/ldap/apps/{slug}/reveal", tag: "LDAP", permission: "clients:write", summary: "Reveal an app's current bind secret", description: "Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.", errors: [404, 409] },
+  { method: "post", path: "/api/v1/ldap/apps/{slug}/reveal", tag: "LDAP", permission: "ldap:write", summary: "Reveal an app's current bind secret", description: "Returns the KEK-sealed secret. 409 when the app predates secret sealing - rotate once to enable reveal.", errors: [404, 409] },
   async (c) => {
     const app = await getLdapAppBySlug(c.env, param(c, "slug").toLowerCase());
     if (!app) throw new ServiceError(404, "No such LDAP app.");
@@ -169,7 +169,7 @@ defineRoute(
 );
 
 defineRoute(
-  { method: "delete", path: "/api/v1/ldap/apps/{slug}", tag: "LDAP", permission: "clients:write", summary: "Revoke an LDAP app", description: "Sets revoked_at; binds and searches fail immediately. Idempotent.", errors: [404] },
+  { method: "delete", path: "/api/v1/ldap/apps/{slug}", tag: "LDAP", permission: "ldap:write", summary: "Revoke an LDAP app", description: "Sets revoked_at; binds and searches fail immediately. Idempotent.", errors: [404] },
   async (c) => {
     const app = await getLdapAppBySlug(c.env, param(c, "slug").toLowerCase());
     if (!app) throw new ServiceError(404, "No such LDAP app.");
@@ -197,7 +197,7 @@ const SettingsBody = z.object({
 });
 
 defineRoute(
-  { method: "get", path: "/api/v1/ldap/settings", tag: "LDAP", permission: "directory:read", summary: "Read the LDAP settings", response: SettingsSchema },
+  { method: "get", path: "/api/v1/ldap/settings", tag: "LDAP", permission: "ldap:read", summary: "Read the LDAP settings", response: SettingsSchema },
   async (c) => c.json(await settingsJson(c.env))
 );
 
@@ -206,7 +206,7 @@ defineRoute(
     method: "post",
     path: "/api/v1/ldap/settings",
     tag: "LDAP",
-    permission: "settings:write",
+    permission: "ldap:write",
     summary: "Update the LDAP settings",
     description: "Only the fields sent change. `enabled: true` also generates the domain SID and GUID namespace on first use.",
     body: SettingsBody,

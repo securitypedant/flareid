@@ -90,6 +90,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   await assertMayAssignGroups(ctx, groupIds);
 
   if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ? OR upn = ?").bind(username, upn).first()) throw new ServiceError(409, TAKEN(username));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ?").bind(upn).first()) throw new ServiceError(409, TAKEN(username));
   const emails = emailInputs(input);
   try {
     await assertEmailsUsable(ctx.env, null, emails);
@@ -245,6 +246,7 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   if (managerExternalId && managerExternalId === existing.external_id) managerExternalId = null; // can't manage yourself
 
   if (await ctx.env.DB.prepare("SELECT id FROM users WHERE (username = ? OR upn = ?) AND id != ?").bind(username, upn, id).first()) throw new ServiceError(409, TAKEN(username));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ? AND user_id != ?").bind(upn, id).first()) throw new ServiceError(409, TAKEN(username));
 
   let email = existing.email;
   let emails: UserEmailInput[] | undefined;

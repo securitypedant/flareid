@@ -89,6 +89,8 @@ import {
 } from "../lib/schemas.js";
 
 import { audit, consoleCtx, ServiceError } from "../services/context.js";
+import { assertMayTouchUser } from "../services/guards.js";
+import { unsealMaybe } from "../lib/sealed.js";
 import { scimConfigured, applyScimScope } from "../services/scim-sync.js";
 import {
   createUser,
@@ -321,7 +323,7 @@ admin.post("/admin/reauth", async (c) => {
   if (!(await verifyPassword(String(body.password ?? "").slice(0, 1024), user))) return fail("That password is not right.");
   if (user.mfa_enabled) {
     const code = String(body.code ?? "").slice(0, 12);
-    const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+    const counter = user.totp_secret ? await matchTotpCounter((await unsealMaybe(c.env, user.totp_secret)) ?? "", code) : null;
     const ok = (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) || (await verifyAndConsumeBackupCode(c.env, user.id, code));
     if (!ok) return fail("That code is not right.");
   }
@@ -3208,6 +3210,7 @@ admin.post(`${CFONE}/watch`, async (c) => {
   const reason = String(body.reason ?? "").trim().slice(0, 300);
   const ttl = Math.max(0, Number(body.ttl_hours ?? 0) || 0);
   if (!userId || !reason) return c.redirect(`${CFONE}?error=${encodeURIComponent("Pick a person and give a reason.")}`, 302);
+  await assertMayTouchUser(consoleCtx(c), userId);
   await flagUser(c.env, userId, reason, "manual", ttl);
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_flagged", upn, { reason });
@@ -3216,6 +3219,7 @@ admin.post(`${CFONE}/watch`, async (c) => {
 
 admin.post(`${CFONE}/watch/:uid/remove`, async (c) => {
   const userId = Number(c.req.param("uid"));
+  await assertMayTouchUser(consoleCtx(c), userId);
   await unflagUser(c.env, userId);
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_unflagged", upn);

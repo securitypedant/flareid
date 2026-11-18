@@ -2,11 +2,12 @@ import type { Env } from "../env.js";
 import type { GroupRow, LdapAppRow, UserRow } from "../lib/types.js";
 import { getUserByLoginIdentifier } from "../lib/db.js";
 import { resolveManyGroupMemberUserIds } from "../lib/groups.js";
-import { clearLoginAttempts, loginRateKey, recordLoginAttempt, recordMfaAttempt, clearMfaAttempts, recordRateAttempt } from "../lib/rate-limit.js";
+import { clearLoginAttempts, loginRateKey, recordLoginAttempt, recordMfaAttempt, clearMfaAttempts, rateKeyOverLimit, rateLimitAddress, recordRateAttempt } from "../lib/rate-limit.js";
 import { upgradePasswordHashIfNeeded, storedHashFormat, verifyPassword, hashPassword, type StoredPassword } from "../lib/password.js";
 import { timed } from "../lib/metrics.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import { sha256Hex } from "../lib/tokens.js";
+import { unsealMaybe } from "../lib/sealed.js";
 import { mfaRequiredFor, isFactorEnabled } from "../lib/auth-policy.js";
 import { isSetupCompleted } from "../lib/settings.js";
 import { getLdapAppBySlug } from "./apps.js";
@@ -92,11 +93,17 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   if (password.length === 0) return { ok: false, reason: "unauthenticated" };
 
   if (resolved.kind === "service") {
-    if ((await recordRateAttempt(env, `ldap:svc:${resolved.slug}`, 20, 15)) || (await recordRateAttempt(env, `ldap:svcip:${ip}`, 60, 15))) {
+    // Failures only, and per (slug, source): a busy application must not be
+    // able to burn its own bind budget with successful binds, and one hostile
+    // source must not be able to lock the app out for everyone else. The
+    // per-IP counter stays an all-attempts volumetric cap.
+    const svcKey = `ldap:svc:${resolved.slug}:${rateLimitAddress(ip)}`;
+    if ((await rateKeyOverLimit(env, svcKey, 20, 15)) || (await recordRateAttempt(env, `ldap:svcip:${ip}`, 60, 15))) {
       return { ok: false, reason: "svc_rate_limited" };
     }
     const app = await getLdapAppBySlug(env, resolved.slug);
     if (!app || app.revoked_at || (await sha256Hex(passwordStr)) !== app.secret_hash) {
+      await recordRateAttempt(env, svcKey, 20, 15);
       return { ok: false, reason: app?.revoked_at ? "app_revoked" : "bad_password" };
     }
     return { ok: true, bound: { kind: "service", app }, app };
@@ -135,7 +142,9 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   // legacy PBKDF2 row verifies cheaper than scrypt, so every failure is
   // padded to one verification of each.
   const stored: StoredPassword = usable && user ? { password_hash: user.password_hash, password_salt: user.password_salt, password_iterations: user.password_iterations } : await dummyHash(env);
-  const ok = await timed(env, "auth.verify", verifyPassword(pw, stored));
+  // Only a usable account runs the real verify; the padding below then always
+  // lands on exactly two verifications (one real + one dummy, or two dummies).
+  const ok = usable && user ? await timed(env, "auth.verify", verifyPassword(pw, stored)) : false;
 
   if (!ok || !usable || !user) {
     const format = usable && user ? storedHashFormat(stored) : null;
@@ -159,7 +168,7 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
     }
     if (!(await rebindOk(ctx, app, user, passwordStr))) {
       if (await recordMfaAttempt(env, user.id, ip)) return { ok: false, reason: "otp_rate_limited" };
-      const counter = await matchTotpCounter(user.totp_secret!, otp);
+      const counter = await matchTotpCounter((await unsealMaybe(env, user.totp_secret)) ?? "", otp);
       if (counter === null || !(await claimTotpCounter(env, user.id, counter))) return { ok: false, reason: "otp_invalid" };
       await clearMfaAttempts(env, user.id, ip);
       await rememberRebind(ctx, app, user, passwordStr);

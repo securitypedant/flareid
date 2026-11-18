@@ -1,6 +1,6 @@
 import { errorPage, safeBackHref } from "../lib/html.js";
 import { grants } from "../lib/permissions.js";
-import { enrolledFactors, FACTOR_SHORT_LABELS, isFactorEnabled, isFactorUsable, secondFactorGate } from "../lib/auth-policy.js";
+import { enrolledFactors, FACTOR_SHORT_LABELS, hasSecondFactor, isFactorEnabled, isFactorUsable, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
 import {
@@ -18,6 +18,8 @@ import {
 } from "../lib/security-questions.js";
 import { finishRegistration, listPasskeys, registrationOptions, removePasskey } from "../lib/passkeys.js";
 import { isFreshlyAuthenticated } from "../lib/step-up.js";
+import { sealMaybe, unsealMaybe } from "../lib/sealed.js";
+import { markConsumed } from "../lib/one-shot.js";
 import { PASSKEY_REGISTER_SCRIPT } from "../lib/passkey-scripts.js";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { brandFor } from "../lib/brands.js";
@@ -981,7 +983,7 @@ async function passkeyStepUp(c: Context<{ Bindings: Env }>, password: string): P
 /** A current TOTP (claimed, so it cannot be replayed) or an unused backup code. */
 async function secondFactorOk(c: Context<{ Bindings: Env }>, code: string): Promise<"totp" | "backup_code" | null> {
   const user = c.get("user");
-  const counter = user.totp_secret ? await matchTotpCounter(user.totp_secret, code) : null;
+  const counter = user.totp_secret ? await matchTotpCounter((await unsealMaybe(c.env, user.totp_secret)) ?? "", code) : null;
   if (counter !== null && (await claimTotpCounter(c.env, user.id, counter))) return "totp";
   if (await verifyAndConsumeBackupCode(c.env, user.id, code)) return "backup_code";
   return null;
@@ -1120,7 +1122,10 @@ function errorRedirectPage(c: Context<{ Bindings: Env }>, message: string) {
 account.get("/account/mfa/setup", async (c) => {
   const user = c.get("user");
   const resume = c.req.query("resume") ?? "";
-  if (user.mfa_enabled) return c.redirect("/account/security", 302);
+  // Redirect only when a usable second factor exists - mfa_enabled can outlive
+  // its factor being switched off, and an 'enrol'-gated session would loop
+  // between this page and the gate that sent it here.
+  if (await hasSecondFactor(c.env, user, { admin: Boolean(c.get("access")?.isAdmin) })) return c.redirect("/account/security", 302);
   const [totpOn, passkeyOn, emailAvailable, kbaAvailable] = await Promise.all([
     isFactorEnabled(c.env, "totp"),
     isFactorEnabled(c.env, "passkey"),
@@ -1151,6 +1156,14 @@ account.get("/account/mfa/setup", async (c) => {
             : `<form method="POST" action="/account/mfa/email/send">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="${passkeyOn ? "secondary" : "primary"}" type="submit">Send a code to ${to}</button></form>`
         }`);
 
+  // Enrolling a credential from a session that isn't freshly authenticated
+  // needs the password again - a hijacked session must not be able to plant a
+  // factor that survives a password reset.
+  const needsPassword = !(await isFreshlyAuthenticated(c.env, c.get("sessionId")));
+  const passwordField = !needsPassword
+    ? ""
+    : `<div style="text-align:left; margin-top:10px;"><label for="enrol_password">Confirm with your password</label><input type="password" id="enrol_password" name="password" autocomplete="current-password" required style="max-width:220px;" /></div>`;
+
   let kbaCard = "";
   if (kbaOn) {
     const [choices, { required }] = await Promise.all([enabledSecurityQuestions(c.env), getKbaSettings(c.env)]);
@@ -1165,6 +1178,7 @@ account.get("/account/mfa/setup", async (c) => {
         <form method="POST" action="/account/mfa/questions">
           <input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />
           ${kbaFields(choices, required)}
+          ${needsPassword ? `<label for="kba_current_password">Confirm with your password</label><input type="password" id="kba_current_password" name="current_password" autocomplete="current-password" required />` : ""}
           <button class="${passkeyOn || emailOn ? "secondary" : "primary"}" type="submit">Save security questions</button>
         </form>`);
   }
@@ -1200,6 +1214,8 @@ account.get("/account/mfa/setup", async (c) => {
           ${passkeyOn || emailOn || kbaCard ? "<h2>Or use an authenticator app</h2>" : ""}
           ${resume ? '<p class="sub">Multi-factor authentication is required before you can continue.</p>' : ""}
           ${c.req.query("error") === "1" ? '<p class="error">Incorrect code, please try again.</p>' : ""}
+          ${c.req.query("error") === "2" ? '<p class="error">Incorrect password, please try again.</p>' : ""}
+          ${c.req.query("error") === "3" ? '<p class="error">Too many attempts. Please wait a few minutes before trying again.</p>' : ""}
           <p class="sub">Scan this with Google Authenticator, Authy, or any standard TOTP app.</p>
           <div>${qrSvg}</div>
           <p class="muted">Or enter this code manually: <code>${escapeHtml(secret)}</code></p>
@@ -1211,6 +1227,8 @@ account.get("/account/mfa/setup", async (c) => {
                 <input type="text" id="code" name="code" inputmode="numeric" maxlength="6" required autofocus style="margin-bottom:0; max-width:160px;" />
               </div>
               <button class="primary" type="submit">Enable MFA</button>
+            </div>
+            ${passwordField}
             </div>
           </form>
           <div class="form-actions" style="justify-content:center; margin-top:18px;">
@@ -1249,6 +1267,15 @@ account.post("/account/mfa/setup", async (c) => {
   const code = String(body.code ?? "");
   const resume = String(body.resume ?? "");
 
+  // The administrator's off switch is consulted when the page renders; it must
+  // also gate the write, or a stale/forged form enrols a disabled factor.
+  if (!(await isFactorEnabled(c.env, "totp"))) return c.redirect("/account/security", 302);
+  // Enrolment changes account credentials: a session that isn't fresh must
+  // prove the password again, the same rule passkey registration follows.
+  const step = await passkeyStepUp(c, String(body.password ?? ""));
+  if (step === "budget") return c.redirect(`/account/mfa/setup?error=3&resume=${encodeURIComponent(resume)}`, 302);
+  if (step === "denied") return c.redirect(`/account/mfa/setup?error=2&resume=${encodeURIComponent(resume)}`, 302);
+
   const secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) return c.html(errorPage(c.get("appName"), 400, "The set-up session expired. Start setting up the authenticator app again.", "/account/mfa/setup", Boolean(c.get("access")?.isAdmin), c.get("logoUrl")), 400);
 
@@ -1256,13 +1283,16 @@ account.post("/account/mfa/setup", async (c) => {
   if (counter === null) {
     return c.redirect(`/account/mfa/setup?error=1&resume=${encodeURIComponent(resume)}`, 302);
   }
+  // One pending secret, one enrolment: claimed before the credential write so
+  // a replayed submission cannot re-arm the factor.
+  if (!(await markConsumed(c.env, `enroll:${c.get("sessionId")}`))) return c.redirect("/account/mfa/setup", 302);
 
   // totp_last_counter starts at the code that proved enrolment, so that very
   // code cannot be replayed at /login/mfa or /account/mfa/disable.
   await c.env.DB.prepare(
     "UPDATE users SET totp_secret = ?, mfa_enabled = 1, totp_last_counter = ?, updated_at = ? WHERE id = ?"
   )
-    .bind(secret, counter, new Date().toISOString(), user.id)
+    .bind(await sealMaybe(c.env, secret), counter, new Date().toISOString(), user.id)
     .run();
   await deletePendingEnrollment(c.env, c.get("sessionId"));
   // Every other session predates the second factor (a password-only session
@@ -1418,6 +1448,15 @@ account.post("/account/mfa/questions", async (c) => {
     if (await stepUpBudgetExceeded(c)) return c.redirect(kbaReturn(body, "kba_error=kba-too-many"), 302);
     if (!(await verifyPassword(String(body.current_password ?? "").slice(0, 1024), user))) {
       await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_change" }, c.req.raw);
+      return c.redirect(kbaReturn(body, "kba_error=kba-password"), 302);
+    }
+  } else {
+    // Setting questions for the first time mints a factor: same step-up rule
+    // as TOTP and passkeys (fresh session, or the current password).
+    const step = await passkeyStepUp(c, String(body.current_password ?? ""));
+    if (step === "budget") return c.redirect(kbaReturn(body, "kba_error=kba-too-many"), 302);
+    if (step === "denied") {
+      await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_set" }, c.req.raw);
       return c.redirect(kbaReturn(body, "kba_error=kba-password"), 302);
     }
   }

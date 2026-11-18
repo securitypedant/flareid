@@ -66,6 +66,9 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
     env.DB.prepare("DELETE FROM account_tokens WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)").bind(iso(now), iso(now - day)),
     env.DB.prepare("DELETE FROM session_clients WHERE session_id NOT IN (SELECT id FROM sessions)"),
     env.DB.prepare("DELETE FROM device_codes WHERE expires_at < ?").bind(iso(now)),
+    // Dead letters: rows that exhausted retries, plus anything queued longer
+    // than two days (e.g. its stream was disabled mid-flight).
+    env.DB.prepare("DELETE FROM ssf_outbox WHERE attempts >= 8 OR queued_at < ?").bind(iso(now - 2 * day)),
   ]);
 
   const [authCodes, accessTokens, refreshTokens, sessions, trustedDevices, auditLog] = results.map((r) => Number(r.meta.changes ?? 0));

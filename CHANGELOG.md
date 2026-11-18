@@ -305,6 +305,35 @@ third-party-initiated login and dynamic client registration.
   error redirects from `/authorize` (query and `form_post`) now carry
   `iss`, which the OIDF conformance suite requires.
 
+- **The medium- and low-severity audit backlog is remediated.** The follow-up
+  sweep from the third codebase-wide security audit:
+
+  - Replay and one-shot hardening: `private_key_jwt` client assertions must
+    carry `exp`/`iat`/`jti` and a seen jti is refused (RFC 7523); inbound SSF
+    SETs need an `aud` naming this receiver, a fresh `iat`, and an unseen
+    `jti`; KV get-then-delete one-shots (SAML/OIDC states, passkey and
+    enrolment challenges, step-up actions, consent, device codes) now claim
+    atomically in D1 so a replay inside KV's propagation window gets nothing.
+  - Secret parity: `cfone.api_token`, `scim_targets.secret`,
+    `upstream_idps` client secrets, LDAP service secrets and TOTP seeds seal
+    at rest like the other credentials - out of backup bundles and snapshots.
+  - Guard coverage: Cloudflare One watch actions pass `assertMayTouchUser`;
+    system groups refuse SCIM/directory-import writes; the LDAP HTTP API
+    checks the `ldap` permission area (not legacy scopes), `userinfo` and
+    `introspect` honour the sign-in permission, and IdP/user-email writes
+    reject alias/UPN collisions.
+  - Session hygiene: browser logout notifies back-channel clients before the
+    front-channel pass deletes `session_clients`, and device-grant approvals
+    record their `session_clients` row so revocation reaches them.
+  - Denial-of-service surface: edge rate limiting covers the previously
+    unlisted auth-adjacent routes and charges the client dimension by a hash
+    (DCR can no longer mint fresh client_ids to reset it), IPv6 `/48`
+    rate-limit keys refund on failure, failed-login counting no longer
+    scans the audit table, LDAP binds pad the timing gap and cap open
+    connections, photo fetch redirects/timeouts/streaming are bounded, SAML
+    SP metadata cert growth is capped, and API bodies are validated against
+    their declared schemas.
+
 ## [4.0.0] - 2026-11-17
 
 **Migration `0032_user_emails.sql`** - `user_emails`, the per-account contact

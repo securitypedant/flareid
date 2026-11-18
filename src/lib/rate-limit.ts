@@ -73,6 +73,19 @@ export async function recordRateAttempt(env: Env, key: string, max: number, wind
   return (await recordAttempt(env, key, windowMinutes * 60_000)) > max;
 }
 
+/**
+ * Read-only check against the same fixed-window buckets recordAttempt uses:
+ * reports whether the key is already over budget WITHOUT counting the call,
+ * for callers that only charge failures (the attempt is recorded later, and
+ * only when the credential check actually fails).
+ */
+export async function rateKeyOverLimit(env: Env, key: string, max: number, windowMinutes: number): Promise<boolean> {
+  const row = await env.DB.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?").bind(key).first<{ count: number; window_start: number }>();
+  if (!row) return false;
+  if (Date.now() - row.window_start > windowMinutes * 60_000) return false;
+  return row.count > max;
+}
+
 export function getClientIp(request: Request): string {
   // Only the address Cloudflare's edge sets. X-Forwarded-For is client-supplied
   // and would let a caller pick its own rate-limit bucket off the edge.
@@ -110,7 +123,9 @@ export function rateLimitAddress48(ip: string): string {
 
 /** A successful step gives its unit back to the shared per-IP bucket, so that bucket counts failures only. */
 async function refundIpAttempt(env: Env, ip: string): Promise<void> {
-  await env.DB.prepare("UPDATE rate_limits SET count = MAX(count - 1, 0) WHERE key = ?").bind(`login:ip:${rateLimitAddress(ip)}`).run();
+  const keys = [`login:ip:${rateLimitAddress(ip)}`];
+  if (ip.includes(":")) keys.push(`login:ip48:${rateLimitAddress48(ip)}`);
+  await env.DB.prepare("UPDATE rate_limits SET count = MAX(count - 1, 0) WHERE key IN (SELECT value FROM json_each(?))").bind(JSON.stringify(keys)).run();
 }
 
 /**

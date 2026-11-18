@@ -151,9 +151,13 @@ export function ssfClearCaches(): void {
 }
 
 async function userByEmail(env: Env, email: string): Promise<UserRow | null> {
+  // Deterministic precedence when an alias happens to spell another
+  // account's upn: the direct sign-in name wins over the alias.
   return env.DB.prepare(
-    "SELECT u.* FROM users u LEFT JOIN user_emails e ON e.user_id = u.id WHERE u.upn = ? OR e.email = ? LIMIT 1"
-  ).bind(email, email).first<UserRow>();
+    `SELECT u.* FROM users u LEFT JOIN user_emails e ON e.user_id = u.id
+      WHERE u.upn = ? OR e.email = ?
+      ORDER BY CASE WHEN u.upn = ? THEN 0 ELSE 1 END LIMIT 1`
+  ).bind(email, email, email).first<UserRow>();
 }
 
 function subjectEmail(subId: SsfSubId | undefined): string | null {
@@ -195,16 +199,34 @@ export async function receiveSet(env: Env, token: string): Promise<SsfReceiveRes
   } catch (e) {
     throw new SsfReceiveError(401, `SET verification failed: ${(e as Error).message}`);
   }
-  // aud, when present, must name us - a SET meant for someone else's receiver
-  // shouldn't drive local effects here.
+  // aud must name us - a SET meant for someone else's receiver shouldn't
+  // drive local effects here, and RFC 8417 requires the claim.
   const aud = Array.isArray(verified.aud) ? verified.aud : verified.aud ? [verified.aud] : [];
-  if (aud.length && !aud.includes(env.ISSUER_URL)) {
+  if (!aud.includes(env.ISSUER_URL)) {
     throw new SsfReceiveError(401, `SET aud does not name this receiver (${env.ISSUER_URL}).`);
   }
+  // Freshness bounds the replay window; jti dedupe (below) catches repeats
+  // inside it. RFC 8417 requires both claims.
+  const iat = typeof verified.iat === "number" ? verified.iat : 0;
+  const nowSec = Date.now() / 1000;
+  if (!iat || nowSec - iat > 900 || iat - nowSec > 300) {
+    throw new SsfReceiveError(401, "SET iat is missing or outside the freshness window.");
+  }
+  if (!verified.jti) throw new SsfReceiveError(401, "SET has no jti.");
+  // Replay ledger: a seen (issuer, jti) is refused. Rows piggyback rate_limits
+  // and its cleanup sweep; the iat window above is far shorter than that
+  // table's retention horizon, so a replay can never outlive its row.
+  const jtiSeen = await env.DB.prepare(
+    `INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?)
+     ON CONFLICT(key) DO UPDATE SET count = count + 1 RETURNING count`
+  ).bind(`ssf:jti:${iss}:${String(verified.jti)}`, Date.now()).first<{ count: number }>();
+  if ((jtiSeen?.count ?? 1) > 1) throw new SsfReceiveError(401, "SET jti already seen.");
   const accepted: string[] = [];
   const ignored: string[] = [];
   const events = (verified.events ?? {}) as Record<string, { subject?: SsfSubId }>;
-  for (const [uri, body] of Object.entries(events)) {
+  const eventEntries = Object.entries(events);
+  if (eventEntries.length > 50) throw new SsfReceiveError(400, "SET contains too many events.");
+  for (const [uri, body] of eventEntries) {
     const email = subjectEmail(body?.subject);
     const user = email ? await userByEmail(env, email) : null;
     if (uri === SSF_EVENTS["caep.session-revoked"] || uri === "https://schemas.openid.net/secevent/risc/event-type/sessions-revoked") {

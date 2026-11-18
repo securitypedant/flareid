@@ -329,4 +329,46 @@ describe("private_key_jwt client authentication", () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it("requires exp/iat/jti and refuses a replayed jti (RFC 7523)", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const cookie = await sessionFor(userId);
+    const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
+    const jwk = { ...(await exportJWK(publicKey)), kid: "k1" };
+    const client = await seedClient(apiKey);
+    await env.DB.prepare("UPDATE oauth_clients SET jwks = ? WHERE client_id = ?").bind(JSON.stringify({ keys: [jwk] }), client.client_id).run();
+
+    const token = (assertion: string, code: string) =>
+      SELF.fetch(`${BASE}/token`, {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: REDIRECT,
+          client_id: client.client_id,
+          client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+          client_assertion: assertion,
+        }).toString(),
+      });
+    const code = async () => new URL((await authorize(cookie, client.client_id)).headers.get("location")!, BASE).searchParams.get("code")!;
+
+    // No exp: an assertion that never expires is refused outright.
+    const timeless = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(client.client_id).setSubject(client.client_id)
+      .setAudience(`${BASE}/token`).setIssuedAt().setJti(crypto.randomUUID())
+      .sign(privateKey);
+    expect((await token(timeless, await code())).status).toBe(401);
+
+    // A valid assertion redeems once; the same jti a second time is a replay.
+    const assertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(client.client_id).setSubject(client.client_id)
+      .setAudience(`${BASE}/token`).setIssuedAt().setExpirationTime("5m").setJti(crypto.randomUUID())
+      .sign(privateKey);
+    expect((await token(assertion, await code())).status).toBe(200);
+    expect((await token(assertion, await code())).status).toBe(401);
+  });
 });

@@ -170,7 +170,11 @@ defineRoute(
     const { entries } = await queryAuditLog(c.env, filters, AUDIT_EXPORT_MAX, 0);
     const day = new Date().toISOString().slice(0, 10);
     if (c.req.query("format") === "csv") {
-      const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const esc = (v: unknown) => {
+        let str = String(v ?? "");
+        if (/^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+        return `"${str.replace(/"/g, '""')}"`;
+      };
       const lines = [
         "at,actor_upn,action,target,ip,user_agent,details,chain_hash",
         ...entries.map((e) => [e.at, e.actor_upn, e.action, e.target, e.ip, e.user_agent, e.details, e.chain_hash].map(esc).join(",")),

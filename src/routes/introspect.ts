@@ -1,3 +1,4 @@
+import { canSignIn } from "../lib/admin-roles.js";
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { sha256Hex } from "../lib/tokens.js";
@@ -28,7 +29,7 @@ introspect.post("/introspect", async (c) => {
   // for a deactivated user is not active, however fresh it is.
   const userActive = async (userId: number): Promise<boolean> => {
     const user = await getUserById(c.env, userId);
-    return user?.status === "active";
+    return user !== null && user.status === "active" && (await canSignIn(c.env, userId));
   };
 
   if (accessTokenRow) {

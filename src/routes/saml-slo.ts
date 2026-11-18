@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { DOMParser } from "@xmldom/xmldom";
 import type { Env } from "../env.js";
 import { inflateAuthnRequest, rawQueryParams, verifyRedirectSignature } from "../lib/saml/authn-request.js";
+import { markConsumed } from "../lib/one-shot.js";
 import { getSpByEntityId } from "../lib/saml/service-providers.js";
 import { idpEntityId } from "../lib/saml/messages.js";
 import { signingKey } from "../lib/saml/sign.js";
@@ -86,10 +87,9 @@ samlSlo.get("/saml/slo", async (c) => {
     return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "The LogoutRequest is malformed, expired or addressed elsewhere.", action: null });
   }
   const replayKey = `saml:slo:${await sha256Hex(`${sp.id}\n${requestId}`)}`;
-  if (await c.env.SESSIONS_KV.get(replayKey)) {
+  if (!(await markConsumed(c.env, replayKey))) {
     return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "This LogoutRequest was already used.", action: null });
   }
-  await c.env.SESSIONS_KV.put(replayKey, "1", { expirationTtl: Math.ceil((2 * SLO_MAX_SKEW_MS) / 1000) + 60 });
 
   const session = await getSession(c.req.raw, c.env);
   let status = "urn:oasis:names:tc:SAML:2.0:status:Success";

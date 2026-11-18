@@ -97,8 +97,10 @@ describe("issuer resolution with an empty ISSUER_URL", () => {
     forgetStoredIssuer(); // as a fresh isolate would see it
     expect(await issuerAt(WORKERS_DEV)).toBe(CUSTOM);
     expect(await issuerAt(CUSTOM)).toBe(CUSTOM);
-    // Once fixed, a plain-http request no longer decides anything, so it is not refused here.
-    expect(await issuerAt("http://idp.someone.test")).toBe(CUSTOM);
+    // Once fixed, a plain-http request no longer decides anything - and is
+    // refused outright: credentials must never ride http on any hostname.
+    const httpRes = await call("http://idp.someone.test/.well-known/openid-configuration");
+    expect(httpRes.status).toBe(400);
   });
 
   it("is persisted by the API's setup too, and a pinned ISSUER_URL still wins", async () => {
