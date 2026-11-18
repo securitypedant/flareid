@@ -9,6 +9,7 @@ import { conformUserAttributes, defaultSchemaId, getSchemaAttributes, splitUserA
 import { getMasteredFields, masteringKeyFor } from "../lib/scim-mapping.js";
 import { drainScimDeprovisionQueue, scimDeprovisionStatements } from "../lib/scim-client.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
+import { emitAndDrain, SSF_EVENTS } from "../lib/ssf.js";
 import { resolveNewAccountPassword } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { removePasskey } from "../lib/passkeys.js";
@@ -351,6 +352,10 @@ export async function setUserStatus(ctx: ServiceCtx, id: number, status: "active
     await revokeTokensForUser(ctx.env, id);
   }
   await audit(ctx, status === "active" ? "user.activated" : "user.deactivated", user.upn);
+  if (status === "disabled") {
+    // CAEP out: receivers step the account down on their side too (lib/ssf.ts).
+    await afterResponse(ctx, () => emitAndDrain(ctx.env, SSF_EVENTS["risc.account-disabled"], { format: "email", email: user.upn }));
+  }
   await afterResponse(ctx, (later) => syncUserBestEffort(later, id, status === "active" ? "push" : "deactivate"));
 }
 
@@ -375,6 +380,7 @@ export async function resetUserPassword(ctx: ServiceCtx, id: number, chosen: str
   await revokeAllSessionsForUser(ctx.env, id);
   await revokeTokensForUser(ctx.env, id);
   await audit(ctx, "user.password_reset", user.upn, { chosen: Boolean(chosen) });
+  await afterResponse(ctx, () => emitAndDrain(ctx.env, SSF_EVENTS["caep.credential-change"], { format: "email", email: user.upn }));
   return { password, user };
 }
 
@@ -394,8 +400,10 @@ export async function resetUserMfa(ctx: ServiceCtx, id: number): Promise<void> {
 
 export async function revokeUserSessions(ctx: ServiceCtx, id: number): Promise<number> {
   await assertMayTouchUser(ctx, id);
+  const user = await getUserById(ctx.env, id);
   const count = await revokeAllSessionsForUser(ctx.env, id);
   await audit(ctx, "user.sessions_revoked_all", String(id), { count });
+  if (count > 0 && user) await afterResponse(ctx, () => emitAndDrain(ctx.env, SSF_EVENTS["caep.session-revoked"], { format: "email", email: user.upn }));
   return count;
 }
 

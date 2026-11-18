@@ -30,8 +30,44 @@ account or written by inbound provisioning).
 `auth_policies.max_risk` (the posture conditions below), `groups.system`
 and `groups.cf_list_sync`, and the `user_watch` / `cf_lists` tables behind
 the risk watchlist and gateway-list sync.
+**Migration `0041_audit_chain_and_ssf.sql`** - `audit_log.chain_hash` (the
+tamper-evident chain below), and the `ssf_streams` / `ssf_outbox` /
+`ssf_transmitters` tables behind Shared Signals.
 
 ### Added
+
+- **Audit export and tamper-evidence.** Every audit row now carries a
+  `chain_hash` - SHA-256 over the previous row's hash plus its own
+  contents - so editing or deleting a written row breaks the chain after
+  it. `GET /api/v1/audit/verify` recomputes it (or the Log page's "Verify
+  integrity" link; concurrent writers can fork, which it reports
+  separately). `GET /api/v1/audit/export` and the Log page's "Export"
+  stream the filtered view as NDJSON (or `?format=csv`) including
+  `chain_hash` for offline re-verification.
+
+- **Backup, restore and DR** (docs/dr.md). `GET /api/v1/backup` downloads
+  every table as one JSON bundle (admin scope; it contains password hashes
+  and encrypted secrets, so treat it like the database itself).
+  `POST /api/v1/backup/restore` - bootstrap token only, `confirm: true`
+  required - validates every bundled table and column against the schema
+  before wiping and rewriting, parents-before-children by the schema's
+  own foreign keys. Uncomment `r2_buckets` in wrangler.jsonc for daily
+  snapshots to R2 in the cron.
+
+- **Shared Signals Framework** (Integrations → Signals, a new `signals`
+  permission area, and `/api/v1/ssf/*`). Outbound: registered streams get
+  signed SETs (`application/secevent+jwt`, keys at `/jwks.json`) on
+  session revokes, credential changes, account disables and new risk
+  flags; delivery queues in `ssf_outbox` and retries hourly, per-stream
+  status on the page. Inbound: trusted transmitters (issuer + JWKS URL)
+  push SETs to `POST /ssf/receive`; a verified session-revoked kills the
+  person's sessions and credential/risk events flag them on the risk
+  watchlist for 24h. Discovery at `/.well-known/ssf-configuration`.
+
+- **Observability runbook** (docs/observability.md): what already emits
+  (Analytics Engine metrics, the audit log, structured cron events,
+  `/health`), which Workers notifications to configure for alerting, and
+  the queries worth keeping.
 
 - **Cloudflare One integrations** (Integrations → Cloudflare One, a new
   `cfone` permission area, and `/api/v1/integrations/cloudflare-one`).

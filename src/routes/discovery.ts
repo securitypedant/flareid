@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { getPublicJwks } from "../lib/jwt.js";
 import { ACR_VALUES, SUPPORTED_SCOPES } from "../lib/oidc.js";
+import { SSF_EVENTS } from "../lib/ssf.js";
 
 export const discovery = new Hono<{ Bindings: Env }>();
 
@@ -44,4 +45,19 @@ discovery.get("/.well-known/openid-configuration", (c) => {
 
 discovery.get("/jwks.json", async (c) => {
   return c.json({ keys: await getPublicJwks(c.env) });
+});
+
+// Shared Signals Framework transmitter metadata (OpenID SSF): receivers read
+// this to learn our issuer, signing keys and the events we push.
+discovery.get("/.well-known/ssf-configuration", (c) => {
+  const issuer = c.env.ISSUER_URL;
+  return c.json({
+    issuer,
+    jwks_uri: `${issuer}/jwks.json`,
+    delivery_methods_supported: ["https://schemas.openid.net/secevent/risc/delivery-method/push"],
+    events_supported: Object.values(SSF_EVENTS),
+    // Stream registration is by API/console, not the spec's stream-management
+    // endpoint - the receiver just needs the events it wants named there.
+    configuration_endpoint: `${issuer}/api/v1/ssf/streams`,
+  });
 });

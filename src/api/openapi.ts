@@ -86,6 +86,7 @@ export const TAGS = [
   { name: "LDAP", description: "The read-only LDAP interface: app registrations and directory settings." },
   { name: "Federation", description: "Inbound federation: upstream identity providers people sign in through (FlareID as the relying party)." },
   { name: "Cloudflare One", description: "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist." },
+  { name: "Signals", description: "Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters." },
   { name: "Email", description: "Outbound email settings and templates." },
   { name: "API keys", description: "Bearer tokens for this API." },
   { name: "Branding", description: "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates." },
@@ -93,6 +94,7 @@ export const TAGS = [
   { name: "Roles", description: "Admin roles: permission sets granted to groups." },
   { name: "Signing keys", description: "Token signing keys (public parts only)." },
   { name: "Monitoring", description: "Overview statistics, performance and the audit log." },
+  { name: "Backup", description: "Whole-database export and restore for disaster recovery (docs/dr.md)." },
   { name: "Recovery", description: "Break-glass administrator reset (bootstrap token only)." },
 ] as const;
 export type Tag = (typeof TAGS)[number]["name"];

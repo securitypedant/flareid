@@ -1,5 +1,6 @@
 import { DOMParser, type Element as XmlElement } from "@xmldom/xmldom";
 import { normalizeCertPem } from "./x509.js";
+import { logAudit } from "../audit.js";
 
 const NS_MD = "urn:oasis:names:tc:SAML:2.0:metadata";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
@@ -282,9 +283,7 @@ export async function refreshSpMetadata(env: import("../../env.js").Env): Promis
         )
         .run();
       if (drifts.length) {
-        await env.DB.prepare("INSERT INTO audit_log (at, actor_upn, action, target, details) VALUES (?, 'cron', 'saml.metadata_refresh_held', ?, ?)")
-          .bind(now, sp.entity_id, JSON.stringify({ held: drifts }))
-          .run();
+        await logAudit(env, { id: null, upn: "cron" }, "saml.metadata_refresh_held", sp.entity_id, { held: drifts });
       }
       refreshed++;
     } catch (e) {

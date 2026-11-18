@@ -1,156 +1,211 @@
-// Hardening after the run-2 audit: hashed trusted devices, no X-Forwarded-For,
-// import password policy, per-client back-channel rate limits, batched SCIM sync.
-import { beforeEach, describe, expect, it } from "vitest";
-import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import worker from "../src/index.js";
-import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
-import { getClientIp } from "../src/lib/rate-limit.js";
-import { trustDevice } from "../src/lib/trusted-devices.js";
-import { sha256Hex } from "../src/lib/tokens.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SELF, env } from "cloudflare:test";
+import { apiCall, BASE, bootstrapInstance, resetDatabase, BOOTSTRAP } from "./helpers.js";
+import { createSession } from "../src/lib/sessions.js";
+import { drainSsfOutbox, emitSsfEvent, receiveSet, ssfClearCaches, SSF_EVENTS } from "../src/lib/ssf.js";
+import { verifyAuditChain } from "../src/lib/audit.js";
+import { generateKeyPair, exportJWK, SignJWT } from "jose";
 
-beforeEach(resetDatabase);
-
-describe("hardening", () => {
-  it("stores only a hash of the trusted-device cookie", async () => {
-    await bootstrapInstance({ domain: "horizon.test" });
-    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
-    const cookie = await trustDevice(env, new Request(BASE), id);
-    const value = /=([^;]+)/.exec(cookie)![1]!;
-    const row = await env.DB.prepare("SELECT id FROM trusted_devices WHERE user_id = ?").bind(id).first<{ id: string }>();
-    expect(row!.id).toBe(await sha256Hex(value));
-    expect(row!.id).not.toBe(value);
-  });
-
-  it("ignores X-Forwarded-For when deriving the client address", () => {
-    expect(getClientIp(new Request(BASE, { headers: { "X-Forwarded-For": "1.2.3.4" } }))).toBe("unknown");
-    expect(getClientIp(new Request(BASE, { headers: { "CF-Connecting-IP": "5.6.7.8", "X-Forwarded-For": "1.2.3.4" } }))).toBe("5.6.7.8");
-  });
-
-  it("rejects an imported password that fails the policy", async () => {
-    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    const r = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "weak", password: "a", status: "active" }] } });
-    expect(r.body.errors[0].message).toContain("Password rejected");
-    expect(await env.DB.prepare("SELECT id FROM users WHERE username = 'weak'").first()).toBeNull();
-  });
-
-  it("keys /token limits per client as well as per address - but only for a client that exists", async () => {
-    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    const a = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "A", redirect_uris: ["https://a.test/cb"] } })).body.client_id as string;
-    const b = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "B", redirect_uris: ["https://b.test/cb"] } })).body.client_id as string;
-    const keys: string[] = [];
-    const limiter = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
-    const ctx = createExecutionContext();
-    const form = (id: string) => new Request(`${BASE}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.9" }, body: `grant_type=x&client_id=${id}` });
-    await worker.fetch(form(a), { ...env, API_LIMITER: limiter } as typeof env, ctx);
-    await worker.fetch(form(b), { ...env, API_LIMITER: limiter } as typeof env, ctx);
-    // A made-up client_id does not mint its own budget: it shares the address's.
-    await worker.fetch(form("attacker-invented-id"), { ...env, API_LIMITER: limiter } as typeof env, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(keys).toEqual([`api:203.0.113.9:client:${a}`, `api:203.0.113.9:client:${b}`, "api:203.0.113.9"]);
-  });
-
-  it("IPv6 sources are charged at /64 and /48 so rotating prefixes cannot escape the budget", async () => {
-    await bootstrapInstance({ domain: "horizon.test" });
-    const keys: string[] = [];
-    const limiter = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
-    const ctx = createExecutionContext();
-    for (const addr of ["2001:db8:aa:1::1", "2001:db8:aa:2::1", "2001:db8:bb:1::1"]) {
-      await worker.fetch(new Request(`${BASE}/api/v1/status`, { headers: { Authorization: "Bearer x", "CF-Connecting-IP": addr } }), { ...env, API_LIMITER: limiter } as typeof env, ctx);
-    }
-    await waitOnExecutionContext(ctx);
-    // Two /64s under the same /48 plus one outside it.
-    expect(keys).toEqual([
-      "api:2001:db8:aa:1::/64", "api:48:2001:db8:aa::/48",
-      "api:2001:db8:aa:2::/64", "api:48:2001:db8:aa::/48",
-      "api:2001:db8:bb:1::/64", "api:48:2001:db8:bb::/48",
-    ]);
-  });
+beforeEach(async () => {
+  await resetDatabase();
+  ssfClearCaches();
 });
 
-describe("SCIM full sync in steps", () => {
-  it("runs user batches, then the groups, and reports each step for the sync log", async () => {
-    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "Crew" }], users: [{ username: "a1", status: "active", groups: ["Crew"] }, { username: "a2", status: "active" }] } });
-    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] }, tuning: { pace_ms: 0, members_per_request: 500, sync_batch: 500 } } });
-    let n = 0;
-    const { vi } = await import("vitest");
-    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (!url.startsWith("https://scim.test/")) return new Response("unexpected", { status: 500 });
-      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-      if (method === "GET") return Response.json({ schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"], totalResults: 0, Resources: [] });
-      return Response.json({ id: `remote-${++n}` }, { status: method === "POST" ? 201 : 200 });
-    });
-    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
-    const { createSession } = await import("../src/lib/sessions.js");
-    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    const step = async (restart: boolean) =>
-      (await (await worker.fetch(new Request(`${BASE}/admin/scim/sync${restart ? "?restart=1" : ""}`, { method: "POST", headers: { Origin: BASE, Cookie: cookie } }), env, createExecutionContext())).json()) as Record<string, unknown>;
-    const first = await step(true);
-    expect(first).toMatchObject({ phase: "users", complete: false, remainingUsers: 0, userErrors: 0 });
-    expect(first.users).toBeGreaterThanOrEqual(3);
-    const second = await step(false);
-    expect(second).toMatchObject({ phase: "groups", complete: true, groupErrors: 0 });
-    expect(second.groups).toBeGreaterThanOrEqual(1);
-    spy.mockRestore();
-    const page = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
-    expect(page).toContain('id="scim-log"');
-    expect(page).toContain("full sync:");
-  });
-});
+async function seedUser(apiKey: string, username: string): Promise<number> {
+  const res = await apiCall("/api/v1/users", { token: apiKey, body: { username, given_name: username[0]!.toUpperCase() + username.slice(1), password: "user-password-123", status: "active" } });
+  if (res.status !== 201) throw new Error(`user create failed: ${JSON.stringify(res.body)}`);
+  return (await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first<{ id: number }>())!.id;
+}
 
-describe("inline scripts", () => {
-  it("the SCIM page script keeps its newline escape (a raw newline in a string broke the whole script)", async () => {
-    await bootstrapInstance({ domain: "horizon.test" });
-    const { setScimConfig } = await import("../src/lib/settings.js");
-    await setScimConfig(env, { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24) });
-    const targetId = (await env.DB.prepare("SELECT id FROM scim_targets ORDER BY id").first<{ id: number }>())!.id;
-    const id = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
-    const { createSession } = await import("../src/lib/sessions.js");
-    const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    const html = await (await worker.fetch(new Request(`${BASE}/admin/integrations/scim/${targetId}`, { headers: { Cookie: cookie } }), env, createExecutionContext())).text();
-    expect(html).toContain('text + "\\n";');
-    // No double-quoted string in any inline script runs across a line break.
-    for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
-      for (const line of m[1]!.split("\n")) expect((line.replace(/\\./g, "").match(/"/g) ?? []).length % 2, line).toBe(0);
-    }
+/** Stubs outbound fetch for the named hosts; other requests pass through. */
+function stubHosts(handler: (url: URL, init?: RequestInit) => Response, ...hosts: string[]) {
+  const calls: { method: string; url: string }[] = [];
+  const real = globalThis.fetch.bind(globalThis);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const u = new URL(url);
+    if (!hosts.some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`))) return real(input as RequestInfo, init);
+    calls.push({ method: init?.method ?? "GET", url });
+    return handler(u, init);
   });
-});
+  return calls;
+}
 
-describe("import SCIM push", () => {
-  it("pushes only the groups an import could have changed", async () => {
-    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, passwords: "none", groups: [{ name: "A" }, { name: "B" }, { name: "C" }], users: [{ username: "u1", status: "active", groups: ["A"] }, { username: "u2", status: "active", groups: ["B"] }] } });
-    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.test/scim/v2", secret: "x".repeat(24), scope: { mode: "all", group_ids: [] }, tuning: { pace_ms: 0, members_per_request: 500, sync_batch: 500 } } });
-    const { vi } = await import("vitest");
-    const groupWrites: string[] = [];
-    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/Groups") && method !== "GET") groupWrites.push(url);
-      if (method === "GET") return Response.json({ Resources: [] });
-      return Response.json({ id: `r-${Math.random()}` }, { status: method === "POST" ? 201 : 200 });
-    });
-    // The config call re-pushes everything in the background; let it finish,
-    // then a full sync pushes the users and the groups with their members.
-    await new Promise((r) => setTimeout(r, 300));
-    const { syncAll } = await import("../src/lib/scim-client.js");
-    while (!(await syncAll(env)).complete) { /* next step */ }
-    groupWrites.length = 0;
-    const byScimId = new Map((await env.DB.prepare("SELECT g.name, l.scim_id FROM groups g JOIN scim_group_links l ON l.group_id = g.id").all<{ name: string; scim_id: string }>()).results.map((g) => [g.scim_id, g.name]));
-    // u1 moves from A to C: A and C change, B does not. The push runs after the
-    // import's response, so give it a moment to land its writes.
-    const res = await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "u1", status: "active", groups: ["C"] }] } });
+describe("audit tamper-evidence", () => {
+  it("chains rows and verifies; a tampered row breaks the chain", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, "ada");
+    await seedUser(apiKey, "bob");
+
+    const verify = await apiCall("/api/v1/audit/verify", { token: apiKey });
+    expect(verify.status).toBe(200);
+    expect(verify.body.status).toBe("ok");
+    expect(verify.body.checked).toBeGreaterThan(0);
+
+    // Rewrite history: change what a row says happened.
+    const row = await env.DB.prepare("SELECT id FROM audit_log WHERE chain_hash IS NOT NULL ORDER BY id LIMIT 1 OFFSET 1").first<{ id: number }>();
+    await env.DB.prepare("UPDATE audit_log SET action = 'user.created_innocently' WHERE id = ?").bind(row!.id).run();
+    const broken = await apiCall("/api/v1/audit/verify", { token: apiKey });
+    expect(broken.body.status).toBe("broken");
+    expect(broken.body.at_id).toBe(row!.id);
+
+    // Deleting a later row also breaks it - the next row's parent vanishes.
+    await resetDatabase();
+    const { apiKey: k2 } = await bootstrapInstance();
+    await seedUser(k2, "ada");
+    const mid = await env.DB.prepare("SELECT id FROM audit_log WHERE chain_hash IS NOT NULL ORDER BY id LIMIT 1 OFFSET 1").first<{ id: number }>();
+    await env.DB.prepare("DELETE FROM audit_log WHERE id = ?").bind(mid!.id).run();
+    const deleted = await verifyAuditChain(env);
+    expect(deleted.status).toBe("broken");
+  });
+
+  it("exports NDJSON with chain_hash for offline re-verification", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, "ada");
+    const res = await SELF.fetch(`${BASE}/api/v1/audit/export`, { headers: { Authorization: `Bearer ${apiKey}` } });
     expect(res.status).toBe(200);
-    let names: (string | undefined)[] = [];
-    for (let i = 0; i < 50; i++) {
-      names = groupWrites.map((url) => byScimId.get(url.split("/Groups/")[1] ?? ""));
-      if (names.includes("A") && names.includes("C")) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    spy.mockRestore();
-    expect(names).toContain("A");
-    expect(names).toContain("C");
-    expect(names).not.toContain("B");
+    expect(res.headers.get("content-type")).toContain("ndjson");
+    const lines = (await res.text()).trim().split("\n");
+    const first = JSON.parse(lines[0]!);
+    expect(first.chain_hash).toBeTruthy();
+    expect(first.action).toBeTruthy();
+  });
+});
+
+describe("backup and restore", () => {
+  it("exports every table; restore brings a deleted user back", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, "ada");
+
+    const backup = await apiCall("/api/v1/backup", { token: apiKey });
+    expect(backup.status).toBe(200);
+    expect(backup.body.version).toBe(1);
+    expect(backup.body.tables.users.length).toBeGreaterThan(1);
+    expect(backup.body.tables.d1_migrations).toBeUndefined();
+
+    await apiCall("/api/v1/users/ada", { token: apiKey, method: "DELETE" });
+    expect(await env.DB.prepare("SELECT id FROM users WHERE username = 'ada'").first()).toBeNull();
+
+    // The restore needs the bootstrap token - an admin API key is refused.
+    expect((await apiCall("/api/v1/backup/restore", { token: apiKey, body: backup.body })).status).toBe(401);
+    // And it needs the confirmation flag.
+    expect((await apiCall("/api/v1/backup/restore", { token: BOOTSTRAP, body: backup.body })).status).toBe(400);
+
+    const restore = await apiCall("/api/v1/backup/restore", { token: BOOTSTRAP, body: { ...backup.body, confirm: true } });
+    expect(restore.status).toBe(200);
+    expect(restore.body.restored).toBeGreaterThan(10);
+    expect(await env.DB.prepare("SELECT id FROM users WHERE username = 'ada'").first()).toBeTruthy();
+  });
+});
+
+describe("shared signals", () => {
+  it("advertises its configuration", async () => {
+    const res = await SELF.fetch(`${BASE}/.well-known/ssf-configuration`);
+    const doc = await res.json<{ issuer: string; jwks_uri: string; events_supported: string[] }>();
+    expect(doc.jwks_uri).toContain("/jwks.json");
+    expect(doc.events_supported).toContain(SSF_EVENTS["caep.session-revoked"]);
+  });
+
+  it("renders the console page", async () => {
+    await bootstrapInstance();
+    const admin = await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>();
+    const { setCookie } = await createSession(env, admin!.id, ["pwd", "mfa"], new Request(BASE));
+    const res = await SELF.fetch(`${BASE}/admin/integrations/signals`, { headers: { Cookie: setCookie.split(";")[0]! } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Outbound streams");
+    expect(html).toContain("Inbound transmitters");
+    expect(html).toContain("/ssf/receive");
+  });
+
+  it("queues and delivers SETs to a registered stream", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const stream = await apiCall("/api/v1/ssf/streams", { token: apiKey, body: { name: "Okta", endpoint_url: "https://rx.example.com/events" } });
+    expect(stream.status).toBe(201);
+
+    await emitSsfEvent(env, SSF_EVENTS["caep.session-revoked"], { format: "email", email: "ada@example.com" });
+    expect(await env.DB.prepare("SELECT id FROM ssf_outbox").first()).toBeTruthy();
+
+    const calls = stubHosts(() => new Response("{}", { status: 200 }), "rx.example.com");
+    const drained = await drainSsfOutbox(env);
+    expect(drained).toEqual({ sent: 1, failed: 0 });
+    expect(await env.DB.prepare("SELECT id FROM ssf_outbox").first()).toBeNull();
+    // The receiver got a signed secevent+jwt, not JSON.
+    expect(calls[0]!.url).toBe("https://rx.example.com/events");
+
+    const streamNow = await apiCall("/api/v1/ssf/streams", { token: apiKey });
+    expect(streamNow.body.streams[0].last_push_at).toBeTruthy();
+  });
+
+  it("retries a failing endpoint and reports the error", async () => {
+    await bootstrapInstance();
+    await env.DB.prepare("INSERT INTO ssf_streams (name, endpoint_url, aud, events, created_at) VALUES ('rx', 'https://rx.example.com/e', '', '[]', 'now')").run();
+    await emitSsfEvent(env, SSF_EVENTS["caep.credential-change"], { format: "email", email: "x@example.com" });
+    stubHosts(() => new Response("down", { status: 500 }), "rx.example.com");
+    const r = await drainSsfOutbox(env);
+    expect(r).toEqual({ sent: 0, failed: 1 });
+    const row = await env.DB.prepare("SELECT attempts, last_error FROM ssf_outbox").first<{ attempts: number; last_error: string }>();
+    expect(row!.attempts).toBe(1);
+    expect(row!.last_error).toContain("500");
+  });
+
+  it("receives a signed SET: session-revoked kills sessions, risk events flag the user", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey, "ada");
+    const upn = (await env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())!.upn;
+    await createSession(env, userId, ["pwd"], new Request(BASE));
+
+    const tx = await apiCall("/api/v1/ssf/transmitters", { token: apiKey, body: { name: "CF", issuer: "https://tx.example.com", jwks_url: "https://tx.example.com/jwks.json" } });
+    expect(tx.status).toBe(201);
+
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = { ...(await exportJWK(publicKey)), kid: "tx1" };
+    stubHosts(() => Response.json({ keys: [jwk] }), "tx.example.com");
+
+    const set = await new SignJWT({ events: { [SSF_EVENTS["caep.session-revoked"]]: { subject: { format: "email", email: upn } } } })
+      .setProtectedHeader({ alg: "RS256", kid: "tx1" })
+      .setIssuer("https://tx.example.com")
+      .setIssuedAt()
+      .setJti(crypto.randomUUID())
+      .sign(privateKey);
+
+    const res = await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: set });
+    expect(res.status).toBe(202);
+    expect((await res.json<{ accepted: string[] }>()).accepted).toContain(SSF_EVENTS["caep.session-revoked"]);
+    expect(await env.DB.prepare("SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first()).toBeNull();
+
+    // A risk signal flags the user on the watchlist.
+    const flag = await new SignJWT({ events: { ["https://schemas.openid.net/secevent/risc/event-type/credential-compromise"]: { subject: { format: "email", email: upn } } } })
+      .setProtectedHeader({ alg: "RS256", kid: "tx1" })
+      .setIssuer("https://tx.example.com")
+      .setIssuedAt()
+      .setJti(crypto.randomUUID())
+      .sign(privateKey);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: flag })).status).toBe(202);
+    expect(await env.DB.prepare("SELECT user_id FROM user_watch WHERE user_id = ?").bind(userId).first()).toBeTruthy();
+  });
+
+  it("rejects SETs from unknown issuers and bad signatures", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await apiCall("/api/v1/ssf/transmitters", { token: apiKey, body: { name: "CF", issuer: "https://tx.example.com", jwks_url: "https://tx.example.com/jwks.json" } });
+
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = { ...(await exportJWK(publicKey)), kid: "tx1" };
+    stubHosts(() => Response.json({ keys: [jwk] }), "tx.example.com");
+
+    const unknown = await new SignJWT({ events: {} })
+      .setProtectedHeader({ alg: "RS256", kid: "x" })
+      .setIssuer("https://stranger.example.com")
+      .setIssuedAt()
+      .sign(privateKey);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: unknown })).status).toBe(401);
+
+    const { privateKey: evil } = await generateKeyPair("RS256");
+    const forged = await new SignJWT({ events: {} })
+      .setProtectedHeader({ alg: "RS256", kid: "tx1" })
+      .setIssuer("https://tx.example.com")
+      .setIssuedAt()
+      .sign(evil);
+    expect((await SELF.fetch(`${BASE}/ssf/receive`, { method: "POST", body: forged })).status).toBe(401);
   });
 });

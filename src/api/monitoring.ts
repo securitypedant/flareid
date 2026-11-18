@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import { LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
+import { verifyAuditChain } from "../lib/audit.js";
 import { defineRoute } from "./openapi.js";
 import { AuditEntrySchema } from "./schemas.js";
 
@@ -114,6 +115,73 @@ defineRoute(
         }
         return { ...e, details: parsed };
       }),
+    });
+  }
+);
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/audit/verify",
+    tag: "Monitoring",
+    permission: "audit:read",
+    summary: "Verify the audit log's tamper-evident chain",
+    description:
+      "Every audit row stores a SHA-256 chain over the previous row's hash and its own contents. This recomputes the chain and reports `ok`, `fork` (two rows share a parent - possible under concurrent writes), or `broken` (a row was altered or removed). Rows written before chaining was introduced are skipped and counted in `unchained`.",
+    query: z.object({ limit: z.string().optional().openapi({ description: "How many of the newest rows to check, at most 10,000 (default)." }) }),
+    response: z.object({
+      checked: z.number(),
+      unchained: z.number(),
+      status: z.enum(["ok", "empty", "broken", "fork"]),
+      at_id: z.number().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  async (c) => {
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 10_000) || 10_000, 1), 10_000);
+    return c.json(await verifyAuditChain(c.env, limit));
+  }
+);
+
+/** The export caps out at this many rows per call; use filters or another call after the last row's `at` for more. */
+const AUDIT_EXPORT_MAX = 100_000;
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/audit/export",
+    tag: "Monitoring",
+    permission: "audit:read",
+    summary: "Export the audit log",
+    description:
+      "The same filters as GET /api/v1/audit, as a download instead of a page. `format` is `ndjson` (default, one entry per line) or `csv`. `chain_hash` is included so the export can be re-verified offline. At most 100,000 rows per call.",
+    query: z.object({
+      format: z.enum(["ndjson", "csv"]).optional(),
+      search: z.string().optional(),
+      actor: z.string().optional(),
+      category: z.string().optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+    }),
+    response: z.string().openapi({ description: "NDJSON or CSV body." }),
+  },
+  async (c) => {
+    const filters = logFilters({ search: c.req.query("search"), actor: c.req.query("actor"), category: c.req.query("category"), from: c.req.query("from"), to: c.req.query("to") });
+    const { entries } = await queryAuditLog(c.env, filters, AUDIT_EXPORT_MAX, 0);
+    const day = new Date().toISOString().slice(0, 10);
+    if (c.req.query("format") === "csv") {
+      const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const lines = [
+        "at,actor_upn,action,target,ip,user_agent,details,chain_hash",
+        ...entries.map((e) => [e.at, e.actor_upn, e.action, e.target, e.ip, e.user_agent, e.details, e.chain_hash].map(esc).join(",")),
+      ];
+      return new Response(lines.join("\n"), {
+        headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="flareid-audit-${day}.csv"` },
+      });
+    }
+    const ndjson = entries.map(({ actor_user_id: _id, ...e }) => JSON.stringify(e)).join("\n");
+    return new Response(ndjson, {
+      headers: { "content-type": "application/x-ndjson; charset=utf-8", "content-disposition": `attachment; filename="flareid-audit-${day}.ndjson"` },
     });
   }
 );

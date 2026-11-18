@@ -348,7 +348,8 @@ async function reconcileWatchlist(env: Env): Promise<void> {
 }
 
 /** Flags a user; a manual flag never lapses, an automatic one expires. */
-export async function flagUser(env: Env, userId: number, reason: string, source: "manual" | "auto:fails", ttlHours = 0): Promise<void> {
+export async function flagUser(env: Env, userId: number, reason: string, source: "manual" | "auto:fails" | "ssf", ttlHours = 0): Promise<void> {
+  const already = await env.DB.prepare("SELECT 1 AS x FROM user_watch WHERE user_id = ?").bind(userId).first();
   await env.DB.prepare(
     `INSERT INTO user_watch (user_id, reason, source, flagged_at, expires_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(user_id) DO UPDATE SET reason = excluded.reason, source = excluded.source, expires_at = excluded.expires_at`
@@ -359,6 +360,15 @@ export async function flagUser(env: Env, userId: number, reason: string, source:
   await env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(group.id, userId).run();
   const { pushUsersById } = await import("./scim-client.js");
   await pushUsersById(env, [userId]);
+  // New flags are a risk signal: receivers should force re-auth/step-up.
+  // Refreshed flags don't re-emit - a repeating auto-flag isn't new news.
+  if (!already) {
+    const upn = (await env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn;
+    if (upn) {
+      const { emitAndDrain, SSF_EVENTS } = await import("./ssf.js");
+      await emitAndDrain(env, SSF_EVENTS["risc.credential-change-required"], { format: "email", email: upn }).catch(() => undefined);
+    }
+  }
 }
 
 export async function unflagUser(env: Env, userId: number): Promise<void> {

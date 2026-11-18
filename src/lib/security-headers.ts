@@ -72,7 +72,7 @@ export const csrfProtection: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
 };
 
 /** Public documents relying parties fetch and may cache; everything else is no-store. */
-const PUBLIC_CACHEABLE = new Set(["/.well-known/openid-configuration", "/jwks.json", "/saml/metadata", "/saml/cert.pem", "/health"]);
+const PUBLIC_CACHEABLE = new Set(["/.well-known/openid-configuration", "/.well-known/ssf-configuration", "/jwks.json", "/saml/metadata", "/saml/cert.pem", "/health"]);
 
 /** Security response headers, on every response. */
 export const securityHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {

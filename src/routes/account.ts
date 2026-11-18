@@ -39,6 +39,7 @@ import { logAudit } from "../lib/audit.js";
 import { getRateLimitPolicy, recordRateAttempt } from "../lib/rate-limit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { createSession, listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
+import { emitAndDrain, SSF_EVENTS } from "../lib/ssf.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from "../lib/authorize-state.js";
 import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
@@ -909,6 +910,9 @@ account.post("/account/sessions/:id/revoke", async (c) => {
   if (sessions.some((s) => s.id === sessionId)) {
     await revokeSession(c.env, sessionId);
     await logAudit(c.env, user, "user.session_revoked_self", user.upn, undefined, c.req.raw);
+    c.executionCtx.waitUntil(
+      emitAndDrain(c.env, SSF_EVENTS["caep.session-revoked"], { format: "email", email: user.upn }).catch(() => undefined)
+    );
   }
   return c.redirect("/account/security?saved=session", 302);
 });
@@ -917,6 +921,11 @@ account.post("/account/sessions/revoke-others", async (c) => {
   const user = c.get("user");
   const count = await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
   await logAudit(c.env, user, "user.sessions_revoked_all_others", user.upn, { count }, c.req.raw);
+  if (count > 0) {
+    c.executionCtx.waitUntil(
+      emitAndDrain(c.env, SSF_EVENTS["caep.session-revoked"], { format: "email", email: user.upn }).catch(() => undefined)
+    );
+  }
   return c.redirect("/account/security?saved=sessions-others", 302);
 });
 
@@ -1095,6 +1104,9 @@ account.post("/account/password", async (c) => {
   const rotated = await createSession(c.env, user.id, amr, c.req.raw);
 
   await logAudit(c.env, user, "user.password_changed_self", user.upn, undefined, c.req.raw);
+  c.executionCtx.waitUntil(
+    emitAndDrain(c.env, SSF_EVENTS["caep.credential-change"], { format: "email", email: user.upn }).catch(() => undefined)
+  );
 
   const res = c.redirect("/account/security?saved=password", 302);
   res.headers.append("Set-Cookie", rotated.setCookie);

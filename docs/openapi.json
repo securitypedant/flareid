@@ -69,6 +69,10 @@
       "description": "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist."
     },
     {
+      "name": "Signals",
+      "description": "Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters."
+    },
+    {
       "name": "Email",
       "description": "Outbound email settings and templates."
     },
@@ -95,6 +99,10 @@
     {
       "name": "Monitoring",
       "description": "Overview statistics, performance and the audit log."
+    },
+    {
+      "name": "Backup",
+      "description": "Whole-database export and restore for disaster recovery (docs/dr.md)."
     },
     {
       "name": "Recovery",
@@ -1979,6 +1987,92 @@
           "lists",
           "list_status",
           "watchlist"
+        ]
+      },
+      "SsfStream": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "endpoint_url": {
+            "type": "string"
+          },
+          "aud": {
+            "type": "string",
+            "description": "Audience the receiver expects in the SET; empty uses the endpoint's host."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Event URIs this stream gets; empty means all supported."
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "last_push_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queued": {
+            "type": "number",
+            "description": "Undelivered events waiting in the outbox."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "endpoint_url",
+          "aud",
+          "events",
+          "disabled",
+          "created_at",
+          "last_push_at",
+          "last_error",
+          "queued"
+        ]
+      },
+      "SsfTransmitter": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "jwks_url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "issuer",
+          "jwks_url",
+          "created_at"
         ]
       },
       "ImportResult": {
@@ -12187,6 +12281,215 @@
         }
       }
     },
+    "/api/v1/audit/verify": {
+      "get": {
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Verify the audit log's tamper-evident chain",
+        "description": "Every audit row stores a SHA-256 chain over the previous row's hash and its own contents. This recomputes the chain and reports `ok`, `fork` (two rows share a parent - possible under concurrent writes), or `broken` (a row was altered or removed). Rows written before chaining was introduced are skipped and counted in `unchained`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "audit:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "How many of the newest rows to check, at most 10,000 (default)."
+            },
+            "required": false,
+            "description": "How many of the newest rows to check, at most 10,000 (default).",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "checked": {
+                      "type": "number"
+                    },
+                    "unchained": {
+                      "type": "number"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "empty",
+                        "broken",
+                        "fork"
+                      ]
+                    },
+                    "at_id": {
+                      "type": "number"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "checked",
+                    "unchained",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit/export": {
+      "get": {
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Export the audit log",
+        "description": "The same filters as GET /api/v1/audit, as a download instead of a page. `format` is `ndjson` (default, one entry per line) or `csv`. `chain_hash` is included so the export can be re-verified offline. At most 100,000 rows per call.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "audit:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ndjson",
+                "csv"
+              ]
+            },
+            "required": false,
+            "name": "format",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "search",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "actor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "category",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "description": "NDJSON or CSV body."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ldap/apps": {
       "get": {
         "tags": [
@@ -13239,6 +13542,764 @@
           },
           "404": {
             "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backup": {
+      "get": {
+        "tags": [
+          "Backup"
+        ],
+        "summary": "Export the whole database",
+        "description": "A JSON bundle `{ version: 1, at, tables: { name: [rows] } }` covering every table except the migration ledger. It contains everything an attacker would want - password hashes, encrypted secrets, session state - so it needs an `admin` permission key and should be handled like the database itself. Restore with POST /api/v1/backup/restore (bootstrap token only).",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "admin",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "description": "The backup bundle."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backup/restore": {
+      "post": {
+        "tags": [
+          "Backup"
+        ],
+        "summary": "Restore a backup bundle",
+        "description": "Bootstrap token only. Body is the bundle from GET /api/v1/backup plus `confirm: true`. **Wipes every table and rewrites it** - the bundle's tables and columns are validated against this schema before the first delete, so a bundle from a newer schema aborts cleanly. Apply the target's migrations first.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "bootstrap-token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "restored": {
+                      "type": "number"
+                    },
+                    "tables": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "restored",
+                    "tables"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssf/streams": {
+      "get": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "List outbound signal streams",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "streams": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SsfStream"
+                      }
+                    },
+                    "events_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "streams",
+                    "events_supported"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Register an outbound stream",
+        "description": "A receiver endpoint we push signed SETs to (application/secevent+jwt). `events` selects which of the supported CAEP/RISC URIs it gets; an empty list means all.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "endpoint_url": {
+                    "type": "string"
+                  },
+                  "aud": {
+                    "type": "string"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                        "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                        "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                        "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "endpoint_url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SsfStream"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssf/streams/{id}": {
+      "patch": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Update an outbound stream",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "endpoint_url": {
+                    "type": "string"
+                  },
+                  "aud": {
+                    "type": "string"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                        "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                        "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                        "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"
+                      ]
+                    }
+                  },
+                  "disabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SsfStream"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Delete an outbound stream",
+        "description": "Queued undelivered events for the stream go with it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssf/outbox/drain": {
+      "post": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Retry undelivered events now",
+        "description": "The outbox drains on emit and on the hourly cron; this forces a pass - useful after fixing a receiver that was down.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sent": {
+                      "type": "number"
+                    },
+                    "failed": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "sent",
+                    "failed"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssf/transmitters": {
+      "get": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "List trusted inbound transmitters",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "transmitters": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SsfTransmitter"
+                      }
+                    }
+                  },
+                  "required": [
+                    "transmitters"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Trust an inbound transmitter",
+        "description": "An issuer whose SETs we accept at POST /ssf/receive, verified against `jwks_url`. A `session-revoked` event for a user's email kills their sessions; a credential/risk event flags them on the risk watchlist for 24h.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "issuer": {
+                    "type": "string"
+                  },
+                  "jwks_url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "issuer",
+                  "jwks_url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SsfTransmitter"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssf/transmitters/{id}": {
+      "delete": {
+        "tags": [
+          "Signals"
+        ],
+        "summary": "Stop trusting a transmitter",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "signals:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
             "content": {
               "application/json": {
                 "schema": {

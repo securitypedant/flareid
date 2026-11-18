@@ -28,12 +28,13 @@ import {
   markSetupCompleted,
   validatePassword,
 } from "../lib/settings.js";
-import { logAudit } from "../lib/audit.js";
+import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
+import { drainSsfOutbox } from "../lib/ssf.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
 import {
@@ -470,6 +471,7 @@ const INTEGRATION_PAGES = [
   { key: "federation", label: "Federation" },
   { key: "email", label: "Email" },
   { key: "cf-one", label: "Cloudflare One" },
+  { key: "signals", label: "Signals" },
 ] as const;
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
 
@@ -3218,6 +3220,197 @@ admin.post(`${CFONE}/watch/:uid/remove`, async (c) => {
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_unflagged", upn);
   return c.redirect(`${CFONE}?saved=1`, 302);
+});
+
+const SIGNALS = "/admin/integrations/signals";
+const SSF_EVENT_LABELS: Record<string, string> = {
+  "https://schemas.openid.net/secevent/caep/event-type/session-revoked": "Session revoked (CAEP)",
+  "https://schemas.openid.net/secevent/caep/event-type/credential-change": "Credential change (CAEP)",
+  "https://schemas.openid.net/secevent/risc/event-type/account-disabled": "Account disabled (RISC)",
+  "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required": "Risk flag - re-auth required (RISC)",
+};
+
+interface SsfStreamView {
+  id: number;
+  name: string;
+  endpoint_url: string;
+  aud: string;
+  events: string;
+  disabled: number;
+  last_push_at: string | null;
+  last_error: string | null;
+  queued: number;
+}
+
+admin.get(SIGNALS, async (c) => {
+  const { results: streams } = await c.env.DB.prepare(
+    `SELECT s.*, (SELECT COUNT(*) FROM ssf_outbox o WHERE o.stream_id = s.id) AS queued FROM ssf_streams s ORDER BY s.id`
+  ).all<SsfStreamView>();
+  const { results: transmitters } = await c.env.DB.prepare("SELECT * FROM ssf_transmitters ORDER BY id").all<{ id: number; name: string; issuer: string; jwks_url: string; created_at: string }>();
+  const issuer = c.env.ISSUER_URL;
+  const eventNames = (raw: string): string => {
+    try {
+      const evs = JSON.parse(raw || "[]") as string[];
+      return evs.length ? evs.map((e) => SSF_EVENT_LABELS[e] ?? e).join(", ") : "all events";
+    } catch {
+      return "all events";
+    }
+  };
+  const streamRows = streams.length
+    ? streams
+        .map(
+          (s) => `<tr>
+            <td>${escapeHtml(s.name)}<br/><span class="muted"><code>${escapeHtml(s.endpoint_url)}</code></span></td>
+            <td class="muted">${escapeHtml(eventNames(s.events))}</td>
+            <td class="muted">${s.disabled ? "disabled" : s.last_error ? `<span class="error">${escapeHtml(s.last_error)}</span>` : s.last_push_at ? `pushed ${ts(s.last_push_at)}` : "never pushed"}${s.queued ? `<br/>${s.queued} queued` : ""}</td>
+            <td class="actions">
+              <form method="POST" action="${SIGNALS}/streams/${s.id}/toggle" style="display:inline;"><button class="link-button" type="submit">${s.disabled ? "Enable" : "Disable"}</button></form>
+              <form method="POST" action="${SIGNALS}/streams/${s.id}/delete" style="display:inline;" ${confirmAttrs(`Delete stream "${s.name}"? Queued events go with it.`)}><button class="link-button" type="submit">Delete</button></form>
+            </td>
+          </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">No streams yet.</td></tr>`;
+  const txRows = transmitters.length
+    ? transmitters
+        .map(
+          (t) => `<tr>
+            <td>${escapeHtml(t.name)}<br/><span class="muted"><code>${escapeHtml(t.issuer)}</code></span></td>
+            <td class="muted"><code>${escapeHtml(t.jwks_url)}</code></td>
+            <td class="actions">
+              <form method="POST" action="${SIGNALS}/transmitters/${t.id}/delete" style="display:inline;" ${confirmAttrs(`Stop trusting "${t.name}"?`)}><button class="link-button" type="submit">Delete</button></form>
+            </td>
+          </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="3" class="muted">No trusted transmitters.</td></tr>`;
+
+  return c.html(
+    layout(
+      c,
+      "Signals",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("drained") ? successBanner(`Outbox drained: ${escapeHtml(c.req.query("drained")!)}.`) : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error") ?? "")}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro("Shared Signals Framework: push CAEP/RISC security events to receivers, and accept them from trusted transmitters. Metadata is at <code>/.well-known/ssf-configuration</code>; SETs are signed with the token signing keys at <code>/jwks.json</code>.")}
+      `)}
+      ${cardSection(`
+        <h2>Outbound streams</h2>
+        <p class="muted">Receivers we push signed Security Event Tokens to. Session revokes, credential changes, account disables and risk flags each queue a SET per stream; failed deliveries retry hourly.</p>
+        <table>
+          <thead><tr><th>Stream</th><th>Events</th><th>Status</th><th></th></tr></thead>
+          <tbody>${streamRows}</tbody>
+        </table>
+        <h3 style="margin-top:18px;">Add a stream</h3>
+        <form method="POST" action="${SIGNALS}/streams">
+          <div class="field-row">
+            <div><label for="s_name">Name</label><input type="text" id="s_name" name="name" placeholder="e.g. Okta SSF receiver" required /></div>
+            <div><label for="s_ep">Endpoint URL</label><input type="url" id="s_ep" name="endpoint_url" placeholder="https://receiver.example.com/events" required /></div>
+            <div><label for="s_aud">Audience</label><input type="text" id="s_aud" name="aud" placeholder="blank = endpoint host" /></div>
+          </div>
+          <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
+            ${Object.entries(SSF_EVENT_LABELS)
+              .map(([uri, label]) => `<label style="display:flex; align-items:center; gap:6px; font-weight:500;"><input type="checkbox" name="events" value="${escapeHtml(uri)}" style="width:auto;" /> ${escapeHtml(label)}</label>`)
+              .join("")}
+          </div>
+          <p class="muted" style="margin:0 0 12px;">Tick none to send every supported event.</p>
+          <button class="secondary" type="submit">Add stream</button>
+        </form>
+        ${streams.some((s) => s.queued) ? `<form method="POST" action="${SIGNALS}/drain" style="margin-top:10px;"><button class="secondary" type="submit">Retry queued events now</button></form>` : ""}
+      `)}
+      ${cardSection(`
+        <h2>Inbound transmitters</h2>
+        <p class="muted">Issuers whose SETs we accept at <code>${escapeHtml(issuer)}/ssf/receive</code>, verified against their JWKS. A session-revoked event kills the person's sessions; a credential or risk event puts them on the risk watchlist for 24h.</p>
+        <table>
+          <thead><tr><th>Transmitter</th><th>JWKS</th><th></th></tr></thead>
+          <tbody>${txRows}</tbody>
+        </table>
+        <h3 style="margin-top:18px;">Trust a transmitter</h3>
+        <form method="POST" action="${SIGNALS}/transmitters">
+          <div class="field-row">
+            <div><label for="t_name">Name</label><input type="text" id="t_name" name="name" placeholder="e.g. Cloudflare risk stream" required /></div>
+            <div><label for="t_iss">Issuer</label><input type="text" id="t_iss" name="issuer" placeholder="https://transmitter.example.com" required /></div>
+            <div><label for="t_jwks">JWKS URL</label><input type="url" id="t_jwks" name="jwks_url" placeholder="https://transmitter.example.com/jwks.json" required /></div>
+          </div>
+          <button class="secondary" type="submit">Trust transmitter</button>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "Signals" }]
+    )
+  );
+});
+
+admin.post(`${SIGNALS}/streams`, async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const name = String(body.name ?? "").trim();
+  const endpoint = String(body.endpoint_url ?? "").trim();
+  const aud = String(body.aud ?? "").trim();
+  const rawEvents = Array.isArray(body.events) ? body.events : body.events !== undefined ? [body.events] : [];
+  const events = rawEvents.filter((e): e is string => typeof e === "string" && Boolean(SSF_EVENT_LABELS[e]));
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") throw new Error("Endpoint URL must be https.");
+  } catch (e) {
+    return c.redirect(`${SIGNALS}?error=${encodeURIComponent(e instanceof Error ? e.message : "Endpoint URL must be https.")}`, 302);
+  }
+  if (!name) return c.redirect(`${SIGNALS}?error=${encodeURIComponent("Name is required.")}`, 302);
+  await c.env.DB.prepare("INSERT INTO ssf_streams (name, endpoint_url, aud, events, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(name, endpoint, aud, JSON.stringify(events), new Date().toISOString())
+    .run();
+  await audit(consoleCtx(c), "ssf.stream_created", name, { endpoint_url: endpoint });
+  return c.redirect(`${SIGNALS}?saved=1`, 302);
+});
+
+admin.post(`${SIGNALS}/streams/:id/toggle`, async (c) => {
+  const id = Number(c.req.param("id"));
+  await c.env.DB.prepare("UPDATE ssf_streams SET disabled = 1 - disabled WHERE id = ?").bind(id).run();
+  await audit(consoleCtx(c), "ssf.stream_toggled", String(id));
+  return c.redirect(`${SIGNALS}?saved=1`, 302);
+});
+
+admin.post(`${SIGNALS}/streams/:id/delete`, async (c) => {
+  const id = Number(c.req.param("id"));
+  const name = (await c.env.DB.prepare("SELECT name FROM ssf_streams WHERE id = ?").bind(id).first<{ name: string }>())?.name ?? String(id);
+  await c.env.DB.prepare("DELETE FROM ssf_streams WHERE id = ?").bind(id).run();
+  await audit(consoleCtx(c), "ssf.stream_deleted", name);
+  return c.redirect(`${SIGNALS}?saved=1`, 302);
+});
+
+admin.post(`${SIGNALS}/drain`, async (c) => {
+  const r = await drainSsfOutbox(c.env);
+  return c.redirect(`${SIGNALS}?drained=${encodeURIComponent(`${r.sent} sent, ${r.failed} failed`)}`, 302);
+});
+
+admin.post(`${SIGNALS}/transmitters`, async (c) => {
+  const body = await c.req.parseBody();
+  const name = String(body.name ?? "").trim();
+  const issuer = String(body.issuer ?? "").trim();
+  const jwksUrl = String(body.jwks_url ?? "").trim();
+  try {
+    const url = new URL(jwksUrl);
+    if (url.protocol !== "https:") throw new Error("JWKS URL must be https.");
+  } catch (e) {
+    return c.redirect(`${SIGNALS}?error=${encodeURIComponent(e instanceof Error ? e.message : "JWKS URL must be https.")}`, 302);
+  }
+  if (!name || !issuer) return c.redirect(`${SIGNALS}?error=${encodeURIComponent("Name and issuer are required.")}`, 302);
+  const dup = await c.env.DB.prepare("SELECT id FROM ssf_transmitters WHERE issuer = ?").bind(issuer).first();
+  if (dup) return c.redirect(`${SIGNALS}?error=${encodeURIComponent(`A transmitter for issuer ${issuer} already exists.`)}`, 302);
+  await c.env.DB.prepare("INSERT INTO ssf_transmitters (name, issuer, jwks_url, created_at) VALUES (?, ?, ?, ?)")
+    .bind(name, issuer, jwksUrl, new Date().toISOString())
+    .run();
+  await audit(consoleCtx(c), "ssf.transmitter_created", name, { issuer });
+  return c.redirect(`${SIGNALS}?saved=1`, 302);
+});
+
+admin.post(`${SIGNALS}/transmitters/:id/delete`, async (c) => {
+  const id = Number(c.req.param("id"));
+  const tx = await c.env.DB.prepare("SELECT name, issuer FROM ssf_transmitters WHERE id = ?").bind(id).first<{ name: string; issuer: string }>();
+  await c.env.DB.prepare("DELETE FROM ssf_transmitters WHERE id = ?").bind(id).run();
+  await audit(consoleCtx(c), "ssf.transmitter_deleted", tx?.name ?? String(id), { issuer: tx?.issuer });
+  return c.redirect(`${SIGNALS}?saved=1`, 302);
 });
 
 admin.get("/admin/integrations/oidc", async (c) => {
@@ -6465,12 +6658,28 @@ admin.get("/admin/audit", async (c) => {
   const filtered = Boolean(search || actor || category || from || to);
   const { total, entries } = await queryAuditLog(c.env, filters, pageSize, (page - 1) * pageSize);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const filterParams = Object.fromEntries(Object.entries({ search, actor, category, from, to }).filter(([, v]) => v !== ""));
+  const exportUrl = `/admin/audit/export${Object.keys(filterParams).length ? `?${new URLSearchParams(filterParams)}` : ""}`;
+  const verifyParam = c.req.query("verify");
+  let verifyBanner = "";
+  if (verifyParam) {
+    const result = await verifyAuditChain(c.env);
+    verifyBanner =
+      result.status === "ok" || result.status === "empty"
+        ? successBanner(
+            result.status === "empty"
+              ? "Nothing to verify - the log is empty."
+              : `Integrity verified: ${result.checked} entries chained end-to-end${result.unchained ? ` (${result.unchained} older entries predate chaining)` : ""}.`
+          )
+        : `<p class="error">Integrity check ${result.status === "fork" ? "found a fork" : "failed"} at entry ${result.at_id}: ${escapeHtml(result.message ?? "")}</p>`;
+  }
 
   return c.html(
     layout(
       c,
       "Log",
       `
+      ${verifyBanner}
             ${cardSection(`
         <form method="GET" class="log-filters">
           <input type="text" name="search" placeholder="Search actor, action, target, IP" value="${escapeHtml(search)}" style="margin-bottom:0;" />
@@ -6482,6 +6691,8 @@ admin.get("/admin/audit", async (c) => {
           ${pageSizeSelect(pageSize)}
           <button class="secondary" type="submit">Filter</button>
           ${filtered ? '<a href="/admin/audit" class="muted">Clear</a>' : ""}
+          <a href="${exportUrl}" class="muted" style="margin-left:auto;">Export</a>
+          <a href="/admin/audit?verify=1" class="muted">Verify integrity</a>
         </form>
       `)}
       ${cardSection(`
@@ -6541,6 +6752,19 @@ admin.get("/admin/audit", async (c) => {
       [{ label: "Admin", href: "/admin" }, { label: "Log" }]
     )
   );
+});
+
+// The filter-bar Export link: the same view as an NDJSON download (the API
+// answers CSV too, at GET /api/v1/audit/export?format=csv).
+admin.get("/admin/audit/export", async (c) => {
+  const filters = logFilters({ search: c.req.query("search"), actor: c.req.query("actor"), category: c.req.query("category"), from: c.req.query("from"), to: c.req.query("to") });
+  const { entries } = await queryAuditLog(c.env, filters, 100_000, 0);
+  const day = new Date().toISOString().slice(0, 10);
+  const ndjson = entries.map(({ actor_user_id: _id, ...e }) => JSON.stringify(e)).join("\n");
+  await audit(consoleCtx(c), "audit.exported", undefined, { entries: entries.length });
+  return new Response(ndjson, {
+    headers: { "content-type": "application/x-ndjson; charset=utf-8", "content-disposition": `attachment; filename="flareid-audit-${day}.ndjson"` },
+  });
 });
 
 // ---------- LDAP ----------

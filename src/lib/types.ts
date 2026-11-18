@@ -55,6 +55,7 @@ export interface AuditLogRow {
   details: string | null;
   ip: string | null;
   user_agent: string | null;
+  chain_hash: string | null;
 }
 
 export interface GroupRow {

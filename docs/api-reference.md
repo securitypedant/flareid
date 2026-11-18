@@ -21,6 +21,7 @@ API version 4.0.0.
 - [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
 - [Federation](#federation) - Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
 - [Cloudflare One](#cloudflare-one) - The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist.
+- [Signals](#signals) - Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters.
 - [Email](#email) - Outbound email settings and templates.
 - [API keys](#api-keys) - Bearer tokens for this API.
 - [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
@@ -28,6 +29,7 @@ API version 4.0.0.
 - [Roles](#roles) - Admin roles: permission sets granted to groups.
 - [Signing keys](#signing-keys) - Token signing keys (public parts only).
 - [Monitoring](#monitoring) - Overview statistics, performance and the audit log.
+- [Backup](#backup) - Whole-database export and restore for disaster recovery (docs/dr.md).
 - [Recovery](#recovery) - Break-glass administrator reset (bootstrap token only).
 
 ## Status
@@ -2446,6 +2448,214 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
+## Signals
+
+Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/ssf/streams` | `signals:read` | List outbound signal streams |
+| `POST` | `/api/v1/ssf/streams` | `signals:write` | Register an outbound stream |
+| `PATCH` | `/api/v1/ssf/streams/{id}` | `signals:write` | Update an outbound stream |
+| `DELETE` | `/api/v1/ssf/streams/{id}` | `signals:write` | Delete an outbound stream |
+| `POST` | `/api/v1/ssf/outbox/drain` | `signals:write` | Retry undelivered events now |
+| `GET` | `/api/v1/ssf/transmitters` | `signals:read` | List trusted inbound transmitters |
+| `POST` | `/api/v1/ssf/transmitters` | `signals:write` | Trust an inbound transmitter |
+| `DELETE` | `/api/v1/ssf/transmitters/{id}` | `signals:write` | Stop trusting a transmitter |
+
+### `GET /api/v1/ssf/streams`
+
+List outbound signal streams.
+
+Permission: `signals:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `streams` | SsfStream[] | yes |  |
+| `events_supported` | string[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ssf/streams`
+
+Register an outbound stream.
+
+A receiver endpoint we push signed SETs to (application/secevent+jwt). `events` selects which of the supported CAEP/RISC URIs it gets; an empty list means all.
+
+Permission: `signals:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `endpoint_url` | string | yes |  |
+| `aud` | string | no |  |
+| `events` | "https://schemas.openid.net/secevent/caep/event-type/session-revoked" \| "https://schemas.openid.net/secevent/caep/event-type/credential-change" \| "https://schemas.openid.net/secevent/risc/event-type/account-disabled" \| "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"[] | no |  |
+
+Response `201`:
+
+`SsfStream`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `endpoint_url` | string | yes |  |
+| `aud` | string | yes | Audience the receiver expects in the SET; empty uses the endpoint's host. |
+| `events` | string[] | yes | Event URIs this stream gets; empty means all supported. |
+| `disabled` | boolean | yes |  |
+| `created_at` | string | yes |  |
+| `last_push_at` | string \| null | yes |  |
+| `last_error` | string \| null | yes |  |
+| `queued` | number | yes | Undelivered events waiting in the outbox. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/ssf/streams/{id}`
+
+Update an outbound stream.
+
+Permission: `signals:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no |  |
+| `endpoint_url` | string | no |  |
+| `aud` | string | no |  |
+| `events` | "https://schemas.openid.net/secevent/caep/event-type/session-revoked" \| "https://schemas.openid.net/secevent/caep/event-type/credential-change" \| "https://schemas.openid.net/secevent/risc/event-type/account-disabled" \| "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"[] | no |  |
+| `disabled` | boolean | no |  |
+
+Response `200`:
+
+`SsfStream`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `endpoint_url` | string | yes |  |
+| `aud` | string | yes | Audience the receiver expects in the SET; empty uses the endpoint's host. |
+| `events` | string[] | yes | Event URIs this stream gets; empty means all supported. |
+| `disabled` | boolean | yes |  |
+| `created_at` | string | yes |  |
+| `last_push_at` | string \| null | yes |  |
+| `last_error` | string \| null | yes |  |
+| `queued` | number | yes | Undelivered events waiting in the outbox. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/ssf/streams/{id}`
+
+Delete an outbound stream.
+
+Queued undelivered events for the stream go with it.
+
+Permission: `signals:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ssf/outbox/drain`
+
+Retry undelivered events now.
+
+The outbox drains on emit and on the hourly cron; this forces a pass - useful after fixing a receiver that was down.
+
+Permission: `signals:write`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sent` | number | yes |  |
+| `failed` | number | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/ssf/transmitters`
+
+List trusted inbound transmitters.
+
+Permission: `signals:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `transmitters` | SsfTransmitter[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/ssf/transmitters`
+
+Trust an inbound transmitter.
+
+An issuer whose SETs we accept at POST /ssf/receive, verified against `jwks_url`. A `session-revoked` event for a user's email kills their sessions; a credential/risk event flags them on the risk watchlist for 24h.
+
+Permission: `signals:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `issuer` | string | yes |  |
+| `jwks_url` | string | yes |  |
+
+Response `201`:
+
+`SsfTransmitter`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `issuer` | string | yes |  |
+| `jwks_url` | string | yes |  |
+| `created_at` | string | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/ssf/transmitters/{id}`
+
+Stop trusting a transmitter.
+
+Permission: `signals:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
 ## Email
 
 Outbound email settings and templates.
@@ -3896,6 +4106,8 @@ Overview statistics, performance and the audit log.
 | `GET` | `/api/v1/stats` | `performance:read` | Overview statistics |
 | `GET` | `/api/v1/performance` | `performance:read` | Request volume, errors and latency |
 | `GET` | `/api/v1/audit` | `audit:read` | Read the audit log |
+| `GET` | `/api/v1/audit/verify` | `audit:read` | Verify the audit log's tamper-evident chain |
+| `GET` | `/api/v1/audit/export` | `audit:read` | Export the audit log |
 
 ### `GET /api/v1/stats`
 
@@ -3975,6 +4187,98 @@ Response `200`:
 | `entries` | AuditEntry[] | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/audit/verify`
+
+Verify the audit log's tamper-evident chain.
+
+Every audit row stores a SHA-256 chain over the previous row's hash and its own contents. This recomputes the chain and reports `ok`, `fork` (two rows share a parent - possible under concurrent writes), or `broken` (a row was altered or removed). Rows written before chaining was introduced are skipped and counted in `unchained`.
+
+Permission: `audit:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `limit` | query | no | How many of the newest rows to check, at most 10,000 (default). |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checked` | number | yes |  |
+| `unchained` | number | yes |  |
+| `status` | "ok" \| "empty" \| "broken" \| "fork" | yes |  |
+| `at_id` | number | no |  |
+| `message` | string | no |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/audit/export`
+
+Export the audit log.
+
+The same filters as GET /api/v1/audit, as a download instead of a page. `format` is `ndjson` (default, one entry per line) or `csv`. `chain_hash` is included so the export can be re-verified offline. At most 100,000 rows per call.
+
+Permission: `audit:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `format` | query | no | "ndjson" \\| "csv" |
+| `search` | query | no | string |
+| `actor` | query | no | string |
+| `category` | query | no | string |
+| `from` | query | no | string |
+| `to` | query | no | string |
+
+Response `200`:
+
+`string`
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+## Backup
+
+Whole-database export and restore for disaster recovery (docs/dr.md).
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/backup` | `admin` | Export the whole database |
+| `POST` | `/api/v1/backup/restore` | `bootstrap-token` | Restore a backup bundle |
+
+### `GET /api/v1/backup`
+
+Export the whole database.
+
+A JSON bundle `{ version: 1, at, tables: { name: [rows] } }` covering every table except the migration ledger. It contains everything an attacker would want - password hashes, encrypted secrets, session state - so it needs an `admin` permission key and should be handled like the database itself. Restore with POST /api/v1/backup/restore (bootstrap token only).
+
+Permission: `admin`
+
+Response `200`:
+
+`map of any`
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/backup/restore`
+
+Restore a backup bundle.
+
+Bootstrap token only. Body is the bundle from GET /api/v1/backup plus `confirm: true`. **Wipes every table and rewrites it** - the bundle's tables and columns are validated against this schema before the first delete, so a bundle from a newer schema aborts cleanly. Apply the target's migrations first.
+
+Permission: `bootstrap-token`
+
+Request body:
+
+`map of any`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `restored` | number | yes |  |
+| `tables` | number | yes |  |
+
+Errors: `400`, `403` (`{ "error", "message" }`).
 
 ## Recovery
 

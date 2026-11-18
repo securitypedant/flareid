@@ -86,6 +86,11 @@
     { "name": "AUTH_LIMITER", "namespace_id": "7341", "simple": { "limit": 120, "period": 60 } },
     { "name": "API_LIMITER", "namespace_id": "7342", "simple": { "limit": 600, "period": 60 } }
   ]
+  // Daily whole-database snapshots, written by the cron (lib/backup.ts).
+  // Uncomment and create the bucket (`wrangler r2 bucket create
+  // flareid-backups`) to enable; the same bundle is on demand at
+  // GET /api/v1/backup without it. See docs/dr.md.
+  // "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "flareid-backups" }]
   // Secrets, set with `wrangler secret put` (or the dashboard) rather than
   // stored here - see .dev.vars.example:
   //   BOOTSTRAP_TOKEN        - required. Authenticates first-run setup, at /setup

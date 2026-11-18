@@ -61,7 +61,8 @@ for anything ongoing.
 Permissions are the same ones admin roles use (Security → Roles): one per
 area, `<area>:read` or `<area>:write` (write implies read), and `*` for
 everything. The areas are `users`, `groups`, `domains`, `schemas`, `import`
-(write only), `oidc`, `saml`, `scim`, `email`, `api_keys`, `security`,
+(write only), `oidc`, `saml`, `scim`, `email`, `cfone`, `signals`,
+`api_keys`, `security`,
 `branding`, `signing_keys`, `roles`, `audit` and `performance` (both read
 only). Each operation names the permission it needs as `x-permission` in the
 spec, and in the reference.
@@ -106,7 +107,9 @@ does - in summary:
 | Email | `GET`/`PUT /email`, `POST /email/enabled`, `POST /email/test` |
 | Branding | `GET`/`PATCH /branding` (default brand, `custom_css` included), `PUT`/`DELETE /branding/logo`, `GET`/`POST /branding/brands`, `GET`/`PATCH`/`DELETE /branding/brands/{id}`, `PUT`/`DELETE /branding/brands/{id}/logo`, `GET /branding/email-templates`, `PUT`/`DELETE /branding/email-templates/{key}` - see [branding.md](branding.md) |
 | Security | `GET /security`, `PUT /security/password-policy`, `.../rate-limit`, `.../session-limits`, `.../audit-retention`, `.../new-user-password`, `.../require-mfa`, `.../breached-passwords`, `.../turnstile`, `POST /security/new-user-password/apply-to-all`; authentication policies (`/security/policies`), factors (`/security/factors`, security questions at `/security/security-questions`), roles (`/security/roles`) and signing keys (`/security/signing-keys`, `POST .../{alg}/rotate`) |
-| Monitoring | `GET /audit` (the console's log filters), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
+| Monitoring | `GET /audit` (the console's log filters), `GET /audit/export` (NDJSON, or `?format=csv`), `GET /audit/verify` (the tamper-evident chain), `GET /stats` (the overview), `GET /performance` (`configured: false` until `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` are set) |
+| Signals | `GET`/`POST /ssf/streams`, `PATCH`/`DELETE /ssf/streams/{id}`, `POST /ssf/outbox/drain`, `GET`/`POST /ssf/transmitters`, `DELETE /ssf/transmitters/{id}` - Shared Signals Framework, see [observability.md](observability.md) |
+| Backup | `GET /backup` (whole-database JSON bundle, admin scope only), `POST /backup/restore` (bootstrap token only, `confirm: true` required) - see [dr.md](dr.md) |
 
 Second factors: `GET /security/factors` lists `totp`, `passkey`,
 `email_otp` (email one-time codes) and `security_questions`, each with

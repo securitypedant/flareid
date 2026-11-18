@@ -92,13 +92,23 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     does not need a redeploy. ES256 alongside RS256, which SAML also wants.~~ (done in v3.4.0-v3.6.0)
 ~~25. Breached-password check via the HIBP k-anonymity API; Turnstile on login
     and recovery.~~ (done in v3.4.0-v3.6.0)
-26. Audit log export (Logpush or R2), a retention policy, and tamper-evidence.
+~~26. Audit log export (Logpush or R2), a retention policy, and tamper-evidence.~~
+    (done - GET /api/v1/audit/export streams NDJSON/CSV with filters and
+    /admin/audit/export downloads from the console; every row carries a
+    SHA-256 chain_hash over its predecessor verified by
+    GET /api/v1/audit/verify or the Log page's "Verify integrity"; retention
+    was already under Security → Settings)
 ~~27. Observability: structured logs, login success and failure metrics,
     alerting.~~ (partly done - JSON access logs, an audit-event metrics
     dataset, sub-request spans and a live view on the performance page.
-    Alerting still means configuring Workers notifications in the dashboard.)
-28. Documented backup, restore and disaster recovery for D1; a directory export
-    endpoint.
+    Alerting means configuring Workers notifications in the dashboard -
+    runbook in docs/observability.md.)
+~~28. Documented backup, restore and disaster recovery for D1; a directory export
+    endpoint.~~ (done - GET /api/v1/backup exports every table as one JSON
+    bundle (admin scope), POST /api/v1/backup/restore (bootstrap token only)
+    validates and rewrites it, and an optional R2 binding takes daily
+    snapshots in the cron; runbook in docs/dr.md. User export was already in
+    the directory-import bundle shape.)
 ~~29. Scale: paginated and searchable group-membership editing - the current
     member checklist will not survive ten thousand users - and documented,
     tested ceilings.~~ (done in v3.4.0-v3.6.0)
@@ -150,10 +160,16 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     device-cert requirement and a risk cap; the Risk watchlist system group
     feeds SCIM and list sync; /admin verifies the Access JWT when a team +
     AUD are set)
-39. **Shared Signals Framework**: a transmitter for CAEP `session-revoked` and
+~~39. **Shared Signals Framework**: a transmitter for CAEP `session-revoked` and
     `credential-change` (universal logout to Okta/Entra/Google receivers), and
     the receiver scaffolding to consume Cloudflare's risk-score stream - which
-    today is gated to the Okta-specific IdP integration.
+    today is gated to the Okta-specific IdP integration.~~ (done -
+    /.well-known/ssf-configuration + signed SET push to registered streams
+    (session-revoked, credential-change, account-disabled, plus a RISC
+    re-auth-required on new watchlist flags) with an outbox retried hourly;
+    POST /ssf/receive verifies inbound SETs against registered transmitter
+    JWKS - session-revoked kills sessions, credential/risk events flag the
+    user on the risk watchlist. Integrations → Signals + /api/v1/ssf/*)
 ~~40. **Reusable list sync**: push FlareID data into Cloudflare One lists -
     (a) group membership as email lists (org structure into Gateway DNS/HTTP
     policies, which cannot read SCIM groups), (b) FlareID-computed risk

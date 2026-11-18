@@ -2,6 +2,8 @@ import { errorResponse } from "./lib/html.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { getCfOne, sweepWatchlist, syncLists } from "./lib/cfone.js";
+import { snapshotToR2 } from "./lib/backup.js";
+import { drainSsfOutbox } from "./lib/ssf.js";
 import { handleLdapConnection } from "./ldap/index.js";
 import { Hono } from "hono";
 import type { Env } from "./env.js";
@@ -21,6 +23,7 @@ import { account } from "./routes/account.js";
 import { admin } from "./routes/admin.js";
 import { api } from "./routes/api.js";
 import { scimServer } from "./routes/scim-server.js";
+import { ssfReceiver } from "./routes/ssf.js";
 import { defaultBrand } from "./lib/brands.js";
 import { getConsoleTimezone } from "./lib/settings.js";
 import { brandAssets } from "./routes/brand-assets.js";
@@ -64,6 +67,8 @@ app.route("/", api);
 app.route("/", scimServer);
 // Uploaded logos and custom stylesheets: static content, no page around them.
 app.route("/", brandAssets);
+// Shared Signals: transmitters push signed SETs; the signature is the auth.
+app.route("/", ssfReceiver);
 
 // Resolves the default brand's display name and logo once per request so
 // every downstream handler/view can read them synchronously via
@@ -169,6 +174,20 @@ export default {
           (r) => (r.swept > 0 || r.synced > 0 || r.failed > 0) && console.log(JSON.stringify({ event: "cfone_sync", ...r })),
           (err) => console.error(JSON.stringify({ event: "cfone_sync_failed", error: String(err) }))
         )
+    );
+    // Shared Signals: retry SET deliveries that failed earlier (lib/ssf.ts).
+    ctx.waitUntil(
+      drainSsfOutbox(env).then(
+        (r) => (r.sent > 0 || r.failed > 0) && console.log(JSON.stringify({ event: "ssf_drain", ...r })),
+        (err) => console.error(JSON.stringify({ event: "ssf_drain_failed", error: String(err) }))
+      )
+    );
+    // Daily whole-database snapshot when the optional R2 binding is set (docs/dr.md).
+    ctx.waitUntil(
+      snapshotToR2(env).then(
+        (r) => r.written && console.log(JSON.stringify({ event: "backup_snapshot", key: r.written })),
+        (err) => console.error(JSON.stringify({ event: "backup_snapshot_failed", error: String(err) }))
+      )
     );
   },
 } satisfies ExportedHandler<Env>;
