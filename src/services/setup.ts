@@ -1,6 +1,6 @@
 import { APP_NAME_MAX, SUBTITLE_MAX } from "../lib/brands.js";
 import { importDirectory, type ImportResult } from "../lib/directory-import.js";
-import { addDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { isValidDomain, addDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import {

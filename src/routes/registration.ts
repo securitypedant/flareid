@@ -123,6 +123,8 @@ function clientBody(env: Env, row: OAuthClientRow, opts: { secret?: string; regi
     ...(row.initiate_login_uri ? { initiate_login_uri: row.initiate_login_uri } : {}),
     ...(row.jwks ? { jwks: JSON.parse(row.jwks) } : {}),
     ...(row.jwks_uri ? { jwks_uri: row.jwks_uri } : {}),
+    ...(row.grant_types ? { grant_types: JSON.parse(row.grant_types) } : {}),
+    ...(row.registered_scope ? { scope: row.registered_scope } : {}),
   };
 }
 
@@ -149,8 +151,8 @@ registration.post("/connect/register", async (c) => {
 
   await c.env.DB.prepare(
     `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris,
-      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg)
-     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
+      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg, grant_types, registered_scope)
+     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       clientId,
@@ -166,7 +168,9 @@ registration.post("/connect/register", async (c) => {
       await sha256Hex(registrationToken),
       body.jwks ? JSON.stringify(body.jwks) : null,
       validFrontchannelUri(body.jwks_uri ?? "") || null,
-      body.id_token_signed_response_alg ?? "RS256"
+      body.id_token_signed_response_alg ?? "RS256",
+      body.grant_types ? JSON.stringify([...new Set(body.grant_types)]) : null,
+      body.scope !== undefined ? body.scope.trim().slice(0, 512) : null
     )
     .run();
 
@@ -218,12 +222,14 @@ registration.put("/connect/register/:client_id", async (c) => {
   const alg = body.id_token_signed_response_alg !== undefined ? body.id_token_signed_response_alg : client.id_token_signed_response_alg;
   const name = body.client_name !== undefined ? String(body.client_name).trim() || client.name : client.name;
   const isPublic = body.token_endpoint_auth_method !== undefined ? body.token_endpoint_auth_method === "none" : client.client_type === "public";
+  const grantTypes = body.grant_types !== undefined ? JSON.stringify([...new Set(body.grant_types)]) : client.grant_types;
+  const registeredScope = body.scope !== undefined ? body.scope.trim().slice(0, 512) : client.registered_scope;
 
   await c.env.DB.prepare(
     `UPDATE oauth_clients SET name = ?, redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, backchannel_logout_uri = ?,
-       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ? WHERE id = ?`
+       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ?, grant_types = ?, registered_scope = ? WHERE id = ?`
   )
-    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", client.id)
+    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", grantTypes, registeredScope, client.id)
     .run();
 
   const updated = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(client.id).first<OAuthClientRow>();

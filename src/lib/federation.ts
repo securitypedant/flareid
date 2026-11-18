@@ -190,13 +190,22 @@ interface OidcMetadata {
   jwks_uri: string;
 }
 
-/** The provider's discovery document, cached in KV for an hour. */
+/** The provider's discovery document, cached in KV for an hour - failures for one minute, so a stalling or down upstream doesn't get re-fetched by every anonymous sign-in attempt. */
 export async function oidcMetadata(env: Env, issuer: string): Promise<OidcMetadata> {
   const kvKey = `fed:meta:${issuer}`;
   const cached = await env.SESSIONS_KV.get(kvKey);
+  if (cached === "!") throw new FederationError("The provider's discovery document could not be fetched (upstream error).");
   if (cached) return JSON.parse(cached) as OidcMetadata;
-  const res = await fetch(`${issuer}/.well-known/openid-configuration`);
-  if (!res.ok) throw new FederationError(`The provider's discovery document could not be fetched (HTTP ${res.status}).`);
+  let res: Response | null = null;
+  try {
+    res = await fetch(`${issuer}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(10_000), redirect: "error" });
+  } catch {
+    // res stays null - timeout or network failure, negative-cached below.
+  }
+  if (!res || !res.ok) {
+    await env.SESSIONS_KV.put(kvKey, "!", { expirationTtl: 60 });
+    throw new FederationError(`The provider's discovery document could not be fetched (${res ? `HTTP ${res.status}` : "timed out"}).`);
+  }
   const meta = (await res.json()) as Partial<OidcMetadata>;
   if (!meta.authorization_endpoint || !meta.token_endpoint || !meta.jwks_uri) throw new FederationError("The provider's discovery document is missing endpoints.");
   const out: OidcMetadata = {
@@ -244,6 +253,7 @@ export async function oidcExchange(env: Env, meta: OidcMetadata, cfg: OidcIdpCon
   const clientSecret = await unsealMaybe(env, cfg.client_secret);
   const res = await fetch(meta.token_endpoint, {
     method: "POST",
+    signal: AbortSignal.timeout(10_000),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
@@ -257,7 +267,7 @@ export async function oidcExchange(env: Env, meta: OidcMetadata, cfg: OidcIdpCon
   if (!res.ok) throw new FederationError(`The code exchange failed (HTTP ${res.status}).`);
   const tokens = (await res.json()) as { id_token?: string; error?: string };
   if (!tokens.id_token) throw new FederationError(`The provider did not return an id_token${tokens.error ? ` (${tokens.error})` : ""}.`);
-  const { payload } = await jwtVerify(tokens.id_token, createRemoteJWKSet(new URL(meta.jwks_uri)), {
+  const { payload } = await jwtVerify(tokens.id_token, createRemoteJWKSet(new URL(meta.jwks_uri), { timeoutDuration: 10_000 }), {
     issuer: meta.issuer,
     audience: cfg.client_id,
   });

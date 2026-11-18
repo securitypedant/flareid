@@ -140,7 +140,7 @@ const JWKS_TTL_MS = 5 * 60 * 1000;
 function transmitterJwks(issuer: string, jwksUrl: string): ReturnType<typeof createRemoteJWKSet> {
   const cached = txJwks.get(issuer);
   if (cached && Date.now() - cached.at < JWKS_TTL_MS) return cached.jwks;
-  const jwks = createRemoteJWKSet(new URL(jwksUrl));
+  const jwks = createRemoteJWKSet(new URL(jwksUrl), { timeoutDuration: 10_000 });
   txJwks.set(issuer, { jwks, at: Date.now() });
   return jwks;
 }

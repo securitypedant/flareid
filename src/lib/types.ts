@@ -104,6 +104,10 @@ export interface OAuthClientRow {
   jwks: string | null;
   /** RFC 7591 jwks_uri: a remote JWKS document for private_key_jwt. */
   jwks_uri: string | null;
+  /** RFC 7591 grant_types the client registered; NULL = every supported grant (admin-created rows). */
+  grant_types: string | null;
+  /** RFC 7591 `scope` metadata - bounds a client_credentials request's scope when set. */
+  registered_scope: string | null;
 }
 
 export interface SamlServiceProviderRow {

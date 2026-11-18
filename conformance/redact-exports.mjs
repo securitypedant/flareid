@@ -60,9 +60,40 @@ function* files(root) {
   }
 }
 
-const secrets = [...collectSecrets(JSON.parse(readFileSync(configPath, "utf8")))];
+const config = JSON.parse(readFileSync(configPath, "utf8"));
+const secrets = [...collectSecrets(config)];
 // The suite runner's API token is not in the config but can appear in logs.
 for (const extra of [process.env.CONFORMANCE_TOKEN]) if (extra && extra.length >= 6) secrets.push(extra);
+
+// The same secret reaches exports in encoded forms too: HTTP Basic headers
+// hold base64(client_id:secret), form posts hold percent-encodings, raw
+// captures can hold base64 of the value alone, and JSON logs escape it.
+// Literal-only replacement would let every one of those through.
+function collectClientIds(value, out = new Set()) {
+  if (Array.isArray(value)) for (const item of value) collectClientIds(item, out);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "client_id" && typeof item === "string" && item) out.add(item);
+      else collectClientIds(item, out);
+    }
+  }
+  return out;
+}
+const b64url = (s) => Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const encoded = new Set();
+for (const secret of secrets) {
+  encoded.add(Buffer.from(secret, "utf8").toString("base64"));
+  encoded.add(b64url(secret));
+  encoded.add(encodeURIComponent(secret));
+  const json = JSON.stringify(secret).slice(1, -1);
+  if (json !== secret) encoded.add(json);
+  for (const id of collectClientIds(config)) {
+    const basic = Buffer.from(`${id}:${secret}`, "utf8").toString("base64");
+    encoded.add(basic);
+    encoded.add(b64url(`${id}:${secret}`));
+  }
+}
+secrets.push(...[...encoded].filter((e) => e.length >= 6));
 // Longest first so a secret that prefixes another is replaced whole.
 secrets.sort((a, b) => b.length - a.length);
 

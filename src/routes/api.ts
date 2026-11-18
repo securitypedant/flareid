@@ -37,7 +37,7 @@ import {
   countConforming,
   defaultSchemaId,
 } from "../lib/schemas.js";
-import { addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { isValidDomain, addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, updateUpstreamIdp, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
@@ -190,6 +190,7 @@ defineRoute({
   const body = await readJson<{ domain?: string; set_default?: boolean }>(c);
   const domain = String(body.domain ?? "").trim().toLowerCase();
   if (!domain) return c.json(badRequest("domain is required."), 400);
+  if (!isValidDomain(domain)) return c.json(badRequest(`"${domain}" is not a valid DNS domain name.`), 400);
 
   const existing = await listDomains(c.env);
   if (!existing.some((d) => d.domain === domain)) await addDomain(c.env, domain);

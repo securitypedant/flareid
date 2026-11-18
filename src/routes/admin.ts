@@ -19,7 +19,7 @@ import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middlew
 import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
-import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
+import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { listUserEmails, setUserEmails } from "../lib/user-emails.js";
 import {
   getDefaultPassword,
@@ -922,6 +922,7 @@ admin.get("/admin/setup", async (c) => {
       c,
       "Welcome to FlareID",
       `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <p class="sub">Before anyone else can sign in, confirm the basics below. You can change all of this later from Admin → Domains / Security.</p>
         <form method="POST" action="/admin/setup" ${confirmAttrs(
@@ -967,6 +968,7 @@ admin.post("/admin/setup", async (c) => {
   const removeSampleData = body.sample_data === "remove";
 
   if (domain) {
+    if (!isValidDomain(domain)) return c.redirect("/admin/setup?error=" + encodeURIComponent(`"${domain}" is not a valid DNS domain name.`), 302);
     const existing = await listDomains(c.env);
     if (!existing.some((d) => d.domain === domain)) {
       await addDomain(c.env, domain);
@@ -4809,6 +4811,7 @@ admin.post("/admin/domains", async (c) => {
   const body = await c.req.parseBody();
   const domain = String(body.domain ?? "").trim().toLowerCase();
   if (domain) {
+    if (!isValidDomain(domain)) return c.redirect("/admin/domains?error=" + encodeURIComponent(`"${domain}" is not a valid DNS domain name.`), 302);
     await addDomain(c.env, domain);
     await logAudit(c.env, c.get("user"), "domain.added", domain, undefined, c.req.raw);
   }

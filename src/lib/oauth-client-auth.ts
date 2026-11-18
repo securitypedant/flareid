@@ -29,7 +29,7 @@ async function verifyClientAssertion(env: Env, client: OAuthClientRow, assertion
     if (remoteJwks.size >= 500) remoteJwks.clear();
     let jwks = remoteJwks.get(client.jwks_uri);
     if (!jwks) {
-      jwks = createRemoteJWKSet(new URL(client.jwks_uri));
+      jwks = createRemoteJWKSet(new URL(client.jwks_uri), { timeoutDuration: 10_000 });
       remoteJwks.set(client.jwks_uri, jwks);
     }
     keySet = jwks;

@@ -106,5 +106,8 @@ samlSlo.get("/saml/slo", async (c) => {
       status = "urn:oasis:names:tc:SAML:2.0:status:Requester";
     }
   }
+  // Use-time scheme check: writes require https, but a row from before that
+  // rule must not redirect a signed LogoutResponse to cleartext.
+  if (!sp.slo_url.startsWith("https://")) return renderAuthMessage(c, 400, { title: msg("msg.signOutFailed.title"), message: "This app's logout endpoint is not https.", action: null });
   return c.redirect(await logoutResponseUrl(c.env, sp.slo_url, requestId, status, raw.RelayState), 302);
 });

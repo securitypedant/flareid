@@ -38,6 +38,12 @@ token.post("/token", async (c) => {
   const client = await authenticateClient(c.env, body, c.req.header("Authorization"), { allowPublic: true });
   if (!client) return c.json({ error: "invalid_client" }, 401);
 
+  // RFC 7591 grant_types: a client that declared its grants at registration
+  // stays inside them. NULL (admin-created rows) allows every supported grant.
+  if (client.grant_types && !(JSON.parse(client.grant_types) as string[]).includes(grantType)) {
+    return c.json({ error: "unauthorized_client", error_description: "This client is not registered for that grant type." }, 400);
+  }
+
   if (grantType === "authorization_code") {
     const code = String(body.code ?? "");
     const redirectUri = String(body.redirect_uri ?? "");
@@ -162,6 +168,15 @@ token.post("/token", async (c) => {
       return c.json({ error: "unauthorized_client", error_description: "The client_credentials grant needs a confidential client." }, 400);
     }
     const scope = String(body.scope ?? "").slice(0, 512);
+    // A client that declared its scopes at registration stays inside them -
+    // the service JWT's scope claim is the only thing downstream services
+    // see, so it must not be self-assigned past the registered set.
+    if (client.registered_scope) {
+      const allowed = new Set(client.registered_scope.split(/\s+/).filter(Boolean));
+      if (!scope.split(/\s+/).filter(Boolean).every((s) => allowed.has(s))) {
+        return c.json({ error: "invalid_scope", error_description: "scope exceeds what this client registered for." }, 400);
+      }
+    }
     const audience = String(body.audience ?? client.client_id).slice(0, 512);
     const accessToken = await signServiceToken(c.env, client.client_id, scope, audience, SERVICE_TOKEN_TTL_SECONDS);
     await logAudit(c.env, null, "oauth.client_credentials", client.name, { client_id: client.client_id }, c.req.raw);
