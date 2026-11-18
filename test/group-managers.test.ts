@@ -222,7 +222,9 @@ describe("profile photos", () => {
     expect(img.headers.get("content-type")).toBe("image/png");
     expect(img.headers.get("cache-control")).toContain("max-age=300");
     expect(new Uint8Array(await img.arrayBuffer())).toEqual(PNG);
-    expect((await get("/account", cookie)).status).toBe(200);
+    // The initials circle sits under the photo and shows through when there is none.
+    const accountPage = await (await get("/account", cookie)).text();
+    expect(accountPage).toContain("avatar-initials");
     // A non-image is refused and nothing is stored.
     const bad = new FormData();
     bad.append("photo", new File([new TextEncoder().encode("not an image")], "x.png", { type: "image/png" }));

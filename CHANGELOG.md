@@ -60,7 +60,9 @@ account or written by inbound provisioning).
   attribute takes a `data:` URI or an `https://` URL fetched server-side,
   and `photo` is a mastered field, so an HR-managed photo hides the upload
   form. Avatars appear in the admin user and access-request lists and on
-  managed-group pages.
+  managed-group pages; a user with no photo shows their initials in a
+  tinted circle (the photo <img> covers them when it loads), and the
+  top-bar menu button shows the same.
 
 - **Role visibility on groups.** The groups list names each group's admin
   roles in a Role column ("-" for plain member groups) and can be filtered

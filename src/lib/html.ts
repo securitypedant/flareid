@@ -490,13 +490,21 @@ const STYLES = `
   /* Compact bulk-action bar that sits at the top of a list card */
   .bulk-bar { border-bottom: 1px solid var(--fi-line); padding-bottom: 12px; margin-bottom: 12px; }
   .bulk-bar-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0; }
-  .bulk-bar-group { display: inline-flex; gap: 6px; align-items: flex-start; }
+  .bulk-bar-count { white-space: nowrap; }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
 
   /* Profile photos */
   .avatar { border-radius: 50%; object-fit: cover; background: var(--fi-line-soft); border: 1px solid var(--fi-line); }
   .avatar-lg { width: 96px; height: 96px; }
   .avatar-sm { width: 28px; height: 28px; vertical-align: middle; margin-right: 8px; }
   .avatar-xs { width: 22px; height: 22px; vertical-align: middle; }
+  /* Initials circle under the photo: the img covers it when it loads and hides
+     itself when it 404s, so "no photo" needs no script. */
+  .avatar-initials { position: relative; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; color: #fff; background: hsl(var(--avatar-hue, 210) 40% 45%); overflow: hidden; text-transform: uppercase; user-select: none; }
+  .avatar-initials img { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; border: 0; }
+  .avatar-xs.avatar-initials { font-size: 9px; }
+  .avatar-sm.avatar-initials { font-size: 11px; }
+  .avatar-lg.avatar-initials { font-size: 34px; }
   .photo-upload-btn { font-size: 0.78rem; padding: 5px 12px; }
 
   /* Copy-to-clipboard buttons */
@@ -1149,6 +1157,37 @@ export function successBanner(message: string): string {
   return `<div class="success-banner">${escapeHtml(message)}</div>`;
 }
 
+/** "Ada Chen" -> "AC", "cher" -> "CH", "" -> "?". */
+export function initialsFor(displayName: string, fallback = ""): string {
+  const parts = (displayName.trim() || fallback.trim()).split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return parts.length === 1 ? parts[0]!.slice(0, 2).toUpperCase() : (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
+
+/** The same name always lands on the same tint, so a list reads consistently. */
+function avatarHue(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+  return h;
+}
+
+/**
+ * A person's avatar: their photo when they have one, their initials in a
+ * tinted circle when they do not. The initials sit under the <img>, which
+ * hides itself on a 404 - no script or extra query needed for the fallback.
+ */
+export function avatar(userId: number, displayName: string, size: "xs" | "sm" | "lg" = "sm", opts: { upn?: string; v?: string } = {}): string {
+  const name = displayName || opts.upn || "Account";
+  const src = `/account/photo/${userId}${opts.v ? `?v=${encodeURIComponent(opts.v)}` : ""}`;
+  return `<span class="avatar avatar-${size} avatar-initials" style="--avatar-hue:${avatarHue(name)};" role="img" aria-label="${escapeHtml(name)}">${escapeHtml(initialsFor(displayName, opts.upn))}<img src="${src}" alt="" class="avatar avatar-${size}" data-hide-on-error /></span>`;
+}
+
+/** The initials circle on its own, for a spot that already knows there is no photo. */
+export function avatarInitials(displayName: string, size: "xs" | "sm" | "lg" = "xs"): string {
+  const name = displayName || "Account";
+  return `<span class="avatar avatar-${size} avatar-initials" style="--avatar-hue:${avatarHue(name)};" aria-hidden="true">${escapeHtml(initialsFor(displayName))}</span>`;
+}
+
 /** A searchable, chip-based multi-select built from plain checkboxes (no build step, works everywhere). */
 export function multiSelect(
   name: string,
@@ -1335,7 +1374,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
       ${bell}
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
       <div class="nav-menu" data-nav-menu>
-        <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : ""}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
+        <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
           <a href="/account">Account</a>
           <a href="/account/groups">Groups</a>

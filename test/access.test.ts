@@ -258,7 +258,7 @@ describe("bulk group actions", () => {
     const res = await SELF.fetch(`${BASE}/admin/groups/bulk`, {
       method: "POST",
       headers: { ...FORM, Cookie: admin },
-      body: new URLSearchParams({ action: "requestable", requestable: "1", group_ids: String(a) }).toString(),
+      body: new URLSearchParams({ action: "requestable_on", group_ids: String(a) }).toString(),
       redirect: "manual",
     });
     expect(res.headers.get("Location")).toContain("notice=");

@@ -24,7 +24,7 @@ import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, paginationControls, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, paginationControls, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
@@ -194,7 +194,7 @@ account.get("/account", async (c) => {
             ])}
           </div>
           <div style="text-align:center; flex-shrink:0;">
-            <img src="/account/photo/${user.id}?v=${encodeURIComponent(photoV ?? "none")}" alt="" class="avatar avatar-lg" data-hide-on-error />
+            ${avatar(user.id, user.display_name, "lg", { upn: user.upn, v: photoV ?? "none" })}
             ${
               photoMastered
                 ? '<p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">Your photo is managed by your HR system.</p>'
@@ -356,7 +356,7 @@ account.get("/account/groups/:id", async (c) => {
                   ${pending
                     .map(
                       (r) => `<tr>
-                        <td><img src="/account/photo/${r.user_id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(r.display_name)}<br/><span class="muted" style="font-size:12px; padding-left:36px; display:block;">${escapeHtml(r.upn)}</span></td>
+                        <td>${avatar(r.user_id, r.display_name, "sm", { upn: r.upn })}${escapeHtml(r.display_name)}<br/><span class="muted" style="font-size:12px; padding-left:36px; display:block;">${escapeHtml(r.upn)}</span></td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>
                         <td style="white-space:nowrap;">
@@ -391,7 +391,7 @@ account.get("/account/groups/:id", async (c) => {
             ? `<table><thead><tr><th>Name</th><th>UPN</th><th></th></tr></thead><tbody>
                 ${members.rows
                   .map(
-                    (u) => `<tr><td><img src="/account/photo/${u.id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(u.display_name)}</td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/account/groups/${group.id}/members/${u.id}/remove" style="margin:0;" ${confirmAttrs(`Remove ${u.display_name} from ${group.name}?`, { title: "Remove this member?", action: "Remove" })}><button class="link-button" type="submit">Remove</button></form></td></tr>`
+                    (u) => `<tr><td>${avatar(u.id, u.display_name, "sm", { upn: u.upn })}${escapeHtml(u.display_name)}</td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/account/groups/${group.id}/members/${u.id}/remove" style="margin:0;" ${confirmAttrs(`Remove ${u.display_name} from ${group.name}?`, { title: "Remove this member?", action: "Remove" })}><button class="link-button" type="submit">Remove</button></form></td></tr>`
                   )
                   .join("")}
               </tbody></table>

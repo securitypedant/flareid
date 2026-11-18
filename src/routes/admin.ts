@@ -16,7 +16,7 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -1098,7 +1098,7 @@ admin.get("/admin/users", async (c) => {
             ${(users as (UserRow & { has_passkey: number })[])
               .map(
                 (u) => `<tr>
-                  <td><a href="/admin/users/${u.id}"><img src="/account/photo/${u.id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(u.display_name)}</a></td>
+                  <td><a href="/admin/users/${u.id}">${avatar(u.id, u.display_name, "sm", { upn: u.upn })}${escapeHtml(u.display_name)}</a></td>
                   <td>${escapeHtml(u.upn)}</td>
                   <td><span class="badge badge-${u.status}">${u.status}</span></td>
                   <td>${factorList(enrolledFactors(u))}</td>
@@ -2200,19 +2200,16 @@ admin.get("/admin/groups", async (c) => {
         <div class="bulk-bar" id="bulk-bar" style="display:none;">
           <form method="POST" action="/admin/groups/bulk" class="bulk-bar-row">
             <div id="bulk-ids"></div>
-            <strong><span id="bulk-count">0</span> selected</strong>
-            <span class="bulk-bar-group">
-              <select name="requestable" style="margin:0; width:auto;">
-                <option value="1">Allow membership requests</option>
-                <option value="0">Stop membership requests</option>
-              </select>
-              <button class="secondary" type="submit" name="action" value="requestable" style="margin:0;">Apply</button>
-            </span>
-            <span class="bulk-bar-group" style="flex:1; min-width:260px;">
-              <span style="flex:1;">${remoteMultiSelect("user_ids", "/admin/users/lookup", [], "People to add to all selected...")}</span>
-              <button class="secondary" type="submit" name="action" value="add_members" style="margin:0;">Add members</button>
-            </span>
-            <a href="#" id="bulk-clear" class="cancel">Clear</a>
+            <span class="bulk-bar-count"><strong><span id="bulk-count">0</span></strong> selected</span>
+            <select name="action" id="bulk-action" required style="margin:0; width:auto;">
+              <option value="">Choose an action...</option>
+              <option value="requestable_on">Allow membership requests</option>
+              <option value="requestable_off">Stop membership requests</option>
+              <option value="add_members">Add people to the selected groups</option>
+            </select>
+            <span id="bulk-people" style="display:none; flex:1; min-width:220px;">${remoteMultiSelect("user_ids", "/admin/users/lookup", [], "People to add...")}</span>
+            <button class="secondary" type="submit" id="bulk-apply" disabled style="margin:0;">Apply</button>
+            <a href="#" id="bulk-clear" class="cancel" style="margin-left:auto;">Clear</a>
           </form>
           <p class="muted" style="margin:6px 0 0; font-size:12px;">Selection survives paging and filtering. Only static groups can be selected.</p>
         </div>
@@ -2281,6 +2278,14 @@ const GROUP_SELECT_SCRIPT = `
   });
   var clear = document.getElementById("bulk-clear");
   if (clear) clear.addEventListener("click", function (e) { e.preventDefault(); sel.clear(); render(); });
+  // The action picker reveals the people field only when it needs it.
+  var action = document.getElementById("bulk-action");
+  var people = document.getElementById("bulk-people");
+  var apply = document.getElementById("bulk-apply");
+  if (action) action.addEventListener("change", function () {
+    if (people) people.style.display = action.value === "add_members" ? "" : "none";
+    if (apply) apply.disabled = !action.value;
+  });
   render();
 })();
 `;
@@ -2431,8 +2436,8 @@ admin.post("/admin/groups/bulk", async (c) => {
   const groupIds = list(body.group_ids).map(Number).filter(Boolean);
   const action = String(body.action ?? "");
   try {
-    if (action === "requestable") {
-      const on = String(body.requestable ?? "") === "1";
+    if (action === "requestable_on" || action === "requestable_off") {
+      const on = action === "requestable_on";
       const result = await bulkSetRequestable(consoleCtx(c), groupIds, on);
       const note = `Requests ${on ? "allowed" : "stopped"} on ${result.applied.length} group${result.applied.length === 1 ? "" : "s"}.`;
       return c.redirect(`/admin/groups?notice=${encodeURIComponent(result.skipped.length ? `${note} Skipped: ${result.skipped.join(", ")}.` : note)}`, 302);
@@ -2533,7 +2538,7 @@ admin.get("/admin/access", async (c) => {
                   ${requests
                     .map(
                       (r) => `<tr>
-                        <td><a href="/admin/users/${r.user_id}"><img src="/account/photo/${r.user_id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
+                        <td><a href="/admin/users/${r.user_id}">${avatar(r.user_id, r.display_name, "sm", { upn: r.upn })}${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
                         <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a>${roleGroups.has(r.group_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>
