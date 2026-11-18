@@ -3,13 +3,13 @@ import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { authPage, loginAppearance, msg, renderAuthMessage, requestLocale, type AuthMessage } from "../lib/login-views.js";
 import { t, type MessageKey } from "../lib/i18n.js";
-import { escapeHtml } from "../lib/html.js";
+import { escapeHtml, scriptTag } from "../lib/html.js";
 import { getClientByClientId } from "../lib/db.js";
 import { clearSessionCookie, getSession, oidcSid, revokeSession } from "../lib/sessions.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, recordConsent } from "../lib/oidc.js";
 import { verifyOwnIdToken } from "../lib/jwt.js";
 import { logAudit } from "../lib/audit.js";
-import { finishOidcAuthorize, type PendingConsent } from "./authorize.js";
+import { finishOidcAuthorize, respondAuthorize, type PendingConsent } from "./authorize.js";
 
 /**
  * Consent for non-trusted clients, and RP-initiated logout - the two places
@@ -78,13 +78,40 @@ oidcSession.post("/consent/:id", async (c) => {
 
   if (decision !== "allow" || !client) {
     await logAudit(c.env, { id: userId, upn: String(userId) }, "oauth.consent_denied", client?.name ?? request.clientId, undefined, c.req.raw);
-    return c.redirect(authorizeErrorRedirect(request.redirectUri, "access_denied", request.state, "The user declined."), 302);
+    return respondAuthorize(c, authorizeErrorRedirect(request.redirectUri, "access_denied", request.state, "The user declined."), request.responseMode);
   }
   const shownGroups = [...effectiveClaimGroups(client, request.scope, [...(request.claimGroups?.id_token ?? []), ...(request.claimGroups?.userinfo ?? [])])];
   await recordConsent(c.env, userId, client.client_id, request.scope, shownGroups);
   await logAudit(c.env, { id: userId, upn: String(userId) }, "oauth.consent_granted", client.name, { scope: request.scope }, c.req.raw);
   const { redirectTo } = await finishOidcAuthorize(c.env, request, userId, amr, sid, { consented: true });
-  return c.redirect(redirectTo, 302);
+  return respondAuthorize(c, redirectTo, request.responseMode);
+});
+
+// ---------- Session Management (OpenID Connect Session Management 1.0) ----------
+
+/**
+ * The OP iframe RPs embed to poll login state (§4.2): it answers postMessage
+ * with "unchanged" while the posted session_state still matches this session,
+ * "changed" once it doesn't (or there's no session), "error" on a malformed
+ * query. It exists to be framed, hence the frame-ancestors marker (which the
+ * security-headers middleware turns into the CSP allowance).
+ */
+oidcSession.get("/check_session", async (c) => {
+  const session = await getSession(c.req.raw, c.env);
+  const sid = session ? await oidcSid(session.id) : "";
+  const script = `var OP_SID=${JSON.stringify(sid)};
+window.addEventListener("message",function(e){
+ var p=String(e.data).split(" "),cid=p[0],st=(p[1]||"").split("."),salt=st[1];
+ function reply(m){if(e.source&&e.origin!=="null")e.source.postMessage(m,e.origin);}
+ if(!cid||!salt){reply("error");return;}
+ if(!OP_SID){reply("changed");return;}
+ crypto.subtle.digest("SHA-256",new TextEncoder().encode(cid+" "+e.origin+" "+OP_SID+" "+salt)).then(function(d){
+  var hex=Array.prototype.map.call(new Uint8Array(d),function(b){return("0"+b.toString(16)).slice(-2);}).join("");
+  reply(hex===st[0]?"unchanged":"changed");
+ }).catch(function(){reply("error");});
+});`;
+  c.header("X-FlareID-Frame-Ancestors", "*");
+  return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body>${scriptTag(script)}</body></html>`);
 });
 
 // ---------- RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0) ----------

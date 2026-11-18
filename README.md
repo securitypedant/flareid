@@ -18,11 +18,15 @@ happens to run on Cloudflare's platform.
 
 ## What it does
 
-- **OIDC**: `/authorize`, `/token` (authorization_code + refresh_token, PKCE),
-  `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`,
-  `/.well-known/openid-configuration`, RP-initiated and front-channel logout.
-  Confidential and public (PKCE-only) clients, a consent screen for clients not
-  marked trusted, a per-client claim allowlist, and `prompt`, `max_age`,
+- **OIDC**: `/authorize`, `/token` (authorization_code + refresh_token,
+  client_credentials + device authorization, PKCE), `/userinfo`, `/jwks.json`,
+  `/introspect`, `/revoke`, `/.well-known/openid-configuration`, RP-initiated,
+  front-channel and back-channel logout, session management
+  (`check_session_iframe` + `session_state`), third-party-initiated login, and
+  dynamic client registration (`/connect/register`, RFC 7591/7592, with
+  `private_key_jwt`). Confidential and public (PKCE-only) clients, a consent
+  screen for clients not marked trusted, a per-client claim allowlist,
+  `response_mode=form_post`, `address`/`phone` claims, and `prompt`, `max_age`,
   `auth_time`, `acr`, `at_hash`. Works with Cloudflare Access's Generic OIDC
   integration, or any standards-compliant relying party.
 - **Authentication**: username (or full UPN) and password, with optional

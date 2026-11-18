@@ -94,6 +94,16 @@ export interface OAuthClientRow {
   id_token_signed_response_alg: string;
   /** OIDC Front-Channel Logout 1.0 target ('' = none). */
   frontchannel_logout_uri: string;
+  /** OIDC Back-Channel Logout 1.0 target ('' = none). */
+  backchannel_logout_uri: string;
+  /** Third-party-initiated login: the OP endpoint third parties call for this client ('' = not offered). */
+  initiate_login_uri: string;
+  /** SHA-256 of the RFC 7591 registration access token (NULL = statically provisioned). */
+  registration_token_hash: string | null;
+  /** RFC 7591 jwks: an embedded JWKS JSON document for private_key_jwt. */
+  jwks: string | null;
+  /** RFC 7591 jwks_uri: a remote JWKS document for private_key_jwt. */
+  jwks_uri: string | null;
 }
 
 export interface SamlServiceProviderRow {

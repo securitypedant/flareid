@@ -197,6 +197,8 @@
     "setup.error.password": "Choose a password for the administrator.",
     "setup.error.mismatch": "The passwords do not match.",
     "login.error.device_cert": "This account must sign in from a managed device. Connect with the WARP client and try again.",
-    "login.error.risk": "Sign-in was blocked: this account's current risk level is above what its sign-in policy allows. Ask an administrator."
+    "login.error.risk": "Sign-in was blocked: this account's current risk level is above what its sign-in policy allows. Ask an administrator.",
+    "consent.claims.address": "Postal address",
+    "consent.claims.phone": "Phone number"
   }
 }

@@ -1360,6 +1360,8 @@ Request body:
 | `allowed_claims` | array \| null | no | Claim groups this client may receive; null = every group. |
 | `post_logout_redirect_uris` | string[] | no |  |
 | `frontchannel_logout_uri` | string | no | https URL; empty clears it. |
+| `backchannel_logout_uri` | string | no | https URL; empty clears it. |
+| `initiate_login_uri` | string | no | https URL; empty clears it. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed. |
 
 Response `200`:
@@ -1461,6 +1463,8 @@ Request body:
 | `allowed_claims` | array \| null | no |  |
 | `post_logout_redirect_uris` | string[] | no |  |
 | `frontchannel_logout_uri` | string | no |  |
+| `backchannel_logout_uri` | string | no |  |
+| `initiate_login_uri` | string | no |  |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed (default RS256). |
 
 Response `200`:

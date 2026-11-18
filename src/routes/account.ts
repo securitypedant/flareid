@@ -41,7 +41,7 @@ import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, veri
 import { createSession, listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
 import { emitAndDrain, SSF_EVENTS } from "../lib/ssf.js";
 import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from "../lib/authorize-state.js";
-import { finishOidcAuthorize } from "./authorize.js";
+import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
@@ -1239,7 +1239,8 @@ account.post("/account/mfa/passkey-enrolled", async (c) => {
   if (!amr.includes("hwk")) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
   await revokeAllSessionsForUser(c.env, user.id, sessionId);
   await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : "/account/security?saved=passkey-added", 302);
+  const passkeyDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : { to: "/account/security?saved=passkey-added" };
+  return respondAuthorize(c, passkeyDest.to, passkeyDest.responseMode);
 });
 
 account.post("/account/mfa/setup", async (c) => {
@@ -1277,20 +1278,20 @@ account.post("/account/mfa/setup", async (c) => {
 });
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
-async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string, amr: string[] = ["pwd", "mfa"]): Promise<string> {
+async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string, amr: string[] = ["pwd", "mfa"]): Promise<{ to: string; responseMode?: string }> {
   // Only a flow this user parked after authenticating: never a sealed
   // anonymous one, which would let enrolment stand in for a fresh login.
-  if (isSealedFlowId(resumeFlowId)) return "/account";
+  if (isSealedFlowId(resumeFlowId)) return { to: "/account" };
   const flow = await getLoginFlow(env, resumeFlowId);
-  if (!flow || flow.resumeFor !== userId) return "/account";
+  if (!flow || flow.resumeFor !== userId) return { to: "/account" };
   // The factor just enrolled must satisfy the gate (security questions never
   // do for an administrator): otherwise the flow stays parked at enrolment.
   const user = await getUserById(env, userId);
-  if (!user || (await secondFactorGate(env, user, amr)) !== "ok") return `/account/mfa/setup?resume=${encodeURIComponent(resumeFlowId)}`;
+  if (!user || (await secondFactorGate(env, user, amr)) !== "ok") return { to: `/account/mfa/setup?resume=${encodeURIComponent(resumeFlowId)}` };
 
   if (flow.kind === "direct") {
     await deleteLoginFlow(env, resumeFlowId);
-    return safeNextPath(flow.next);
+    return { to: safeNextPath(flow.next) };
   }
 
   // A SAML flow can't finish here - it ends in a POST form, not a URL. The
@@ -1299,12 +1300,12 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, s
   // login": without it /saml/complete refuses the flow (see saml.ts).
   if (flow.kind === "saml") {
     await bindFlowToUser(env, resumeFlowId, userId);
-    return `/saml/complete?flow=${resumeFlowId}`;
+    return { to: `/saml/complete?flow=${resumeFlowId}` };
   }
 
   await deleteLoginFlow(env, resumeFlowId);
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
-  return redirectTo;
+  return { to: redirectTo, responseMode: flow.request.responseMode };
 }
 
 // ---------- Email one-time codes ----------
@@ -1364,7 +1365,8 @@ account.post("/account/mfa/email/enable", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "otp", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.email_otp_enabled", user.upn, undefined, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account/security?saved=email-otp-enabled", 302);
+  const emailOtpDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : { to: "/account/security?saved=email-otp-enabled" };
+  return respondAuthorize(c, emailOtpDest.to, emailOtpDest.responseMode);
 });
 
 /** Turning email codes off takes a fresh code, within the step-up budget - as disabling the authenticator does. */
@@ -1444,7 +1446,8 @@ account.post("/account/mfa/questions", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "kba", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.security_questions_enabled", user.upn, details, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account/security?saved=kba-enabled", 302);
+  const kbaDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : { to: "/account/security?saved=kba-enabled" };
+  return respondAuthorize(c, kbaDest.to, kbaDest.responseMode);
 });
 
 /** Removing security questions takes the current password, within the step-up budget. */
@@ -1461,9 +1464,20 @@ account.post("/account/mfa/questions/remove", async (c) => {
   return c.redirect("/account/security?saved=kba-removed", 302);
 });
 
-function backupCodesPage(codes: string[], continueTo = "/account"): string {
+function backupCodesPage(codes: string[], continueTo: string | { to: string; responseMode?: string } = "/account"): string {
   const fileContents = `${codes.join("\n")}\n`;
   const downloadHref = `data:text/plain;charset=utf-8,${encodeURIComponent(fileContents)}`;
+  const dest = typeof continueTo === "string" ? { to: continueTo } : continueTo;
+  // A form_post authorization can't continue through a plain link: the code
+  // must arrive at the RP in a POST body, so the Continue button is a form.
+  const continueEl =
+    dest.responseMode === "form_post"
+      ? (() => {
+          const u = new URL(dest.to);
+          const fields = [...u.searchParams].map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}" />`).join("");
+          return `<form method="POST" action="${escapeHtml(u.origin + u.pathname)}">${fields}<button class="primary" type="submit">Continue</button></form>`;
+        })()
+      : `<a href="${escapeHtml(dest.to)}"><button class="primary" type="button">Continue</button></a>`;
 
   return cardSection(`
     <p class="success">MFA is now enabled.</p>
@@ -1474,7 +1488,7 @@ function backupCodesPage(codes: string[], continueTo = "/account"): string {
     <div class="row" style="justify-content:flex-start; margin-top:12px;">
       <a href="${downloadHref}" download="backup-codes.txt"><button class="secondary" type="button">Download backup-codes.txt</button></a>
     </div>
-    <div class="row" style="margin-top:16px;"><a href="${escapeHtml(continueTo)}"><button class="primary" type="button">Continue</button></a></div>
+    <div class="row" style="margin-top:16px;">${continueEl}</div>
   `);
 }
 

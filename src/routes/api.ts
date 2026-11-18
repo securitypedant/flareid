@@ -544,6 +544,8 @@ defineRoute({
     allowed_claims: z.array(z.string()).nullable().optional(),
     post_logout_redirect_uris: z.array(z.string()).optional(),
     frontchannel_logout_uri: z.string().optional(),
+    backchannel_logout_uri: z.string().optional(),
+    initiate_login_uri: z.string().optional(),
     id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed (default RS256)." }),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS) }),
@@ -558,6 +560,8 @@ defineRoute({
     allowed_claims?: string[] | null;
     post_logout_redirect_uris?: string[];
     frontchannel_logout_uri?: string;
+    backchannel_logout_uri?: string;
+    initiate_login_uri?: string;
     id_token_signed_response_alg?: string;
   }>(c);
   const isPublic = body.client_type === "public";
@@ -576,6 +580,10 @@ defineRoute({
   const postLogout = JSON.stringify(postLogoutList);
   const fcl = body.frontchannel_logout_uri === undefined ? undefined : validFrontchannelUri(String(body.frontchannel_logout_uri).trim());
   if (body.frontchannel_logout_uri && !fcl) return c.json(badRequest("frontchannel_logout_uri must be an https URL."), 400);
+  const bcl = body.backchannel_logout_uri === undefined ? undefined : validFrontchannelUri(String(body.backchannel_logout_uri).trim());
+  if (body.backchannel_logout_uri && !bcl) return c.json(badRequest("backchannel_logout_uri must be an https URL."), 400);
+  const init = body.initiate_login_uri === undefined ? undefined : validFrontchannelUri(String(body.initiate_login_uri).trim());
+  if (body.initiate_login_uri && !init) return c.json(badRequest("initiate_login_uri must be an https URL."), 400);
   if (body.id_token_signed_response_alg !== undefined && !isIdTokenAlg(body.id_token_signed_response_alg)) {
     return c.json(badRequest(`id_token_signed_response_alg must be one of ${ID_TOKEN_ALGS.join(", ")}.`), 400);
   }
@@ -614,6 +622,8 @@ defineRoute({
       .bind(name, JSON.stringify(redirectUris), clientSecretHash, isPublic ? "public" : "confidential", trusted, allowedClaims, postLogout, existing.id)
       .run();
     if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
+    if (bcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE client_id = ?").bind(bcl, clientId).run();
+    if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
     if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(idTokenAlg, existing.id).run();
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
@@ -628,6 +638,8 @@ defineRoute({
     .run();
 
   if (fcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE client_id = ?").bind(fcl, clientId).run();
+  if (bcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE client_id = ?").bind(bcl, clientId).run();
+  if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
   if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE client_id = ?").bind(idTokenAlg, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 

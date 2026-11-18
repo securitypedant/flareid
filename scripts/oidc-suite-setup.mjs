@@ -21,10 +21,10 @@ const suite = (process.env.CONFORMANCE_SERVER ?? "https://www.certification.open
 const alias = process.env.CONFORMANCE_ALIAS ?? "flareid-ci";
 const base = `${suite}test/a/${alias}/`;
 
-async function api(path, body) {
-  const r = await fetch(`${issuer}/api/v1${path}`, { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+async function api(path, body, method = "POST") {
+  const r = await fetch(`${issuer}/api/v1${path}`, { method, headers: { Authorization: `Bearer ${key}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${JSON.stringify(j)}`);
+  if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${JSON.stringify(j)}`);
   return j;
 }
 
@@ -39,6 +39,8 @@ for (const n of [1, 2]) {
     redirect_uris: [`${base}callback`],
     post_logout_redirect_uris: [`${base}post_logout_redirect`],
     frontchannel_logout_uri: `${base}frontchannel_logout`,
+    backchannel_logout_uri: `${base}backchannel_logout`,
+    initiate_login_uri: `${base}initiate_login`,
   });
   clients.push(c);
 }
@@ -49,11 +51,43 @@ for (const n of [1, 2]) {
 // the sample directory: thousands of members). Those pushes are deltas
 // against the last push (nothing is sent when membership did not change);
 // they used to be full member-list PUTs, which made this step take minutes.
+// The scope-* test modules ask for address and phone claims: give the test
+// user a schema that holds them and values to release.
+const SCHEMA = "OIDF Conformance";
+const ATTRS = ["street_address", "locality", "region", "postal_code", "country", "phone_number", "phone_number_verified"].map((name) => ({ name, label: name }));
+try {
+  await api("/schemas", { object_type: "user", name: SCHEMA, attributes: ATTRS });
+} catch (e) {
+  if (!String(e).includes("409")) throw e;
+  const { schemas } = await api("/schemas", undefined, "GET");
+  const existing = (schemas ?? []).find((s) => s.object_type === "user" && s.name === SCHEMA);
+  if (existing) await api(`/schemas/${existing.id}`, { attributes: ATTRS }, "PATCH");
+}
+
 const password = `Cf-${secret()}`;
 const domain = new URL(issuer).hostname;
 const imported = await api("/directory/import", {
   version: 1,
-  users: [{ username: "conformance", given_name: "Conformance", family_name: "Suite", email: `conformance@${domain}`, status: "active", password }],
+  users: [
+    {
+      username: "conformance",
+      given_name: "Conformance",
+      family_name: "Suite",
+      email: `conformance@${domain}`,
+      status: "active",
+      password,
+      schema: SCHEMA,
+      attributes: {
+        street_address: "12 Normandy Avenue",
+        locality: "Cambridge",
+        region: "Cambridgeshire",
+        postal_code: "CB3 0DU",
+        country: "GB",
+        phone_number: "+44 1223 000000",
+        phone_number_verified: "true",
+      },
+    },
+  ],
 });
 if (imported.errors?.length) throw new Error(`user import: ${JSON.stringify(imported.errors)}`);
 const upn = `conformance@${imported.domain ?? domain}`;
@@ -100,8 +134,8 @@ const config = {
   alias,
   description: `FlareID ${issuer}`,
   server: { discoveryUrl: `${issuer}/.well-known/openid-configuration` },
-  client: { ...clients[0], scope: "openid email profile" },
-  client2: { ...clients[1], scope: "openid email profile" },
+  client: { ...clients[0], scope: "openid email profile address phone" },
+  client2: { ...clients[1], scope: "openid email profile address phone" },
   client_secret_post: { ...clients[0] },
   browser: [login],
   override,

@@ -36,7 +36,22 @@ export interface IdTokenClaims {
  * client asked for by scope, intersected with what it is allowed.
  */
 /** Names the IdP asserts itself: a schema attribute never takes them, released or not. */
-export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family_name", "preferred_username", "email", "email_verified", "groups", "job_title", "department", "manager", "sub", "amr", "acr", "custom"]);
+export const RESERVED_CLAIM_NAMES = new Set(["id", "name", "given_name", "family_name", "preferred_username", "email", "email_verified", "groups", "job_title", "department", "manager", "sub", "amr", "acr", "custom", "address", "street_address", "locality", "region", "postal_code", "country", "phone", "phone_number", "phone_number_verified"]);
+
+/** The OIDC `address` claim (Core 5.1.1): a JSON object, assembled from the schema attributes that hold it. */
+function addressClaim(attrs: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!attrs) return undefined;
+  if (attrs.address) {
+    try {
+      const parsed: unknown = JSON.parse(attrs.address);
+      if (parsed && typeof parsed === "object") return parsed as Record<string, string>;
+    } catch {
+      return { formatted: attrs.address };
+    }
+  }
+  const parts = Object.fromEntries(["formatted", "street_address", "locality", "region", "postal_code", "country"].map((k) => [k, attrs[k]]).filter(([, v]) => v));
+  return Object.keys(parts).length ? parts : undefined;
+}
 
 export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
   const attributes: Record<string, unknown> = {};
@@ -50,6 +65,15 @@ export function buildClaims(claims: IdTokenClaims, release: Set<ClaimGroup>) {
     });
   }
   if (release.has("email")) Object.assign(attributes, { email: claims.email, email_verified: true });
+  if (release.has("address")) {
+    const address = addressClaim(claims.customAttributes);
+    if (address) attributes.address = address;
+  }
+  if (release.has("phone")) {
+    const number = claims.customAttributes?.phone_number ?? claims.customAttributes?.phone;
+    if (number) attributes.phone_number = number;
+    if (claims.customAttributes?.phone_number_verified !== undefined) attributes.phone_number_verified = claims.customAttributes.phone_number_verified === "true";
+  }
   if (release.has("groups")) attributes.groups = claims.groups;
   if (release.has("hr")) Object.assign(attributes, { job_title: claims.jobTitle, department: claims.department, manager: claims.managerEmail });
   return {

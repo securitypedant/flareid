@@ -119,6 +119,12 @@ export async function applySecurityHeaders(requestUrl: string, h: Headers): Prom
   // The front-channel logout page names the relying-party origins it frames.
   const frameSrc = h.get("X-FlareID-Frame-Src");
   h.delete("X-FlareID-Frame-Src");
+  // The check-session iframe (OIDC Session Management) exists to be framed by
+  // relying parties: its response marks that and gets a frame-ancestors
+  // allowance instead of the default 'none' (+ no X-Frame-Options DENY).
+  const frameAncestors = h.get("X-FlareID-Frame-Ancestors");
+  h.delete("X-FlareID-Frame-Ancestors");
+  if (frameAncestors) h.delete("X-Frame-Options");
   // The sign-in and recovery forms with bot protection on load Turnstile's
   // script, which frames its challenge (turnstile.ts). Only those responses
   // say so, and only they get the allowance.
@@ -137,7 +143,7 @@ export async function applySecurityHeaders(requestUrl: string, h: Headers): Prom
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
-        "frame-ancestors 'none'",
+        `frame-ancestors ${frameAncestors ?? "'none'"}`,
         ...(frames ? [`frame-src ${frames}`] : []),
       ].join("; ")
     );

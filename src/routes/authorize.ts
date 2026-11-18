@@ -11,11 +11,25 @@ import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
-import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed } from "../lib/oidc.js";
+import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed, sessionState } from "../lib/oidc.js";
+import { formPostPage } from "../lib/saml/post-form.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
 const CONSENT_TTL_SECONDS = 600;
+
+/**
+ * Delivers the authorization response the way the client asked for it
+ * (`response_mode`): the default query-string redirect, or an auto-submitting
+ * POST form when the mode is form_post (OAuth 2.0 Multiple Response Types).
+ */
+export function respondAuthorize(c: Context<{ Bindings: Env }>, location: string, responseMode?: string) {
+  if (responseMode !== "form_post") return c.redirect(location, 302);
+  const url = new URL(location);
+  const fields: Record<string, string> = {};
+  for (const [k, v] of url.searchParams) fields[k] = v;
+  return c.html(formPostPage(c.get("appName"), url.origin + url.pathname, fields));
+}
 
 /** A pending consent decision, stored after authentication (so not an anonymous write). */
 export interface PendingConsent {
@@ -82,7 +96,7 @@ export async function finishOidcAuthorize(
       req.claimGroups ? JSON.stringify(req.claimGroups) : null
     )
     .run();
-  // Remembered for front-channel logout: ending this session notifies this client.
+  // Remembered for front- and back-channel logout: ending this session notifies this client.
   if (sid) {
     await env.DB.prepare("INSERT OR IGNORE INTO session_clients (session_id, client_id, created_at) VALUES (?, ?, ?)").bind(sid, req.clientId, new Date().toISOString()).run();
   }
@@ -90,8 +104,36 @@ export async function finishOidcAuthorize(
   const redirect = new URL(req.redirectUri);
   redirect.searchParams.set("code", code);
   if (req.state) redirect.searchParams.set("state", req.state);
+  // OIDC Session Management: the RP keeps this salted hash and polls the OP's
+  // check-session iframe to learn when the session here ends.
+  if (sid) redirect.searchParams.set("session_state", await sessionState(env, req.clientId, req.redirectUri, sid));
   return { redirectTo: redirect.toString() };
 }
+
+/**
+ * Third-party-initiated login (OIDC Core §4): a third party calls
+ * `/oidc/init-login?iss={client_id}` to have the OP start an authentication
+ * for that relying party. Only clients that registered an
+ * `initiate_login_uri` opt in; the flow then runs a normal authorization
+ * request on their behalf (their first registered redirect_uri, fresh
+ * state+nonce). `login_hint` passes through; `target_link_uri` is the RP's
+ * own concern and is ignored here.
+ */
+authorize.get("/oidc/init-login", async (c) => {
+  const iss = c.req.query("iss") ?? "";
+  const client = iss ? await getClientByClientId(c.env, iss) : null;
+  if (!client || !client.initiate_login_uri) {
+    return renderAuthMessage(c, 400, appConfigError("It is not registered for third-party sign-in."));
+  }
+  const [redirectUri] = JSON.parse(client.redirect_uris) as string[];
+  if (!redirectUri) {
+    return renderAuthMessage(c, 400, appConfigError("It has no redirect URI registered."));
+  }
+  const params = new URLSearchParams({ response_type: "code", client_id: iss, redirect_uri: redirectUri, scope: "openid", state: randomToken(16), nonce: randomToken(16) });
+  const hint = c.req.query("login_hint");
+  if (hint) params.set("login_hint", hint);
+  return c.redirect(`/authorize?${params.toString()}`, 302);
+});
 
 // OpenID Connect Core 3.1.2.1: the authorization endpoint takes GET and POST
 // (form-encoded), with the same parameters.
@@ -117,6 +159,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   const codeChallengeMethod = url.searchParams.get("code_challenge_method") ?? undefined;
   const prompt = url.searchParams.get("prompt") ?? undefined;
   const maxAgeRaw = url.searchParams.get("max_age");
+  const responseMode = url.searchParams.get("response_mode");
 
   if (!clientId || !redirectUri) {
     return renderAuthMessage(c, 400, appConfigError("The sign-in request it sent is missing required parameters."));
@@ -130,8 +173,11 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
 
   // From here the redirect_uri is known to be the client's own, so errors go
   // back to it (RFC 6749 4.1.2.1) rather than stranding the user on our page.
-  const fail = (error: string, description: string) => c.redirect(authorizeErrorRedirect(redirectUri, error, state, description), 302);
+  const fail = (error: string, description: string) => respondAuthorize(c, authorizeErrorRedirect(redirectUri, error, state, description), responseMode === "form_post" ? "form_post" : undefined);
   if (responseType !== "code") return fail("unsupported_response_type", "Only response_type=code is supported.");
+  if (responseMode !== null && responseMode !== "query" && responseMode !== "form_post") {
+    return fail("invalid_request", "response_mode must be query or form_post.");
+  }
   // Request objects are not supported (discovery says so): refuse rather than
   // silently ignore parameters the client put only inside one.
   if (url.searchParams.has("request")) return fail("request_not_supported", "Request objects are not supported.");
@@ -165,6 +211,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
     ...(prompt ? { prompt } : {}),
     ...(maxAge !== undefined ? { maxAge } : {}),
     ...(uiLocale ? { uiLocale } : {}),
+    ...(responseMode === "form_post" ? { responseMode } : {}),
   };
 
   // SSO: if there's already a valid FlareID session in this browser, skip the
@@ -187,7 +234,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
     } else {
       const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);
-      return c.redirect(redirectTo, 302);
+      return respondAuthorize(c, redirectTo, pendingRequest.responseMode);
     }
   }
 

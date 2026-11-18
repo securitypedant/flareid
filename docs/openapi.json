@@ -5716,6 +5716,14 @@
                     "type": "string",
                     "description": "https URL; empty clears it."
                   },
+                  "backchannel_logout_uri": {
+                    "type": "string",
+                    "description": "https URL; empty clears it."
+                  },
+                  "initiate_login_uri": {
+                    "type": "string",
+                    "description": "https URL; empty clears it."
+                  },
                   "id_token_signed_response_alg": {
                     "type": "string",
                     "enum": [
@@ -16054,6 +16062,12 @@
                     }
                   },
                   "frontchannel_logout_uri": {
+                    "type": "string"
+                  },
+                  "backchannel_logout_uri": {
+                    "type": "string"
+                  },
+                  "initiate_login_uri": {
                     "type": "string"
                   },
                   "id_token_signed_response_alg": {

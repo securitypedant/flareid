@@ -30,6 +30,9 @@ export interface ClientSettings {
   /** JSON array of post-logout redirect URIs. */
   postLogoutRedirectUris: string;
   frontchannelLogoutUri: string;
+  /** Back-channel logout and third-party-initiated-login targets; omitted keeps the current ones. */
+  backchannelLogoutUri?: string;
+  initiateLoginUri?: string;
   /** id_token signing algorithm; omitted keeps the current one. */
   idTokenAlg?: IdTokenAlg;
 }
@@ -40,6 +43,8 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
     .bind(s.name, JSON.stringify(s.redirectUris), s.trusted, s.allowedClaims, s.postLogoutRedirectUris, id)
     .run();
   await ctx.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE id = ?").bind(s.frontchannelLogoutUri, id).run();
+  if (s.backchannelLogoutUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE id = ?").bind(s.backchannelLogoutUri, id).run();
+  if (s.initiateLoginUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE id = ?").bind(s.initiateLoginUri, id).run();
   if (s.idTokenAlg) await ctx.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(s.idTokenAlg, id).run();
   await audit(ctx, "oidc_client.updated", s.name);
 }

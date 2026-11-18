@@ -17,11 +17,18 @@ src/index.ts
   ├── /.well-known/…   routes/discovery.ts
   ├── /jwks.json       routes/discovery.ts
   ├── /authorize       routes/authorize.ts
+  ├── /oidc/init-login routes/authorize.ts   ─ third-party-initiated login
   ├── /login, /logout  routes/login.ts
   ├── /token           routes/token.ts
   ├── /introspect      routes/introspect.ts
   ├── /revoke          routes/introspect.ts
   ├── /userinfo        routes/userinfo.ts
+  ├── /check_session   routes/oidc-session.ts ─ session-management iframe
+  ├── /oidc/logout     routes/oidc-session.ts ─ RP-initiated logout
+  ├── /connect/register routes/registration.ts ─ RFC 7591/7592 dynamic clients
+  ├── /device*         routes/device.ts    ─ RFC 8628 device authorization
+  ├── /ssf/*           routes/ssf.ts       ─ Shared Signals receiver + discovery
+  ├── /.well-known/ssf-configuration  routes/ssf.ts
   ├── /account/*       routes/account.ts   ─ requireSession
   └── /admin/*         routes/admin.ts     ─ requireSession + requireAdmin
 ```

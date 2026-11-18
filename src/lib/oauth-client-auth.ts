@@ -1,7 +1,49 @@
+import { createLocalJWKSet, createRemoteJWKSet, jwtVerify, type JWTVerifyOptions } from "jose";
 import type { Env } from "../env.js";
 import { getClientByClientId } from "./db.js";
 import { sha256Hex } from "./tokens.js";
 import type { OAuthClientRow } from "./types.js";
+
+const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+/** Remote JWKS documents change rarely; one getter per URI, keyed for the process. */
+const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+/**
+ * RFC 7523 private_key_jwt: the client authenticates with a JWT it signed with
+ * a private key whose public half it registered (jwks or jwks_uri metadata).
+ * iss and sub are its client_id; aud is this OP's issuer or token endpoint.
+ */
+async function verifyClientAssertion(env: Env, client: OAuthClientRow, assertion: string): Promise<boolean> {
+  let keySet: ReturnType<typeof createLocalJWKSet> | ReturnType<typeof createRemoteJWKSet>;
+  if (client.jwks) {
+    try {
+      keySet = createLocalJWKSet(JSON.parse(client.jwks) as Parameters<typeof createLocalJWKSet>[0]);
+    } catch {
+      return false;
+    }
+  } else if (client.jwks_uri) {
+    let jwks = remoteJwks.get(client.jwks_uri);
+    if (!jwks) {
+      jwks = createRemoteJWKSet(new URL(client.jwks_uri));
+      remoteJwks.set(client.jwks_uri, jwks);
+    }
+    keySet = jwks;
+  } else {
+    return false;
+  }
+  try {
+    const opts: JWTVerifyOptions = {
+      issuer: client.client_id,
+      subject: client.client_id,
+      audience: [env.ISSUER_URL, `${env.ISSUER_URL}/token`],
+    };
+    await jwtVerify(assertion, keySet, opts);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function parseBasicAuth(header: string | undefined): { clientId: string; clientSecret: string } | null {
   if (!header?.startsWith("Basic ")) return null;
@@ -48,6 +90,12 @@ export async function authenticateClient(
   if (!client) return null;
 
   if (client.client_type === "public") return opts.allowPublic && !clientSecret ? client : null;
-  if (!clientSecret || !client.client_secret_hash) return null;
+  if (!clientSecret) {
+    if (String(body.client_assertion_type ?? "") === ASSERTION_TYPE && typeof body.client_assertion === "string" && (await verifyClientAssertion(env, client, body.client_assertion))) {
+      return client;
+    }
+    return null;
+  }
+  if (!client.client_secret_hash) return null;
   return timingSafeEqualHex(await sha256Hex(clientSecret), client.client_secret_hash) ? client : null;
 }

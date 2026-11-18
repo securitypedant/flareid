@@ -54,5 +54,8 @@ export default defineConfig({
   ],
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
+    // e2e/ holds the Docker/Playwright drivers, which run outside the Workers
+    // runtime (and import playwright, which is not a dependency).
+    exclude: ["e2e/**", "node_modules/**"],
   },
 });

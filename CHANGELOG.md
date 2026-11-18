@@ -33,8 +33,49 @@ the risk watchlist and gateway-list sync.
 **Migration `0041_audit_chain_and_ssf.sql`** - `audit_log.chain_hash` (the
 tamper-evident chain below), and the `ssf_streams` / `ssf_outbox` /
 `ssf_transmitters` tables behind Shared Signals.
+**Migration `0042_oidc_profiles.sql`** - `oauth_clients` gains
+`backchannel_logout_uri`, `initiate_login_uri`, `registration_token_hash`,
+`jwks` and `jwks_uri` - the columns behind back-channel logout,
+third-party-initiated login and dynamic client registration.
 
 ### Added
+
+- **The remaining OIDC OP conformance profiles.** The OIDF workflow now runs
+  all nine OP profiles a code-only provider can be certified for (the four
+  implicit/hybrid profiles need response types FlareID does not issue):
+
+  - *Form Post OP*: `response_mode=form_post` auto-submits the authorization
+    response to the redirect URI, including through the MFA and
+    trusted-device resume steps and on errors.
+  - *Session Management OP*: authorize responses carry `session_state`, and
+    `/check_session` serves the spec's postMessage iframe, advertised as
+    `check_session_iframe` in discovery.
+  - *Back-Channel OP*: sessions ending (logout, expiry sweep, admin revoke)
+    POST a signed `logout_token` to every participating client's
+    `backchannel_logout_uri` - `src/lib/backchannel.ts`, settable per client
+    like the front-channel URI.
+  - *3rd Party-Init OP*: `GET /oidc/init-login?iss=<client_id>` starts a
+    normal authorization request aimed at the client's `initiate_login_uri`,
+    passing `login_hint` and `target_link_uri` through.
+  - *Dynamic OP*: `POST /connect/register` creates clients from RFC 7591
+    metadata (redirect URIs, logout/init URIs, `jwks`/`jwks_uri`,
+    `id_token_signed_response_alg`, grant types) and returns
+    `registration_client_uri` + `registration_access_token`; GET/PUT on the
+    client URI reads and updates per RFC 7592. Clients registered with a
+    `jwks` or `jwks_uri` authenticate at `/token` with `private_key_jwt`
+    assertions (RFC 7523), at every client-authenticated endpoint.
+
+- **`address` and `phone` claim groups.** The OIDC `address` and `phone`
+  scopes now resolve to the standard claims (`address` object,
+  `phone_number`, `phone_number_verified`) from user schema attributes;
+  discovery advertises them and consent lists them.
+
+- **Containerized e2e rig** (`e2e/`, docs/e2e.md). One Dockerfile runs
+  `wrangler dev` against local D1 in a clean container; `e2e/smoke.mjs`
+  drives 26 checks over setup, users, logins, the OIDC code flow, audit
+  export/verify, backup and SSF. `e2e/compose.yml` adds a local app lab
+  (Grafana + SimpleSAMLphp + a TLS sidecar) for real-app OIDC/SAML testing
+  per docs/real-apps.md, seeded by `e2e/real-apps.mjs`.
 
 - **Audit export and tamper-evidence.** Every audit row now carries a
   `chain_hash` - SHA-256 over the previous row's hash plus its own

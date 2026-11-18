@@ -27,7 +27,7 @@ type Group = "auth" | "api";
 function routeGroup(method: string, path: string): Group | null {
   // Every sign-in step: the password, the second steps (code, passkey, email code and its send).
   if (path === "/login" || path.startsWith("/login/") || path === "/authorize" || path === "/saml/sso" || path === "/saml/complete") return "auth";
-  if (path.startsWith("/api/") || path === "/token" || path === "/introspect" || path === "/revoke" || path === "/userinfo") return "api";
+  if (path.startsWith("/api/") || path === "/token" || path === "/introspect" || path === "/revoke" || path === "/userinfo" || path.startsWith("/connect/register")) return "api";
   if (path.startsWith("/scim/v2/")) return "api";
   if (path === "/setup") return "auth";
   if (method === "POST" && (path === "/forgot-password" || path.startsWith("/reset-password") || path.startsWith("/invite/"))) return "auth";

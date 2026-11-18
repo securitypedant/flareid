@@ -1,5 +1,7 @@
 import type { Env } from "../env.js";
 import type { OAuthClientRow } from "./types.js";
+import { oidcSid } from "./sessions.js";
+import { randomToken, sha256Hex } from "./tokens.js";
 
 /**
  * Claims are released in groups. A client receives a group only when it is
@@ -17,12 +19,14 @@ import type { OAuthClientRow } from "./types.js";
  * before v3) is allowed every group, so existing integrations see no change
  * as long as they ask for the scopes they use.
  */
-export const CLAIM_GROUPS = ["email", "profile", "hr", "custom", "groups"] as const;
+export const CLAIM_GROUPS = ["email", "profile", "address", "phone", "hr", "custom", "groups"] as const;
 export type ClaimGroup = (typeof CLAIM_GROUPS)[number];
 
 export const CLAIM_GROUP_LABELS: Record<ClaimGroup, string> = {
   email: "Email address",
   profile: "Name and username",
+  address: "Postal address",
+  phone: "Phone number",
   hr: "Job title, department and manager",
   custom: "Custom attributes (the nested custom claim)",
   groups: "Group memberships",
@@ -31,10 +35,12 @@ export const CLAIM_GROUP_LABELS: Record<ClaimGroup, string> = {
 const SCOPE_GROUPS: Record<string, ClaimGroup[]> = {
   email: ["email"],
   profile: ["profile", "hr", "custom"],
+  address: ["address"],
+  phone: ["phone"],
   groups: ["groups"],
 };
 
-export const SUPPORTED_SCOPES = ["openid", "email", "profile", "groups", "offline_access"];
+export const SUPPORTED_SCOPES = ["openid", "email", "profile", "address", "phone", "groups", "offline_access"];
 
 export function parseAllowedClaims(client: Pick<OAuthClientRow, "allowed_claims">): ClaimGroup[] {
   if (client.allowed_claims === null || client.allowed_claims === undefined) return [...CLAIM_GROUPS];
@@ -61,6 +67,8 @@ export function effectiveClaimGroups(client: Pick<OAuthClientRow, "allowed_claim
 const CLAIM_NAME_GROUPS: Record<string, ClaimGroup> = {
   email: "email", email_verified: "email",
   name: "profile", given_name: "profile", family_name: "profile", preferred_username: "profile",
+  address: "address",
+  phone_number: "phone", phone_number_verified: "phone",
   groups: "groups",
   job_title: "hr", department: "hr", manager: "hr", employee_number: "hr",
   custom: "custom",
@@ -185,4 +193,17 @@ export function authorizeErrorRedirect(redirectUri: string, error: string, state
   if (description) url.searchParams.set("error_description", description);
   if (state) url.searchParams.set("state", state);
   return url.toString();
+}
+
+/**
+ * OIDC Session Management 1.0: the session_state an authorization response
+ * carries. A salted digest of (client_id, RP origin, OP session id, salt) -
+ * the check-session iframe recomputes it server-side and answers "unchanged"
+ * only while the same session is live.
+ */
+export async function sessionState(env: Env, clientId: string, redirectUri: string, sessionId: string): Promise<string> {
+  const origin = new URL(redirectUri).origin;
+  const salt = randomToken(8);
+  const hash = await sha256Hex(`${clientId} ${origin} ${await oidcSid(sessionId)} ${salt}`);
+  return `${hash}.${salt}`;
 }

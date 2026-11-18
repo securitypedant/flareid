@@ -32,7 +32,7 @@ import {
   type LoginFlow,
 } from "../lib/authorize-state.js";
 import { clearSessionCookie, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
-import { finishOidcAuthorize } from "./authorize.js";
+import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
 import { getSpById } from "../lib/saml/service-providers.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
@@ -185,7 +185,7 @@ login.post("/logout", async (c) => {
  * response to the service provider's ACS.
  */
 export type LoginFlowOutcome =
-  | { type: "redirect"; to: string }
+  | { type: "redirect"; to: string; responseMode?: string }
   | { type: "saml-post"; acsUrl: string; samlResponse: string; relayState: string | null };
 
 export async function completeLoginFlow(
@@ -257,7 +257,7 @@ export async function completeLoginFlow(
   }
 
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
-  return { outcome: { type: "redirect", to: redirectTo }, setCookie };
+  return { outcome: { type: "redirect", to: redirectTo, responseMode: flow.request.responseMode }, setCookie };
 }
 
 login.post("/login", async (c) => {
@@ -360,7 +360,7 @@ login.post("/login", async (c) => {
   if (outcome.type === "saml-post") {
     return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   }
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });
 
 // Passkey sign-in (discoverable credentials, no username typed).
@@ -401,7 +401,7 @@ login.post("/login/passkey", async (c) => {
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });
 
 // The second step with a passkey instead of a code.
@@ -443,7 +443,7 @@ login.post("/login/mfa/passkey", async (c) => {
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });
 
 login.post("/login/mfa", async (c) => {
@@ -514,7 +514,7 @@ login.post("/login/mfa", async (c) => {
   if (outcome.type === "saml-post") {
     return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   }
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });
 
 // The second step with a code sent by email. Sending is a POST of its own, so
@@ -594,7 +594,7 @@ login.post("/login/mfa/email", async (c) => {
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });
 
 // The second step with security questions. "start" picks the questions for
@@ -671,5 +671,5 @@ login.post("/login/mfa/questions", async (c) => {
   c.header("Set-Cookie", setCookie);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
-  return c.redirect(outcome.to, 302);
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
 });

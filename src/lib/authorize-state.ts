@@ -17,6 +17,8 @@ export interface PendingAuthorizeRequest {
   claimGroups?: { id_token: string[]; userinfo: string[] };
   /** The first supported language in OIDC `ui_locales`, for the pages that follow sign-in (consent). */
   uiLocale?: string;
+  /** OIDC `response_mode` (OAuth 2.0 Multiple Response Types): absent means `query`. */
+  responseMode?: "form_post";
 }
 
 export interface PendingSamlRequest {

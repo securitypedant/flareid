@@ -197,6 +197,8 @@
     "setup.error.password": "Choisissez un mot de passe pour l'administrateur.",
     "setup.error.mismatch": "Les mots de passe ne correspondent pas.",
     "login.error.device_cert": "Ce compte doit se connecter depuis un appareil géré. Connectez-vous avec le client WARP et réessayez.",
-    "login.error.risk": "Connexion bloquée : le niveau de risque actuel de ce compte dépasse ce que sa politique autorise. Demandez à un administrateur."
+    "login.error.risk": "Connexion bloquée : le niveau de risque actuel de ce compte dépasse ce que sa politique autorise. Demandez à un administrateur.",
+    "consent.claims.address": "Adresse postale",
+    "consent.claims.phone": "Numéro de téléphone"
   }
 }

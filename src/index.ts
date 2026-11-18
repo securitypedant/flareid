@@ -29,6 +29,7 @@ import { getConsoleTimezone } from "./lib/settings.js";
 import { brandAssets } from "./routes/brand-assets.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { purgeRetiredKeys } from "./lib/signing-keys.js";
+import { registration } from "./routes/registration.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 import { edgeRateLimit } from "./lib/edge-limit.js";
 import { recordRequestMetrics } from "./lib/metrics.js";
@@ -69,6 +70,8 @@ app.route("/", scimServer);
 app.route("/", brandAssets);
 // Shared Signals: transmitters push signed SETs; the signature is the auth.
 app.route("/", ssfReceiver);
+// Dynamic client registration (RFC 7591/7592): machine callers, bearer tokens.
+app.route("/", registration);
 
 // Resolves the default brand's display name and logo once per request so
 // every downstream handler/view can read them synchronously via

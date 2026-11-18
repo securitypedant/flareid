@@ -172,11 +172,18 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
 /** Revokes a session by its own id (e.g. on logout, or "sign out this device"). */
 export async function revokeSession(env: Env, sessionId: string): Promise<void> {
   await env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();
+  // Back-channel logout: tell clients that registered a URI (best effort,
+  // bounded by its own timeout inside).
+  const { notifySessionRevoked } = await import("./backchannel.js");
+  await notifySessionRevoked(env, [sessionId]).catch(() => {});
 }
 
 /** Revokes every active session for a user (optionally keeping one, e.g. the current one). Returns how many were revoked. */
 export async function revokeAllSessionsForUser(env: Env, userId: number, exceptSessionId?: string): Promise<number> {
   const now = new Date().toISOString();
+  const { results: going } = await env.DB.prepare("SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL" + (exceptSessionId ? " AND id != ?" : ""))
+    .bind(...(exceptSessionId ? [userId, exceptSessionId] : [userId]))
+    .all<{ id: string }>();
   const result = exceptSessionId
     ? await env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL AND id != ?")
         .bind(now, userId, exceptSessionId)
@@ -184,6 +191,8 @@ export async function revokeAllSessionsForUser(env: Env, userId: number, exceptS
     : await env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
         .bind(now, userId)
         .run();
+  const { notifySessionRevoked } = await import("./backchannel.js");
+  await notifySessionRevoked(env, going.map((s) => s.id)).catch(() => {});
   return result.meta.changes ?? 0;
 }
 

@@ -29,6 +29,9 @@ function clientJson(cl: OAuthClientRow) {
     redirect_uris: JSON.parse(cl.redirect_uris) as string[],
     post_logout_redirect_uris: JSON.parse(cl.post_logout_redirect_uris || "[]") as string[],
     frontchannel_logout_uri: cl.frontchannel_logout_uri || null,
+    backchannel_logout_uri: cl.backchannel_logout_uri || null,
+    initiate_login_uri: cl.initiate_login_uri || null,
+    has_jwks: Boolean(cl.jwks || cl.jwks_uri),
     trusted: cl.trusted === 1,
     allowed_claims: cl.allowed_claims === null ? null : parseAllowedClaims(cl),
     id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
@@ -65,6 +68,8 @@ defineRoute(
       allowed_claims: z.array(z.string()).nullable().optional().openapi({ description: "Claim groups this client may receive; null = every group." }),
       post_logout_redirect_uris: z.array(z.string()).optional(),
       frontchannel_logout_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
+      backchannel_logout_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
+      initiate_login_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
       id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed." }),
     }),
     errors: [404],
@@ -73,7 +78,7 @@ defineRoute(
   async (c) => {
     const client = await clientFor(c);
     if (!client) return noClient(c);
-    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; id_token_signed_response_alg?: string }>(c);
+    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; backchannel_logout_uri?: string; initiate_login_uri?: string; id_token_signed_response_alg?: string }>(c);
     const current = clientJson(client);
     const name = String(body.name ?? current.name).trim();
     if (!name) return c.json(badRequest("name cannot be empty."), 400);
@@ -86,6 +91,10 @@ defineRoute(
     if (badLogout) return c.json(badRequest(`post_logout_redirect_uri "${badLogout}" must be https (or http on a loopback host).`), 400);
     const fcl = body.frontchannel_logout_uri === undefined ? (client.frontchannel_logout_uri ?? "") : validFrontchannelUri(String(body.frontchannel_logout_uri).trim());
     if (body.frontchannel_logout_uri && !fcl) return c.json(badRequest("frontchannel_logout_uri must be an https URL."), 400);
+    const bcl = body.backchannel_logout_uri === undefined ? undefined : validFrontchannelUri(String(body.backchannel_logout_uri).trim());
+    if (body.backchannel_logout_uri && !bcl) return c.json(badRequest("backchannel_logout_uri must be an https URL."), 400);
+    const init = body.initiate_login_uri === undefined ? undefined : validFrontchannelUri(String(body.initiate_login_uri).trim());
+    if (body.initiate_login_uri && !init) return c.json(badRequest("initiate_login_uri must be an https URL."), 400);
     if (body.id_token_signed_response_alg !== undefined && !isIdTokenAlg(body.id_token_signed_response_alg)) {
       return c.json(badRequest(`id_token_signed_response_alg must be one of ${ID_TOKEN_ALGS.join(", ")}.`), 400);
     }
@@ -97,6 +106,8 @@ defineRoute(
       allowedClaims: claims,
       postLogoutRedirectUris: JSON.stringify(logout),
       frontchannelLogoutUri: fcl,
+      ...(bcl !== undefined ? { backchannelLogoutUri: bcl } : {}),
+      ...(init !== undefined ? { initiateLoginUri: init } : {}),
       idTokenAlg: body.id_token_signed_response_alg as "RS256" | "ES256" | undefined,
     });
     return c.json(clientJson((await clientFor(c))!));

@@ -414,7 +414,9 @@ Scope: `directory:read` / `clients:write`.
   "trusted": true,
   "allowed_claims": ["profile", "email", "groups"],
   "post_logout_redirect_uris": ["https://app.example.com/signed-out"],
-  "frontchannel_logout_uri": "https://app.example.com/logout/frontchannel"
+  "frontchannel_logout_uri": "https://app.example.com/logout/frontchannel",
+  "backchannel_logout_uri": "https://app.example.com/logout/backchannel",
+  "initiate_login_uri": "https://app.example.com/oidc/start"
 }
 ```
 
@@ -433,6 +435,16 @@ Scope: `directory:read` / `clients:write`.
 - `frontchannel_logout_uri` (https) is loaded in a hidden iframe, with `iss`
   and `sid`, when a user who signed in to this client signs out of FlareID
   (OpenID Connect Front-Channel Logout 1.0).
+- `backchannel_logout_uri` (https) is POSTed a signed `logout_token` instead
+  (OpenID Connect Back-Channel Logout 1.0) - for RPs that prefer a
+  server-to-server call over the iframe.
+- `initiate_login_uri` (https) opts the client in to third-party-initiated
+  login: `GET /oidc/init-login?iss=<client_id>` (with optional `login_hint`
+  and `target_link_uri`) starts a normal authorization request aimed at that
+  URI (OpenID Connect Core §4.1).
+- Clients that registered with `jwks` or `jwks_uri` (see `/connect/register`,
+  RFC 7591) authenticate at `/token` with `private_key_jwt` assertions
+  instead of `client_secret_basic`.
 
 Supplying `client_id` and `client_secret` is what makes a single-pass Terraform
 apply possible: Terraform needs the credential to create the Access identity

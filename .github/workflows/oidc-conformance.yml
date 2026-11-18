@@ -51,18 +51,26 @@ jobs:
           git -C /tmp/suite checkout 23353b36957d6466010de767c812d2c91ed37638
           pip install --quiet --require-hashes -r conformance/requirements.txt
 
-      - name: Basic OP, Config OP and RP-initiated logout plans
+      - name: OP certification plans
         env:
           CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
         working-directory: /tmp/suite/scripts
         run: |
+          # All nine OP profiles a code-only OP can be certified for; the four
+          # implicit/hybrid profiles need response_types FlareID does not issue.
           python3 run-test-plan.py \
             --expected-failures-file "$GITHUB_WORKSPACE/conformance/expected-failures.json" \
             --expected-skips-file "$GITHUB_WORKSPACE/conformance/expected-skips.json" \
             --export-dir "$GITHUB_WORKSPACE/conformance-results" \
             "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-config-certification-test-plan" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
-            "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
+            "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-dynamic-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-3rdparty-init-login-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-backchannel-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-session-management-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
 
       - name: Scrub shared secrets from the suite exports
         if: always()
