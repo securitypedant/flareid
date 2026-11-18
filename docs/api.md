@@ -97,7 +97,7 @@ does - in summary:
 | Area | Endpoints |
 |---|---|
 | Users | `POST /users`, `GET`/`PATCH`/`DELETE /users/{username}`, `POST .../reset-password`, `POST .../reset-mfa`, `GET`/`DELETE .../sessions`, `GET .../passkeys`, `DELETE .../passkeys/{credential_id}`, `GET .../apps`, `DELETE .../apps/{client_id}` |
-| Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members paged, `?search=`), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}` |
+| Groups | `POST /groups`, `GET`/`PATCH`/`DELETE /groups/{id}` (members and managers paged, `?search=`), `POST /groups/bulk` (`requestable_on`/`requestable_off`/`add_members` across a selection), `POST .../freeze`, `POST .../members`, `DELETE .../members/{username}`, `POST .../managers`, `DELETE .../managers/{username}` |
 | OIDC clients | `GET`/`PATCH`/`DELETE /clients/{client_id}`, `POST .../rotate-secret` |
 | SAML, SCIM | `GET /saml/service-providers/{id}`, `GET /scim/config`, `GET /scim/targets`, `GET /scim/targets/{id}` |
 | Federation | `GET`/`POST /federation/idps`, `GET`/`PATCH`/`DELETE /federation/idps/{id}` - upstream identity providers people sign in through |

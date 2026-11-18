@@ -193,6 +193,33 @@ export async function removeGroupMember(ctx: ServiceCtx, id: number, uid: number
   });
 }
 
+/** Names people as managers of a group; they can then change members and answer requests from My account. */
+export async function addGroupManagers(ctx: ServiceCtx, id: number, userIds: number[]): Promise<number> {
+  const group = await getGroupById(ctx.env, id);
+  if (!group) throw new ServiceError(404, "Not found");
+  if (group.rule) throw new ServiceError(400, "A dynamic group's membership follows its rule - there is nothing to delegate.");
+  // A role group's members are an admin grant - delegated management must
+  // never reach it, so naming managers there is refused even for Super Admin.
+  if ((await adminRoleGroupIds(ctx.env)).has(id)) throw new ServiceError(400, "An admin role group can't have managers - its membership grants an admin role.");
+  await assertMayTouchGroup(ctx, id);
+  if (!userIds.length) return 0;
+  const results = await ctx.env.DB.batch(
+    userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_managers (group_id, user_id, created_at) VALUES (?, ?, ?)").bind(id, uid, new Date().toISOString()))
+  );
+  const added = results.reduce((n, r) => n + Number(r.meta.changes ?? 0), 0);
+  await audit(ctx, "group.managers_added", group.name, { count: added });
+  return added;
+}
+
+export async function removeGroupManager(ctx: ServiceCtx, id: number, uid: number): Promise<void> {
+  const group = await getGroupById(ctx.env, id);
+  if (!group) throw new ServiceError(404, "Not found");
+  await assertMayTouchGroup(ctx, id);
+  const user = await ctx.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
+  await ctx.env.DB.prepare("DELETE FROM group_managers WHERE group_id = ? AND user_id = ?").bind(id, uid).run();
+  await audit(ctx, "group.manager_removed", group.name, { user: user?.upn });
+}
+
 /**
  * A group's current members - assigned ones for a static group, rule matches
  * for a dynamic one - optionally filtered by name, UPN or username, one page

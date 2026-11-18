@@ -3,8 +3,9 @@ import type { Env } from "../env.js";
 import { resolveGroupMemberUserIds } from "../lib/groups.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes } from "../lib/schemas.js";
 import type { GroupRow } from "../lib/types.js";
+import { groupManagers } from "../lib/group-managers.js";
 import { apiCtx, ServiceError } from "../services/context.js";
-import { addGroupMembers, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, getGroupById, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
+import { addGroupManagers, addGroupMembers, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, getGroupById, groupMembers, removeGroupManager, removeGroupMember, updateGroup } from "../services/groups.js";
 import { defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import { GroupSchema, IdParam, MemberSchema, RuleSchema, StringMap } from "./schemas.js";
 
@@ -95,7 +96,10 @@ defineRoute(
     params: IdParam,
     query: z.object({ search: z.string().optional(), limit: z.string().optional().openapi({ description: "Default 100, at most 500." }), offset: z.string().optional() }),
     errors: [404],
-    response: GroupSchema.extend({ members: z.object({ total: z.number(), limit: z.number(), offset: z.number(), users: z.array(MemberSchema) }) }),
+    response: GroupSchema.extend({
+      members: z.object({ total: z.number(), limit: z.number(), offset: z.number(), users: z.array(MemberSchema) }),
+      managers: z.array(MemberSchema).openapi({ description: "The group's named managers, who may change members and answer requests from My account." }),
+    }),
   },
   async (c) => {
     const group = await groupFor(c);
@@ -106,6 +110,7 @@ defineRoute(
     return c.json({
       ...(await groupJson(c.env, group)),
       members: { total, limit, offset, users: rows.map((u) => ({ upn: u.upn, username: u.username, display_name: u.display_name, status: u.status })) },
+      managers: (await groupManagers(c.env, group.id)).map((u) => ({ upn: u.upn, username: u.username, display_name: u.display_name, status: u.status })),
     });
   }
 );
@@ -232,6 +237,40 @@ defineRoute(
     const user = await c.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(param(c, "username").toLowerCase()).first<{ id: number }>();
     if (!user) return notFound(c, `No user "${param(c, "username").toLowerCase()}".`);
     await removeGroupMember(apiCtx(c), group.id, user.id);
+    return c.json({ ok: true });
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/groups/{id}/managers",
+    tag: "Groups",
+    permission: "groups:write",
+    summary: "Name group managers",
+    description:
+      "A static group's managers can change its members and answer its access requests from My account. A dynamic group's membership follows its rule, so it takes none. An admin role group needs `*`.",
+    params: IdParam,
+    body: z.object({ usernames: z.array(z.string()) }),
+    errors: [404],
+    response: z.object({ ok: z.literal(true), added: z.number() }),
+  },
+  async (c) => {
+    const group = await groupFor(c);
+    if (!group) return noGroup(c);
+    const body = await readJson<{ usernames: string[] }>(c);
+    return c.json({ ok: true, added: await addGroupManagers(apiCtx(c), group.id, await userIds(c.env, body.usernames ?? [])) });
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/groups/{id}/managers/{username}", tag: "Groups", permission: "groups:write", summary: "Remove a group manager", params: IdParam.extend({ username: z.string() }), errors: [404] },
+  async (c) => {
+    const group = await groupFor(c);
+    if (!group) return noGroup(c);
+    const user = await c.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(param(c, "username").toLowerCase()).first<{ id: number }>();
+    if (!user) return notFound(c, `No user "${param(c, "username").toLowerCase()}".`);
+    await removeGroupManager(apiCtx(c), group.id, user.id);
     return c.json({ ok: true });
   }
 );

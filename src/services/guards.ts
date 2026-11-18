@@ -1,4 +1,5 @@
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "../lib/admin-roles.js";
+import { isGroupManager } from "../lib/group-managers.js";
 import type { UserRow } from "../lib/types.js";
 import { ServiceError, type ServiceCtx } from "./context.js";
 
@@ -39,6 +40,18 @@ export async function assertNoAdminRoleGrant(ctx: ServiceCtx, before: UserRow | 
   if (ctx.privileged) return;
   const granted = await grantsAdminRoleGroup(ctx.env, before, after);
   if (granted) throw new ServiceError(403, `That change puts the user in "${granted}", an admin role group - ${NEEDS}.`);
+}
+
+/**
+ * Who may change a group's members and answer its access requests without
+ * groups:write: its managers. Admin-role groups are excluded up front by the
+ * ordinary guard - delegated management never delegates an admin grant.
+ */
+export async function assertMayManageGroup(ctx: ServiceCtx, groupId: number): Promise<void> {
+  await assertMayTouchGroup(ctx, groupId);
+  if (ctx.privileged) return;
+  if (ctx.selfId && (await isGroupManager(ctx.env, ctx.selfId, groupId))) return;
+  throw new ServiceError(403, "Only this group's managers can do that here.");
 }
 
 export async function assertMayNameGroup(ctx: ServiceCtx, name: string): Promise<void> {

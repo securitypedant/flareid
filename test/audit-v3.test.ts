@@ -68,7 +68,7 @@ describe("credential lifecycle", () => {
     const { apiKey, upn, clientId, clientSecret } = await setup();
     const { cookie, tokens } = await tokensFor(upn, clientId, clientSecret);
     const pw = await call("/account/password", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: new URLSearchParams({ current_password: PW, new_password: "New-password-456!", confirm_password: "New-password-456!" }).toString() });
-    expect(pw.headers.get("Location")).toBe("/account?saved=password");
+    expect(pw.headers.get("Location")).toBe("/account/security?saved=password");
     expect((await refresh(tokens.refresh_token!, clientId, clientSecret)).status).toBe(400);
 
     expect((await call("/api/v1/users/nina/invite", { method: "POST", headers: { Authorization: `Bearer ${apiKey}` } })).status).toBe(200);
@@ -88,7 +88,7 @@ describe("credential lifecycle", () => {
     await env.DB.prepare("INSERT INTO webauthn_credentials (id, user_id, public_key, created_at) VALUES ('cred-1', ?, 'pk', ?)").bind(id, new Date().toISOString()).run();
 
     const pw = await call("/account/password", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: new URLSearchParams({ current_password: PW, new_password: "New-password-456!", confirm_password: "New-password-456!" }).toString() });
-    expect(pw.headers.get("Location")).toBe("/account?saved=password");
+    expect(pw.headers.get("Location")).toBe("/account/security?saved=password");
     const rotated = pw.headers.get("Set-Cookie")?.split(";")[0];
     expect(rotated).toBeTruthy();
     expect(rotated).not.toBe(cookie);
@@ -237,11 +237,11 @@ describe("wave 2", () => {
     await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(id).run();
     const cookie = (await createSession(env, id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
     const regen = await call("/account/mfa/backup-codes/regenerate", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "" });
-    expect(regen.headers.get("Location")).toBe("/account?error=mfa-code");
+    expect(regen.headers.get("Location")).toBe("/account/security?error=mfa-code");
     let limited = false;
     for (let i = 0; i < 8 && !limited; i++) {
       const r = await call("/account/mfa/disable", { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "code=000000" });
-      limited = r.headers.get("Location") === "/account?error=too-many";
+      limited = r.headers.get("Location") === "/account/security?error=too-many";
     }
     expect(limited).toBe(true);
   });

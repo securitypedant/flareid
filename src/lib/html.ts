@@ -177,6 +177,43 @@ const STYLES = `
   .topbar nav a.signout, .topbar nav .link-button.signout { color: var(--fi-muted); }
   .topbar nav a.signout:hover, .topbar nav .link-button.signout:hover { color: var(--fi-red); background: var(--fi-red-soft); }
 
+  /* top-bar dropdown menus: the account menu and the notifications bell */
+  .nav-menu { position: relative; display: inline-block; }
+  .nav-menu-btn {
+    background: none; border: none; cursor: pointer; font: inherit;
+    color: var(--fi-body); font-size: 0.875rem; font-weight: 500;
+    padding: 6px 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;
+  }
+  .nav-menu-btn:hover { background: var(--fi-line-soft); color: var(--fi-ink); }
+  .nav-menu.open .nav-menu-btn { background: var(--fi-line-soft); color: var(--fi-ink); }
+  .nav-menu-list {
+    display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+    min-width: 220px; max-width: 340px; background: var(--fi-surface);
+    border: 1px solid var(--fi-line); border-radius: 10px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.18); padding: 6px;
+  }
+  .nav-menu.open .nav-menu-list { display: block; }
+  .nav-menu-list a {
+    display: block; padding: 8px 10px; border-radius: 6px; border-bottom: none;
+    color: var(--fi-ink); font-size: 0.875rem; font-weight: 500;
+  }
+  .nav-menu-list a:hover { background: var(--fi-line-soft); text-decoration: none; }
+  .notif-btn { position: relative; padding: 6px 10px !important; }
+  .notif-dot {
+    position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
+    border-radius: 999px; background: var(--fi-amber); color: #1c1007;
+    font-size: 0.625rem; font-weight: 700; line-height: 16px; text-align: center; padding: 0 4px;
+  }
+  .notif-item { display: block; padding: 8px 10px; border-radius: 6px; border-bottom: none; color: var(--fi-ink); font-size: 0.8125rem; }
+  .notif-item:hover { background: var(--fi-line-soft); text-decoration: none; }
+  .notif-item .notif-when { display: block; color: var(--fi-muted); font-size: 0.72rem; margin-top: 2px; }
+  .notif-empty { padding: 12px 10px; color: var(--fi-muted); font-size: 0.8125rem; }
+  .nav-badge {
+    display: inline-block; min-width: 18px; height: 18px; border-radius: 999px;
+    background: var(--fi-amber); color: #1c1007; font-size: 0.6875rem; font-weight: 700;
+    line-height: 18px; text-align: center; padding: 0 5px; margin-left: 6px; vertical-align: 1px;
+  }
+
   /* -------------------------------------------------------------- page */
   .page-wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 40px; }
   .center-wrap { max-width: 400px; margin: 9vh auto; padding: 0 20px; }
@@ -440,6 +477,22 @@ const STYLES = `
   .multiselect-option.hidden { display: none; }
   .multiselect-option.selected { display: none; }
   .multiselect-option-desc { color: var(--fi-muted); font-size: 0.78rem; padding-left: 22px; }
+  .multiselect-badge {
+    display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+    background: var(--fi-amber-soft); color: var(--fi-amber); border: 1px solid #fcd34d;
+    font-size: 0.6875rem; font-weight: 600; vertical-align: 1px;
+  }
+
+  /* Compact bulk-action bar that sits at the top of a list card */
+  .bulk-bar { border-bottom: 1px solid var(--fi-line); padding-bottom: 12px; margin-bottom: 12px; }
+  .bulk-bar-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0; }
+  .bulk-bar-group { display: inline-flex; gap: 6px; align-items: flex-start; }
+
+  /* Profile photos */
+  .avatar { border-radius: 50%; object-fit: cover; background: var(--fi-line-soft); border: 1px solid var(--fi-line); }
+  .avatar-lg { width: 96px; height: 96px; }
+  .avatar-sm { width: 28px; height: 28px; vertical-align: middle; margin-right: 8px; }
+  .photo-upload-btn { font-size: 0.78rem; padding: 5px 12px; }
 
   /* Copy-to-clipboard buttons */
   .copy-btn {
@@ -567,6 +620,13 @@ function msRemote(input) {
       const box = document.createElement('input');
       box.type = 'checkbox'; box.name = root.dataset.name; box.value = String(it.id); box.dataset.label = it.label;
       label.append(box, document.createTextNode(' ' + it.label));
+      (it.badges || []).forEach(function (bd) {
+        const s = document.createElement('span');
+        s.className = 'multiselect-badge';
+        if (bd.title) s.title = bd.title;
+        s.textContent = bd.label;
+        label.appendChild(s);
+      });
       if (it.desc) {
         const d = document.createElement('div');
         d.className = 'multiselect-option-desc';
@@ -1215,8 +1275,45 @@ const TS_SCRIPT = `(function(){
   }
 })();`;
 
+/** Top-bar dropdowns (account menu, notifications): one opens at a time, clicks outside close them. */
+const NAV_MENU_SCRIPT = `(function(){
+  document.addEventListener('click', function(e){
+    var btn = e.target.closest ? e.target.closest('.nav-menu-btn') : null;
+    document.querySelectorAll('.nav-menu.open').forEach(function(m){ if (btn && m.contains(btn)) return; m.classList.remove('open'); });
+    if (btn) btn.parentElement.classList.toggle('open');
+  });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') document.querySelectorAll('.nav-menu.open').forEach(function(m){ m.classList.remove('open'); }); });
+})();`;
+
 /** The top bar. `logoUrl` is the brand's uploaded logo (brands.ts); FlareID's icon without one. */
-export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, tz = ""): string {
+/** One row of the notifications dropdown: something a signed-in person can act on. */
+export interface TopNotification {
+  label: string;
+  href: string;
+  when?: string;
+}
+
+/** What the bell carries: pending work for this person, newest first. */
+export interface NotificationFeed {
+  count: number;
+  items: TopNotification[];
+  /** Where "see all" points; defaults to the first item's href. */
+  seeAllHref?: string;
+}
+
+const CARET = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>';
+const BELL = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2a4 4 0 00-4 4v2.2l-1.2 2.6a.6.6 0 00.55.9h9.3a.6.6 0 00.55-.9L12 8.2V6a4 4 0 00-4-4z"/><path d="M6.5 13.5a1.75 1.75 0 003 0"/></svg>';
+
+export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, tz = "", notifications?: NotificationFeed | null): string {
+  const bell = notifications
+    ? `<div class="nav-menu" data-nav-menu>
+        <button class="nav-menu-btn notif-btn" type="button" aria-label="Notifications${notifications.count ? ` - ${notifications.count} pending` : ""}" title="Things needing your attention">${BELL}${notifications.count ? `<span class="notif-dot">${notifications.count > 99 ? "99+" : notifications.count}</span>` : ""}</button>
+        <div class="nav-menu-list">
+          ${notifications.items.length ? notifications.items.map((i) => `<a class="notif-item" href="${escapeHtml(i.href)}">${escapeHtml(i.label)}${i.when ? `<span class="notif-when">${escapeHtml(i.when)}</span>` : ""}</a>`).join("") : '<div class="notif-empty">Nothing needs your attention.</div>'}
+          ${notifications.count > notifications.items.length ? `<a class="notif-item" href="${escapeHtml(notifications.seeAllHref ?? notifications.items[0]?.href ?? "/admin/access")}">See all ${notifications.count} &rarr;</a>` : ""}
+        </div>
+      </div>`
+    : "";
   return `<header class="topbar"${tz ? ` data-tz="${escapeHtml(tz)}"` : ""}>
     <div class="brand-row">
     <a href="/" class="brand">
@@ -1230,8 +1327,16 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
     </div>
     <nav>
       <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>
-      <a href="/account">My account</a>
+      <div class="nav-menu" data-nav-menu>
+        <button class="nav-menu-btn" type="button" aria-haspopup="true">Account ${CARET}</button>
+        <div class="nav-menu-list">
+          <a href="/account">Account</a>
+          <a href="/account/groups">Groups</a>
+          <a href="/account/security">Security</a>
+        </div>
+      </div>
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
+      ${bell}
       <form method="POST" action="/logout" style="display:inline"><button class="link-button signout" type="submit">Sign out</button></form>
     </nav>
   </header>`;
@@ -1342,6 +1447,7 @@ export function page(
   ${scriptTag(UI_SCRIPT)}
   ${navHtml ? scriptTag(THEME_TOGGLE_SCRIPT) : ""}
   ${navHtml ? scriptTag(TS_SCRIPT) : ""}
+  ${navHtml ? scriptTag(NAV_MENU_SCRIPT) : ""}
 </body>
 </html>`;
 }

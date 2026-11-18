@@ -22,8 +22,48 @@ granted to every role already managing SAML or clients.
 **Migration `0038_access_governance.sql`** - `groups.requestable` plus
 `access_requests`, `cert_campaigns` and `cert_items`, the tables behind
 access requests and membership reviews.
+**Migration `0039_managers_and_photos.sql`** - `group_managers` (the named
+people who run a static group's members and requests without holding
+`groups:write`) and `user_photos` (profile image bytes, uploaded on My
+account or written by inbound provisioning).
 
 ### Added
+
+- **Delegated group management.** An admin can name managers on any static
+  group (a card on its console page, `POST|DELETE
+  /api/v1/groups/{id}/managers`); a manager then runs the group from My
+  account → Groups → Manage - adding and removing members and approving or
+  denying its access requests - without holding `groups:write`. Dynamic
+  groups take no managers (a rule assigns their members) and admin role
+  groups take none either, since their membership is itself an admin grant.
+  Membership changes made this way flow through the same guards, audit
+  events and SCIM pushes as a console edit.
+
+- **My account is three pages.** The top bar's menu (Account, Groups,
+  Security) splits what was one long page: Account holds profile and photo,
+  Groups holds memberships, the searchable request form, request history
+  and any groups you manage, and Security holds factors, password,
+  sessions, devices and connected apps.
+
+- **Notifications.** A bell in the top bar drops down the work waiting on
+  you - pending access requests for an administrator, the ones waiting on
+  the groups you manage for a group manager - and the admin's left nav
+  shows the queue size as a count on Groups/Access.
+
+- **Profile photos.** A photo can be uploaded on My account (PNG, JPG,
+  WebP or GIF, 1 MB, stored in `user_photos` and served to signed-in users
+  at `/account/photo/{id}`), or arrive with provisioning: the SCIM `photos`
+  attribute takes a `data:` URI or an `https://` URL fetched server-side,
+  and `photo` is a mastered field, so an HR-managed photo hides the upload
+  form. Avatars appear in the admin user and access-request lists and on
+  managed-group pages.
+
+- **Role visibility on groups.** The groups list names each group's admin
+  roles in a Role column ("-" for plain member groups) and can be filtered
+  to role-bearing groups only; the request-access picker on My account
+  labels them too, with each role's description alongside the group's.
+
+
 
 - **Access requests and certification campaigns.** A static group can be
   marked requestable (a checkbox in the group editor, `requestable` in the

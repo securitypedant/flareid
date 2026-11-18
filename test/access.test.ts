@@ -43,10 +43,10 @@ describe("access requests", () => {
 
     // The group shows up on My account as something to ask for, searchable by
     // name or description, with both shown.
-    const accountPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
+    const accountPage = await (await SELF.fetch(`${BASE}/account/groups`, { headers: { Cookie: cookie } })).text();
     expect(accountPage).toContain("Request access");
-    const found = await (await SELF.fetch(`${BASE}/account/access/groups?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string }[];
-    expect(found).toEqual([{ id: groupId, label: "VPN users", desc: "For the field team" }]);
+    const found = await (await SELF.fetch(`${BASE}/account/access/groups?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string; badges: { label: string }[] }[];
+    expect(found).toEqual([{ id: groupId, label: "VPN users", desc: "For the field team", badges: [] }]);
     expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=nomatch`, { headers: { Cookie: cookie } })).json()).toEqual([]);
 
     const ask = await SELF.fetch(`${BASE}/account/access/request`, {
@@ -80,7 +80,7 @@ describe("access requests", () => {
     expect((await requestRow(req!.id))!.status).toBe("approved");
 
     // The requester sees the outcome on My account.
-    const after = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
+    const after = await (await SELF.fetch(`${BASE}/account/groups`, { headers: { Cookie: cookie } })).text();
     expect(after).toContain("Approved");
     // And can't ask again - already a member.
     expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);

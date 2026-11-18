@@ -37,7 +37,7 @@ describe("passkeys", () => {
     const reg = await SELF.fetch(`${BASE}/account/passkeys`, { method: "POST", headers: { ...JSON_POST, Cookie: cookie }, body: JSON.stringify({ name: "Laptop", response: await auth.register(opts.challenge) }) });
     expect(await reg.json()).toEqual({ ok: true });
     expect((await env.DB.prepare("SELECT name FROM webauthn_credentials WHERE user_id = ?").bind(id).first<{ name: string }>())!.name).toBe("Laptop");
-    expect(await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text()).toContain("Laptop");
+    expect(await (await SELF.fetch(`${BASE}/account/security`, { headers: { Cookie: cookie } })).text()).toContain("Laptop");
 
     const ok = await passkeyLogin(auth);
     expect(ok.status).toBe(302);

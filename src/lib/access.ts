@@ -81,6 +81,8 @@ export interface AccessRequestQuery {
   status?: string;
   /** Matches the person's UPN or display name, the group name, or the reason. */
   search?: string;
+  /** One group's requests (the managed-group page). */
+  groupId?: number;
   limit?: number;
   offset?: number;
 }
@@ -97,6 +99,10 @@ export async function listAccessRequests(env: Env, q: AccessRequestQuery = {}): 
     const like = `%${needle.replace(/[%_]/g, (m) => `\\${m}`)}%`;
     conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(g.name) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
     params.push(like, like, like, like);
+  }
+  if (q.groupId) {
+    conditions.push("r.group_id = ?");
+    params.push(q.groupId);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const from = `FROM access_requests r JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id ${where}`;

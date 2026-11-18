@@ -88,20 +88,20 @@ describe("security questions", () => {
   it("enrols from My account and signs in with normalised answers; answers are never stored or logged in clear", async () => {
     const { rita, qids } = await setup();
     const cookie = (await createSession(env, rita, ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
-    const account = await page("/account", cookie);
+    const account = await page("/account/security", cookie);
     expect(account).toContain("Security questions");
     expect(account).toContain('action="/account/mfa/questions"');
     expect(account).toContain('name="question_3"');
 
     const saved = await post("/account/mfa/questions", enrolForm(qids), cookie);
-    expect(saved.headers.get("Location")).toBe("/account?saved=kba-enabled");
+    expect(saved.headers.get("Location")).toBe("/account/security?saved=kba-enabled");
     expect((await userRow(rita)).security_questions_enabled).toBe(1);
     const rows = await env.DB.prepare("SELECT * FROM user_security_answers WHERE user_id = ?").bind(rita).all<{ answer_hash: string }>();
     expect(rows.results).toHaveLength(3);
     expect(new Set(rows.results.map((r) => r.answer_hash)).size).toBe(3);
     expect(rows.results.every((r) => r.answer_hash.startsWith("$scrypt$"))).toBe(true);
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.security_questions_enabled'").first()).not.toBeNull();
-    expect(await page("/account", cookie)).toContain("Change your questions");
+    expect(await page("/account/security", cookie)).toContain("Change your questions");
 
     // Sign-in: security questions are the only factor, so they are asked straight away.
     const step = await passwordStep();
@@ -144,22 +144,22 @@ describe("security questions", () => {
     await refused(enrolForm(qids), "kba-unknown");
     await env.DB.prepare("UPDATE security_questions SET enabled = 1 WHERE id = ?").bind(qids[0]).run();
     expect((await userRow(rita)).security_questions_enabled).toBe(0);
-    expect(await page("/account?kba_error=kba-same#security-questions", cookie)).toContain("Each answer must be different from the others.");
+    expect(await page("/account/security?kba_error=kba-same#security-questions", cookie)).toContain("Each answer must be different from the others.");
 
-    expect((await post("/account/mfa/questions", enrolForm(qids), cookie)).headers.get("Location")).toBe("/account?saved=kba-enabled");
+    expect((await post("/account/mfa/questions", enrolForm(qids), cookie)).headers.get("Location")).toBe("/account/security?saved=kba-enabled");
 
     // Changing: the current password, then a valid new set.
     const newSet = enrolForm(qids.slice(3), ["Ford Fiesta", "Maple Street", "Bunny"]);
     expect((await post("/account/mfa/questions", { ...newSet, current_password: "wrong" }, cookie)).headers.get("Location")).toContain("kba_error=kba-password");
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.step_up_failed' AND details LIKE '%security_questions_change%'").first()).not.toBeNull();
-    expect((await post("/account/mfa/questions", { ...newSet, current_password: PASSWORD }, cookie)).headers.get("Location")).toBe("/account?saved=kba-changed");
+    expect((await post("/account/mfa/questions", { ...newSet, current_password: PASSWORD }, cookie)).headers.get("Location")).toBe("/account/security?saved=kba-changed");
     const ids = (await env.DB.prepare("SELECT question_id FROM user_security_answers WHERE user_id = ? ORDER BY question_id").bind(rita).all<{ question_id: number }>()).results.map((r) => r.question_id);
     expect(ids).toEqual(qids.slice(3, 6));
 
     // Removing: the current password too.
     expect((await post("/account/mfa/questions/remove", { current_password: "wrong" }, cookie)).headers.get("Location")).toContain("kba_error=kba-password");
     expect((await userRow(rita)).security_questions_enabled).toBe(1);
-    expect((await post("/account/mfa/questions/remove", { current_password: PASSWORD }, cookie)).headers.get("Location")).toBe("/account?saved=kba-removed");
+    expect((await post("/account/mfa/questions/remove", { current_password: PASSWORD }, cookie)).headers.get("Location")).toBe("/account/security?saved=kba-removed");
     expect((await userRow(rita)).security_questions_enabled).toBe(0);
     expect(await env.DB.prepare("SELECT 1 FROM user_security_answers WHERE user_id = ?").bind(rita).first()).toBeNull();
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.security_questions_disabled'").first()).not.toBeNull();
@@ -221,7 +221,7 @@ describe("security questions", () => {
     const off = await passwordStep();
     expect(off.res.status).toBe(302);
     const cookie = (await createSession(env, rita, ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
-    expect(await page("/account", cookie)).not.toContain("Security questions");
+    expect(await page("/account/security", cookie)).not.toContain("Security questions");
     const mfaId = await storePendingMfa(env, rita, "s.unused");
     expect((await post("/login/mfa/questions/start", { mfa_id: mfaId })).status).toBe(400);
     expect((await post("/login/mfa/questions", { mfa_id: mfaId })).status).toBe(400);
@@ -407,7 +407,7 @@ describe("security questions", () => {
     await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(adminId).run();
     const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
 
-    const account = await page("/account", cookie);
+    const account = await page("/account/security", cookie);
     expect(account).toContain("Security questions aren&#039;t available to administrators");
     expect(account).not.toContain('action="/account/mfa/questions"');
     expect(account).not.toContain('action="/account/mfa/questions/remove"');
@@ -427,11 +427,11 @@ describe("security questions", () => {
 
     // Questions set before the role was granted can still be removed.
     await enrolDirectly(adminId, qids);
-    const enrolled = await page("/account", cookie);
+    const enrolled = await page("/account/security", cookie);
     expect(enrolled).toContain('action="/account/mfa/questions/remove"');
     expect(enrolled).not.toContain('action="/account/mfa/questions"');
     const removed = await post("/account/mfa/questions/remove", { current_password: "test-admin-password-1" }, cookie);
-    expect(removed.headers.get("Location")).toBe("/account?saved=kba-removed");
+    expect(removed.headers.get("Location")).toBe("/account/security?saved=kba-removed");
     expect((await userRow(adminId)).security_questions_enabled).toBe(0);
   });
 });

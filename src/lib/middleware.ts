@@ -8,6 +8,7 @@ import { clearSessionCookie, getSession, revokeSession } from "./sessions.js";
 import { getUserById, getUserGroupNames } from "./db.js";
 import { isMfaRequired } from "./settings.js";
 import type { UserRow } from "./types.js";
+import type { NotificationFeed } from "./html.js";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -22,6 +23,10 @@ declare module "hono" {
     logoUrl: string | null;
     /** Console timezone override (settings.ts): "" for each browser's own zone, else "UTC" or an IANA zone - carried on the top bar's data-tz for TS_SCRIPT. */
     consoleTz: string;
+    /** The bell's feed for this page load (notifications.ts), set by the admin/account middleware. */
+    notifications: NotificationFeed | null;
+    /** Pending access-request count for the left-nav badge (admin pages). */
+    accessPending: number;
   }
 }
 

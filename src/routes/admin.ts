@@ -7,7 +7,7 @@ import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, stashPendingAction, STEP_UP_WINDOW_MINUTES, takePendingAction } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
-import { accessFor, adminRoleGroupIds, adminRoleGroupNames, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
@@ -16,7 +16,7 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -100,7 +100,9 @@ import {
   setUserStatus,
   updateUserProfile,
 } from "../services/users.js";
-import { assertRuleAllowed, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupMember, updateGroup } from "../services/groups.js";
+import { addGroupManagers, assertRuleAllowed, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupManager, removeGroupMember, updateGroup } from "../services/groups.js";
+import { groupManagers } from "../lib/group-managers.js";
+import { notificationFeedFor } from "../lib/notifications.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import {
   addSecurityQuestion,
@@ -191,6 +193,17 @@ admin.use("/admin/*", async (c, next) => {
   const pending = await stashPendingAction(c.env, c.get("sessionId"), c.req.raw, back);
   const dest = pending ? `/admin/reauth/resume?id=${pending}&to=${encodeURIComponent(back)}` : back;
   return c.redirect(`/admin/reauth?next=${encodeURIComponent(dest)}&back=${encodeURIComponent(back)}`, 303);
+});
+
+/** Page loads carry the pending-request count (nav badge) and the bell's feed. */
+admin.use("/admin/*", async (c, next) => {
+  if (c.req.method === "GET") {
+    // The Access queue lives under the groups area - nobody else can act on it.
+    const feed = grants(c.get("access")?.perms ?? [], "groups:read") ? await notificationFeedFor(c.env, c.get("user").id, true) : null;
+    c.set("notifications", feed);
+    c.set("accessPending", feed?.count ?? 0);
+  }
+  await next();
 });
 
 function safeNext(next: string | undefined): string {
@@ -350,7 +363,14 @@ const CRUMB_SECTIONS: Record<string, string> = {
 };
 
 function layout(
-  c: { get: ((k: "appName") => string) & ((k: "access") => Access | undefined) & ((k: "logoUrl") => string | null) & ((k: "consoleTz") => string) },
+  c: {
+    get: ((k: "appName") => string) &
+      ((k: "access") => Access | undefined) &
+      ((k: "logoUrl") => string | null) &
+      ((k: "consoleTz") => string) &
+      ((k: "notifications") => NotificationFeed | null | undefined) &
+      ((k: "accessPending") => number | undefined);
+  },
   title: string,
   body: string,
   crumbs?: Breadcrumb[],
@@ -379,7 +399,7 @@ function layout(
   return page(
     `${title}`,
     `<div class="admin-shell">
-      <aside class="admin-side">${adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined)}</aside>
+      <aside class="admin-side">${adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined, c.get("accessPending") ?? 0)}</aside>
       <div class="admin-main">
         <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
         ${body}
@@ -387,7 +407,7 @@ function layout(
     </div>`,
     appName,
     true,
-    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"))
+    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"))
   );
 }
 
@@ -435,7 +455,8 @@ function consoleError(c: Context<{ Bindings: Env }>, message: string, status: nu
   return c.html(layout(c, title, errorCard(status, message, safeBackHref(c.req.raw, "/admin")), [{ label: "Admin", href: "/admin" }, { label: title }]), status as 400);
 }
 
-function adminNav(active: string, sub = "", visible?: Set<string>) {
+function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) {
+  const pendingBadge = pending > 0 ? `<span class="nav-badge">${pending > 99 ? "99+" : pending}</span>` : "";
   const items: [string, string, string][] = [
     ["overview", "/admin", "Overview"],
     ["users", "/admin/users", "Users"],
@@ -450,10 +471,10 @@ function adminNav(active: string, sub = "", visible?: Set<string>) {
   return items
     .filter(([key]) => !visible || visible.has(key))
     .map(([key, href, label]) => {
-      const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
+      const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}${key === "groups" && active !== "groups" ? pendingBadge : ""}</a>`;
       // A section's pages are listed only while you are in that section.
       if (key === "groups" && active === "groups") {
-        return link + [["groups", "/admin/groups", "Groups"], ["access", "/admin/access", "Access"]]
+        return link + [["groups", "/admin/groups", "Groups"], ["access", "/admin/access", `Access${pendingBadge}`]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "groups") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
@@ -1073,7 +1094,7 @@ admin.get("/admin/users", async (c) => {
             ${(users as (UserRow & { has_passkey: number })[])
               .map(
                 (u) => `<tr>
-                  <td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td>
+                  <td><a href="/admin/users/${u.id}"><img src="/account/photo/${u.id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(u.display_name)}</a></td>
                   <td>${escapeHtml(u.upn)}</td>
                   <td><span class="badge badge-${u.status}">${u.status}</span></td>
                   <td>${factorList(enrolledFactors(u))}</td>
@@ -1293,12 +1314,17 @@ admin.get("/admin/groups/lookup", async (c) => {
   )
     .bind(like, like, like)
     .all<GroupRow & { member_count: number }>();
+  const roleMap = await groupRolesMap(c.env);
   return c.json(
-    results.map((g) => ({
-      id: g.id,
-      label: g.name,
-      desc: `${g.member_count} member${g.member_count === 1 ? "" : "s"}${g.description ? ` · ${g.description}` : ""}`,
-    }))
+    results.map((g) => {
+      const roles = roleMap.get(g.id) ?? [];
+      return {
+        id: g.id,
+        label: g.name,
+        badges: roles.map((r) => ({ label: r.name, title: r.description })),
+        desc: `${g.member_count} member${g.member_count === 1 ? "" : "s"}${roles.length ? ` · grants ${roles.map((r) => r.name).join(", ")}` : ""}${g.description ? ` · ${g.description}` : ""}`,
+      };
+    })
   );
 });
 
@@ -2105,21 +2131,29 @@ async function readGroupForm(c: { env: Env; req: { parseBody: (o: { all: true })
 admin.get("/admin/groups", async (c) => {
   const search = c.req.query("search") ?? "";
   const typeFilter = c.req.query("type") ?? "";
+  const rolesOnly = c.req.query("roles") === "1";
   const pageSize = [20, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 20;
   const page = Math.max(1, Number(c.req.query("page")) || 1);
   const like = `%${search}%`;
+  const roleMap = await groupRolesMap(c.env);
 
   const conditions = ["(name LIKE ? OR description LIKE ?)"];
+  const params: (string | number)[] = [like, like];
   if (typeFilter === "dynamic") conditions.push("rule != ''");
   if (typeFilter === "static") conditions.push("rule = ''");
+  if (rolesOnly) {
+    const ids = [...roleMap.keys()];
+    conditions.push(ids.length ? `id IN (${ids.map(() => "?").join(",")})` : "0");
+    params.push(...ids);
+  }
   const where = `WHERE ${conditions.join(" AND ")}`;
 
   const batchResults = await c.env.DB.batch([
-    c.env.DB.prepare(`SELECT COUNT(*) as n FROM groups ${where}`).bind(like, like),
+    c.env.DB.prepare(`SELECT COUNT(*) as n FROM groups ${where}`).bind(...params),
     c.env.DB.prepare(
       `SELECT g.*, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) as member_count
        FROM groups g ${where} ORDER BY g.name LIMIT ? OFFSET ?`
-    ).bind(like, like, pageSize, (page - 1) * pageSize),
+    ).bind(...params, pageSize, (page - 1) * pageSize),
   ]);
   const total = Number((batchResults[0]!.results[0] as { n: number } | undefined)?.n ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -2148,6 +2182,7 @@ admin.get("/admin/groups", async (c) => {
             <select name="type" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
               ${[["", "All types"], ["static", "Static"], ["dynamic", "Dynamic"]].map(([v, l]) => `<option value="${v}" ${v === typeFilter ? "selected" : ""}>${l}</option>`).join("")}
             </select>
+            <label class="check" style="margin-bottom:8px; white-space:nowrap;"><input type="checkbox" name="roles" value="1" ${rolesOnly ? "checked" : ""} data-autosubmit style="width:auto; margin:0 4px 0 0;" />With roles</label>
             <input type="hidden" name="page" value="1" />
             ${pageSizeSelect(pageSize)}
           </div>
@@ -2158,35 +2193,37 @@ admin.get("/admin/groups", async (c) => {
         </form>
       `)}
       ${cardSection(`
-        <form method="POST" action="/admin/groups/bulk" id="bulk-bar" style="display:none; margin:0;">
-          <div id="bulk-ids"></div>
-          <div class="row" style="justify-content:flex-start; gap:14px; flex-wrap:wrap; align-items:flex-end;">
-            <strong style="margin-bottom:8px;"><span id="bulk-count">0</span> selected</strong>
-            <span style="display:flex; gap:6px; align-items:center;">
+        <div class="bulk-bar" id="bulk-bar" style="display:none;">
+          <form method="POST" action="/admin/groups/bulk" class="bulk-bar-row">
+            <div id="bulk-ids"></div>
+            <strong><span id="bulk-count">0</span> selected</strong>
+            <span class="bulk-bar-group">
               <select name="requestable" style="margin:0; width:auto;">
                 <option value="1">Allow membership requests</option>
                 <option value="0">Stop membership requests</option>
               </select>
               <button class="secondary" type="submit" name="action" value="requestable" style="margin:0;">Apply</button>
             </span>
-            <span style="display:flex; gap:6px; align-items:flex-start; flex:1; min-width:300px;">
+            <span class="bulk-bar-group" style="flex:1; min-width:260px;">
               <span style="flex:1;">${remoteMultiSelect("user_ids", "/admin/users/lookup", [], "People to add to all selected...")}</span>
-              <button class="secondary" type="submit" name="action" value="add_members" style="margin:8px 0 0;">Add members</button>
+              <button class="secondary" type="submit" name="action" value="add_members" style="margin:0;">Add members</button>
             </span>
-            <a href="#" id="bulk-clear" class="cancel" style="margin-bottom:8px;">Clear selection</a>
-          </div>
-          <p class="muted" style="margin:8px 0 0;">Selection survives paging and filtering. Only static groups can be selected - a dynamic group's membership follows its rule.</p>
-        </form>
+            <a href="#" id="bulk-clear" class="cancel">Clear</a>
+          </form>
+          <p class="muted" style="margin:6px 0 0; font-size:12px;">Selection survives paging and filtering. Only static groups can be selected.</p>
+        </div>
         <table>
-          <thead><tr><th style="width:28px;"><input type="checkbox" id="gsel-all" style="width:auto; margin:0;" title="Select all on this page" /></th><th>Name</th><th>Type</th><th>Description</th><th>Members</th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" id="gsel-all" style="width:auto; margin:0;" title="Select all on this page" /></th><th>Name</th><th>Type</th><th>Role</th><th>Description</th><th>Members</th></tr></thead>
           <tbody>
             ${groups
               .map((g) => {
                 const rule = parseRule(g.rule);
+                const roles = roleMap.get(g.id) ?? [];
                 return `<tr>
                   <td>${rule ? "" : `<input type="checkbox" data-gsel value="${g.id}" style="width:auto; margin:0;" />`}</td>
-                  <td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${g.name === SUPER_ADMINS_GROUP ? ' <span class="badge badge-admin">Admin access</span>' : ""}${!rule && g.requestable ? ' <span class="pill" title="People can ask to join on My account">Requestable</span>' : ""}</td>
+                  <td><a href="/admin/groups/${g.id}">${escapeHtml(g.name)}</a>${!rule && g.requestable ? ' <span class="pill" title="People can ask to join on My account">Requestable</span>' : ""}</td>
                   <td>${rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'}</td>
+                  <td>${roles.length ? roles.map((r) => `<span class="badge badge-admin" title="${escapeHtml(r.description)}">${escapeHtml(r.name)}</span>`).join(" ") : '<span class="muted">-</span>'}</td>
                   <td>${escapeHtml(g.description ?? "")}</td>
                   <td>${countFor(g)}</td>
                 </tr>`;
@@ -2194,7 +2231,7 @@ admin.get("/admin/groups", async (c) => {
               .join("")}
           </tbody>
         </table>
-        ${paginationControls("/admin/groups", page, totalPages, { search, type: typeFilter, pageSize })}
+        ${paginationControls("/admin/groups", page, totalPages, { search, type: typeFilter, roles: rolesOnly ? "1" : "", pageSize })}
       `)}
       ${scriptTag(GROUP_SELECT_SCRIPT)}
       `,
@@ -2303,6 +2340,32 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
   `);
 }
 
+/**
+ * The delegation card on a static group's page: named managers change the
+ * membership and answer access requests from My account without groups:write.
+ */
+async function groupManagersPanel(env: Env, group: GroupRow): Promise<string> {
+  const managers = await groupManagers(env, group.id);
+  return cardSection(`
+    <div class="card-head"><h2>Managers</h2></div>
+    <p class="muted">Managers can add and remove members and answer membership requests from My account - no console permission needed. They still cannot change an admin role group.</p>
+    ${
+      managers.length
+        ? `<table><thead><tr><th>Name</th><th>UPN</th><th></th></tr></thead><tbody>
+            ${managers
+              .map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/managers/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td></tr>`)
+              .join("")}
+          </tbody></table>`
+        : '<p class="muted">No managers yet.</p>'
+    }
+    <form method="POST" action="/admin/groups/${group.id}/managers" style="margin-top:12px;">
+      <label>Add managers</label>
+      ${remoteMultiSelect("manager_ids", "/admin/users/lookup", [], "Search people...")}
+      <div class="row" style="justify-content:flex-start;"><button class="secondary" type="submit">Add managers</button></div>
+    </form>
+  `);
+}
+
 admin.post("/admin/groups/:id/members/:uid/remove", async (c) => {
   const id = Number(c.req.param("id"));
   await removeGroupMember(consoleCtx(c), id, Number(c.req.param("uid")));
@@ -2313,6 +2376,29 @@ admin.post("/admin/groups/:id/freeze", async (c) => {
   const id = Number(c.req.param("id"));
   await freezeGroup(consoleCtx(c), id);
   return c.redirect(`/admin/groups/${id}?saved=1`, 302);
+});
+
+admin.post("/admin/groups/:id/managers", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.parseBody({ all: true });
+  const userIds = (Array.isArray(body.manager_ids) ? body.manager_ids.map(String) : body.manager_ids === undefined ? [] : [String(body.manager_ids)]).map(Number).filter(Boolean);
+  try {
+    if (!userIds.length) throw new Error("Pick at least one person to make a manager.");
+    await addGroupManagers(consoleCtx(c), id, userIds);
+    return c.redirect(`/admin/groups/${id}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/groups/${id}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/groups/:id/managers/:uid/remove", async (c) => {
+  const id = Number(c.req.param("id"));
+  try {
+    await removeGroupManager(consoleCtx(c), id, Number(c.req.param("uid")));
+    return c.redirect(`/admin/groups/${id}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/groups/${id}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
 });
 
 admin.get("/admin/groups/:id", async (c) => {
@@ -2327,7 +2413,7 @@ admin.get("/admin/groups/:id", async (c) => {
     layout(
       c,
       group.name,
-      `${c.req.query("saved") ? successBanner("Saved.") : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}${await groupMembersPanel(c.env, group, msearch, mpage)}`,
+      `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}${await groupFormHtml(c, group, Number(c.req.query("schema")))}${await groupMembersPanel(c.env, group, msearch, mpage)}${rule ? "" : await groupManagersPanel(c.env, group)}`,
       [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: group.name }],
       undefined,
       rule ? `<span class="badge badge-admin" title="${escapeHtml(ruleDescription(rule))}">Dynamic</span>` : '<span class="pill">Static</span>'
@@ -2443,7 +2529,7 @@ admin.get("/admin/access", async (c) => {
                   ${requests
                     .map(
                       (r) => `<tr>
-                        <td><a href="/admin/users/${r.user_id}">${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
+                        <td><a href="/admin/users/${r.user_id}"><img src="/account/photo/${r.user_id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
                         <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a>${roleGroups.has(r.group_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>

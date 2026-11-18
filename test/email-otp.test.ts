@@ -98,7 +98,7 @@ describe("email one-time codes", () => {
     expect((await factor(email, adminCookie, "email_otp", true)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
 
     const cookie = (await createSession(env, rita, ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
-    const accountPage = await (await call(email, "/account", { headers: { Cookie: cookie } })).text();
+    const accountPage = await (await call(email, "/account/security", { headers: { Cookie: cookie } })).text();
     expect(accountPage).toContain("Email codes");
     expect(accountPage).toContain("Send a code to rita@personal.test");
 
@@ -109,13 +109,13 @@ describe("email one-time codes", () => {
     const code = email.lastCode();
     expect(email.sent[0]!.subject).toContain(code); // the Sign-in code template
     expect(email.sent[0]!.text).toContain("10 minutes");
-    expect(await (await call(email, "/account?email_code=enrol", { headers: { Cookie: cookie } })).text()).toContain('action="/account/mfa/email/enable"');
+    expect(await (await call(email, "/account/security?email_code=enrol", { headers: { Cookie: cookie } })).text()).toContain('action="/account/mfa/email/enable"');
 
     const wrong = await post(email, "/account/mfa/email/enable", { code: wrongCode(code) }, cookie);
     expect(wrong.headers.get("Location")).toContain("error=email-code");
     expect((await userRow(rita)).email_otp_enabled).toBe(0);
     const ok = await post(email, "/account/mfa/email/enable", { code }, cookie);
-    expect(ok.headers.get("Location")).toBe("/account?saved=email-otp-enabled");
+    expect(ok.headers.get("Location")).toBe("/account/security?saved=email-otp-enabled");
     expect((await userRow(rita)).email_otp_enabled).toBe(1);
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.email_otp_enabled'").first()).not.toBeNull();
 
@@ -214,7 +214,7 @@ describe("email one-time codes", () => {
     let step = await passwordStep(email);
     expect(step.res.status).toBe(302); // no second step: the password policy is enough and no factor is in use
     const cookie = (await createSession(env, rita, ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
-    expect(await (await call(email, "/account", { headers: { Cookie: cookie } })).text()).not.toContain("Email codes");
+    expect(await (await call(email, "/account/security", { headers: { Cookie: cookie } })).text()).not.toContain("Email codes");
     const mfaId = await storePendingMfa(env, rita, "s.unused");
     expect((await post(email, "/login/mfa/email/send", { mfa_id: mfaId })).status).toBe(400);
     expect(email.sent).toHaveLength(0);
@@ -282,7 +282,7 @@ describe("email one-time codes", () => {
     expect(done.headers.get("Location")).toBe("/account");
     expect(await amrOf(sessionIdOf(res)!)).toEqual(["pwd", "otp", "mfa"]);
     expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(other.sessionId).first<{ revoked_at: string | null }>())!.revoked_at).not.toBeNull();
-    expect((await call(email, "/account", { headers: { Cookie: cookie } })).status).toBe(200);
+    expect((await call(email, "/account/security", { headers: { Cookie: cookie } })).status).toBe(200);
   });
 
   it("turning email codes off needs a fresh code", async () => {
@@ -291,7 +291,7 @@ describe("email one-time codes", () => {
     await factor(email, adminCookie, "email_otp", true);
     await enrolDirectly(rita);
     const cookie = (await createSession(env, rita, ["pwd", "otp", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
-    expect(await (await call(email, "/account", { headers: { Cookie: cookie } })).text()).toContain("Turn off");
+    expect(await (await call(email, "/account/security", { headers: { Cookie: cookie } })).text()).toContain("Turn off");
 
     // No code sent: refused, and counted as a failed step-up.
     expect((await post(email, "/account/mfa/email/disable", { code: "123456" }, cookie)).headers.get("Location")).toContain("error=email-code");
@@ -300,7 +300,7 @@ describe("email one-time codes", () => {
 
     expect((await post(email, "/account/mfa/email/send", { purpose: "disable" }, cookie)).headers.get("Location")).toContain("email_code=disable");
     const off = await post(email, "/account/mfa/email/disable", { code: email.lastCode() }, cookie);
-    expect(off.headers.get("Location")).toBe("/account?saved=email-otp-disabled");
+    expect(off.headers.get("Location")).toBe("/account/security?saved=email-otp-disabled");
     expect((await userRow(rita)).email_otp_enabled).toBe(0);
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.email_otp_disabled'").first()).not.toBeNull();
   });

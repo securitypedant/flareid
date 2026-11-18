@@ -512,6 +512,8 @@ Static and dynamic (rule-based) groups.
 | `POST` | `/api/v1/groups/{id}/freeze` | `groups:write` | Convert a dynamic group to static |
 | `POST` | `/api/v1/groups/{id}/members` | `groups:write` | Add members to a static group |
 | `DELETE` | `/api/v1/groups/{id}/members/{username}` | `groups:write` | Remove a member from a static group |
+| `POST` | `/api/v1/groups/{id}/managers` | `groups:write` | Name group managers |
+| `DELETE` | `/api/v1/groups/{id}/managers/{username}` | `groups:write` | Remove a group manager |
 
 ### `POST /api/v1/groups`
 
@@ -722,6 +724,54 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 ### `DELETE /api/v1/groups/{id}/members/{username}`
 
 Remove a member from a static group.
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+| `username` | path | yes | string |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/groups/{id}/managers`
+
+Name group managers.
+
+A static group's managers can change its members and answer its access requests from My account. A dynamic group's membership follows its rule, so it takes none. An admin role group needs `*`.
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `usernames` | string[] | yes |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `added` | number | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/groups/{id}/managers/{username}`
+
+Remove a group manager.
 
 Permission: `groups:write`
 
@@ -1896,7 +1946,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 List the fields mastered by inbound provisioning.
 
-Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, or custom.<key> for a custom attribute.
+Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key> for a custom attribute.
 
 Permission: `scim:read`
 
@@ -1912,7 +1962,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Replace the mastered field list.
 
-The whole set, empty to unmaster everything. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, or custom.<key>.
+The whole set, empty to unmaster everything. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key>.
 
 Permission: `scim:write`
 

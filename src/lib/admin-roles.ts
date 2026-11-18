@@ -148,6 +148,21 @@ export async function adminRoleGroupIds(env: Env): Promise<Set<number>> {
   return new Set(results.filter((r) => rolePermissions(r).some((p) => p !== "signin" && !p.startsWith("account:"))).map((r) => r.group_id));
 }
 
+/** The admin roles each group grants, keyed by group - roles with only signin/self-service permissions don't count. */
+export async function groupRolesMap(env: Env): Promise<Map<number, { name: string; description: string }[]>> {
+  const { results } = await env.DB
+    .prepare("SELECT rg.group_id, r.name, r.description, r.permissions FROM admin_role_groups rg JOIN admin_roles r ON r.id = rg.role_id ORDER BY r.name")
+    .all<{ group_id: number; name: string; description: string; permissions: string }>();
+  const map = new Map<number, { name: string; description: string }[]>();
+  for (const r of results) {
+    if (!rolePermissions(r).some((p) => p !== "signin" && !p.startsWith("account:"))) continue;
+    const list = map.get(r.group_id) ?? [];
+    list.push({ name: r.name, description: r.description });
+    map.set(r.group_id, list);
+  }
+  return map;
+}
+
 /** Names of the groups that grant an admin role - FlareID's own groups, kept by wipes and replace-imports. */
 export async function adminRoleGroupNames(env: Env): Promise<string[]> {
   const ids = [...(await adminRoleGroupIds(env))];

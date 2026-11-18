@@ -558,7 +558,7 @@ export async function correlateUser(env: Env, input: CorrelationInput): Promise<
 export const MASTERING_FIELDS = [
   "upn", "emails", "given_name", "family_name", "display_name", "job_title",
   "department", "employee_number", "hire_date", "employment_status",
-  "employment_type", "location", "manager",
+  "employment_type", "location", "manager", "photo",
 ] as const;
 const CUSTOM_MASTERED = /^custom\.[A-Za-z][\w-]*$/;
 

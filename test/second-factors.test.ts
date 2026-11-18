@@ -96,12 +96,12 @@ describe("second factors", () => {
     expect(nonePage).toMatch(/Multi-factor authentication <span class="badge badge-disabled">Not enrolled/);
 
     const own = (await createSession(env, await id("both"), ["pwd", "hwk"], new Request(BASE))).setCookie.split(";")[0]!;
-    const account = (await page("/account", own)).html;
+    const account = (await page("/account/security", own)).html;
     expect(account).toContain("Your second factors: Authenticator app, Passkey.");
     expect(account).toContain(">Authenticator app</h2>");
     expect(account).not.toContain("Two-factor authentication</h2>");
     const bare = (await createSession(env, await id("none"), ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
-    expect((await page("/account", bare)).html).toContain("You have no second factor yet.");
+    expect((await page("/account/security", bare)).html).toContain("You have no second factor yet.");
   });
 
   it("an administrator's security questions are marked as not counting", async () => {

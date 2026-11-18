@@ -24,7 +24,7 @@ import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, paginationControls, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupNames } from "../lib/db.js";
@@ -43,9 +43,14 @@ import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from ".
 import { finishOidcAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
-import { cancelAccessRequest, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
-import { adminRoleGroupIds } from "../lib/admin-roles.js";
-import { consoleCtx } from "../services/context.js";
+import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
+import { groupRolesMap } from "../lib/admin-roles.js";
+import { isGroupManager, managedGroups } from "../lib/group-managers.js";
+import { notificationFeedFor } from "../lib/notifications.js";
+import { deleteUserPhoto, getUserPhoto, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
+import { consoleCtx, ServiceError } from "../services/context.js";
+import { addGroupMembers, getGroupById, groupMembers, removeGroupMember } from "../services/groups.js";
+import { assertMayManageGroup } from "../services/guards.js";
 
 export const account = new Hono<{ Bindings: Env }>();
 
@@ -64,6 +69,11 @@ const personalBrand: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
 };
 account.use("/account/*", personalBrand);
 account.use("/account", personalBrand);
+/** The bell's feed for account pages: pending requests an admin sees globally, a manager sees for their groups. */
+account.use("/account/*", async (c, next) => {
+  if (c.req.method === "GET") c.set("notifications", await notificationFeedFor(c.env, c.get("user").id, c.get("access")?.isAdmin ?? false));
+  await next();
+});
 // Self-service is a permission like any other (the default "User" role grants both).
 account.use("/account/*", async (c, next) => {
   const need = c.req.method === "GET" || c.req.method === "HEAD" ? "account:read" : "account:write";
@@ -79,7 +89,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"))
+    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"))
   );
 }
 
@@ -106,6 +116,9 @@ const SAVED_MESSAGES: Record<string, string> = {
   "kba-removed": "Your security questions have been removed.",
   "access-requested": "Your request is in - an administrator will take a look.",
   "access-cancelled": "Your request has been withdrawn.",
+  members: "The group's membership has been updated.",
+  request: "The request has been decided.",
+  photo: "Your photo has been updated.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -144,37 +157,8 @@ async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttrib
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const editable = await editableAttributes(c.env, user);
-  const groups = await getUserGroupNames(c.env, user.id);
-  const remainingBackupCodes = user.mfa_enabled ? await countRemainingBackupCodes(c.env, user.id) : 0;
-  const currentSessionId = c.get("sessionId");
-  const sessions = await listActiveSessionsForUser(c.env, user.id);
-  const devices = await listTrustedDevices(c.env, user.id);
-  const passkeys = await listPasskeys(c.env, user.id);
-  const isAdmin = c.get("access").isAdmin;
-  // Only factors that work right now: one switched off is not offered here at all.
-  const enrolled = enrolledFactors({ ...user, has_passkey: passkeys.length > 0 });
-  const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
-  const factors = enrolled.filter((_, i) => usable[i]);
-  const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
-  const [requestable, myRequests] = await Promise.all([requestableGroups(c.env, user.id), myAccessRequests(c.env, user.id)]);
-  const kbaCard = (await securityQuestionsAvailable(c.env))
-    ? c.get("access").isAdmin
-      ? adminSecurityQuestionsCard(user, c.req.query("kba_error") ?? "")
-      : await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "")
-    : "";
-  const { results: connectedApps } = await c.env.DB.prepare(
-    `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
-     JOIN oauth_clients oc ON oc.client_id = at.client_id
-     WHERE at.user_id = ? AND at.expires_at > ?
-     UNION
-     SELECT DISTINCT oc.id, oc.name FROM refresh_tokens rt
-     JOIN oauth_clients oc ON oc.client_id = rt.client_id
-     WHERE rt.user_id = ? AND rt.revoked_at IS NULL`
-  )
-    .bind(user.id, new Date().toISOString(), user.id)
-    .all<{ id: number; name: string }>();
-
+  const [editable, mastered] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env)]);
+  const photoMastered = mastered.includes("photo");
   return c.html(
     layout(
       c,
@@ -182,26 +166,45 @@ account.get("/account", async (c) => {
       `
       ${savedBanner(c)}
       ${cardSection(`
-        <h2>Profile</h2>
-        <p class="muted">Everything this directory holds about you. These values are managed by your administrator - ask them if something is wrong.</p>
-        ${attrGrid([
-          attr("Display name", user.display_name),
-          attr("First name", user.given_name),
-          attr("Last name", user.family_name),
-          attr("Username", user.username),
-          attr("UPN", user.upn),
-          attr("Job title", user.job_title),
-          attr("Department", user.department),
-          attr("Employee number", user.employee_number),
-          attr("Location", user.location),
-          attr("Hire date", user.hire_date),
-          attr("Employment status", user.employment_status),
-          attr("Employment type", user.employment_type),
-          attr("Manager", user.manager_external_id),
-          attr("Account status", user.status),
-          attr("Administrator", user.is_admin ? "Yes" : "No"),
-          attrHtml("Created", ts(user.created_at)),
-        ])}
+        <div class="row between" style="align-items:flex-start; gap:18px;">
+          <div style="flex:1; min-width:0;">
+            <h2>Profile</h2>
+            <p class="muted">Everything this directory holds about you. These values are managed by your administrator - ask them if something is wrong.</p>
+            ${attrGrid([
+              attr("Display name", user.display_name),
+              attr("First name", user.given_name),
+              attr("Last name", user.family_name),
+              attr("Username", user.username),
+              attr("UPN", user.upn),
+              attr("Job title", user.job_title),
+              attr("Department", user.department),
+              attr("Employee number", user.employee_number),
+              attr("Location", user.location),
+              attr("Hire date", user.hire_date),
+              attr("Employment status", user.employment_status),
+              attr("Employment type", user.employment_type),
+              attr("Manager", user.manager_external_id),
+              attr("Account status", user.status),
+              attr("Administrator", user.is_admin ? "Yes" : "No"),
+              attrHtml("Created", ts(user.created_at)),
+            ])}
+          </div>
+          <div style="text-align:center; flex-shrink:0;">
+            <img src="/account/photo/${user.id}?v=${user.updated_at}" alt="" class="avatar avatar-lg" data-hide-on-error />
+            ${
+              photoMastered
+                ? '<p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">Your photo is managed by your HR system.</p>'
+                : `<form method="POST" action="/account/photo" enctype="multipart/form-data" style="margin-top:10px;">
+                    <label class="secondary photo-upload-btn" style="cursor:pointer; display:inline-block;">
+                      Change photo
+                      <input type="file" name="photo" accept="image/png,image/jpeg,image/webp,image/gif" data-autosubmit style="display:none;" />
+                    </label>
+                  </form>
+                  <form method="POST" action="/account/photo/remove" style="margin-top:4px;"><button class="link-button" type="submit" style="font-size:11px;">Remove photo</button></form>
+                  <p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">PNG, JPG, WebP or GIF up to 1 MB.</p>`
+            }
+          </div>
+        </div>
       `)}
 
       ${
@@ -218,9 +221,28 @@ account.get("/account", async (c) => {
       `)
           : ""
       }
+      `,
+      user.upn
+    )
+  );
+});
 
+account.get("/account/groups", async (c) => {
+  const user = c.get("user");
+  const [groups, requestable, myRequests, managed] = await Promise.all([
+    getUserGroupNames(c.env, user.id),
+    requestableGroups(c.env, user.id),
+    myAccessRequests(c.env, user.id),
+    managedGroups(c.env, user.id),
+  ]);
+  return c.html(
+    layout(
+      c,
+      "Groups",
+      `
+      ${savedBanner(c)}
       ${cardSection(`
-        <h2>Groups</h2>
+        <h2>Your groups</h2>
         ${groups.length > 0 ? groups.map((g) => `<span class="pill">${escapeHtml(g)}</span>`).join("") : '<p class="muted">No group memberships</p>'}
         ${
           requestable.length
@@ -263,6 +285,220 @@ account.get("/account", async (c) => {
         }
       `)}
 
+
+      ${
+        managed.length
+          ? cardSection(`
+        <h2>Groups you manage</h2>
+        <p class="muted">You own these groups' membership - add or remove people and answer requests to join.</p>
+        <table>
+          <thead><tr><th>Group</th><th>Members</th><th>Waiting</th><th></th></tr></thead>
+          <tbody>
+            ${managed
+              .map(
+                (g) => `<tr>
+                  <td>${escapeHtml(g.name)}${g.description ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(g.description)}</span>` : ""}</td>
+                  <td class="muted">${g.member_count}</td>
+                  <td>${g.pending ? `<span class="badge badge-pending">${g.pending}</span>` : '<span class="muted">-</span>'}</td>
+                  <td style="text-align:right;"><a href="/account/groups/${g.id}"><button class="secondary" type="button">Manage</button></a></td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `)
+          : ""
+      }
+      `,
+      user.upn
+    )
+  );
+});
+
+/**
+ * A managed group's own page: the requests waiting on it (approve or deny
+ * with a note), its members (remove one, search or page a big group), and a
+ * picker to add people. Every write goes through assertMayManageGroup on the
+ * POST - this page only decides what to show.
+ */
+account.get("/account/groups/:id", async (c) => {
+  const user = c.get("user");
+  const group = await getGroupById(c.env, Number(c.req.param("id")));
+  if (!group || group.rule || !(await isGroupManager(c.env, user.id, group.id))) {
+    return c.html(errorRedirectPage(c, "That group doesn't exist, isn't yours to manage, or assigns its members by rule."), 404);
+  }
+  const search = (c.req.query("search") ?? "").slice(0, 100);
+  const page = Math.max(1, Number(c.req.query("page")) || 1);
+  const [{ rows: pending }, members] = await Promise.all([
+    listAccessRequests(c.env, { status: "pending", groupId: group.id }),
+    groupMembers(c.env, group, search, 20, (page - 1) * 20),
+  ]);
+  const pages = Math.max(1, Math.ceil(members.total / 20));
+  return c.html(
+    layout(
+      c,
+      group.name,
+      `
+      ${savedBanner(c)}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      <p class="muted"><a href="/account/groups">&larr; Your groups</a></p>
+      ${cardSection(`
+        <h2>Requests ${pending.length ? `<span class="badge badge-pending">${pending.length}</span>` : ""}</h2>
+        ${
+          pending.length
+            ? `<table>
+                <thead><tr><th>Person</th><th>Reason</th><th>Asked</th><th></th></tr></thead>
+                <tbody>
+                  ${pending
+                    .map(
+                      (r) => `<tr>
+                        <td><img src="/account/photo/${r.user_id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(r.display_name)}<br/><span class="muted" style="font-size:12px; padding-left:36px; display:block;">${escapeHtml(r.upn)}</span></td>
+                        <td class="muted">${escapeHtml(r.reason || "—")}</td>
+                        <td class="muted">${ts(r.created_at)}</td>
+                        <td style="white-space:nowrap;">
+                          <form method="POST" action="/account/groups/${group.id}/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
+                            <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
+                            <button class="secondary" type="submit" name="decision" value="approved" style="margin:0;">Approve</button>
+                            <button class="secondary" type="submit" name="decision" value="denied" style="margin:0;">Deny</button>
+                          </form>
+                        </td>
+                      </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : '<p class="muted">No requests waiting for a decision.</p>'
+        }
+      `)}
+      ${cardSection(`
+        <div class="card-head">
+          <h2>Members <span class="muted" style="font-weight:500;">(${members.total})</span></h2>
+          <form method="GET" class="inline-field" style="margin:0;">
+            <input type="search" name="search" value="${escapeHtml(search)}" placeholder="Find a person by name or UPN" style="margin:0; width:260px;" />
+            <button class="secondary" type="submit">Search</button>
+          </form>
+        </div>
+        ${
+          members.rows.length
+            ? `<table><thead><tr><th>Name</th><th>UPN</th><th></th></tr></thead><tbody>
+                ${members.rows
+                  .map(
+                    (u) => `<tr><td><img src="/account/photo/${u.id}" alt="" class="avatar avatar-sm" data-hide-on-error />${escapeHtml(u.display_name)}</td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/account/groups/${group.id}/members/${u.id}/remove" style="margin:0;" ${confirmAttrs(`Remove ${u.display_name} from ${group.name}?`, { title: "Remove this member?", action: "Remove" })}><button class="link-button" type="submit">Remove</button></form></td></tr>`
+                  )
+                  .join("")}
+              </tbody></table>
+              ${paginationControls(`/account/groups/${group.id}`, page, pages, { search })}`
+            : `<p class="muted">${search ? `Nobody in this group matches "${escapeHtml(search)}".` : "No members yet."}</p>`
+        }
+        <form method="POST" action="/account/groups/${group.id}/members" style="margin-top:14px;">
+          <label>Add people</label>
+          ${remoteMultiSelect("user_ids", `/account/groups/${group.id}/people`, [], "Search people...")}
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Add to group</button></div>
+        </form>
+      `)}
+      `,
+      user.upn
+    )
+  );
+});
+
+// People a manager can still add to their group: active and not already in it.
+account.get("/account/groups/:id/people", async (c) => {
+  const user = c.get("user");
+  const groupId = Number(c.req.param("id"));
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+  if (!q || !(await isGroupManager(c.env, user.id, groupId))) return c.json([]);
+  const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, display_name, upn FROM users
+     WHERE status = 'active' AND id NOT IN (SELECT user_id FROM group_members WHERE group_id = ?)
+       AND (lower(display_name) LIKE ? ESCAPE '\\' OR lower(upn) LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\')
+     ORDER BY display_name LIMIT 20`
+  )
+    .bind(groupId, like, like, like)
+    .all<{ id: number; display_name: string; upn: string }>();
+  return c.json(results.map((u) => ({ id: u.id, label: u.display_name, desc: u.upn })));
+});
+
+account.post("/account/groups/:id/members", async (c) => {
+  const ctx = consoleCtx(c);
+  const groupId = Number(c.req.param("id"));
+  const body = await c.req.parseBody({ all: true });
+  const userIds = (Array.isArray(body.user_ids) ? body.user_ids.map(String) : body.user_ids === undefined ? [] : [String(body.user_ids)]).map(Number).filter(Boolean);
+  try {
+    await assertMayManageGroup(ctx, groupId);
+    await addGroupMembers(ctx, groupId, userIds);
+    return c.redirect(`/account/groups/${groupId}?saved=members`, 302);
+  } catch (e) {
+    return c.redirect(`/account/groups/${groupId}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+account.post("/account/groups/:id/members/:uid/remove", async (c) => {
+  const ctx = consoleCtx(c);
+  const groupId = Number(c.req.param("id"));
+  try {
+    await assertMayManageGroup(ctx, groupId);
+    await removeGroupMember(ctx, groupId, Number(c.req.param("uid")));
+    return c.redirect(`/account/groups/${groupId}?saved=members`, 302);
+  } catch (e) {
+    return c.redirect(`/account/groups/${groupId}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+account.post("/account/groups/:id/requests/:rid", async (c) => {
+  const ctx = consoleCtx(c);
+  const groupId = Number(c.req.param("id"));
+  const body = await c.req.parseBody();
+  try {
+    const req = await getAccessRequest(c.env, Number(c.req.param("rid")));
+    if (!req || req.group_id !== groupId) throw new ServiceError(404, "That request doesn't exist any more.");
+    await assertMayManageGroup(ctx, groupId);
+    const decision = String(body.decision ?? "");
+    if (decision !== "approved" && decision !== "denied") throw new ServiceError(400, "Pick Approve or Deny.");
+    await decideAccessRequest(ctx, req.id, decision, String(body.note ?? ""));
+    return c.redirect(`/account/groups/${groupId}?saved=request`, 302);
+  } catch (e) {
+    return c.redirect(`/account/groups/${groupId}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+account.get("/account/security", async (c) => {
+  const user = c.get("user");
+  const remainingBackupCodes = user.mfa_enabled ? await countRemainingBackupCodes(c.env, user.id) : 0;
+  const currentSessionId = c.get("sessionId");
+  const sessions = await listActiveSessionsForUser(c.env, user.id);
+  const devices = await listTrustedDevices(c.env, user.id);
+  const passkeys = await listPasskeys(c.env, user.id);
+  const isAdmin = c.get("access").isAdmin;
+  // Only factors that work right now: one switched off is not offered here at all.
+  const enrolled = enrolledFactors({ ...user, has_passkey: passkeys.length > 0 });
+  const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
+  const factors = enrolled.filter((_, i) => usable[i]);
+  const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
+  const kbaCard = (await securityQuestionsAvailable(c.env))
+    ? isAdmin
+      ? adminSecurityQuestionsCard(user, c.req.query("kba_error") ?? "")
+      : await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "")
+    : "";
+  const { results: connectedApps } = await c.env.DB.prepare(
+    `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
+     JOIN oauth_clients oc ON oc.client_id = at.client_id
+     WHERE at.user_id = ? AND at.expires_at > ?
+     UNION
+     SELECT DISTINCT oc.id, oc.name FROM refresh_tokens rt
+     JOIN oauth_clients oc ON oc.client_id = rt.client_id
+     WHERE rt.user_id = ? AND rt.revoked_at IS NULL`
+  )
+    .bind(user.id, new Date().toISOString(), user.id)
+    .all<{ id: number; name: string }>();
+
+  return c.html(
+    layout(
+      c,
+      "Security",
+      `
+      ${savedBanner(c)}
       <h2 class="section-title">Security</h2>
       <p class="muted" id="second-factors">${
         factors.length
@@ -414,7 +650,6 @@ account.get("/account", async (c) => {
     )
   );
 });
-
 /**
  * My account > Security: email one-time codes. Turning them on and off each
  * takes a code sent to the address, so only someone who reads that inbox can
@@ -570,19 +805,59 @@ account.post("/account/profile", async (c) => {
   return c.redirect("/account?saved=profile", 302);
 });
 
+/**
+ * Any signed-in person can view any user's photo - a directory shows faces.
+ * Served from the account app so the session cookie gates it; images on
+ * admin pages load through here too.
+ */
+account.get("/account/photo/:uid", async (c) => {
+  const photo = await getUserPhoto(c.env, Number(c.req.param("uid")));
+  if (!photo) return c.notFound();
+  return new Response(photo.data, {
+    headers: { "content-type": photo.content_type, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" },
+  });
+});
+
+account.post("/account/photo", async (c) => {
+  const user = c.get("user");
+  if ((await getMasteredFields(c.env)).includes("photo")) return c.html(errorRedirectPage(c, "Your photo comes from your HR system - it can't be changed here."));
+  const body = await c.req.parseBody();
+  const file = body.photo;
+  if (!(file instanceof File) || file.size === 0) return c.html(errorRedirectPage(c, "Choose an image file to upload."));
+  if (file.size > MAX_PHOTO_BYTES) return c.html(errorRedirectPage(c, "Photos are limited to 1 MB - crop or resize it and try again."));
+  const buf = await file.arrayBuffer();
+  const type = sniffImageType(buf);
+  if (!type) return c.html(errorRedirectPage(c, "That doesn't look like a PNG, JPG, WebP or GIF image."));
+  await setUserPhoto(c.env, user.id, buf, type);
+  await logAudit(c.env, user, "user.photo_updated_self", user.upn, undefined, c.req.raw);
+  return c.redirect("/account?saved=photo", 302);
+});
+
+account.post("/account/photo/remove", async (c) => {
+  const user = c.get("user");
+  if ((await getMasteredFields(c.env)).includes("photo")) return c.html(errorRedirectPage(c, "Your photo comes from your HR system - it can't be changed here."));
+  await deleteUserPhoto(c.env, user.id);
+  return c.redirect("/account?saved=photo", 302);
+});
+
 // Feeds the request-access picker's search-as-you-type: only the requestable
 // static groups this person could still ask for, as {id, label, desc} items.
 account.get("/account/access/groups", async (c) => {
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
   if (!q) return c.json([]);
-  const [groups, roleGroups] = await Promise.all([requestableGroups(c.env, c.get("user").id, q, 20), adminRoleGroupIds(c.env)]);
+  const [groups, roleMap] = await Promise.all([requestableGroups(c.env, c.get("user").id, q, 20), groupRolesMap(c.env)]);
   return c.json(
-    groups.map((g) => ({
-      id: g.id,
-      label: g.name,
-      // Asking for a role-bearing group is asking for the role - say so.
-      desc: roleGroups.has(g.id) ? `Admin access${g.description ? ` · ${g.description}` : ""}` : g.description ?? "",
-    }))
+    groups.map((g) => {
+      const roles = roleMap.get(g.id) ?? [];
+      return {
+        id: g.id,
+        label: g.name,
+        // Asking for a role-bearing group is asking for the roles - name them,
+        // with each role's own description, before the group's.
+        badges: roles.map((r) => ({ label: r.name, title: r.description })),
+        desc: [...roles.map((r) => `Grants ${r.name}${r.description ? ` — ${r.description}` : ""}`), ...(g.description ? [g.description] : [])].join(" · "),
+      };
+    })
   );
 });
 
@@ -593,7 +868,7 @@ account.post("/account/access/request", async (c) => {
   } catch (e) {
     return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
   }
-  return c.redirect("/account?saved=access-requested", 302);
+  return c.redirect("/account/groups?saved=access-requested", 302);
 });
 
 account.post("/account/access/requests/:id/cancel", async (c) => {
@@ -602,7 +877,7 @@ account.post("/account/access/requests/:id/cancel", async (c) => {
   } catch (e) {
     return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
   }
-  return c.redirect("/account?saved=access-cancelled", 302);
+  return c.redirect("/account/groups?saved=access-cancelled", 302);
 });
 
 account.post("/account/devices/:id/revoke", async (c) => {
@@ -610,7 +885,7 @@ account.post("/account/devices/:id/revoke", async (c) => {
   const deviceId = c.req.param("id");
   await revokeTrustedDevice(c.env, user.id, deviceId);
   await logAudit(c.env, user, "user.device_revoked_self", user.upn, undefined, c.req.raw);
-  return c.redirect("/account?saved=device", 302);
+  return c.redirect("/account/security?saved=device", 302);
 });
 
 account.post("/account/sessions/:id/revoke", async (c) => {
@@ -621,14 +896,14 @@ account.post("/account/sessions/:id/revoke", async (c) => {
     await revokeSession(c.env, sessionId);
     await logAudit(c.env, user, "user.session_revoked_self", user.upn, undefined, c.req.raw);
   }
-  return c.redirect("/account?saved=session", 302);
+  return c.redirect("/account/security?saved=session", 302);
 });
 
 account.post("/account/sessions/revoke-others", async (c) => {
   const user = c.get("user");
   const count = await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
   await logAudit(c.env, user, "user.sessions_revoked_all_others", user.upn, { count }, c.req.raw);
-  return c.redirect("/account?saved=sessions-others", 302);
+  return c.redirect("/account/security?saved=sessions-others", 302);
 });
 
 account.post("/account/apps/:clientDbId/revoke", async (c) => {
@@ -637,7 +912,7 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
   const client = await c.env.DB.prepare("SELECT client_id, name FROM oauth_clients WHERE id = ?")
     .bind(clientDbId)
     .first<{ client_id: string; name: string }>();
-  if (!client) return c.redirect("/account", 302);
+  if (!client) return c.redirect("/account/security", 302);
 
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM access_tokens WHERE user_id = ? AND client_id = ?").bind(user.id, client.client_id),
@@ -654,7 +929,7 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
   ]);
   await logAudit(c.env, user, "user.app_access_revoked_self", client.name, undefined, c.req.raw);
 
-  return c.redirect("/account?saved=app", 302);
+  return c.redirect("/account/security?saved=app", 302);
 });
 
 /**
@@ -724,7 +999,7 @@ account.get("/account/passkeys/:id/remove", async (c) => {
   const user = c.get("user");
   const id = decodeURIComponent(c.req.param("id") ?? "");
   const passkey = (await listPasskeys(c.env, user.id)).find((p) => p.id === id);
-  if (!passkey) return c.redirect("/account#passkeys", 302);
+  if (!passkey) return c.redirect("/account/security#passkeys", 302);
   const fresh = await isFreshlyAuthenticated(c.env, c.get("sessionId"));
   return c.html(
     layout(
@@ -736,7 +1011,7 @@ account.get("/account/passkeys/:id/remove", async (c) => {
         ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
         <form method="POST" action="/account/passkeys/${encodeURIComponent(id)}/remove">
           ${fresh ? "" : `<label for="pk_current_password">You signed in a while ago - confirm your password to remove it.</label><input type="password" id="pk_current_password" name="current_password" required autocomplete="current-password" maxlength="1024" style="max-width:320px;" />`}
-          <div class="form-actions"><button class="danger" type="submit">Remove passkey</button><a class="button secondary" href="/account#passkeys">Cancel</a></div>
+          <div class="form-actions"><button class="danger" type="submit">Remove passkey</button><a class="button secondary" href="/account/security#passkeys">Cancel</a></div>
         </form>`)
     )
   );
@@ -758,7 +1033,7 @@ account.post("/account/passkeys/:id/remove", async (c) => {
   }
   await removePasskey(c.env, user.id, id);
   await logAudit(c.env, user, "user.passkey_removed", user.upn, undefined, c.req.raw);
-  return c.redirect("/account?saved=passkey-removed", 302);
+  return c.redirect("/account/security?saved=passkey-removed", 302);
 });
 
 account.post("/account/password", async (c) => {
@@ -807,7 +1082,7 @@ account.post("/account/password", async (c) => {
 
   await logAudit(c.env, user, "user.password_changed_self", user.upn, undefined, c.req.raw);
 
-  const res = c.redirect("/account?saved=password", 302);
+  const res = c.redirect("/account/security?saved=password", 302);
   res.headers.append("Set-Cookie", rotated.setCookie);
   return res;
 });
@@ -819,7 +1094,7 @@ function errorRedirectPage(c: Context<{ Bindings: Env }>, message: string) {
 account.get("/account/mfa/setup", async (c) => {
   const user = c.get("user");
   const resume = c.req.query("resume") ?? "";
-  if (user.mfa_enabled) return c.redirect("/account", 302);
+  if (user.mfa_enabled) return c.redirect("/account/security", 302);
   const [totpOn, passkeyOn, emailAvailable, kbaAvailable] = await Promise.all([
     isFactorEnabled(c.env, "totp"),
     isFactorEnabled(c.env, "passkey"),
@@ -938,7 +1213,7 @@ account.post("/account/mfa/passkey-enrolled", async (c) => {
   if (!amr.includes("hwk")) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
   await revokeAllSessionsForUser(c.env, user.id, sessionId);
   await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : "/account?saved=passkey-added", 302);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : "/account/security?saved=passkey-added", 302);
 });
 
 account.post("/account/mfa/setup", async (c) => {
@@ -1013,7 +1288,7 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, s
 /** Where an email-code action goes back to: the forced-enrolment page it came from, or My account. */
 function emailCodeReturn(body: Record<string, unknown>, query: string): string {
   if (body.from === "setup") return `/account/mfa/setup?resume=${encodeURIComponent(String(body.resume ?? ""))}&${query}`;
-  return `/account?${query}#email-codes`;
+  return `/account/security?${query}#email-codes`;
 }
 
 account.post("/account/mfa/email/send", async (c) => {
@@ -1021,7 +1296,7 @@ account.post("/account/mfa/email/send", async (c) => {
   const body = await c.req.parseBody();
   const purpose = body.purpose === "disable" ? "disable" : "enrol";
   if (!(await emailOtpAvailable(c.env))) return c.redirect(emailCodeReturn(body, "error=email-unavailable"), 302);
-  if ((purpose === "enrol") === Boolean(user.email_otp_enabled)) return c.redirect("/account", 302);
+  if ((purpose === "enrol") === Boolean(user.email_otp_enabled)) return c.redirect("/account/security", 302);
   const sent = await sendEmailOtp(c.env, user, accountScope(c.get("sessionId")), purpose);
   if (!sent.ok) {
     if (sent.reason === "rate_limited") {
@@ -1042,7 +1317,7 @@ account.post("/account/mfa/email/enable", async (c) => {
   const resume = String(body.resume ?? "");
   const sessionId = c.get("sessionId");
   if (!(await emailOtpAvailable(c.env))) return c.redirect(emailCodeReturn(body, "error=email-unavailable"), 302);
-  if (user.email_otp_enabled) return c.redirect("/account", 302);
+  if (user.email_otp_enabled) return c.redirect("/account/security", 302);
   const result = await verifyEmailOtp(c.env, accountScope(sessionId), user.id, "enrol", String(body.code ?? ""));
   if (result !== "ok") {
     await logAudit(c.env, user, "user.email_otp_enrol_failed", user.upn, { reason: result }, c.req.raw);
@@ -1063,22 +1338,22 @@ account.post("/account/mfa/email/enable", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "otp", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.email_otp_enabled", user.upn, undefined, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account?saved=email-otp-enabled", 302);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account/security?saved=email-otp-enabled", 302);
 });
 
 /** Turning email codes off takes a fresh code, within the step-up budget - as disabling the authenticator does. */
 account.post("/account/mfa/email/disable", async (c) => {
   const user = c.get("user");
-  if (!user.email_otp_enabled) return c.redirect("/account", 302);
-  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many#email-codes", 302);
+  if (!user.email_otp_enabled) return c.redirect("/account/security", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many#email-codes", 302);
   const result = await verifyEmailOtp(c.env, accountScope(c.get("sessionId")), user.id, "disable", String((await c.req.parseBody()).code ?? ""));
   if (result !== "ok") {
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "email_otp_disable", reason: result }, c.req.raw);
-    return c.redirect(`/account?${result === "wrong" ? "email_code=disable&" : ""}error=email-code#email-codes`, 302);
+    return c.redirect(`/account/security?${result === "wrong" ? "email_code=disable&" : ""}error=email-code#email-codes`, 302);
   }
   await c.env.DB.prepare("UPDATE users SET email_otp_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
   await logAudit(c.env, user, "user.email_otp_disabled", user.upn, undefined, c.req.raw);
-  return c.redirect("/account?saved=email-otp-disabled", 302);
+  return c.redirect("/account/security?saved=email-otp-disabled", 302);
 });
 
 // ---------- Security questions ----------
@@ -1088,7 +1363,7 @@ account.post("/account/mfa/email/disable", async (c) => {
 /** Where a security-questions action goes back to: the forced-enrolment page it came from, or My account. */
 function kbaReturn(body: Record<string, unknown>, query: string): string {
   if (body.from === "setup") return `/account/mfa/setup?resume=${encodeURIComponent(String(body.resume ?? ""))}&${query}`;
-  return `/account?${query}#security-questions`;
+  return `/account/security?${query}#security-questions`;
 }
 
 /**
@@ -1128,7 +1403,7 @@ account.post("/account/mfa/questions", async (c) => {
   const details = { questions: entries.map((e) => e.questionId) };
   if (changing) {
     await logAudit(c.env, user, "user.security_questions_changed", user.upn, details, c.req.raw);
-    return c.redirect("/account?saved=kba-changed", 302);
+    return c.redirect("/account/security?saved=kba-changed", 302);
   }
 
   // As with the other factors: every other session predates the second factor.
@@ -1143,21 +1418,21 @@ account.post("/account/mfa/questions", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "kba", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.security_questions_enabled", user.upn, details, c.req.raw);
-  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account?saved=kba-enabled", 302);
+  return c.redirect(resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : "/account/security?saved=kba-enabled", 302);
 });
 
 /** Removing security questions takes the current password, within the step-up budget. */
 account.post("/account/mfa/questions/remove", async (c) => {
   const user = c.get("user");
-  if (!user.security_questions_enabled) return c.redirect("/account", 302);
-  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?kba_error=kba-too-many#security-questions", 302);
+  if (!user.security_questions_enabled) return c.redirect("/account/security", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?kba_error=kba-too-many#security-questions", 302);
   if (!(await verifyPassword(String((await c.req.parseBody()).current_password ?? "").slice(0, 1024), user))) {
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_remove" }, c.req.raw);
-    return c.redirect("/account?kba_error=kba-password#security-questions", 302);
+    return c.redirect("/account/security?kba_error=kba-password#security-questions", 302);
   }
   await c.env.DB.batch(clearAnswersStatements(c.env, user.id));
   await logAudit(c.env, user, "user.security_questions_disabled", user.upn, undefined, c.req.raw);
-  return c.redirect("/account?saved=kba-removed", 302);
+  return c.redirect("/account/security?saved=kba-removed", 302);
 });
 
 function backupCodesPage(codes: string[], continueTo = "/account"): string {
@@ -1179,13 +1454,13 @@ function backupCodesPage(codes: string[], continueTo = "/account"): string {
 
 account.post("/account/mfa/backup-codes/regenerate", async (c) => {
   const user = c.get("user");
-  if (!user.mfa_enabled) return c.redirect("/account", 302);
+  if (!user.mfa_enabled) return c.redirect("/account/security", 302);
   // New codes are a second factor: issuing them needs one, as disabling MFA does.
-  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many", 302);
   const factor = await secondFactorOk(c, String((await c.req.parseBody()).code ?? ""));
   if (!factor) {
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "backup_codes_regenerate" }, c.req.raw);
-    return c.redirect("/account?error=mfa-code", 302);
+    return c.redirect("/account/security?error=mfa-code", 302);
   }
 
   const codes = await generateBackupCodes(c.env, user.id);
@@ -1206,12 +1481,12 @@ account.post("/account/mfa/disable", async (c) => {
   // A backup code works too. It is the only factor left to someone who lost
   // their authenticator and signed in with one - and without it they could
   // never disable MFA to enrol a new device.
-  if (await stepUpBudgetExceeded(c)) return c.redirect("/account?error=too-many", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many", 302);
   const factor = await secondFactorOk(c, code);
   const backupOk = factor === "backup_code";
   if (!factor) {
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "mfa_disable" }, c.req.raw);
-    return c.redirect("/account?error=mfa-code", 302);
+    return c.redirect("/account/security?error=mfa-code", 302);
   }
 
   await c.env.DB.prepare(
@@ -1223,5 +1498,5 @@ account.post("/account/mfa/disable", async (c) => {
   await deleteTrustedDevicesForUser(c.env, user.id);
   await logAudit(c.env, user, "user.mfa_disabled", user.upn, { with: backupOk ? "backup_code" : "totp" }, c.req.raw);
 
-  return c.redirect("/account?saved=mfa-disabled", 302);
+  return c.redirect("/account/security?saved=mfa-disabled", 302);
 });

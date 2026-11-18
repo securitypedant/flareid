@@ -30,6 +30,8 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/users/:id/delete": "DELETE /api/v1/users/{username}",
   "POST /admin/groups": "POST /api/v1/groups",
   "POST /admin/groups/:id/members/:uid/remove": "DELETE /api/v1/groups/{id}/members/{username}",
+  "POST /admin/groups/:id/managers": "POST /api/v1/groups/{id}/managers",
+  "POST /admin/groups/:id/managers/:uid/remove": "DELETE /api/v1/groups/{id}/managers/{username}",
   "POST /admin/groups/:id/freeze": "POST /api/v1/groups/{id}/freeze",
   "POST /admin/groups/:id": "PATCH /api/v1/groups/{id}",
   "POST /admin/groups/:id/delete": "DELETE /api/v1/groups/{id}",
