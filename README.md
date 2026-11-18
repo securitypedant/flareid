@@ -1,5 +1,11 @@
 # FlareID
 
+> **⚠️ PROOF OF CONCEPT — NOT FOR PRODUCTION USE.**
+>
+> FlareID has not been tested, hardened, or validated to any standard of
+> maturity required to run in production. Do not use it to protect real
+> systems or real user data.
+
 ![FlareID admin console](public/FlareID-screenshot-01.png)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/securitypedant/flareid)
