@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import { escapeHtml, page, scriptTag } from "./html.js";
 import { brandDomainForHost, brandFor, domainFromHint, type Brand } from "./brands.js";
+import { getClientByClientId } from "./db.js";
 import { DEFAULT_LOGIN_SUBTITLE, getDefaultLanguage, getLoginAppearance, type CursorTrail, type LoginAppearance, type LoginGradient } from "./settings.js";
 import { allowTurnstileCsp, turnstileWidget } from "./turnstile.js";
 import { allLocales, html, localeInfo, matchLocale, parseAcceptLanguage, t, tHtml, tPlural, type Locale, type MessageKey, type Vars } from "./i18n.js";
@@ -106,6 +107,15 @@ function gradientStyles(gradient: LoginGradient): string {
        box; drawn at its own portrait aspect ratio rather than squeezed square. */
     .auth-brand img { height: 46px; width: auto; max-width: 220px; object-fit: contain; }
     .auth-brand span { font-size: 1.75rem; font-weight: 700; line-height: 1; color: var(--fi-ink); letter-spacing: -0.025em; }
+    /* The relying party's own identity, below the brand: its registered logo
+       (logo_uri) and a line naming it, plus links to its documents (client_uri,
+       policy_uri, tos_uri) so people can check where they are signing in. */
+    .auth-client { text-align: center; margin: 0 0 18px; }
+    .auth-client-logo { display: block; margin: 0 auto 8px; max-height: 64px; max-width: 220px; object-fit: contain; }
+    .auth-client-name { margin: 0; font-size: 0.9375rem; font-weight: 600; color: var(--fi-body); }
+    .auth-client-links { margin: 18px 0 0; padding: 0; list-style: none; display: flex; justify-content: center; gap: 6px 16px; flex-wrap: wrap; font-size: 0.8125rem; }
+    .auth-client-links a { color: var(--fi-muted); }
+    .auth-client-links a:hover { color: var(--fi-accent); }
     .center-wrap h1 { text-align: center; font-size: 1.25rem; margin: 0 0 6px 0; }
     .center-wrap p.sub { text-align: center; margin: 0 0 24px; font-size: 0.9375rem; }
     .center-wrap form .row { margin-top: 20px; }
@@ -341,6 +351,23 @@ function federationButtons(appearance: LoginAppearance, flowId: string, locale: 
   return `<div class="auth-fed"><p class="auth-fed-sep muted">${escapeHtml(t(locale, "login.or"))}</p>${buttons}</div>`;
 }
 
+/** The relying party's identity block for the sign-in page: its registered logo and name, and links to the documents it published at registration. */
+function clientBlock(appearance: LoginAppearance): string {
+  const client = appearance.client;
+  if (!client) return "";
+  const { locale } = appearance;
+  const links = [
+    client.clientUri ? `<a class="auth-client-home" href="${escapeHtml(client.clientUri)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t(locale, "login.clientHome"))}</a>` : "",
+    client.policyUri ? `<a class="auth-client-policy" href="${escapeHtml(client.policyUri)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t(locale, "login.clientPolicy"))}</a>` : "",
+    client.tosUri ? `<a class="auth-client-tos" href="${escapeHtml(client.tosUri)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t(locale, "login.clientTos"))}</a>` : "",
+  ].filter(Boolean);
+  return `<div class="auth-client">
+    ${client.logoUri ? `<img class="auth-client-logo" src="${escapeHtml(client.logoUri)}" alt="${escapeHtml(t(locale, "login.clientLogoAlt", { name: client.name }))}" referrerpolicy="no-referrer" data-hide-on-error />` : ""}
+    <p class="auth-client-name">${escapeHtml(t(locale, "login.continueTo", { name: client.name }))}</p>
+    ${links.length ? `<ul class="auth-client-links">${links.map((l) => `<li>${l}</li>`).join("")}</ul>` : ""}
+  </div>`;
+}
+
 export function loginForm(flowId: string, appearance: LoginAppearance, error?: Text, notice?: string): string {
   const { appName, locale } = appearance;
   const subtitle = subtitleText(appearance);
@@ -350,6 +377,7 @@ export function loginForm(flowId: string, appearance: LoginAppearance, error?: T
     appearance,
     `
     <h1 class="visually-hidden">${escapeHtml(t(locale, "login.heading", { appName }))}</h1>
+    ${clientBlock(appearance)}
     ${notice ? `<p class="muted brand-preview-note" style="text-align:center;">${escapeHtml(notice)}</p>` : ""}
     ${subtitle ? `<p class="sub">${escapeHtml(subtitle)}</p>` : ""}
     ${errors.html}
@@ -376,6 +404,9 @@ export function loginForm(flowId: string, appearance: LoginAppearance, error?: T
  */
 export function sendLoginForm(c: Context<{ Bindings: Env }>, flowId: string, appearance: LoginAppearance, error?: Text, notice?: string) {
   allowTurnstileCsp(c, appearance.turnstileSiteKey);
+  // An external client logo (RFC 7591 logo_uri) needs its exact URL admitted
+  // to img-src for this response - security-headers reads the marker.
+  if (appearance.client?.logoUri) c.header("X-FlareID-Img-Src", appearance.client.logoUri);
   return c.html(loginForm(flowId, appearance, error, notice));
 }
 
@@ -598,6 +629,8 @@ export interface AppearanceHint {
   brand?: Brand;
   /** The language the flow started in, or the app asked for (OIDC ui_locales). */
   locale?: string | null;
+  /** The OAuth client_id of the app that sent this sign-in: its registered display metadata shows on the page. */
+  clientId?: string | null;
 }
 
 /**
@@ -665,9 +698,12 @@ export function customCssDisabled(c: Context<{ Bindings: Env }>): boolean {
 
 /** The appearance of an auth-flow page: the person's brand once known, else the flow's or the request's hint; and its language. */
 export async function loginAppearance(c: Context<{ Bindings: Env }>, hint: AppearanceHint = {}): Promise<LoginAppearance> {
-  const [brand, locale] = await Promise.all([
+  const [brand, locale, client] = await Promise.all([
     hint.brand ?? (hint.userId ? brandFor(c.env, { userId: hint.userId }) : (async () => brandFor(c.env, { domain: hint.domain || (await requestBrandDomain(c)) }))()),
     requestLocale(c, hint.locale),
+    hint.clientId ? getClientByClientId(c.env, hint.clientId) : null,
   ]);
-  return getLoginAppearance(c.env, brand, { customCss: !customCssDisabled(c), locale });
+  const appearance = await getLoginAppearance(c.env, brand, { customCss: !customCssDisabled(c), locale });
+  if (client) appearance.client = { name: client.name, logoUri: client.logo_uri, policyUri: client.policy_uri, tosUri: client.tos_uri, clientUri: client.client_uri };
+  return appearance;
 }

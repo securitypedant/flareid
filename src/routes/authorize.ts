@@ -249,7 +249,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
 
   // OIDC login_hint (Core 3.1.2.1): its domain brands the sign-in page.
   const brandDomain = domainFromHint(url.searchParams.get("login_hint"));
-  const appearance = await loginAppearance(c, { domain: brandDomain, locale: uiLocale });
+  const appearance = await loginAppearance(c, { domain: brandDomain, locale: uiLocale, clientId });
   const flowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest, ...(brandDomain ? { brandDomain } : {}), locale: appearance.locale });
   return sendLoginForm(c, flowId, appearance);
 }

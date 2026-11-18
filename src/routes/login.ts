@@ -158,7 +158,7 @@ login.get("/login/language", async (c) => {
   const flowId = c.req.query("flow_id") ?? "";
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow || !lang) return c.redirect(lang ? `/login?lang=${encodeURIComponent(lang)}` : "/login", 302);
-  const appearance = await loginAppearance(c, { domain: flow.brandDomain });
+  const appearance = await loginAppearance(c, { domain: flow.brandDomain, clientId: flow.kind === "oidc" ? flow.request.clientId : null });
   const id = isSealedFlowId(flowId) ? await sealLoginFlow(c.env, { ...flow, locale: appearance.locale }) : flowId;
   return sendLoginForm(c, id, appearance);
 });
@@ -272,7 +272,7 @@ login.post("/login", async (c) => {
 
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const appearance = await loginAppearance(c, { domain: flow.brandDomain, locale: flow.locale });
+  const appearance = await loginAppearance(c, { domain: flow.brandDomain, locale: flow.locale, clientId: flow.kind === "oidc" ? flow.request.clientId : null });
 
   // Bot protection, before anything that costs: no account lookup, no
   // password hash, and no count against the account's failure budget - a bot
@@ -376,7 +376,7 @@ login.post("/login/passkey", async (c) => {
   const flowId = String(body.flow_id ?? "");
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const appearance = await loginAppearance(c, { domain: flow.brandDomain, locale: flow.locale });
+  const appearance = await loginAppearance(c, { domain: flow.brandDomain, locale: flow.locale, clientId: flow.kind === "oidc" ? flow.request.clientId : null });
   let response: unknown;
   try {
     response = JSON.parse(String(body.response ?? "").slice(0, 16_384));

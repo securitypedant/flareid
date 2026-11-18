@@ -258,6 +258,67 @@ describe("dynamic client registration (RFC 7591/7592)", () => {
     const row = await env.DB.prepare("SELECT trusted FROM oauth_clients WHERE client_id = ?").bind(client_id).first<{ trusted: number }>();
     expect(row!.trusted).toBe(0);
   });
+
+  it("keeps and echoes display metadata, and shows it on the sign-in page", async () => {
+    await bootstrapInstance();
+    const meta = {
+      logo_uri: "https://rp.example/logo.png",
+      policy_uri: "https://rp.example/privacy",
+      tos_uri: "https://rp.example/terms",
+      client_uri: "https://rp.example/",
+    };
+    const created = (await (
+      await SELF.fetch(`${BASE}/connect/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "display rp", redirect_uris: [REDIRECT], ...meta }),
+      })
+    ).json()) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(meta)) expect(created[k]).toBe(v);
+
+    const read = (await (
+      await SELF.fetch(`${BASE}/connect/register/${created.client_id}`, { headers: { Authorization: `Bearer ${created.registration_access_token}` } })
+    ).json()) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(meta)) expect(read[k]).toBe(v);
+
+    const updated = (await (
+      await SELF.fetch(`${BASE}/connect/register/${created.client_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${created.registration_access_token}` },
+        body: JSON.stringify({ redirect_uris: [REDIRECT], tos_uri: "https://rp.example/terms-v2", logo_uri: "" }),
+      })
+    ).json()) as Record<string, unknown>;
+    expect(updated.tos_uri).toBe("https://rp.example/terms-v2");
+    expect(updated.logo_uri).toBeUndefined();
+    expect(updated.policy_uri).toBe(meta.policy_uri);
+
+    const bad = await SELF.fetch(`${BASE}/connect/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [REDIRECT], logo_uri: "javascript:alert(1)" }),
+    });
+    expect(bad.status).toBe(400);
+
+    // The sign-in page names the app, shows its logo and links its documents.
+    const page = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: updated.client_id as string, redirect_uri: REDIRECT, response_type: "code", scope: "openid" })}`, { redirect: "manual" });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("display rp");
+    expect(html).toContain(`href="${meta.policy_uri}"`);
+    expect(html).toContain(`href="https://rp.example/terms-v2"`);
+    expect(html).toContain(`href="${meta.client_uri}"`);
+    expect(html).not.toContain('class="auth-client-logo"');
+
+    const withLogo = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: created.client_id as string, redirect_uri: REDIRECT, response_type: "code", scope: "openid" })}`, { redirect: "manual" });
+    // The PUT cleared the logo; re-set it to see the img and its CSP allowance.
+    await env.DB.prepare("UPDATE oauth_clients SET logo_uri = ? WHERE client_id = ?").bind(meta.logo_uri, created.client_id as string).run();
+    const withLogo2 = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: created.client_id as string, redirect_uri: REDIRECT, response_type: "code", scope: "openid" })}`, { redirect: "manual" });
+    const html2 = await withLogo2.text();
+    expect(html2).toContain(`src="${meta.logo_uri}"`);
+    expect(withLogo2.headers.get("Content-Security-Policy")).toContain(`img-src 'self' data: ${meta.logo_uri}`);
+    expect(withLogo.headers.get("Content-Security-Policy")).toContain("img-src 'self' data:");
+    expect(withLogo.headers.get("Content-Security-Policy")).not.toContain(meta.logo_uri);
+  });
 });
 
 describe("private_key_jwt client authentication", () => {

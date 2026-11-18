@@ -27,6 +27,10 @@ interface ClientMetadata {
   frontchannel_logout_uri?: string;
   backchannel_logout_uri?: string;
   initiate_login_uri?: string;
+  logo_uri?: string;
+  policy_uri?: string;
+  tos_uri?: string;
+  client_uri?: string;
   token_endpoint_auth_method?: string;
   id_token_signed_response_alg?: string;
   jwks?: { keys?: unknown[] };
@@ -72,6 +76,10 @@ function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok:
     [body.backchannel_logout_uri, "backchannel_logout_uri"],
     [body.initiate_login_uri, "initiate_login_uri"],
     [body.jwks_uri, "jwks_uri"],
+    [body.logo_uri, "logo_uri"],
+    [body.policy_uri, "policy_uri"],
+    [body.tos_uri, "tos_uri"],
+    [body.client_uri, "client_uri"],
   ];
   for (const [u, name] of httpsFields) {
     if (u !== undefined && u !== "" && !validFrontchannelUri(u)) return { ok: false, message: `${name} must be an https URL.` };
@@ -123,6 +131,10 @@ function clientBody(env: Env, row: OAuthClientRow, opts: { secret?: string; regi
     ...(row.initiate_login_uri ? { initiate_login_uri: row.initiate_login_uri } : {}),
     ...(row.jwks ? { jwks: JSON.parse(row.jwks) } : {}),
     ...(row.jwks_uri ? { jwks_uri: row.jwks_uri } : {}),
+    ...(row.logo_uri ? { logo_uri: row.logo_uri } : {}),
+    ...(row.policy_uri ? { policy_uri: row.policy_uri } : {}),
+    ...(row.tos_uri ? { tos_uri: row.tos_uri } : {}),
+    ...(row.client_uri ? { client_uri: row.client_uri } : {}),
     ...(row.grant_types ? { grant_types: JSON.parse(row.grant_types) } : {}),
     ...(row.registered_scope ? { scope: row.registered_scope } : {}),
   };
@@ -151,8 +163,9 @@ registration.post("/connect/register", async (c) => {
 
   await c.env.DB.prepare(
     `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris,
-      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg, grant_types, registered_scope)
-     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      frontchannel_logout_uri, backchannel_logout_uri, initiate_login_uri, registration_token_hash, jwks, jwks_uri, id_token_signed_response_alg, grant_types, registered_scope,
+      logo_uri, policy_uri, tos_uri, client_uri)
+     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       clientId,
@@ -170,7 +183,11 @@ registration.post("/connect/register", async (c) => {
       validFrontchannelUri(body.jwks_uri ?? "") || null,
       body.id_token_signed_response_alg ?? "RS256",
       body.grant_types ? JSON.stringify([...new Set(body.grant_types)]) : null,
-      body.scope !== undefined ? body.scope.trim().slice(0, 512) : null
+      body.scope !== undefined ? body.scope.trim().slice(0, 512) : null,
+      body.logo_uri !== undefined ? validFrontchannelUri(body.logo_uri) || null : null,
+      body.policy_uri !== undefined ? validFrontchannelUri(body.policy_uri) || null : null,
+      body.tos_uri !== undefined ? validFrontchannelUri(body.tos_uri) || null : null,
+      body.client_uri !== undefined ? validFrontchannelUri(body.client_uri) || null : null
     )
     .run();
 
@@ -224,12 +241,17 @@ registration.put("/connect/register/:client_id", async (c) => {
   const isPublic = body.token_endpoint_auth_method !== undefined ? body.token_endpoint_auth_method === "none" : client.client_type === "public";
   const grantTypes = body.grant_types !== undefined ? JSON.stringify([...new Set(body.grant_types)]) : client.grant_types;
   const registeredScope = body.scope !== undefined ? body.scope.trim().slice(0, 512) : client.registered_scope;
+  const logo = body.logo_uri !== undefined ? validFrontchannelUri(body.logo_uri) || null : client.logo_uri;
+  const policy = body.policy_uri !== undefined ? validFrontchannelUri(body.policy_uri) || null : client.policy_uri;
+  const tos = body.tos_uri !== undefined ? validFrontchannelUri(body.tos_uri) || null : client.tos_uri;
+  const clientUri = body.client_uri !== undefined ? validFrontchannelUri(body.client_uri) || null : client.client_uri;
 
   await c.env.DB.prepare(
     `UPDATE oauth_clients SET name = ?, redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, backchannel_logout_uri = ?,
-       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ?, grant_types = ?, registered_scope = ? WHERE id = ?`
+       initiate_login_uri = ?, jwks = ?, jwks_uri = ?, id_token_signed_response_alg = ?, client_type = ?, grant_types = ?, registered_scope = ?,
+       logo_uri = ?, policy_uri = ?, tos_uri = ?, client_uri = ? WHERE id = ?`
   )
-    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", grantTypes, registeredScope, client.id)
+    .bind(name, redirectUris, postLogout, fcl, bcl, init, jwks, jwksUri, alg, isPublic ? "public" : "confidential", grantTypes, registeredScope, logo, policy, tos, clientUri, client.id)
     .run();
 
   const updated = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(client.id).first<OAuthClientRow>();

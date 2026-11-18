@@ -6,10 +6,21 @@ may break things.
 
 ## [Unreleased]
 
+- **Relying-party display metadata on the sign-in page** - dynamic clients
+  can register `logo_uri`, `policy_uri`, `tos_uri` and `client_uri` (RFC
+  7591, echoed per RFC 7592); the sign-in page then names the app, shows its
+  logo, and links its documents so people can see where they are
+  authenticating to. The external logo is admitted to `img-src` for exactly
+  that response. Covers the OIDCC `registration-logo_uri` /
+  `policy_uri` / `tos_uri` profiles.
 - **`private_key_jwt` without `client_id`** - the token endpoint now
   identifies the client from the assertion's `iss` when `client_id` is
   omitted, as RFC 7523 allows (and the OIDF conformance suite exercises).
   Previously every assertion-only token request was refused `invalid_client`.
+
+**Migration `0044_client_display_metadata.sql`** - `oauth_clients.logo_uri`,
+`policy_uri`, `tos_uri` and `client_uri`, the RFC 7591 display metadata
+dynamic clients register (validated https, echoed in registration reads).
 
 **Migration `0043_client_grant_types.sql`** - `oauth_clients.grant_types` and
 `oauth_clients.registered_scope`, persisting the RFC 7591 `grant_types` and

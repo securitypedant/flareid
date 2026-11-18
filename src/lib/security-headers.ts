@@ -130,6 +130,10 @@ export async function applySecurityHeaders(requestUrl: string, h: Headers): Prom
   // say so, and only they get the allowance.
   const turnstile = h.get(TURNSTILE_CSP_HEADER) === "1";
   h.delete(TURNSTILE_CSP_HEADER);
+  // A sign-in page that renders a relying party's registered logo names the
+  // exact image URL it will load; only that response admits it.
+  const imgSrc = h.get("X-FlareID-Img-Src");
+  h.delete("X-FlareID-Img-Src");
   // 'self' kept for Turnstile, as default-src gave it before frame-src was set.
   const frames = frameSrc ? [frameSrc, ...(turnstile ? [TURNSTILE_ORIGIN] : [])].join(" ") : turnstile ? `'self' ${TURNSTILE_ORIGIN}` : "";
   if ((h.get("Content-Type") ?? "").startsWith("text/html")) {
@@ -139,7 +143,7 @@ export async function applySecurityHeaders(requestUrl: string, h: Headers): Prom
         "default-src 'self'",
         `script-src ${[...(await inlineScriptHashes()), ...(turnstile ? [TURNSTILE_ORIGIN] : [])].join(" ")}`,
         "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data:",
+        `img-src 'self' data:${imgSrc ? ` ${imgSrc}` : ""}`,
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",

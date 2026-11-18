@@ -424,6 +424,13 @@ export interface LoginAppearance {
   locale: Locale;
   /** Enabled upstream identity providers - the "Sign in with ..." buttons under the form. */
   federationIdps: { id: number; name: string }[];
+  /**
+   * The relying party that sent this sign-in (OIDC flows only): its registered
+   * name plus RFC 7591 display metadata - logo, and links to its home, policy
+   * and terms-of-service documents - rendered on the page so people can see
+   * which app they are authenticating to.
+   */
+  client?: { name: string; logoUri: string | null; policyUri: string | null; tosUri: string | null; clientUri: string | null };
 }
 
 /** The appearance for a brand; resolve the brand with brandFor (brands.ts) or loginAppearance (login-views.ts). */

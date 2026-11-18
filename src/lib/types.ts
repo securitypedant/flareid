@@ -108,6 +108,11 @@ export interface OAuthClientRow {
   grant_types: string | null;
   /** RFC 7591 `scope` metadata - bounds a client_credentials request's scope when set. */
   registered_scope: string | null;
+  /** RFC 7591 display metadata: rendered on the sign-in page so people can see which app they are authenticating to. */
+  logo_uri: string | null;
+  policy_uri: string | null;
+  tos_uri: string | null;
+  client_uri: string | null;
 }
 
 export interface SamlServiceProviderRow {
