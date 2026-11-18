@@ -114,11 +114,14 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
 33. A naming and trademark review. "FlareID" is Cloudflare-adjacent, and the
     README needs to keep saying plainly that this is not an official Cloudflare
     product.
-34. **Identity mediation for inbound provisioning** (v4.0.0): multiple email
+~~34. **Identity mediation for inbound provisioning** (v4.0.0): multiple email
     addresses per user (`user_emails`), a mapping engine (`scim_mappings` -
     expressions deriving UPN/displayName/attributes), correlation rules
     (ordered match keys, update-instead-of-create), and field mastering
-    (HR-owned fields read-only in the console and API).
+    (HR-owned fields read-only in the console and API).~~ (done -
+    user_emails.ts, scim-mapping.ts, Integrations → SCIM's correlation and
+    mastering sections, all enforced on inbound writes and mirrored in the
+    console)
 ~~35. **Inbound federation**: sign in *via* an upstream IdP (OIDC RP + SAML
     SP) with JIT provisioning - FlareID as the hub behind an existing IdP.~~
     (done - `upstream_idps` + `federated_identities`, OIDC auth-code + PKCE
