@@ -47,7 +47,7 @@ import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessR
 import { groupRolesMap } from "../lib/admin-roles.js";
 import { isGroupManager, managedGroups } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
-import { deleteUserPhoto, getUserPhoto, getUserPhotoVersion, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
+import { avatarUrl, deleteUserPhoto, getUserPhoto, getUserPhotoVersion, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { consoleCtx, ServiceError } from "../services/context.js";
 import { addGroupMembers, getGroupById, groupMembers, removeGroupMember } from "../services/groups.js";
 import { assertMayManageGroup } from "../services/guards.js";
@@ -71,7 +71,11 @@ account.use("/account/*", personalBrand);
 account.use("/account", personalBrand);
 /** The bell's feed for account pages: pending requests an admin sees globally, a manager sees for their groups. */
 account.use("/account/*", async (c, next) => {
-  if (c.req.method === "GET") c.set("notifications", await notificationFeedFor(c.env, c.get("user").id, c.get("access")?.isAdmin ?? false));
+  if (c.req.method === "GET") {
+    const [feed, avatar] = await Promise.all([notificationFeedFor(c.env, c.get("user").id, c.get("access")?.isAdmin ?? false), avatarUrl(c.env, c.get("user").id)]);
+    c.set("notifications", feed);
+    c.set("avatarSrc", avatar);
+  }
   await next();
 });
 // Self-service is a permission like any other (the default "User" role grants both).
@@ -89,7 +93,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "")
+    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "", c.get("avatarSrc") ?? "")
   );
 }
 
@@ -503,18 +507,17 @@ account.get("/account/security", async (c) => {
       "Security",
       `
       ${savedBanner(c)}
-      <h2 class="section-title">Security</h2>
-      <p class="muted" id="second-factors">${
-        factors.length
-          ? `Your second factors: ${factors.map((f) => FACTOR_SHORT_LABELS[f] + (f === "security_questions" && isAdmin ? " (not accepted for administrators)" : "")).join(", ")}.`
-          : "You have no second factor yet. Set up an authenticator app, a passkey or another factor below."
-      }</p>
       <div class="two-col">
         ${cardSection(`
           <div class="row between">
             <h2 style="margin:0;">Authenticator app</h2>
             <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enabled" : "Not set up"}</span>
           </div>
+          <p class="muted" id="second-factors" style="margin-top:8px;">${
+            factors.length
+              ? `Your second factors: ${factors.map((f) => FACTOR_SHORT_LABELS[f] + (f === "security_questions" && isAdmin ? " (not accepted for administrators)" : "")).join(", ")}.`
+              : "You have no second factor yet. Set up an authenticator app, a passkey or another factor below."
+          }</p>
           ${
             user.mfa_enabled
               ? `<p class="muted" style="margin-top:8px;">${remainingBackupCodes} backup code(s) remaining.</p>
@@ -820,7 +823,12 @@ account.get("/account/photo/:uid", async (c) => {
   // minutes. Hits keep a short private cache; ?v= busts it on replace.
   if (!photo) return c.body(null, 404, { "cache-control": "no-store" });
   return new Response(photo.data, {
-    headers: { "content-type": photo.content_type, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" },
+    headers: {
+      "content-type": photo.content_type,
+      "content-length": String(photo.data.byteLength),
+      "cache-control": "private, max-age=300",
+      "x-content-type-options": "nosniff",
+    },
   });
 });
 

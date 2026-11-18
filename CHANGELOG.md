@@ -37,10 +37,14 @@ account or written by inbound provisioning).
   groups take no managers (a rule assigns their members) and admin role
   groups take none either, since their membership is itself an admin grant.
   Membership changes made this way flow through the same guards, audit
-  events and SCIM pushes as a console edit.
+  events and SCIM pushes as a console edit. Approval is never circular: a
+  group drops out of the request picker for its managers, and nobody can
+  decide their own request - on the console queue or the managed-group
+  page, whichever surface the POST comes from.
 
-- **My account is three pages.** The top bar's menu (Account, Groups,
-  Security) splits what was one long page: Account holds profile and photo,
+- **My account is three pages.** The top bar's menu under your name
+  (Account, Groups, Security - Sign out moved inside) splits what was one
+  long page: Account holds profile and photo,
   Groups holds memberships, the searchable request form, request history
   and any groups you manage, and Security holds factors, password,
   sessions, devices and connected apps.

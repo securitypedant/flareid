@@ -221,6 +221,7 @@ describe("profile photos", () => {
     expect(img.status).toBe(200);
     expect(img.headers.get("content-type")).toBe("image/png");
     expect(img.headers.get("cache-control")).toContain("max-age=300");
+    expect(new Uint8Array(await img.arrayBuffer())).toEqual(PNG);
     expect((await get("/account", cookie)).status).toBe(200);
     // A non-image is refused and nothing is stored.
     const bad = new FormData();
@@ -231,6 +232,23 @@ describe("profile photos", () => {
     const miss = await get(`/account/photo/${uid}`, cookie);
     expect(miss.status).toBe(404);
     expect(miss.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("serves photos stored before base64 - raw BLOB or driver-serialized string", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const uid = await seedUser(apiKey, "pat");
+    const cookie = await sessionFor(uid);
+    // A raw bound ArrayBuffer is whatever the driver returns for a BLOB.
+    await env.DB.prepare("INSERT INTO user_photos (user_id, content_type, data, updated_at) VALUES (?, 'image/png', ?, ?)")
+      .bind(uid, PNG.buffer, new Date().toISOString()).run();
+    const img = await get(`/account/photo/${uid}`, cookie);
+    expect(img.status).toBe(200);
+    expect(new Uint8Array(await img.arrayBuffer())).toEqual(PNG);
+    // Some drivers serialize a BLOB column as "137,80,78,…" decimal text.
+    await env.DB.prepare("UPDATE user_photos SET data = ? WHERE user_id = ?").bind([...PNG].join(","), uid).run();
+    const img2 = await get(`/account/photo/${uid}`, cookie);
+    expect(img2.status).toBe(200);
+    expect(new Uint8Array(await img2.arrayBuffer())).toEqual(PNG);
   });
 
   it("takes a photo from SCIM and marks the field mastered", async () => {

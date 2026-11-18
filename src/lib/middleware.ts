@@ -27,6 +27,8 @@ declare module "hono" {
     notifications: NotificationFeed | null;
     /** Pending access-request count for the left-nav badge (admin pages). */
     accessPending: number;
+    /** The session user's photo URL for the account-menu button ("" when they have none). */
+    avatarSrc: string;
   }
 }
 

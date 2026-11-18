@@ -1,10 +1,14 @@
 import type { Env } from "../env.js";
+import { base64ToBytes, bytesToBase64 } from "./brands.js";
 
 /**
- * Profile photos live in user_photos as raw image bytes (migration 0039):
- * small, single-purpose rows kept off the hot `users` table. They reach the
- * table from the My account upload or from inbound provisioning (the SCIM
+ * Profile photos live in user_photos (migration 0039): small,
+ * single-purpose rows kept off the hot `users` table. They reach the table
+ * from the My account upload or from inbound provisioning (the SCIM
  * `photos` attribute - a data URI, or an https URL fetched server-side).
+ * Like brand_assets, the image is stored as base64 text: D1 does not
+ * reliably round-trip a raw ArrayBuffer through bind() (it can come back
+ * as the bytes' decimal string), so the column stays untyped.
  */
 
 export const MAX_PHOTO_BYTES = 1_000_000;
@@ -20,21 +24,38 @@ export function sniffImageType(buf: ArrayBuffer): "image/png" | "image/jpeg" | "
   return null;
 }
 
-export async function setUserPhoto(env: Env, userId: number, data: ArrayBuffer, contentType: string): Promise<void> {
+export async function setUserPhoto(env: Env, userId: number, data: ArrayBuffer | Uint8Array, contentType: string): Promise<void> {
   await env.DB.prepare(
     "INSERT INTO user_photos (user_id, content_type, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET content_type = excluded.content_type, data = excluded.data, updated_at = excluded.updated_at"
   )
-    .bind(userId, contentType, data, new Date().toISOString())
+    .bind(userId, contentType, bytesToBase64(data instanceof Uint8Array ? data : new Uint8Array(data)), new Date().toISOString())
     .run();
 }
 
-export async function getUserPhoto(env: Env, userId: number): Promise<{ content_type: string; data: ArrayBuffer } | null> {
-  return env.DB.prepare("SELECT content_type, data FROM user_photos WHERE user_id = ?").bind(userId).first<{ content_type: string; data: ArrayBuffer }>();
+export async function getUserPhoto(env: Env, userId: number): Promise<{ content_type: string; data: Uint8Array } | null> {
+  const row = await env.DB.prepare("SELECT content_type, data FROM user_photos WHERE user_id = ?").bind(userId).first<{ content_type: string; data: string | ArrayBuffer }>();
+  if (!row) return null;
+  // New rows hold base64 text. A raw BLOB written earlier comes back as an
+  // ArrayBuffer, or - when the driver serializes it - as "137,80,…"; decode
+  // whichever shape shows up rather than serving it back as an image.
+  const data =
+    typeof row.data === "string"
+      ? /^\d+(,\d+)*$/.test(row.data)
+        ? Uint8Array.from(row.data.split(",").map(Number))
+        : base64ToBytes(row.data)
+      : new Uint8Array(row.data);
+  return { content_type: row.content_type, data };
 }
 
 /** The photo's own timestamp, for the ?v= cache-buster - users.updated_at doesn't move on a photo write. */
 export async function getUserPhotoVersion(env: Env, userId: number): Promise<string | null> {
   return (await env.DB.prepare("SELECT updated_at FROM user_photos WHERE user_id = ?").bind(userId).first<{ updated_at: string }>())?.updated_at ?? null;
+}
+
+/** The versioned photo URL for a user, or "" when they have none - ?v= busts the private cache on replace. */
+export async function avatarUrl(env: Env, userId: number): Promise<string> {
+  const v = await getUserPhotoVersion(env, userId);
+  return v ? `/account/photo/${userId}?v=${encodeURIComponent(v)}` : "";
 }
 
 export async function deleteUserPhoto(env: Env, userId: number): Promise<void> {

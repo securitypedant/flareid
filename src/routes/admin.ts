@@ -103,6 +103,7 @@ import {
 import { addGroupManagers, assertRuleAllowed, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupManager, removeGroupMember, updateGroup } from "../services/groups.js";
 import { groupManagers } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
+import { avatarUrl } from "../lib/photos.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import {
   addSecurityQuestion,
@@ -202,6 +203,7 @@ admin.use("/admin/*", async (c, next) => {
     const feed = grants(c.get("access")?.perms ?? [], "groups:read") ? await notificationFeedFor(c.env, c.get("user").id, true) : null;
     c.set("notifications", feed);
     c.set("accessPending", feed?.count ?? 0);
+    c.set("avatarSrc", await avatarUrl(c.env, c.get("user").id));
   }
   await next();
 });
@@ -370,6 +372,7 @@ function layout(
       ((k: "consoleTz") => string) &
       ((k: "notifications") => NotificationFeed | null | undefined) &
       ((k: "accessPending") => number | undefined) &
+      ((k: "avatarSrc") => string | undefined) &
       ((k: "user") => UserRow);
   },
   title: string,
@@ -408,7 +411,7 @@ function layout(
     </div>`,
     appName,
     true,
-    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "")
+    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "", c.get("avatarSrc") ?? "")
   );
 }
 
