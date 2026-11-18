@@ -30,6 +30,7 @@ import { brandAssets } from "./routes/brand-assets.js";
 import { purgeExpiredState } from "./lib/cleanup.js";
 import { purgeRetiredKeys } from "./lib/signing-keys.js";
 import { registration } from "./routes/registration.js";
+import { docs } from "./routes/docs.js";
 import { csrfProtection, securityHeaders } from "./lib/security-headers.js";
 import { edgeRateLimit } from "./lib/edge-limit.js";
 import { recordRequestMetrics } from "./lib/metrics.js";
@@ -72,6 +73,8 @@ app.route("/", brandAssets);
 app.route("/", ssfReceiver);
 // Dynamic client registration (RFC 7591/7592): machine callers, bearer tokens.
 app.route("/", registration);
+// Public documentation: static per deployment, so no brand or settings lookup.
+app.route("/", docs);
 
 // Resolves the default brand's display name and logo once per request so
 // every downstream handler/view can read them synchronously via

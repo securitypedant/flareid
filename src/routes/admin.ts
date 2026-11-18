@@ -16,7 +16,8 @@ import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts 
 import { Hono, type Context, type Next } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
+import { adminHelp } from "../docs/help.js";
+import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -426,12 +427,14 @@ function layout(
       : crumbs?.length === 2
         ? "overview"
         : (INTEGRATION_PAGES.find((p) => p.label === crumbs?.[2]?.label)?.key ?? "");
+  const guide = adminHelp(section, sub, crumbs?.[2]?.label);
+  const help = guide ? helpLink(guide.href, guide.title) : "";
   return page(
     `${title}`,
     `<div class="admin-shell">
       <aside class="admin-side">${adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined, c.get("accessPending") ?? 0)}</aside>
       <div class="admin-main">
-        <div class="page-header">${crumbHtml}<div class="page-header-row"><h1>${escapeHtml(title)}</h1>${headerActions}</div></div>
+        <div class="page-header">${crumbHtml}<div class="page-header-row"><div class="page-title"><h1>${escapeHtml(title)}</h1>${help}</div>${headerActions}</div></div>
         ${body}
       </div>
     </div>`,
@@ -531,8 +534,11 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
         .join("");
       return link + children;
     })
-    .join("");
+    .join("") + DOCS_NAV_LINK;
 }
+
+/** Last in the console menu, for every administrator: the public docs, in a new tab. */
+const DOCS_NAV_LINK = `<a href="/docs" class="nav-docs" target="_blank" rel="noopener" aria-label="Docs (opens in a new tab)">Docs <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3H3v10h10v-3M9 2h5v5M14 2L7 9"/></svg></a>`;
 
 // The account-password and SCIM helpers moved to src/services, shared with the API.
 

@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+// Renders the documentation site served at /docs:
+//   docs/site/nav.json + docs/site/*.md  ->  src/docs/content.generated.ts
+//
+// Run: npm run docs:site            (writes the module)
+//      npm run docs:site -- --check (fails if the module is stale; CI runs this)
+//
+// Markdown is rendered here, at build time, so the Worker ships plain HTML
+// strings and no Markdown parser. Raw HTML in the sources is escaped, never
+// passed through. Links to other pages are written as `users.md` or
+// `users.md#heading` and become /docs URLs; every one is checked to exist, so
+// a renamed page or heading fails the build instead of shipping a dead link.
+// The API reference is not in here: the Worker renders it from the live
+// OpenAPI document (src/routes/docs.ts).
+
+import { Marked } from "marked";
+import { readFile, readdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const siteDir = join(root, "docs/site");
+const outFile = join(root, "src/docs/content.generated.ts");
+const check = process.argv.includes("--check");
+
+const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const slugify = (s) =>
+  s
+    .toLowerCase()
+    .replace(/<[^>]*>/g, "")
+    .replace(/&[a-z]+;/g, "")
+    .replace(/[^a-z0-9 -]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+const urlFor = (slug) => (slug === "index" ? "/docs" : `/docs/${slug}`);
+
+const nav = JSON.parse(await readFile(join(siteDir, "nav.json"), "utf8"));
+const slugs = nav.flatMap((s) => s.pages);
+const files = (await readdir(siteDir)).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+const errors = [];
+for (const f of files) if (!slugs.includes(f)) errors.push(`docs/site/${f}.md is not listed in nav.json`);
+for (const s of slugs) if (!files.includes(s)) errors.push(`nav.json lists "${s}" but docs/site/${s}.md does not exist`);
+if (new Set(slugs).size !== slugs.length) errors.push("nav.json lists a page twice");
+if (errors.length) fail(errors);
+
+const pages = {};
+const pendingLinks = [];
+
+for (const slug of slugs) {
+  const source = await readFile(join(siteDir, `${slug}.md`), "utf8");
+  const headings = [];
+  const ids = new Set();
+  let title = "";
+  const marked = new Marked({
+    gfm: true,
+    renderer: {
+      heading({ tokens, depth }) {
+        const inner = this.parser.parseInline(tokens);
+        if (depth === 1) {
+          title = inner.replace(/<[^>]*>/g, "");
+          return "";
+        }
+        let id = slugify(inner);
+        for (let n = 2; ids.has(id); n++) id = `${slugify(inner)}-${n}`;
+        ids.add(id);
+        if (depth === 2) headings.push({ id, text: inner.replace(/<[^>]*>/g, "") });
+        return `<h${depth} id="${id}"><a class="docs-anchor" href="#${id}" aria-hidden="true" tabindex="-1">#</a>${inner}</h${depth}>\n`;
+      },
+      link({ href, tokens }) {
+        const inner = this.parser.parseInline(tokens);
+        const md = /^([a-z0-9-]+)\.md(?:#([a-z0-9-]+))?$/.exec(href);
+        if (md) {
+          pendingLinks.push({ from: slug, slug: md[1], anchor: md[2] });
+          return `<a href="${urlFor(md[1])}${md[2] ? `#${md[2]}` : ""}">${inner}</a>`;
+        }
+        if (/^#[a-z0-9-]+$/.test(href)) {
+          pendingLinks.push({ from: slug, slug, anchor: href.slice(1) });
+          return `<a href="${href}">${inner}</a>`;
+        }
+        if (href.startsWith("/")) return `<a href="${escapeHtml(href)}">${inner}</a>`;
+        if (/^https:\/\//.test(href)) return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+        errors.push(`${slug}.md: unsupported link "${href}" (use page.md, page.md#anchor, #anchor, /path or https://)`);
+        return inner;
+      },
+      html({ text }) {
+        return escapeHtml(text);
+      },
+    },
+  });
+  const html = marked.parse(source, { async: false });
+  if (!title) errors.push(`${slug}.md has no "# Title" heading`);
+  const firstPara = /<p>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? "";
+  const description = firstPara.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").replace(/&quot;/g, '"').replace(/&amp;/g, "&").trim();
+  pages[slug] = { slug, title, description, headings, html: html.trim(), ids: [...ids] };
+}
+
+for (const l of pendingLinks) {
+  const target = pages[l.slug];
+  if (!target) errors.push(`${l.from}.md links to ${l.slug}.md, which is not a page`);
+  else if (l.anchor && !target.ids.includes(l.anchor)) errors.push(`${l.from}.md links to ${l.slug}.md#${l.anchor}, which has no such heading`);
+}
+if (errors.length) fail(errors);
+
+const navOut = nav.map((s) => ({ section: s.section, pages: s.pages.map((slug) => ({ slug, title: pages[slug].title })) }));
+const pagesOut = Object.fromEntries(Object.values(pages).map((p) => [p.slug, p]));
+const module = `// Generated by \`npm run docs:site\` from docs/site/; do not edit by hand.
+// CI runs \`npm run docs:site -- --check\`, which fails when this is stale.
+
+export interface DocHeading {
+  id: string;
+  text: string;
+}
+
+export interface DocPage {
+  slug: string;
+  title: string;
+  /** The first paragraph, as plain text. */
+  description: string;
+  /** The h2 headings, for the page's own table of contents. */
+  headings: DocHeading[];
+  html: string;
+  /** Every heading id on the page, for checking links into it. */
+  ids: string[];
+}
+
+export interface DocSection {
+  section: string;
+  pages: { slug: string; title: string }[];
+}
+
+export const DOCS_NAV: DocSection[] = ${JSON.stringify(navOut, null, 2)};
+
+export const DOCS_PAGES: Record<string, DocPage> = ${JSON.stringify(pagesOut, null, 2)};
+`;
+
+if (check) {
+  const current = await readFile(outFile, "utf8").catch(() => "");
+  if (current !== module) fail(["src/docs/content.generated.ts is stale: run npm run docs:site"]);
+  console.log(`Docs are current (${slugs.length} pages).`);
+} else {
+  await writeFile(outFile, module);
+  console.log(`Wrote src/docs/content.generated.ts (${slugs.length} pages).`);
+}
+
+function fail(messages) {
+  for (const m of messages) console.error(`docs:site: ${m}`);
+  process.exit(1);
+}

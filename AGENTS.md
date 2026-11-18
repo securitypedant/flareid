@@ -30,6 +30,20 @@ npx vitest run test/ldap.test.ts   # LDAP only
 npx vitest run                     # full suite (~4 min)
 ```
 
+## Docs site (/docs)
+
+- Guides are Markdown in `docs/site/` (order and sections in
+  `docs/site/nav.json`). After editing, run `npm run docs:site` and commit
+  the regenerated `src/docs/content.generated.ts`; CI runs
+  `npm run docs:site -- --check`. Link between pages as `users.md` or
+  `users.md#heading` - the generator fails on dead links and anchors.
+- Keep guides short and task-focused for IT admins; deep detail stays in
+  the repo docs (`docs/*.md`, `LDAP.md`, `SAML-implementation.md`).
+- The API reference (`/docs/api/reference`) is rendered at runtime from
+  `openApiDocument()` in `src/routes/docs.ts` - nothing to regenerate.
+- Console (?) help links map section/sub-page to a guide in
+  `src/docs/help.ts`; `test/docs.test.ts` checks every target exists.
+
 ## Releasing
 
 - Version lives in **two** places: `package.json` and `src/version.ts`

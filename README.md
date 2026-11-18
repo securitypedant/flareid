@@ -88,6 +88,10 @@ happens to run on Cloudflare's platform.
   connected applications.
 - **Provisioning API** at `/api/v1`: everything above, without a browser. See
   [docs/api.md](docs/api.md).
+- **Documentation** at `/docs` on every deployment: guides for each capability
+  and an API reference generated from the running code. The admin console
+  links to the matching guide from every page. Sources are in
+  [docs/site/](docs/site/).
 
 SAML support is the v1 profile described in
 [SAML-implementation.md](SAML-implementation.md): redirect-binding AuthnRequest

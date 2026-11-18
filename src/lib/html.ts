@@ -397,12 +397,23 @@ const STYLES = `
   .admin-side a.sub { padding: 5px 12px 5px 26px; font-size: 0.8125rem; font-weight: 500; }
   .admin-side a.sub.active { background: transparent; color: var(--fi-accent); border-left-color: var(--fi-accent); }
   .admin-main { min-width: 0; }
+  /* The Docs link closing the console menu, and the (?) beside page titles. */
+  .admin-side a.nav-docs { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--fi-line); border-radius: 0 0 8px 8px; display: flex; align-items: center; gap: 6px; }
+  .admin-side a.nav-docs svg { opacity: 0.7; }
+  .page-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .help-link {
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 20px; height: 20px; margin-bottom: 4px;
+    border-radius: 999px; border: 1.5px solid var(--fi-line-strong); color: var(--fi-muted);
+    font-size: 0.75rem; font-weight: 700; line-height: 1; text-decoration: none;
+  }
+  .help-link:hover { border-color: var(--fi-accent); color: var(--fi-accent); background: var(--fi-accent-soft); text-decoration: none; }
   @media (max-width: 900px) {
     .admin-shell { grid-template-columns: 1fr; }
     .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; margin-left: 0; }
     .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
     .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
     .admin-side a.sub { padding: 8px 12px; }
+    .admin-side a.nav-docs { margin-top: 0; padding-top: 8px; border-top: none; }
   }
 
   /* Row overflow menu (users/groups lists) */
@@ -1345,6 +1356,14 @@ export interface NotificationFeed {
   seeAllHref?: string;
 }
 
+/** The top bar's theme switch; THEME_TOGGLE_SCRIPT (added by page() whenever there is a top bar) wires it up. */
+export const THEME_TOGGLE_BUTTON = `<button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>`;
+
+/** The (?) beside a console page's title, opening its guide under /docs in a new tab. */
+export function helpLink(href: string, topic: string): string {
+  return `<a class="help-link" href="${escapeHtml(href)}" target="_blank" rel="noopener" title="Help: ${escapeHtml(topic)}" aria-label="Help: ${escapeHtml(topic)} (opens in a new tab)">?</a>`;
+}
+
 const CARET = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>';
 const BELL = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2a4 4 0 00-4 4v2.2l-1.2 2.6a.6.6 0 00.55.9h9.3a.6.6 0 00.55-.9L12 8.2V6a4 4 0 00-4-4z"/><path d="M6.5 13.5a1.75 1.75 0 003 0"/></svg>';
 
@@ -1370,7 +1389,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
       </a>
     </div>
     <nav>
-      <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>
+      ${THEME_TOGGLE_BUTTON}
       ${bell}
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
       <div class="nav-menu" data-nav-menu>

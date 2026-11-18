@@ -32,6 +32,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # The /docs site is rendered from docs/site/*.md into a committed module;
+      # this fails on a stale module, a dead link or an unlisted page.
+      - name: Docs site is current
+        run: npm run docs:site -- --check
+
       - name: Test
         run: npm test
 

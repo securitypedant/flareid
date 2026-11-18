@@ -40,6 +40,20 @@ third-party-initiated login and dynamic client registration.
 
 ### Added
 
+- **Documentation site at `/docs`.** Public, task-focused guides for IT
+  administrators covering every capability - deployment, users, groups,
+  import, domains, schemas, OIDC, SAML, Cloudflare Access, LDAP, SCIM,
+  federation, Cloudflare One, Shared Signals, security settings, policies and
+  factors, roles, signing keys, branding, email, monitoring, backup and
+  upgrades - plus an API guide and a full **API reference** rendered from the
+  live OpenAPI document, so it always matches the deployed routes. Guides are
+  Markdown in `docs/site/`, rendered at build time by `npm run docs:site`
+  (CI fails on a stale render, a dead link or a missing heading anchor). No
+  D1 or KV reads; pages are cacheable for five minutes.
+- **Help links in the admin console.** A **?** beside every console page's
+  title opens the matching guide in a new tab (Integrations → SAML apps opens
+  the SAML guide, and so on), and a **Docs** link closes the console menu,
+  under **Log**.
 - **The remaining OIDC OP conformance profiles.** The OIDF workflow now runs
   all nine OP profiles a code-only provider can be certified for (the four
   implicit/hybrid profiles need response types FlareID does not issue):
