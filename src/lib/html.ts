@@ -193,11 +193,15 @@ const STYLES = `
     box-shadow: 0 8px 30px rgba(0,0,0,0.18); padding: 6px;
   }
   .nav-menu.open .nav-menu-list { display: block; }
-  .nav-menu-list a {
-    display: block; padding: 8px 10px; border-radius: 6px; border-bottom: none;
+  .nav-menu-list a, .nav-menu-list button.nav-item {
+    display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; border: none;
+    background: none; cursor: pointer; font: inherit;
     color: var(--fi-ink); font-size: 0.875rem; font-weight: 500;
   }
-  .nav-menu-list a:hover { background: var(--fi-line-soft); text-decoration: none; }
+  .nav-menu-list a:hover, .nav-menu-list button.nav-item:hover { background: var(--fi-line-soft); text-decoration: none; }
+  .nav-menu-list button.nav-item.signout:hover { color: var(--fi-red); background: var(--fi-red-soft); }
+  .nav-menu-divider { border: none; border-top: 1px solid var(--fi-line); margin: 4px 0; }
+  .nav-menu-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .notif-btn { position: relative; padding: 6px 10px !important; }
   .notif-dot {
     position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
@@ -1304,7 +1308,7 @@ export interface NotificationFeed {
 const CARET = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>';
 const BELL = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2a4 4 0 00-4 4v2.2l-1.2 2.6a.6.6 0 00.55.9h9.3a.6.6 0 00.55-.9L12 8.2V6a4 4 0 00-4-4z"/><path d="M6.5 13.5a1.75 1.75 0 003 0"/></svg>';
 
-export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, tz = "", notifications?: NotificationFeed | null): string {
+export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, tz = "", notifications?: NotificationFeed | null, userName = ""): string {
   const bell = notifications
     ? `<div class="nav-menu" data-nav-menu>
         <button class="nav-menu-btn notif-btn" type="button" aria-label="Notifications${notifications.count ? ` - ${notifications.count} pending` : ""}" title="Things needing your attention">${BELL}${notifications.count ? `<span class="notif-dot">${notifications.count > 99 ? "99+" : notifications.count}</span>` : ""}</button>
@@ -1328,16 +1332,17 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
     <nav>
       <button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>
       <div class="nav-menu" data-nav-menu>
-        <button class="nav-menu-btn" type="button" aria-haspopup="true">Account ${CARET}</button>
+        <button class="nav-menu-btn" type="button" aria-haspopup="true"><span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
           <a href="/account">Account</a>
           <a href="/account/groups">Groups</a>
           <a href="/account/security">Security</a>
+          <hr class="nav-menu-divider" />
+          <form method="POST" action="/logout" style="margin:0;"><button class="nav-item signout" type="submit">Sign out</button></form>
         </div>
       </div>
       ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
       ${bell}
-      <form method="POST" action="/logout" style="display:inline"><button class="link-button signout" type="submit">Sign out</button></form>
     </nav>
   </header>`;
 }

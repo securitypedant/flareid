@@ -369,7 +369,8 @@ function layout(
       ((k: "logoUrl") => string | null) &
       ((k: "consoleTz") => string) &
       ((k: "notifications") => NotificationFeed | null | undefined) &
-      ((k: "accessPending") => number | undefined);
+      ((k: "accessPending") => number | undefined) &
+      ((k: "user") => UserRow);
   },
   title: string,
   body: string,
@@ -407,7 +408,7 @@ function layout(
     </div>`,
     appName,
     true,
-    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"))
+    nav(appName, true, c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "")
   );
 }
 
@@ -2538,6 +2539,8 @@ admin.get("/admin/access", async (c) => {
                           ${
                             r.status !== "pending"
                               ? ""
+                              : r.user_id === c.get("user").id
+                              ? `<span class="muted" style="font-size:12px;">Your request - another approver must decide it.</span>`
                               : roleGroups.has(r.group_id) && !privileged
                               ? `<span class="muted" style="font-size:12px;">Needs a Super Admin</span>`
                               : `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">

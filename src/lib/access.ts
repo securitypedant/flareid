@@ -56,10 +56,11 @@ export async function requestableGroups(env: Env, userId: number, search = "", l
       `SELECT * FROM groups WHERE requestable = 1 AND (rule IS NULL OR rule = '')
         AND id NOT IN (SELECT group_id FROM group_members WHERE user_id = ?)
         AND id NOT IN (SELECT group_id FROM access_requests WHERE user_id = ? AND status = 'pending')
+        AND id NOT IN (SELECT group_id FROM group_managers WHERE user_id = ?)
         AND (name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
         ORDER BY name LIMIT ?`
     )
-      .bind(userId, userId, like, like, limit)
+      .bind(userId, userId, userId, like, like, limit)
       .all<GroupRow>()
   ).results;
 }
@@ -135,6 +136,11 @@ export async function requestAccess(ctx: ServiceCtx, groupId: number, reason: st
   if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first()) {
     throw new ServiceError(409, `You are already a member of "${group.name}".`);
   }
+  // A manager decides other people's requests, never their own - membership
+  // is a direct add on the group's Manage page instead.
+  if (await ctx.env.DB.prepare("SELECT 1 FROM group_managers WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first()) {
+    throw new ServiceError(400, `You manage "${group.name}" - add yourself on its Manage page instead of requesting.`);
+  }
   if (await ctx.env.DB.prepare("SELECT 1 FROM access_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(groupId, userId).first()) {
     throw new ServiceError(409, `A request for "${group.name}" is already waiting for a decision.`);
   }
@@ -163,6 +169,8 @@ export async function decideAccessRequest(ctx: ServiceCtx, requestId: number, de
   const req = await getAccessRequest(ctx.env, requestId);
   if (!req) throw new ServiceError(404, "That request doesn't exist any more.");
   if (req.status !== "pending") throw new ServiceError(409, `That request was already ${req.status}.`);
+  // Nobody decides their own ask - approval has to come from someone else.
+  if (ctx.selfId === req.user_id) throw new ServiceError(403, "You can't decide your own access request - another approver must.");
   // The membership write goes first: if the group is protected for this actor
   // (an admin role group) the request must stay pending, not read "approved".
   if (decision === "approved") await addGroupMembers(ctx, req.group_id, [req.user_id]);

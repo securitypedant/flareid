@@ -103,6 +103,33 @@ describe("group managers", () => {
     expect((await get(`/account/groups/${groupId}`, rosaCookie)).status).toBe(404);
   });
 
+  it("keeps rights one-way: a manager can't request or decide their own group", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const rosa = await seedUser(apiKey, "rosa");
+    const groupId = await makeGroup(apiKey, "Facilities", { requestable: true });
+    const admin = await adminCookie();
+    const rosaCookie = await sessionFor(rosa);
+    await post(`/admin/groups/${groupId}/managers`, `manager_ids=${rosa}`, admin);
+
+    // The picker no longer offers it, and a direct POST refuses.
+    expect(await (await get(`/account/access/groups?q=Facil`, rosaCookie)).json()).toEqual([]);
+    const ask = await post("/account/access/request", `group_id=${groupId}`, rosaCookie);
+    expect(await memberOf(groupId, rosa)).toBeFalsy();
+    expect(ask.headers.get("Location")).toBeNull(); // an error page, not a redirect
+
+    // A request filed *before* she became a manager is still not hers to decide.
+    await env.DB.prepare("DELETE FROM group_managers WHERE group_id = ?").bind(groupId).run();
+    await post("/account/access/request", `group_id=${groupId}`, rosaCookie);
+    const req = await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ? AND status = 'pending'").bind(rosa).first<{ id: number }>();
+    await post(`/admin/groups/${groupId}/managers`, `manager_ids=${rosa}`, admin);
+    const decide = await post(`/account/groups/${groupId}/requests/${req!.id}`, "decision=approved", rosaCookie);
+    expect(decide.headers.get("Location")).toContain("error=");
+    expect((await env.DB.prepare("SELECT status FROM access_requests WHERE id = ?").bind(req!.id).first<{ status: string }>())!.status).toBe("pending");
+    // And she can still put herself in directly - that is what management means.
+    expect((await post(`/account/groups/${groupId}/members`, `user_ids=${rosa}`, rosaCookie)).headers.get("Location")).toContain("saved=members");
+    expect(await memberOf(groupId, rosa)).toBeTruthy();
+  });
+
   it("exposes managers on the group API", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const rosa = await seedUser(apiKey, "rosa");
@@ -193,13 +220,17 @@ describe("profile photos", () => {
     const img = await get(`/account/photo/${uid}`, cookie);
     expect(img.status).toBe(200);
     expect(img.headers.get("content-type")).toBe("image/png");
+    expect(img.headers.get("cache-control")).toContain("max-age=300");
     expect((await get("/account", cookie)).status).toBe(200);
     // A non-image is refused and nothing is stored.
     const bad = new FormData();
     bad.append("photo", new File([new TextEncoder().encode("not an image")], "x.png", { type: "image/png" }));
     expect((await SELF.fetch(`${BASE}/account/photo`, { method: "POST", headers: { Cookie: cookie, Origin: BASE }, body: bad })).status).toBe(200);
     await post("/account/photo/remove", "", cookie);
-    expect((await get(`/account/photo/${uid}`, cookie)).status).toBe(404);
+    // A miss is never cacheable - a cached 404 would hide a just-uploaded photo.
+    const miss = await get(`/account/photo/${uid}`, cookie);
+    expect(miss.status).toBe(404);
+    expect(miss.headers.get("cache-control")).toBe("no-store");
   });
 
   it("takes a photo from SCIM and marks the field mastered", async () => {

@@ -102,7 +102,9 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
 ~~29. Scale: paginated and searchable group-membership editing - the current
     member checklist will not survive ten thousand users - and documented,
     tested ceilings.~~ (done in v3.4.0-v3.6.0)
-30. Branding: logo upload, per-domain branding, custom CSS.
+~~30. Branding: logo upload, per-domain branding, custom CSS.~~ (done -
+    Branding → Settings/Brands/Email templates, per-domain brand
+    resolution, custom CSS and logo upload)
 ~~31. An accessibility and internationalisation pass on the login, MFA and
     consent pages.~~ (done - en/fr/de/es/pt-br/zh-cn/ja/it with locale
     negotiation incl. region fallback, plural rules, a flag picker, and a11y

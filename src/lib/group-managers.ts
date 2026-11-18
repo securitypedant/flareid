@@ -50,9 +50,9 @@ export async function pendingRequestsForManager(env: Env, userId: number, limit 
        FROM access_requests r
        JOIN group_managers m ON m.group_id = r.group_id AND m.user_id = ?
        JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id
-       WHERE r.status = 'pending' ORDER BY r.created_at DESC LIMIT ?`
+       WHERE r.status = 'pending' AND r.user_id != ? ORDER BY r.created_at DESC LIMIT ?`
     )
-      .bind(userId, limit)
+      .bind(userId, userId, limit)
       .all<{ id: number; user_id: number; group_id: number; reason: string; upn: string; display_name: string; group_name: string; created_at: string }>()
   ).results;
 }

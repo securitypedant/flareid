@@ -10,15 +10,17 @@ import type { NotificationFeed } from "./html.js";
  * same shape later.
  */
 export async function notificationFeedFor(env: Env, userId: number, isAdmin: boolean): Promise<NotificationFeed | null> {
+  // A manager's feed skips their own requests - they can't decide those.
   const join = isAdmin ? "" : "JOIN group_managers m ON m.group_id = r.group_id AND m.user_id = ?";
-  const bind = isAdmin ? [] : [userId];
+  const own = isAdmin ? "" : " AND r.user_id != ?";
+  const bind = isAdmin ? [] : [userId, userId];
   const [count, rows] = await env.DB.batch([
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM access_requests r ${join} WHERE r.status = 'pending'`).bind(...bind),
+    env.DB.prepare(`SELECT COUNT(*) AS n FROM access_requests r ${join} WHERE r.status = 'pending'${own}`).bind(...bind),
     env.DB.prepare(
       `SELECT r.id, r.group_id, u.display_name, g.name AS group_name, r.created_at
        FROM access_requests r ${join}
        JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id
-       WHERE r.status = 'pending' ORDER BY r.created_at DESC LIMIT 5`
+       WHERE r.status = 'pending'${own} ORDER BY r.created_at DESC LIMIT 5`
     ).bind(...bind),
   ]);
   const results = (rows?.results ?? []) as { id: number; group_id: number; display_name: string; group_name: string; created_at: string }[];

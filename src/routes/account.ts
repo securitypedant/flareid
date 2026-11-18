@@ -47,7 +47,7 @@ import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessR
 import { groupRolesMap } from "../lib/admin-roles.js";
 import { isGroupManager, managedGroups } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
-import { deleteUserPhoto, getUserPhoto, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
+import { deleteUserPhoto, getUserPhoto, getUserPhotoVersion, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { consoleCtx, ServiceError } from "../services/context.js";
 import { addGroupMembers, getGroupById, groupMembers, removeGroupMember } from "../services/groups.js";
 import { assertMayManageGroup } from "../services/guards.js";
@@ -89,7 +89,7 @@ function layout(c: Context<{ Bindings: Env }>, title: string, body: string, head
     `<div class="page-header"><h1>${escapeHtml(title)}${headerMeta ? ` <span class="header-meta">${escapeHtml(headerMeta)}</span>` : ""}</h1></div>${body}`,
     appName,
     true,
-    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"))
+    nav(appName, Boolean(c.get("access")?.isAdmin), c.get("logoUrl"), c.get("consoleTz"), c.get("notifications"), c.get("user")?.display_name ?? "")
   );
 }
 
@@ -157,7 +157,7 @@ async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttrib
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const [editable, mastered] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env)]);
+  const [editable, mastered, photoV] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id)]);
   const photoMastered = mastered.includes("photo");
   return c.html(
     layout(
@@ -190,7 +190,7 @@ account.get("/account", async (c) => {
             ])}
           </div>
           <div style="text-align:center; flex-shrink:0;">
-            <img src="/account/photo/${user.id}?v=${user.updated_at}" alt="" class="avatar avatar-lg" data-hide-on-error />
+            <img src="/account/photo/${user.id}?v=${encodeURIComponent(photoV ?? "none")}" alt="" class="avatar avatar-lg" data-hide-on-error />
             ${
               photoMastered
                 ? '<p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">Your photo is managed by your HR system.</p>'
@@ -356,11 +356,15 @@ account.get("/account/groups/:id", async (c) => {
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>
                         <td style="white-space:nowrap;">
-                          <form method="POST" action="/account/groups/${group.id}/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
+                          ${
+                            r.user_id === user.id
+                              ? '<span class="muted" style="font-size:12px;">Your request - another approver must decide it.</span>'
+                              : `<form method="POST" action="/account/groups/${group.id}/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
                             <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
                             <button class="secondary" type="submit" name="decision" value="approved" style="margin:0;">Approve</button>
                             <button class="secondary" type="submit" name="decision" value="denied" style="margin:0;">Deny</button>
-                          </form>
+                          </form>`
+                          }
                         </td>
                       </tr>`
                     )
@@ -812,7 +816,9 @@ account.post("/account/profile", async (c) => {
  */
 account.get("/account/photo/:uid", async (c) => {
   const photo = await getUserPhoto(c.env, Number(c.req.param("uid")));
-  if (!photo) return c.notFound();
+  // A miss must never cache: the pre-upload 404 would hide a new photo for
+  // minutes. Hits keep a short private cache; ?v= busts it on replace.
+  if (!photo) return c.body(null, 404, { "cache-control": "no-store" });
   return new Response(photo.data, {
     headers: { "content-type": photo.content_type, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" },
   });

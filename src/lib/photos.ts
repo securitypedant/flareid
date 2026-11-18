@@ -32,6 +32,11 @@ export async function getUserPhoto(env: Env, userId: number): Promise<{ content_
   return env.DB.prepare("SELECT content_type, data FROM user_photos WHERE user_id = ?").bind(userId).first<{ content_type: string; data: ArrayBuffer }>();
 }
 
+/** The photo's own timestamp, for the ?v= cache-buster - users.updated_at doesn't move on a photo write. */
+export async function getUserPhotoVersion(env: Env, userId: number): Promise<string | null> {
+  return (await env.DB.prepare("SELECT updated_at FROM user_photos WHERE user_id = ?").bind(userId).first<{ updated_at: string }>())?.updated_at ?? null;
+}
+
 export async function deleteUserPhoto(env: Env, userId: number): Promise<void> {
   await env.DB.prepare("DELETE FROM user_photos WHERE user_id = ?").bind(userId).run();
 }
