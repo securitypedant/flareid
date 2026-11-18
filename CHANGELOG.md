@@ -6,6 +6,11 @@ may break things.
 
 ## [Unreleased]
 
+**Migration `0043_client_grant_types.sql`** - `oauth_clients.grant_types` and
+`oauth_clients.registered_scope`, persisting the RFC 7591 `grant_types` and
+`scope` metadata dynamic clients register, enforced at `/token` (NULL keeps
+the old "every grant" behaviour for admin-created rows).
+
 **Migration `0034_scim_targets.sql`** - `scim_targets` (one row per downstream
 SCIM server) plus the per-target link tables `scim_user_links` /
 `scim_group_links`; the existing single-target settings and `scim_id` columns
@@ -333,6 +338,20 @@ third-party-initiated login and dynamic client registration.
     connections, photo fetch redirects/timeouts/streaming are bounded, SAML
     SP metadata cert growth is capped, and API bodies are validated against
     their declared schemas.
+
+- **The deferred validation items are resolved.** Placeholder secrets can no
+  longer serve as the login-flow HMAC key; the conformance-export scrub
+  catches base64/urlencoded/HTTP-Basic renderings of secrets, not only the
+  literal strings; upstream IdP discovery and token-exchange fetches (and the
+  jose remote-JWKS fetches behind them) carry timeouts, and discovery failures
+  negative-cache for a minute; request bodies without Content-Length are
+  buffered under the same 4 MiB ceiling as declared ones; managed domains must
+  be syntactic DNS names (a suffix like "com" can no longer capture brand
+  resolution or escape the delete-time LIKE); Analytics Engine queries time
+  out instead of pinning admin pages; SAML ACS/SLO URLs are https-checked
+  again at use time; and dynamically registered clients keep the grants and
+  scope they declared (new `oauth_clients.grant_types`/`registered_scope`
+  columns).
 
 ## [4.0.0] - 2026-11-17
 
