@@ -1,6 +1,6 @@
 {
   "name": "flareid",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "A small, standalone OpenID Connect identity provider for Cloudflare Workers and D1",
   "license": "Apache-2.0",
   "author": "Simon Thorpe",
@@ -56,7 +56,7 @@
         "description": "Analytics Engine dataset for per-request performance data, shown on the admin overview."
       },
       "EMAIL": {
-        "description": "Cloudflare Email Sending, for password recovery, invitations and email codes. Works only once a sending domain is onboarded (`wrangler email sending enable`) and a From address is set in **Admin \u2192 Integrations \u2192 Email**."
+        "description": "Cloudflare Email Sending, for password recovery, invitations and email codes. Works only once a sending domain is onboarded (`wrangler email sending enable`) and a From address is set in **Admin → Integrations → Email**."
       },
       "ISSUER_URL": {
         "description": "Leave empty: the issuer becomes the address you complete `/setup` on, and is then fixed. Add a custom domain **before** running setup, or set this (e.g. `https://idp.example.com`) to pin it."
@@ -65,7 +65,7 @@
         "description": "Optional: your account id, for the performance dashboard on the admin overview. Needs a `CF_ANALYTICS_TOKEN` secret too (an API token with __Account Analytics: Read__)."
       },
       "APP_NAME": {
-        "description": "The product name shown on sign-in and admin pages. Can be changed later in **Admin \u2192 Branding**."
+        "description": "The product name shown on sign-in and admin pages. Can be changed later in **Admin → Branding**."
       }
     }
   },

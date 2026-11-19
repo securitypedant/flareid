@@ -130,11 +130,13 @@ export async function fetchSpMetadata(url: string): Promise<ParsedSpMetadata> {
   try {
     // No redirects: https on the registered URL is what authenticates the
     // publisher, and a redirect would silently move that trust to a host
-    // (or scheme) the administrator never chose.
-    res = await fetch(u.toString(), { headers: { Accept: "application/samlmetadata+xml, application/xml, text/xml" }, signal: AbortSignal.timeout(10_000), redirect: "error" });
+    // (or scheme) the administrator never chose. workerd does not implement
+    // redirect:"error", so ask for "manual" and refuse the 3xx ourselves.
+    res = await fetch(u.toString(), { headers: { Accept: "application/samlmetadata+xml, application/xml, text/xml" }, signal: AbortSignal.timeout(10_000), redirect: "manual" });
   } catch (e) {
     throw new SpMetadataError(`Could not fetch the metadata: ${String((e as Error).message ?? e).slice(0, 120)}`);
   }
+  if (res.status >= 300 && res.status < 400) throw new SpMetadataError("The metadata URL redirects; register the final https URL instead.");
   if (!res.ok) throw new SpMetadataError(`The metadata URL answered ${res.status}.`);
   if (!res.body) throw new SpMetadataError("The metadata response had no body.");
   // Bound the read itself: checking the string after res.text() would already

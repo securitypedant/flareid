@@ -6,6 +6,12 @@ may break things.
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-11-19
+
+- **Fix**: SP metadata import-by-URL was broken on Workers - 
+  rejects ; now requests  and refuses 3xx
+  responses, preserving the no-redirect anti-SSRF intent.
+
 - **SCIM conformance fixes found by SCIM Verify** (verify.scim.dev, wired into
   the new `integration-verification` workflow):
   - `/ServiceProviderConfig`-adjacent **discovery**: `/Schemas` now returns
