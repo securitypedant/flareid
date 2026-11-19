@@ -6,6 +6,8 @@ may break things.
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-11-19
+
 - **Conformance: dedicated clients for the channel-logout plans** - the
   shared static clients no longer register `frontchannel_logout_uri`/
   `backchannel_logout_uri`. Those URIs are invoked by the OP on every logout,
