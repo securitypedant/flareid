@@ -111,11 +111,24 @@ const login = {
   ],
 };
 
+// RP-initiated logout sends the browser to end_session, not /authorize. The
+// suite only navigates a URL when a browser entry matches it; without this
+// entry the end_session URL is queued for manual interaction and every
+// oidcc-rp-initiated-logout* module times out in WAITING. The navigation
+// alone is the test for the redirect modules; the error/confirm modules
+// additionally ask for a screenshot of whatever the OP renders, so the
+// capture runs on any page the logout URL answers with (optional variant -
+// the base module requests no placeholder).
+const capture = (text, optional = false) => ["wait", "xpath", "//*", 10, text, optional ? "update-image-placeholder-optional" : "update-image-placeholder"];
+const logout = {
+  match: `${issuer}/oidc/logout*`,
+  tasks: [{ task: "Capture the logout outcome", match: `${issuer}/oidc/logout*`, optional: true, commands: [capture(".+", true)] }],
+};
+
 // Modules that want a screenshot get one from the scripted browser: a "wait"
 // for text on the page with update-image-placeholder records it, the way the
 // suite's own CI configuration does. Each override replaces the browser
 // script for that module only.
-const capture = (text, optional = false) => ["wait", "xpath", "//*", 10, text, optional ? "update-image-placeholder-optional" : "update-image-placeholder"];
 const secondLogin = {
   ...login,
   tasks: login.tasks.map((t) => (t.task === "Sign in" ? { ...t, commands: [capture("Sign in", true), ...t.commands] } : t)),
@@ -149,7 +162,7 @@ const config = {
   client: { ...clients[0], scope: "openid email profile address phone" },
   client2: { ...clients[1], scope: "openid email profile address phone" },
   client_secret_post: { ...clients[0] },
-  browser: [login],
+  browser: [login, logout],
   override,
 };
 // The config carries live client secrets and the test user's password.

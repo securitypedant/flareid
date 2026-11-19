@@ -6,6 +6,12 @@ may break things.
 
 ## [Unreleased]
 
+- **Conformance: RP-initiated-logout browser coverage** - the generated
+  `suite-config.json` now includes a browser entry matching the
+  `end_session_endpoint` URL. Without it the suite queued the logout URL for
+  manual interaction and every `oidcc-rp-initiated-logout*` module timed out
+  in `WAITING`; the entry also snapshots the rendered outcome (error page or
+  confirmation) into the image placeholder the error modules request.
 - **CI now runs the e2e layers** - a second job builds the container image and
   runs `e2e/smoke.mjs` (full product surface over real HTTP), `e2e/ux.spec.mjs`
   (Chromium), and the new `e2e/proxy-check.mjs`, which drives a real
