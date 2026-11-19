@@ -113,6 +113,14 @@ export interface OAuthClientRow {
   policy_uri: string | null;
   tos_uri: string | null;
   client_uri: string | null;
+  /** OIDC Registration 3.2: "public" (default = raw user id) or "pairwise" (sector-scoped sub). */
+  subject_type: string | null;
+  /** OIDC Registration 2: a JSON document listing this client's redirect_uris; its host is the pairwise sector. */
+  sector_identifier_uri: string | null;
+  /** OIDC Registration 2: JSON array of https URIs the client may pass as request_uri at authorize. */
+  request_uris: string | null;
+  /** OIDC Registration 2: alg the client wants /userinfo signed with; NULL = plain JSON. */
+  userinfo_signed_response_alg: string | null;
 }
 
 export interface SamlServiceProviderRow {

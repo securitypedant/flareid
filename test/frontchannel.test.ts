@@ -52,7 +52,7 @@ describe("front-channel logout", () => {
 });
 
 describe("conformance fixes", () => {
-  it("accepts POST at /authorize and /userinfo, and refuses request objects", async () => {
+  it("accepts POST at /authorize and /userinfo, and refuses unsigned request objects", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"] } });
     const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
@@ -73,7 +73,7 @@ describe("conformance fixes", () => {
 
     const withRequest = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ ...params, request: "eyJhbGciOiJub25lIn0.e30." })}`, { headers: { Cookie: cookie }, redirect: "manual" });
     const err = new URL(withRequest.headers.get("Location")!);
-    expect(err.searchParams.get("error")).toBe("request_not_supported");
+    expect(err.searchParams.get("error")).toBe("invalid_request_object");
     expect(err.searchParams.get("state")).toBe("s1");
   });
 });

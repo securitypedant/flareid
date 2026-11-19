@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { getPublicJwks } from "../lib/jwt.js";
+import { jwksRotationProbe } from "../lib/signing-keys.js";
 import { ACR_VALUES, SUPPORTED_SCOPES } from "../lib/oidc.js";
 import { SSF_EVENTS } from "../lib/ssf.js";
 
@@ -27,8 +28,9 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     response_modes_supported: ["query", "form_post"],
     device_authorization_endpoint: `${issuer}/device_authorization`,
     grant_types_supported: ["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code"],
-    subject_types_supported: ["public"],
+    subject_types_supported: ["public", "pairwise"],
     id_token_signing_alg_values_supported: ["RS256", "ES256"],
+    userinfo_signing_alg_values_supported: ["RS256", "ES256"],
     scopes_supported: SUPPORTED_SCOPES,
     claims_supported: [
       "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "sid", "at_hash",
@@ -39,8 +41,13 @@ discovery.get("/.well-known/openid-configuration", (c) => {
     acr_values_supported: ACR_VALUES,
     prompt_values_supported: ["none", "login", "consent"],
     claims_parameter_supported: true,
-    request_parameter_supported: false,
-    request_uri_parameter_supported: false,
+    request_parameter_supported: true,
+    request_uri_parameter_supported: true,
+    // JAR (RFC 9101): only asymmetric object signatures are accepted, and a
+    // request_uri must match the client's registered request_uris - we never
+    // fetch an arbitrary URL a caller hands us.
+    request_object_signing_alg_values_supported: ["RS256", "ES256"],
+    require_request_uri_registration: true,
     token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none", "private_key_jwt"],
     introspection_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
     revocation_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
@@ -49,6 +56,7 @@ discovery.get("/.well-known/openid-configuration", (c) => {
 });
 
 discovery.get("/jwks.json", async (c) => {
+  await jwksRotationProbe(c.env);
   return c.json({ keys: await getPublicJwks(c.env) });
 });
 

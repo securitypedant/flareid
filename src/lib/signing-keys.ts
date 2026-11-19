@@ -136,3 +136,27 @@ export async function purgeRetiredKeys(env: Env, now = Date.now()): Promise<numb
   const r = await env.DB.prepare("DELETE FROM signing_keys WHERE status = 'retired' AND retired_at < ?").bind(cutoff).run();
   return Number(r.meta.changes ?? 0);
 }
+
+const ROTATION_PROBE_WINDOW_MS = 30_000;
+
+/**
+ * Rotation probe (env JWKS_ROTATION_PROBE=true): a JWKS fetch that lands
+ * within the window after the previous one rotates the RS256 key. The OIDF
+ * conformance suite's rotate-keys module fetches jwks_uri twice a few seconds
+ * apart and expects the second response to carry a new kid while the old key
+ * is still published - rapid re-fetch is the only signal it emits, and the
+ * retired-key window already guarantees the old key stays visible.
+ *
+ * Every in-window fetch rotates, which keeps the probe correct even when an
+ * earlier fetch in the same burst already triggered one. A racing pair can
+ * rotate twice - harmless, retired keys purge on the hourly sweep.
+ */
+export async function jwksRotationProbe(env: Env): Promise<void> {
+  if (env.JWKS_ROTATION_PROBE !== "true") return;
+  const now = Date.now();
+  const last = Number((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'jwks_probe_last'").first<{ value: string }>())?.value ?? "0");
+  await env.DB.prepare("INSERT INTO idp_settings (key, value, updated_at) VALUES ('jwks_probe_last', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .bind(String(now), new Date(now).toISOString())
+    .run();
+  if (last && now - last <= ROTATION_PROBE_WINDOW_MS) await rotateSigningKey(env, "RS256");
+}

@@ -36,7 +36,13 @@
     // setup at /setup was completed on, stored then and never changed. So add
     // a custom domain BEFORE running setup and open /setup on it, or set this
     // to pin the issuer (it then wins over the stored one).
-    "ISSUER_URL": ""
+    "ISSUER_URL": "",
+    // Conformance-suite affordance (signing-keys.ts): a JWKS fetch within 30s
+    // of the previous one rotates the RS256 key, letting the OIDF suite's
+    // rotate-keys module observe a rotation without a manual window. Old keys
+    // stay published 24h. Fine for this conformance-target deployment; set ""
+    // (or remove) on deployments where surprise key churn is unwelcome.
+    "JWKS_ROTATION_PROBE": "true"
     // Signing keys are generated and kept in D1, encrypted with the
     // KEY_ENCRYPTION_KEY secret (src/lib/signing-keys.ts) - nothing here. To
     // import an existing RS256 key instead, set SIGNING_KEY_PKCS8 (secret) and

@@ -4,7 +4,7 @@ import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
 import { CHECK_SESSION_SHA256_JS } from "../src/routes/oidc-session.js";
 import { sha256Hex } from "../src/lib/tokens.js";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 
 beforeEach(async () => {
   await resetDatabase();
@@ -111,12 +111,12 @@ describe("response_mode=form_post", () => {
     const client = await seedClient(apiKey);
 
     // prompt=none with a fresh session is fine, so provoke an error instead:
-    // a made-up scope check won't fail, but an unsigned request object does.
+    // an unsigned request object is refused (RFC 9101: we only take signed ones).
     const res = await authorize(cookie, client.client_id, { response_mode: "form_post", request: "eyJhbGciOiJub25lIn0.eyJmb28iOiJiYXIifQ." });
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain(`action="${REDIRECT}"`);
-    expect(html).toContain('name="error" value="request_not_supported"');
+    expect(html).toContain('name="error" value="invalid_request_object"');
 
     const bad = await authorize(cookie, client.client_id, { response_mode: "fragment" });
     expect(bad.status).toBe(302);
@@ -529,5 +529,249 @@ describe("private_key_jwt client authentication", () => {
       }).toString(),
     });
     expect(bad.status).toBe(401);
+  });
+});
+
+async function registerDynamic(body: Record<string, unknown>): Promise<{ status: number; json: Record<string, unknown> }> {
+  const res = await SELF.fetch(`${BASE}/connect/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+}
+
+describe("signed userinfo (OIDC Core 5.3.2.4)", () => {
+  it("answers application/jwt when the client registered userinfo_signed_response_alg", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const { json: client } = await registerDynamic({ redirect_uris: [REDIRECT], userinfo_signed_response_alg: "RS256" });
+    expect(client.userinfo_signed_response_alg).toBe("RS256");
+
+    const token = `at-${crypto.randomUUID()}`;
+    await env.DB.prepare("INSERT INTO access_tokens (token_hash, client_id, user_id, scope, expires_at, amr) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(await sha256Hex(token), client.client_id, userId, "openid profile", new Date(Date.now() + 600_000).toISOString(), '["pwd"]')
+      .run();
+
+    const res = await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/jwt");
+    const jwt = await res.text();
+
+    const { keys } = (await (await SELF.fetch(`${BASE}/jwks.json`)).json()) as { keys: object[] };
+    const { payload } = await jwtVerify(jwt, createLocalJWKSet({ keys: keys as never[] }));
+    expect(payload.iss).toBe(BASE);
+    expect(payload.aud).toBe(client.client_id);
+    expect(payload.sub).toBe(String(userId));
+  });
+
+  it("still answers JSON when the client registered none, and validates the field at DCR", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const client = await seedClient(apiKey);
+
+    const token = `at-${crypto.randomUUID()}`;
+    await env.DB.prepare("INSERT INTO access_tokens (token_hash, client_id, user_id, scope, expires_at, amr) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(await sha256Hex(token), client.client_id, userId, "openid", new Date(Date.now() + 600_000).toISOString(), '["pwd"]')
+      .run();
+    const res = await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.headers.get("content-type")).toContain("application/json");
+
+    const bad = await registerDynamic({ redirect_uris: [REDIRECT], userinfo_signed_response_alg: "HS256" });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toBe("invalid_client_metadata");
+  });
+});
+
+describe("pairwise subjects (OIDC Core 8)", () => {
+  async function issueIdToken(cookie: string, client: { client_id: string; client_secret: string }, redirectUri: string) {
+    const res = await authorize(cookie, client.client_id, { redirect_uri: redirectUri });
+    const code = new URL(res.headers.get("location")!, BASE).searchParams.get("code")!;
+    const tok = (await (
+      await SELF.fetch(`${BASE}/token`, {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: client.client_id, client_secret: client.client_secret }).toString(),
+      })
+    ).json()) as { id_token: string; access_token: string };
+    return tok;
+  }
+
+  // DCR clients register untrusted; mark them trusted so the flow does not
+  // stop at the consent screen.
+  const trust = async (clientId: string) => env.DB.prepare("UPDATE oauth_clients SET trusted = 1 WHERE client_id = ?").bind(clientId).run();
+
+  it("derives a stable sector-scoped sub across id_token and userinfo, per sector", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const cookie = await sessionFor(userId);
+
+    const a = (await registerDynamic({ redirect_uris: ["https://a.example/cb"], subject_type: "pairwise" })).json as { client_id: string; client_secret: string };
+    const b = (await registerDynamic({ redirect_uris: ["https://b.example/cb"], subject_type: "pairwise" })).json as { client_id: string; client_secret: string };
+    await trust(a.client_id);
+    await trust(b.client_id);
+    const pub = await seedClient(apiKey);
+
+    const subA = JSON.parse(Buffer.from((await issueIdToken(cookie, a, "https://a.example/cb")).id_token.split(".")[1]!, "base64url").toString()).sub as string;
+    const subB = JSON.parse(Buffer.from((await issueIdToken(cookie, b, "https://b.example/cb")).id_token.split(".")[1]!, "base64url").toString()).sub as string;
+    const subPub = JSON.parse(Buffer.from((await issueIdToken(cookie, pub, REDIRECT)).id_token.split(".")[1]!, "base64url").toString()).sub as string;
+
+    expect(subA).toMatch(/^_[0-9a-f]{64}$/);
+    expect(subB).toMatch(/^_[0-9a-f]{64}$/);
+    expect(subA).not.toBe(subB); // different sectors must not correlate
+    expect(subPub).toBe(String(userId));
+
+    // userinfo returns the same pairwise sub the id_token carried.
+    const tok = await issueIdToken(cookie, a, "https://a.example/cb");
+    const info = (await (await SELF.fetch(`${BASE}/userinfo`, { headers: { Authorization: `Bearer ${tok.access_token}` } })).json()) as { sub: string };
+    expect(info.sub).toBe(subA);
+  });
+
+  it("validates the sector document against the registered redirect_uris", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const sectorUri = "https://sector.example/list.json";
+
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(["https://a.example/cb", "https://a.example/alt"]), { headers: { "Content-Type": "application/json" } }));
+    try {
+      const ok = await registerDynamic({ redirect_uris: ["https://a.example/cb", "https://a.example/alt"], subject_type: "pairwise", sector_identifier_uri: sectorUri });
+      expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+      expect(ok.json.sector_identifier_uri).toBe(sectorUri);
+      // The sector is the document's host, not the redirect host.
+      const userId = await seedUser(apiKey);
+      const cookie = await sessionFor(userId);
+      await trust(ok.json.client_id as string);
+      const sub = JSON.parse(
+        Buffer.from((await issueIdToken(cookie, ok.json as { client_id: string; client_secret: string }, "https://a.example/cb")).id_token.split(".")[1]!, "base64url").toString()
+      ).sub as string;
+      expect(sub).toMatch(/^_[0-9a-f]{64}$/);
+
+      const missing = await registerDynamic({ redirect_uris: ["https://other.example/cb"], subject_type: "pairwise", sector_identifier_uri: sectorUri });
+      expect(missing.status).toBe(400);
+      expect(missing.json.error).toBe("invalid_client_metadata");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("requires a shared redirect host when no sector_identifier_uri is given", async () => {
+    await bootstrapInstance();
+    const res = await registerDynamic({ redirect_uris: ["https://a.example/cb", "https://b.example/cb"], subject_type: "pairwise" });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe("invalid_client_metadata");
+  });
+});
+
+describe("JAR request objects (RFC 9101)", () => {
+  async function jarClient() {
+    const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
+    const jwk = { ...(await exportJWK(publicKey)), kid: "jar-k1" };
+    const { json } = await registerDynamic({ redirect_uris: [REDIRECT], jwks: { keys: [jwk] } });
+    await env.DB.prepare("UPDATE oauth_clients SET trusted = 1 WHERE client_id = ?").bind(json.client_id as string).run();
+    return { client: json as { client_id: string }, privateKey };
+  }
+
+  async function requestObject(clientId: string, privateKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"], claims: Record<string, unknown> = {}) {
+    return new SignJWT({
+      client_id: clientId,
+      response_type: "code",
+      redirect_uri: REDIRECT,
+      scope: "openid",
+      state: "jar-state",
+      ...claims,
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "jar-k1" })
+      .setIssuer(clientId)
+      .setAudience(BASE)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+  }
+
+  it("accepts a signed request object and uses the claims inside it", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const cookie = await sessionFor(userId);
+    const { client, privateKey } = await jarClient();
+
+    const request = await requestObject(client.client_id, privateKey);
+    // client_id only inside the object: the endpoint has to find it there.
+    const res = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ request })}`, { headers: { Cookie: cookie }, redirect: "manual" });
+    expect(res.status).toBe(302);
+    const dest = new URL(res.headers.get("location")!);
+    expect(dest.origin + dest.pathname).toBe(REDIRECT);
+    expect(dest.searchParams.get("code")).toBeTruthy();
+    expect(dest.searchParams.get("state")).toBe("jar-state");
+  });
+
+  it("rejects unsigned objects and objects signed with an unknown key", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const cookie = await sessionFor(userId);
+    const { client, privateKey } = await jarClient();
+
+    const unsigned = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: client.client_id, redirect_uri: REDIRECT, request: "eyJhbGciOiJub25lIn0.eyJmb28iOiJiYXIifQ." })}`, {
+      headers: { Cookie: cookie },
+      redirect: "manual",
+    });
+    expect(unsigned.status).toBe(302);
+    expect(new URL(unsigned.headers.get("location")!).searchParams.get("error")).toBe("invalid_request_object");
+
+    const stranger = (await generateKeyPair("RS256", { extractable: true })).privateKey;
+    const forged = await new SignJWT({ client_id: client.client_id, response_type: "code", redirect_uri: REDIRECT, scope: "openid" })
+      .setProtectedHeader({ alg: "RS256", kid: "jar-k1" })
+      .setIssuer(client.client_id)
+      .setAudience(BASE)
+      .setExpirationTime("5m")
+      .sign(stranger);
+    const bad = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: client.client_id, redirect_uri: REDIRECT, request: forged })}`, { headers: { Cookie: cookie }, redirect: "manual" });
+    expect(new URL(bad.headers.get("location")!).searchParams.get("error")).toBe("invalid_request_object");
+  });
+
+  it("fetches request_uri only when it is registered on the client", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const cookie = await sessionFor(userId);
+    const { client, privateKey } = await jarClient();
+    const requestUri = "https://rp.example/object.jwt";
+    await env.DB.prepare("UPDATE oauth_clients SET request_uris = ? WHERE client_id = ?").bind(JSON.stringify([requestUri]), client.client_id).run();
+
+    const object = await requestObject(client.client_id, privateKey);
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      fetched.push(String(input));
+      return new Response(object, { headers: { "Content-Type": "application/jwt" } });
+    });
+    try {
+      const res = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: client.client_id, request_uri: requestUri })}`, { headers: { Cookie: cookie }, redirect: "manual" });
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get("location")!).searchParams.get("code")).toBeTruthy();
+      expect(fetched).toEqual([requestUri]);
+
+      const other = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams({ client_id: client.client_id, redirect_uri: REDIRECT, request_uri: "https://evil.example/x.jwt" })}`, {
+        headers: { Cookie: cookie },
+        redirect: "manual",
+      });
+      expect(new URL(other.headers.get("location")!).searchParams.get("error")).toBe("invalid_request_uri");
+      expect(fetched).toEqual([requestUri]); // never fetched the unregistered one
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("JWKS rotation probe", () => {
+  it("adds a new RS256 kid while keeping the old key published", async () => {
+    await bootstrapInstance();
+    (env as Record<string, unknown>).JWKS_ROTATION_PROBE = "true";
+    try {
+      const before = (await (await SELF.fetch(`${BASE}/jwks.json`)).json()) as { keys: { kid: string }[] };
+      const after = (await (await SELF.fetch(`${BASE}/jwks.json`)).json()) as { keys: { kid: string }[] };
+      const beforeKids = new Set(before.keys.map((k) => k.kid));
+      const afterKids = after.keys.map((k) => k.kid);
+      expect(afterKids.some((kid) => !beforeKids.has(kid))).toBe(true);
+      for (const kid of beforeKids) expect(afterKids).toContain(kid);
+    } finally {
+      (env as Record<string, unknown>).JWKS_ROTATION_PROBE = "";
+    }
   });
 });

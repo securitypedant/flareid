@@ -3,24 +3,24 @@
     "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
     "variant": "*",
     "configuration-filename": "*suite-config.json",
-    "comment": "FlareID does not support the 'request' parameter at all and rejects it with request_not_supported, so the module skips rather than passes - unsigned request objects are neither accepted nor exercisable."
+    "comment": "FlareID accepts only signed request objects (RFC 9101): request_object_signing_alg_values_supported lists RS256/ES256 without 'none', so the module skips - an unsigned object can neither be accepted nor exercised."
+  },
+  {
+    "test-name": "oidcc-request-uri-unsigned-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "As above: unsigned objects are rejected, and the module skips when 'none' is not in request_object_signing_alg_values_supported."
+  },
+  {
+    "test-name": "oidcc-ensure-request-object-with-redirect-uri",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "As above: the module passes an unsigned request object, so it skips when 'none' is not advertised."
   },
   {
     "test-name": "oidcc-idtoken-unsigned",
     "variant": "*",
     "configuration-filename": "*suite-config.json",
     "comment": "id_token_signing_alg_values_supported deliberately omits 'none'; the module skips when unsigned id_tokens are not advertised."
-  },
-  {
-    "test-name": "oidcc-registration-sector-uri",
-    "variant": "*",
-    "configuration-filename": "*suite-config.json",
-    "comment": "FlareID issues only 'public' subject identifiers; the module skips because pairwise (sector_identifier_uri) is not advertised."
-  },
-  {
-    "test-name": "oidcc-registration-sector-bad",
-    "variant": "*",
-    "configuration-filename": "*suite-config.json",
-    "comment": "As above - no pairwise subject type, so the bad-sector-identifier registration path cannot be exercised."
   }
 ]

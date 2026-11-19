@@ -14,6 +14,7 @@ import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed, sessionState } from "../lib/oidc.js";
 import { formPostPage } from "../lib/saml/post-form.js";
 import { decodeJwt } from "jose";
+import { resolveRequestObject } from "../lib/request-object.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -148,8 +149,52 @@ authorize.post("/authorize", async (c) => {
 });
 
 async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearchParams) {
+  // JAR (RFC 9101): with request/request_uri the client_id may live only
+  // inside the object. Decode it unverified to find the client row - the
+  // parameters it carries earn trust only when the signature verifies below.
+  let clientId = params.get("client_id");
+  if (!clientId && params.has("request")) {
+    try {
+      const payload = decodeJwt(params.get("request")!);
+      clientId = typeof payload.client_id === "string" ? payload.client_id : payload.iss ?? null;
+    } catch {
+      clientId = null;
+    }
+  }
+  if (!clientId) {
+    return renderAuthMessage(c, 400, appConfigError("The sign-in request it sent is missing required parameters."));
+  }
+
+  const client = await getClientByClientId(c.env, clientId);
+  if (!client) return renderAuthMessage(c, 400, appConfigError("It is not registered with this sign-in service."));
+
+  if (params.has("request") || params.has("request_uri")) {
+    const resolved = await resolveRequestObject(c.env, params, client);
+    if (!resolved.ok) {
+      // The object itself can't be trusted, so its redirect_uri can't either.
+      // A query-side redirect_uri that is registered for the client is a safe
+      // place to return the error; otherwise the user gets our page. The
+      // object's own response_mode may still shape the error's encoding - it
+      // cannot change where it goes, only how it gets there.
+      const queryRedirect = params.get("redirect_uri");
+      if (queryRedirect && redirectUriAllowed(client, queryRedirect)) {
+        const queryState = params.get("state") ?? "";
+        let objectMode: string | undefined;
+        try {
+          const m = decodeJwt(params.get("request") ?? "").response_mode;
+          objectMode = typeof m === "string" ? m : undefined;
+        } catch {
+          objectMode = undefined;
+        }
+        const mode = params.get("response_mode") === "form_post" || objectMode === "form_post" ? "form_post" : undefined;
+        return respondAuthorize(c, authorizeErrorRedirect(c.env.ISSUER_URL, queryRedirect, resolved.error, queryState, resolved.description), mode);
+      }
+      return renderAuthMessage(c, 400, appConfigError(resolved.description));
+    }
+    params = resolved.params;
+  }
+
   const url = { searchParams: params };
-  const clientId = url.searchParams.get("client_id");
   const redirectUri = url.searchParams.get("redirect_uri");
   const responseType = url.searchParams.get("response_type");
   // Stored verbatim on the grant rows, so bound it; anything beyond known
@@ -163,12 +208,9 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   const maxAgeRaw = url.searchParams.get("max_age");
   const responseMode = url.searchParams.get("response_mode");
 
-  if (!clientId || !redirectUri) {
+  if (!redirectUri) {
     return renderAuthMessage(c, 400, appConfigError("The sign-in request it sent is missing required parameters."));
   }
-
-  const client = await getClientByClientId(c.env, clientId);
-  if (!client) return renderAuthMessage(c, 400, appConfigError("It is not registered with this sign-in service."));
   if (!redirectUriAllowed(client, redirectUri)) {
     return renderAuthMessage(c, 400, appConfigError("The address it asked to return to (redirect_uri) is not registered for it."));
   }
@@ -180,21 +222,6 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
   if (responseMode !== null && responseMode !== "query" && responseMode !== "form_post") {
     return fail("invalid_request", "response_mode must be query or form_post.");
   }
-  // Request objects are not supported (discovery says so): refuse rather than
-  // silently ignore parameters the client put only inside one. A client that
-  // moved response_mode inside the object still gets its error the way it
-  // asked - the payload is decoded unverified only to pick the response mode,
-  // which is safe: the redirect_uri above was already allowlist-checked, and
-  // the claim can change the encoding of the error we send there, nothing more.
-  const objectResponseMode = (): "form_post" | undefined => {
-    try {
-      return decodeJwt(url.searchParams.get("request") ?? "").response_mode === "form_post" ? "form_post" : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  if (url.searchParams.has("request")) return respondAuthorize(c, authorizeErrorRedirect(c.env.ISSUER_URL, redirectUri, "request_not_supported", state, "Request objects are not supported."), responseMode === "form_post" ? "form_post" : objectResponseMode());
-  if (url.searchParams.has("request_uri")) return fail("request_uri_not_supported", "request_uri is not supported.");
 
   // PKCE is S256 only. "plain" sends the verifier's equivalent in the clear, and
   // a challenge with no method defaults to plain (RFC 7636 §4.3), so both are

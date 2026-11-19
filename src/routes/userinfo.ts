@@ -7,6 +7,9 @@ import { buildClaims } from "../lib/jwt.js";
 import { getClientByClientId } from "../lib/db.js";
 import { effectiveClaimGroups, parseRequestedClaims } from "../lib/oidc.js";
 import { parseCustomAttributes } from "../lib/schemas.js";
+import { subjectFor } from "../lib/subject.js";
+import { SignJWT } from "jose";
+import { activeSigningKey } from "../lib/signing-keys.js";
 
 export const userinfo = new Hono<{ Bindings: Env }>();
 
@@ -51,10 +54,12 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
   const client = await getClientByClientId(c.env, row.client_id);
   const release = client ? effectiveClaimGroups(client, row.scope, parseRequestedClaims(row.claims).userinfo) : new Set<never>();
 
-  return c.json({
-    sub: String(user.id),
+  const sub = client ? await subjectFor(c.env, client, user.id) : String(user.id);
+
+  const claims = {
+    sub,
     ...buildClaims({
-      sub: String(user.id),
+      sub,
       id: user.external_id,
       email: user.upn,
       name: user.display_name,
@@ -68,5 +73,23 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
       managerEmail,
       customAttributes: parseCustomAttributes(user.custom_attributes),
     }, release),
-  });
+  };
+
+  // userinfo_signed_response_alg (OIDC Registration 2): when the client
+  // registered one, /userinfo answers application/jwt signed with the IdP's
+  // keys instead of plain JSON (OIDC Core 5.3.2.4).
+  const alg = client?.userinfo_signed_response_alg;
+  if (alg === "RS256" || alg === "ES256") {
+    const { kid, key } = await activeSigningKey(c.env, alg);
+    const jwt = await new SignJWT(claims)
+      .setProtectedHeader({ alg, kid })
+      .setIssuer(c.env.ISSUER_URL)
+      .setAudience(client!.client_id)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(key);
+    return c.body(jwt, 200, { "Content-Type": "application/jwt" });
+  }
+
+  return c.json(claims);
 });

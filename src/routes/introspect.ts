@@ -5,6 +5,7 @@ import { sha256Hex } from "../lib/tokens.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 import { getUserById } from "../lib/db.js";
 import { verifyOwnJwt } from "../lib/jwt.js";
+import { subjectFor } from "../lib/subject.js";
 
 export const introspect = new Hono<{ Bindings: Env }>();
 
@@ -37,7 +38,7 @@ introspect.post("/introspect", async (c) => {
     if (!active) return c.json({ active: false });
     return c.json({
       active: true,
-      sub: String(accessTokenRow.user_id),
+      sub: await subjectFor(c.env, client, accessTokenRow.user_id),
       client_id: client.client_id,
       scope: accessTokenRow.scope,
       token_type: "Bearer",
@@ -60,7 +61,7 @@ introspect.post("/introspect", async (c) => {
   ) {
     return c.json({
       active: true,
-      sub: String(refreshTokenRow.user_id),
+      sub: await subjectFor(c.env, client, refreshTokenRow.user_id),
       client_id: client.client_id,
       scope: refreshTokenRow.scope,
       token_type: "refresh_token",

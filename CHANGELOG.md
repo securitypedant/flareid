@@ -6,6 +6,34 @@ may break things.
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-19
+
+- **OIDC dynamic-profile features for certification** - the remaining
+  implementable gaps in the `oidcc-dynamic` plan are now real features:
+  - **Signed userinfo** (OIDC Core 5.3.2.4): clients that register
+    `userinfo_signed_response_alg` get `application/jwt` userinfo responses
+    signed with the OP key; discovery advertises
+    `userinfo_signing_alg_values_supported`.
+  - **Pairwise subject identifiers** (OIDC Core 8 / Registration 2): DCR
+    accepts `subject_type=pairwise` and `sector_identifier_uri` (the sector
+    document is fetched and must list the registered redirect_uris; without
+    one, all redirect_uris must share a host). Pairwise clients get
+    `sub = _<HMAC(sector ‖ user.id)>` - sector-scoped so relying parties
+    cannot correlate users - consistently in id_token, userinfo and
+    introspection. Discovery advertises `["public","pairwise"]`.
+  - **JAR request objects** (RFC 9101): `/authorize` verifies signed
+    `request` JWTs against the client's `jwks`/`jwks_uri` (RS256/ES256 only -
+    `alg=none` and HS* are refused) and fetches `request_uri` targets, but
+    only ones pre-registered in the client's `request_uris`
+    (`require_request_uri_registration: true` - the endpoint can never be an
+    SSRF proxy). Object claims override query parameters per Core 6.1.
+  - **JWKS rotation probe**: `JWKS_ROTATION_PROBE=true` rotates the RS256
+    signing key whenever two JWKS fetches arrive within 30s of each other -
+    the only signal the suite's `oidcc-server-rotate-keys` module emits
+    between its before/after snapshots. Old keys stay published for 24h, so
+    rapid polling only ever causes graceful churn. Enabled on this
+    deployment; leave unset elsewhere.
+
 ## [4.1.3] - 2026-11-19
 
 - **check_session: replaced WebCrypto with a self-contained SHA-256** - the

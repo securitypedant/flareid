@@ -10,6 +10,7 @@ import { parseCustomAttributes } from "../lib/schemas.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 import type { DeviceCodeRow } from "./device.js";
 import { canSignIn } from "../lib/admin-roles.js";
+import { subjectFor } from "../lib/subject.js";
 import { logAudit } from "../lib/audit.js";
 
 export const token = new Hono<{ Bindings: Env }>();
@@ -340,7 +341,7 @@ async function issueTokenResponse(
     env,
     client.client_id,
     {
-      sub: String(user.id),
+      sub: await subjectFor(env, client, user.id),
       id: user.external_id,
       email: user.upn,
       name: user.display_name,

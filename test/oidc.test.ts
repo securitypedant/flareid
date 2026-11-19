@@ -287,10 +287,10 @@ describe("authorization code flow", () => {
     expect(response.status).toBe(400);
   });
 
-  it("answers request_not_supported in form_post when the request object asks for it", async () => {
+  it("answers invalid_request_object in form_post when the unsigned object asks for it", async () => {
     const { clientId } = await seedRelyingParty();
-    // response_mode lives only inside the (unsupported) request object; the
-    // error must still be delivered the way the client asked (OIDC form_post).
+    // response_mode lives only inside the (rejected) request object; the error
+    // must still be delivered the way the client asked (OIDC form_post).
     const requestJwt = ["eyJhbGciOiJub25lIn0", btoa(JSON.stringify({ response_mode: "form_post" })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), "x"].join(".");
     const response = await SELF.fetch(
       `${BASE}/authorize?${new URLSearchParams({ client_id: clientId, redirect_uri: REDIRECT_URI, response_type: "code", scope: "openid", request: requestJwt })}`,
@@ -298,7 +298,7 @@ describe("authorization code flow", () => {
     );
     const html = await response.text();
     expect(response.status).toBe(200);
-    expect(html).toContain("request_not_supported");
+    expect(html).toContain("invalid_request_object");
     expect(html).toMatch(/method="post"/i);
     expect(response.headers.get("location")).toBeNull();
   });

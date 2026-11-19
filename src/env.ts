@@ -93,4 +93,14 @@ export interface Env {
    * switch are still set in the console.
    */
   TURNSTILE_SECRET_KEY?: string;
+  /**
+   * Conformance-suite affordance (signing-keys.ts jwksRotationProbe): when
+   * "true", a JWKS fetch arriving within 30 s of the previous one rotates the
+   * RS256 signing key, so the OIDF suite's rotate-keys module can observe a
+   * rotation without a manual window. Old keys stay published for
+   * RETIRED_PUBLISH_HOURS, so rapid RP polling only ever causes graceful
+   * churn - still, leave unset on deployments where surprise key rotation is
+   * unwelcome.
+   */
+  JWKS_ROTATION_PROBE?: string;
 }
