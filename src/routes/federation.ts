@@ -97,8 +97,8 @@ async function finishFederatedLogin(c: Context<{ Bindings: Env }>, flowId: strin
   }
   const flow = await getLoginFlow(c.env, flowId);
   if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, ["ext"], c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, ["ext"], c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr: ["ext"], via: idp.name }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return c.redirect(outcome.to, 302);

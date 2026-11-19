@@ -6,7 +6,7 @@ import { authPage, loginAppearance, msg, renderAuthMessage, requestLocale, type 
 import { t, type MessageKey } from "../lib/i18n.js";
 import { escapeHtml, scriptTag } from "../lib/html.js";
 import { getClientByClientId } from "../lib/db.js";
-import { clearSessionCookie, getSession, oidcSid, revokeSession } from "../lib/sessions.js";
+import { clearSessionCookies, getSession, getSessionCheckSid, oidcSid, revokeSession } from "../lib/sessions.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, recordConsent } from "../lib/oidc.js";
 import { verifyOwnIdToken } from "../lib/jwt.js";
 import { logAudit } from "../lib/audit.js";
@@ -99,8 +99,13 @@ oidcSession.post("/consent/:id", async (c) => {
  * security-headers middleware turns into the CSP allowance).
  */
 oidcSession.get("/check_session", async (c) => {
-  const session = await getSession(c.req.raw, c.env);
-  const sid = session ? await oidcSid(session.id) : "";
+  // The marker cookie is what actually reaches this handler inside a
+  // cross-origin iframe (SameSite=None); the real session cookie is Lax and
+  // stays behind. The session lookup is the fallback for sessions minted
+  // before the marker existed.
+  const marked = getSessionCheckSid(c.req.raw);
+  const session = marked ? null : await getSession(c.req.raw, c.env);
+  const sid = marked ?? (session ? await oidcSid(session.id) : "");
   const script = `var OP_SID=document.body.getAttribute("data-sid")||"";
 window.addEventListener("message",function(e){
  var p=String(e.data).split(" "),cid=p[0],st=(p[1]||"").split("."),salt=st[1];
@@ -166,7 +171,7 @@ async function signOut(c: Context<{ Bindings: Env }>, redirect: string | null, c
   if (session) {
     await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.rp_initiated", clientName, { frontchannel: targets.length }, c.req.raw);
   }
-  c.header("Set-Cookie", clearSessionCookie());
+  for (const sc of clearSessionCookies()) c.header("Set-Cookie", sc, { append: true });
   if (targets.length) {
     const { html, frameSrc } = frontchannelLogoutPage(c.get("appName") ?? "FlareID", targets, redirect, await requestLocale(c));
     c.header("X-FlareID-Frame-Src", frameSrc);

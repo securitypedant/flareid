@@ -6,6 +6,19 @@ may break things.
 
 ## [Unreleased]
 
+## [4.1.2] - 2026-11-19
+
+- **Session management: check_session can now see the session inside the
+  iframe** - the session cookie is `SameSite=Lax`, so embedded on an RP page
+  on another origin it never arrives and `/check_session` answered "changed"
+  for a live session (`oidcc-session-management-rp-initiated-logout` in the
+  conformance suite). Login now also sets a `flareid_smc` marker cookie
+  (`SameSite=None; Secure`) carrying the derived OIDC sid - never the session
+  id, which would hand embedding sites a bearer credential - and
+  `/check_session` reads the marker, falling back to the session for logins
+  that predate it. Both are set on every login path and cleared on every
+  logout path.
+
 ## [4.1.1] - 2026-11-19
 
 - **Conformance: dedicated clients for the channel-logout plans** - the

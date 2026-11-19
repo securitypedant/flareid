@@ -1111,7 +1111,7 @@ account.post("/account/password", async (c) => {
   );
 
   const res = c.redirect("/account/security?saved=password", 302);
-  res.headers.append("Set-Cookie", rotated.setCookie);
+  for (const sc of rotated.setCookies) res.headers.append("Set-Cookie", sc);
   return res;
 });
 

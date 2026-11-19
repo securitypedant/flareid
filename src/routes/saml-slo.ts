@@ -8,7 +8,7 @@ import { idpEntityId } from "../lib/saml/messages.js";
 import { signingKey } from "../lib/saml/sign.js";
 import { b64encode, el, escapeXmlText, samlId, samlInstant } from "../lib/saml/xml.js";
 import { msg, renderAuthMessage } from "../lib/login-views.js";
-import { clearSessionCookie, getSession, revokeSession } from "../lib/sessions.js";
+import { clearSessionCookies, getSession, revokeSession } from "../lib/sessions.js";
 import { sha256Hex } from "../lib/tokens.js";
 import { logAudit } from "../lib/audit.js";
 
@@ -99,7 +99,7 @@ samlSlo.get("/saml/slo", async (c) => {
     // replayed against whoever opens it.
     if (sessionIndexes.includes(ours)) {
       await revokeSession(c.env, session.id);
-      c.header("Set-Cookie", clearSessionCookie());
+      for (const sc of clearSessionCookies()) c.header("Set-Cookie", sc, { append: true });
       await logAudit(c.env, { id: session.userId, upn: String(session.userId) }, "logout.saml_slo", sp.name, undefined, c.req.raw);
     } else {
       // The SP names a session this browser does not hold: nothing to end here.

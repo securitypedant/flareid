@@ -5,6 +5,12 @@ import { getClientIp } from "./rate-limit.js";
 import { getSessionPolicy, normalizeSessionPolicy, SESSION_DEFAULTS } from "./settings.js";
 
 const SESSION_COOKIE = "__Host-flareid_session";
+// The session-management marker (OIDC Session Management 1.0): SameSite=None
+// so it is still sent inside the OP's check_session iframe when an RP page on
+// another origin embeds it (the Lax session cookie never arrives there). It
+// carries the derived oidc sid, never the session id - SameSite=None would
+// hand any site embedding the OP a bearer credential.
+const SESSION_CHECK_COOKIE = "flareid_smc";
 /** The default SSO session lifetime; the effective one is the "session_max_hours" setting (Admin → Security). */
 export const SESSION_TTL_SECONDS = 60 * 60 * SESSION_DEFAULTS.maxHours;
 
@@ -32,11 +38,19 @@ export function hasSessionCookie(request: Request): boolean {
   return readSessionIdFromCookie(request) !== null;
 }
 
+function readCookieValue(request: Request, name: string): string | null {
+  const cookies = (request.headers.get("Cookie") ?? "").split(";").map((c) => c.trim());
+  const target = cookies.find((c) => c.startsWith(`${name}=`));
+  return target ? target.substring(name.length + 1) : null;
+}
+
 function readSessionIdFromCookie(request: Request): string | null {
-  const cookieHeader = request.headers.get("Cookie") ?? "";
-  const cookies = cookieHeader.split(";").map((c) => c.trim());
-  const target = cookies.find((c) => c.startsWith(`${SESSION_COOKIE}=`));
-  return target ? target.substring(SESSION_COOKIE.length + 1) : null;
+  return readCookieValue(request, SESSION_COOKIE);
+}
+
+/** The marker cookie's sid value, when the browser presented it. */
+export function getSessionCheckSid(request: Request): string | null {
+  return readCookieValue(request, SESSION_CHECK_COOKIE);
 }
 
 /** Creates a server-tracked session row (so it can later be listed/revoked) and returns the Set-Cookie header for it. */
@@ -55,7 +69,7 @@ export async function createSession(
   userId: number,
   amr: string[],
   request: Request
-): Promise<{ sessionId: string; setCookie: string }> {
+): Promise<{ sessionId: string; setCookie: string; setCookies: string[] }> {
   const sessionId = randomToken(32);
   const now = new Date().toISOString();
 
@@ -66,14 +80,25 @@ export async function createSession(
       .run(),
   ]);
 
-  // The cookie outlives nothing the server would honour: getSession enforces
-  // the same maximum (and the idle limit) on every request.
-  const setCookie = `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${policy.maxHours * 3600}`;
-  return { sessionId, setCookie };
+  // The cookies outlive nothing the server would honour: getSession enforces
+  // the same maximum (and the idle limit) on every request. The session
+  // cookie must stay first: callers and tests read headers.get("set-cookie").
+  const maxAge = policy.maxHours * 3600;
+  const setCookies = [
+    `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `${SESSION_CHECK_COOKIE}=${await oidcSid(sessionId)}; HttpOnly; Secure; Path=/; SameSite=None; Max-Age=${maxAge}`,
+  ];
+  // setCookie stays as the primary session cookie alone for the many callers
+  // that only want its value (tests, header inspection); setCookies is what a
+  // response actually writes.
+  return { sessionId, setCookie: setCookies[0], setCookies };
 }
 
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`;
+export function clearSessionCookies(): string[] {
+  return [
+    `${SESSION_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`,
+    `${SESSION_CHECK_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=None; Max-Age=0`,
+  ];
 }
 
 export async function getSession(request: Request, env: Env): Promise<SessionInfo | null> {

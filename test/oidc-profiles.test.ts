@@ -144,6 +144,32 @@ describe("session management", () => {
     expect(res.headers.get("x-frame-options")).toBeNull();
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors *");
   });
+
+  it("marks the session via a SameSite=None cookie so the iframe can see it cross-origin", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const { setCookies } = await createSession(env, userId, ["pwd", "mfa"], new Request(BASE));
+    const sessionCookie = setCookies[0].split(";")[0]!;
+    const marker = setCookies[1].split(";")[0]!;
+    expect(setCookies[0]).toContain("SameSite=Lax");
+    expect(setCookies[1]).toContain("SameSite=None");
+
+    const client = await seedClient(apiKey);
+    const res = await authorize(sessionCookie, client.client_id);
+    const state = new URL(res.headers.get("location")!).searchParams.get("session_state")!;
+
+    // Inside the iframe on the RP's origin, the Lax session cookie is withheld
+    // and only the marker arrives - /check_session must still answer "unchanged".
+    const cs = await SELF.fetch(`${BASE}/check_session`, { headers: { Cookie: marker } });
+    const sid = (await cs.text()).match(/data-sid="([^"]*)"/)?.[1];
+    expect(sid).toBeTruthy();
+
+    // Recompute the comparison the iframe JS performs (OIDC Session Mgmt 1.0 §4.2).
+    const [hash, salt] = state.split(".");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${client.client_id} ${new URL(REDIRECT).origin} ${sid} ${salt}`));
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    expect(hex).toBe(hash);
+  });
 });
 
 describe("third-party initiated login", () => {

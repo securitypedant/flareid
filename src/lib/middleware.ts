@@ -4,7 +4,7 @@ import { accessFor, canAccess, type Access } from "./admin-roles.js";
 import { secondFactorGate } from "./auth-policy.js";
 import type { Context, Next } from "hono";
 import type { Env } from "../env.js";
-import { clearSessionCookie, getSession, revokeSession } from "./sessions.js";
+import { clearSessionCookies, getSession, revokeSession } from "./sessions.js";
 import { getUserById, getUserGroupNames } from "./db.js";
 import { isMfaRequired } from "./settings.js";
 import type { UserRow } from "./types.js";
@@ -71,7 +71,7 @@ export async function requireSession(c: Context<{ Bindings: Env }>, next: Next) 
     if (gate === "login") {
       await revokeSession(c.env, session!.id);
       const res = c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
-      res.headers.append("Set-Cookie", clearSessionCookie());
+      for (const sc of clearSessionCookies()) res.headers.append("Set-Cookie", sc);
       return res;
     }
   }

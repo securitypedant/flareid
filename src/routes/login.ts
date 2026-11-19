@@ -32,7 +32,7 @@ import {
   storePendingMfa,
   type LoginFlow,
 } from "../lib/authorize-state.js";
-import { clearSessionCookie, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
+import { clearSessionCookies, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
 import { getSpById } from "../lib/saml/service-providers.js";
@@ -167,7 +167,7 @@ login.post("/logout", async (c) => {
   const session = await getSession(c.req.raw, c.env);
   const targets = session ? await frontchannelTargets(c.env, session.id) : [];
   if (session) await revokeSession(c.env, session.id);
-  c.header("Set-Cookie", clearSessionCookie());
+  for (const sc of clearSessionCookies()) c.header("Set-Cookie", sc, { append: true });
   if (targets.length) {
     const { html, frameSrc } = frontchannelLogoutPage(c.get("appName"), targets, "/login", await requestLocale(c));
     c.header("X-FlareID-Frame-Src", frameSrc);
@@ -196,9 +196,9 @@ export async function completeLoginFlow(
   amr: string[],
   request: Request,
   user: { mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number }
-): Promise<{ outcome: LoginFlowOutcome; setCookie: string }> {
+): Promise<{ outcome: LoginFlowOutcome; setCookies: string[] }> {
   // Roles decide whether this account may sign in at all (permission "signin").
-  if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookie: clearSessionCookie() };
+  if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookies: clearSessionCookies() };
 
   // Policy-level sign-in conditions, checked before any session is minted:
   // a policy can require a verified WARP device certificate and/or cap the
@@ -207,7 +207,7 @@ export async function completeLoginFlow(
   const policy = await policyForUser(env, userId);
   if (policy?.device_cert && !deviceCertVerified(request)) {
     await logAudit(env, null, "login.denied_device_cert", policy.name, { user_id: userId }, request);
-    return { outcome: { type: "redirect", to: "/login?denied=device" }, setCookie: clearSessionCookie() };
+    return { outcome: { type: "redirect", to: "/login?denied=device" }, setCookies: clearSessionCookies() };
   }
   if (policy?.max_risk) {
     const config = await getCfOne(env);
@@ -217,19 +217,19 @@ export async function completeLoginFlow(
       // Unknown score passes - a broken integration must not be an outage.
       if (score && !riskAtMost(score.level, policy.max_risk)) {
         await logAudit(env, { id: userId, upn: userRow!.upn }, "login.denied_risk", policy.name, { level: score.level, max: policy.max_risk }, request);
-        return { outcome: { type: "redirect", to: "/login?denied=risk" }, setCookie: clearSessionCookie() };
+        return { outcome: { type: "redirect", to: "/login?denied=risk" }, setCookies: clearSessionCookies() };
       }
     }
   }
 
-  const { sessionId, setCookie } = await createSession(env, userId, amr, request);
+  const { sessionId, setCookies } = await createSession(env, userId, amr, request);
 
   // Until initial setup is complete, always land on the setup wizard -
   // regardless of whether this login came from an OIDC request or a direct
   // /account visit - nothing else should be usable yet.
   const setupCompleted = await isSetupCompleted(env);
   if (!setupCompleted) {
-    return { outcome: { type: "redirect", to: "/admin/setup" }, setCookie };
+    return { outcome: { type: "redirect", to: "/admin/setup" }, setCookies };
   }
 
   // Once setup is done, MFA can be made mandatory - anyone without it enrolled
@@ -241,24 +241,24 @@ export async function completeLoginFlow(
   const gateUser = { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled, security_questions_enabled: user.security_questions_enabled };
   if ((await secondFactorGate(env, gateUser, amr)) !== "ok") {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
-    return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookie };
+    return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookies };
   }
 
-  if (flow.kind === "direct") return { outcome: { type: "redirect", to: safeNextPath(flow.next) }, setCookie };
+  if (flow.kind === "direct") return { outcome: { type: "redirect", to: safeNextPath(flow.next) }, setCookies };
 
   if (flow.kind === "saml") {
     const sp = await getSpById(env, flow.request.spId);
     const fullUser = await getUserById(env, userId);
-    if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookie };
+    if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookies };
     const issued = await issueSamlResponse(env, sp, flow.request, fullUser, sessionId, new Date());
     // Already answered (a replayed request): the sign-in still stands, but no second response.
-    if (!issued) return { outcome: { type: "redirect", to: "/account" }, setCookie };
+    if (!issued) return { outcome: { type: "redirect", to: "/account" }, setCookies };
     await logAudit(env, fullUser, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId }, request);
-    return { outcome: { type: "saml-post", ...issued }, setCookie };
+    return { outcome: { type: "saml-post", ...issued }, setCookies };
   }
 
   const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
-  return { outcome: { type: "redirect", to: redirectTo, responseMode: flow.request.responseMode }, setCookie };
+  return { outcome: { type: "redirect", to: redirectTo, responseMode: flow.request.responseMode }, setCookies };
 }
 
 login.post("/login", async (c) => {
@@ -352,8 +352,8 @@ login.post("/login", async (c) => {
 
   const amr = totp ? ["pwd", "mfa_remembered_device"] : ["pwd"];
   await deleteLoginFlow(c.env, flowId);
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   if (totp) await logAudit(c.env, user, "login.mfa_skipped_trusted_device", user.upn, undefined, c.req.raw);
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") {
@@ -396,8 +396,8 @@ login.post("/login/passkey", async (c) => {
   }
   const amr = ["hwk", "mfa"];
   await deleteLoginFlow(c.env, flowId);
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return respondAuthorize(c, outcome.to, outcome.responseMode);
@@ -438,8 +438,8 @@ login.post("/login/mfa/passkey", async (c) => {
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);
   const amr = ["pwd", "hwk", "mfa"];
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return respondAuthorize(c, outcome.to, outcome.responseMode);
@@ -500,8 +500,8 @@ login.post("/login/mfa", async (c) => {
   await deletePendingMfa(c.env, mfaId);
   await deleteLoginFlow(c.env, pending.flowId);
 
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie, { append: true });
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
 
   if (rememberDevice) {
     const deviceCookie = await trustDevice(c.env, c.req.raw, user.id);
@@ -589,8 +589,8 @@ login.post("/login/mfa/email", async (c) => {
   await deleteLoginFlow(c.env, pending.flowId);
 
   const amr = ["pwd", "otp", "mfa"];
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return respondAuthorize(c, outcome.to, outcome.responseMode);
@@ -666,8 +666,8 @@ login.post("/login/mfa/questions", async (c) => {
   await deleteLoginFlow(c.env, pending.flowId);
 
   const amr = ["pwd", "kba", "mfa"];
-  const { outcome, setCookie } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
-  c.header("Set-Cookie", setCookie);
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
   return respondAuthorize(c, outcome.to, outcome.responseMode);
