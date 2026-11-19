@@ -6,6 +6,25 @@ may break things.
 
 ## [Unreleased]
 
+- **SCIM conformance fixes found by SCIM Verify** (verify.scim.dev, wired into
+  the new `integration-verification` workflow):
+  - `/ServiceProviderConfig`-adjacent **discovery**: `/Schemas` now returns
+    full RFC 7643 §7 schema documents with `attributes` for User,
+    EnterpriseUser and Group (required flags, mutability, complex
+    sub-attributes) instead of bare `{id}` stubs - schema-aware clients can
+    now introspect the server's real surface.
+  - **Sorting**: `GET /Users` and `GET /Groups` honor `sortBy`/`sortOrder`
+    (RFC 7644 §3.4.2.3) for `userName`/`displayName`, case-insensitive;
+    unsupported attributes keep the previous insertion order.
+  - **Error codes**: a create body missing its required attribute
+    (`userName`, `displayName`) reports `scimType: invalidSyntax` (the
+    request does not conform to the schema) rather than `invalidValue`.
+- **CI**: new dispatch-only `integration-verification` workflow -
+  self-contained lab run (smoke, oauth2-proxy, Chromium), plus the SAML
+  profile with real signing material (caddy + SimpleSAMLphp) and the SCIM
+  Verify battery (`e2e/scim-verify-run.mjs`) gated against declared
+  divergences (`e2e/scim-verify-expected.txt`).
+
 ## [4.2.0] - 2026-11-19
 
 - **OIDC dynamic-profile features for certification** - the remaining

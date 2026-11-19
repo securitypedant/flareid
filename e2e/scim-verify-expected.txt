@@ -1,0 +1,8 @@
+# SCIM Verify leaf-test titles we knowingly fail, one per line. The runner
+# (e2e/scim-verify-run.mjs) fails on anything not listed here and flags
+# declarations that stop failing.
+#
+# Our error body emits "status" as a JSON string, per RFC 7643 §3.12 ("the
+# HTTP status code expressed as a JSON string"); the checker asserts a
+# number. Upstream expectation bug; our representation is spec-correct.
+Returns errors when creating an invalid group

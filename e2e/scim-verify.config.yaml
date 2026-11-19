@@ -1,0 +1,132 @@
+# SCIM Verify (verify.scim.dev) configuration for the e2e lab instance.
+# Consumed by .github/workflows/integration-verification.yml and runnable
+# locally against the compose lab:
+#
+#   KEY=$(node -pe 'JSON.parse(require("fs").readFileSync("e2e/state/lab-key.json","utf8")).key')
+#   docker run --rm --entrypoint node -v "$PWD:/work" -w /work ghcr.io/limosa-io/scimverify \
+#     bin/scimverify.js --base-url http://host.docker.internal:8787/scim/v2 \
+#     --auth-header "Bearer $KEY" --config e2e/scim-verify.config.yaml --har-file out.har
+#
+# The instance is throwaway: POST/PUT/PATCH/DELETE fixture entries mutate and
+# delete whichever user /Users?count=1 lists first (id: AUTO). Do not point
+# this at a deployment with data you care about.
+
+detectSchema: true
+detectResourceTypes: true
+
+users:
+  enabled: true
+  operations:
+    - POST
+    - PUT
+    - PATCH
+    - DELETE
+  post_tests:
+    - request:
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"]
+        userName: scimverify@example.com
+        name:
+          givenName: SCIM
+          familyName: Verify
+        displayName: SCIM Verify
+        emails:
+          - value: scimverify@example.com
+            primary: true
+      response:
+        type: object
+        required: [schemas, id, "urn:ietf:params:scim:schemas:core:2.0:User"]
+        properties:
+          id:
+            type: string
+          "urn:ietf:params:scim:schemas:core:2.0:User":
+            type: object
+            required: [userName]
+            properties:
+              userName:
+                type: string
+                const: scimverify@example.com
+  put_tests:
+    - id: AUTO
+      request:
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"]
+        name:
+          givenName: Replaced
+          familyName: Name
+      response:
+        type: object
+        required: [id, "urn:ietf:params:scim:schemas:core:2.0:User"]
+        properties:
+          "urn:ietf:params:scim:schemas:core:2.0:User":
+            type: object
+            properties:
+              name:
+                type: object
+                properties:
+                  givenName:
+                    type: string
+                    const: Replaced
+  patch_tests:
+    - id: AUTO
+      request:
+        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"]
+        Operations:
+          - op: replace
+            path: name.givenName
+            value: Patched
+          - op: replace
+            path: displayName
+            value: Patched Display
+      response:
+        type: object
+        required: [id, "urn:ietf:params:scim:schemas:core:2.0:User"]
+        properties:
+          "urn:ietf:params:scim:schemas:core:2.0:User":
+            type: object
+            properties:
+              displayName:
+                type: string
+                const: Patched Display
+  delete_tests:
+    - id: AUTO
+
+groups:
+  enabled: true
+  operations:
+    - POST
+    - PUT
+    - PATCH
+    - DELETE
+  post_tests:
+    - request:
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+        displayName: SCIM Verify Group
+      response:
+        type: object
+        required: [schemas, id, "urn:ietf:params:scim:schemas:core:2.0:Group"]
+        properties:
+          id:
+            type: string
+          "urn:ietf:params:scim:schemas:core:2.0:Group":
+            type: object
+            required: [displayName]
+            properties:
+              displayName:
+                type: string
+                const: SCIM Verify Group
+  put_tests:
+    - id: AUTO
+      request:
+        schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+        displayName: SCIM Verify Group Renamed
+      response:
+        type: object
+        required: [id, "urn:ietf:params:scim:schemas:core:2.0:Group"]
+        properties:
+          "urn:ietf:params:scim:schemas:core:2.0:Group":
+            type: object
+            properties:
+              displayName:
+                type: string
+                const: SCIM Verify Group Renamed
+  delete_tests:
+    - id: AUTO

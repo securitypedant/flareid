@@ -22,3 +22,4 @@ openid.net.env
 .env*
 !.env.example
 e2e/state/
+scim-verify-out/

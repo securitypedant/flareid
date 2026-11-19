@@ -84,6 +84,13 @@ oauth2-proxy flow. `smoke.mjs` saves its minted admin key to
 `e2e/state/lab-key.json` so `real-apps.mjs` can reuse it after `/setup`
 retires the bootstrap token.
 
+The dispatch-only `integration-verification` workflow runs the same battery
+plus the heavier legs: the `saml` profile with real generated signing material
+(caddy + SimpleSAMLphp) and **SCIM Verify** (`e2e/scim-verify-run.mjs`, config
+`e2e/scim-verify.config.yaml`, declared divergences in
+`e2e/scim-verify-expected.txt`). Run it from the Actions tab when protocol
+code changes or before a release.
+
 ## Caveats
 
 - `wrangler dev` prints `Unable to fetch the Request.cf object` behind some

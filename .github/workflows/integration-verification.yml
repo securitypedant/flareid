@@ -1,0 +1,128 @@
+name: Integration verification
+
+# Self-contained lab verification: builds the FlareID e2e image, seeds it, and
+# exercises the real surfaces end to end - a plain-fetch smoke pass, a real
+# third-party OIDC RP (oauth2-proxy), the SAML lab containers (SimpleSAMLphp
+# behind a caddy TLS proxy), real-browser checks via Playwright, and the SCIM
+# Verify conformance tool. Everything runs inside the runner: no deployment,
+# no secrets, nothing touches production.
+#
+# Dispatch-only by design. The per-merge `e2e` job in ci.yml already covers
+# smoke -> Chromium -> oauth2-proxy on every push; this workflow adds the legs
+# that are too heavy or too mutating for a merge gate (the SAML profile with
+# real signing material, the SCIM Verify battery) and packages the whole
+# battery as one signal. Run from the Actions tab or `gh workflow run` when
+# protocol code changes, before releases, or after infra changes. The heavier
+# app profiles (zabbix, nextcloud, vault, syncope) stay manual: they have no
+# scripted check to run here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      e2e_lab:
+        description: "e2e lab checks (smoke, oauth2-proxy, SAML containers, browser)"
+        type: boolean
+        default: true
+      scim_verify:
+        description: "SCIM Verify conformance tool against the lab instance"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  COMPOSE: docker compose -f e2e/compose.yml
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      # The compose file mounts state/saml-{cert,key}.pem into the flareid
+      # container; keygen writes dotfiles under --out-dir, so rename them.
+      - name: Mint lab SAML signing material
+        run: |
+          node scripts/generate-saml-cert.mjs --out-dir e2e/state
+          mv e2e/state/.saml-key.pem e2e/state/saml-key.pem
+          mv e2e/state/.saml-cert.pem e2e/state/saml-cert.pem
+
+      # App containers reach the IdP as http://host.docker.internal:8787; the
+      # fetch-driven checks must resolve the same name on the runner.
+      - name: Resolve host.docker.internal on the runner
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
+
+      - name: Build and start FlareID
+        run: $COMPOSE up -d --build flareid
+
+      # smoke.mjs does bootstrap -> /setup -> mints the admin API key into
+      # e2e/state/lab-key.json, which real-apps.mjs and the SCIM Verify step
+      # below both reuse.
+      - name: HTTP smoke pass
+        run: node e2e/smoke.mjs
+
+      - name: Seed lab users, clients and SPs
+        run: node e2e/real-apps.mjs
+
+      - name: Start a real OIDC relying party
+        if: inputs.e2e_lab
+        run: $COMPOSE up -d oauth2-proxy whoami
+
+      - name: oauth2-proxy round-trip check
+        if: inputs.e2e_lab
+        run: node e2e/proxy-check.mjs
+
+      - name: Start the SAML lab (caddy + SimpleSAMLphp)
+        if: inputs.e2e_lab
+        run: $COMPOSE --profile saml up -d caddy simplesamlphp
+
+      # No scripted SAML flow exists yet - SAMLscope is the planned deep
+      # check. This proves the profile boots with the seeded config: the SP
+      # reaches its login portal over caddy TLS and the IdP metadata the SP
+      # consumes still serves.
+      - name: SAML lab health check
+        if: inputs.e2e_lab
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8443/simplesaml/) && [ "$code" = 200 ] && break
+            sleep 2
+          done
+          [ "$code" = 200 ] || { echo "simplesamlphp portal never came up (last: $code)"; exit 1; }
+          curl -fsS http://localhost:8787/saml/metadata | grep -q EntityDescriptor
+          echo "simplesamlphp portal and IdP SAML metadata are serving"
+
+      - name: Browser checks (Playwright)
+        if: inputs.e2e_lab
+        run: |
+          npm i --no-save playwright
+          npx playwright install --with-deps chromium
+          node e2e/ux.spec.mjs
+
+      # SCIM Verify runs its RFC 7643/7644 battery against the lab instance
+      # (config in e2e/scim-verify.config.yaml). It mutates the directory -
+      # acceptable here because the lab D1 is throwaway. The runner gates on
+      # the result with the declared-failures discipline from
+      # e2e/scim-verify-expected.txt.
+      - name: SCIM Verify against the lab instance
+        if: inputs.scim_verify
+        run: node e2e/scim-verify-run.mjs
+
+      - name: Compose logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail=300 > compose-logs.txt || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lab-evidence
+          path: |
+            scim-verify-out/
+            compose-logs.txt
+          if-no-files-found: ignore

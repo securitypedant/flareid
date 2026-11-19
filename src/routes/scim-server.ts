@@ -135,8 +135,66 @@ scimServer.get("/scim/v2/ResourceTypes", requireScope("directory:read"), (c) =>
   })
 );
 
+// RFC 7643 §7 schema documents for the three URNs we emit. Clients like SCIM
+// Verify and Entra read `attributes` to learn which fields the server
+// supports and which are required, so list the emitted surface faithfully.
+const SCHEMA_ATTRS: Record<string, unknown[]> = {
+  [USER]: [
+    { name: "userName", type: "string", multiValued: false, required: true, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "server" },
+    { name: "name", type: "complex", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none",
+      subAttributes: [
+        { name: "formatted", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "familyName", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "givenName", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+      ] },
+    { name: "displayName", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "title", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "active", type: "boolean", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "externalId", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "emails", type: "complex", multiValued: true, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none",
+      subAttributes: [
+        { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "type", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "primary", type: "boolean", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+      ] },
+    { name: "groups", type: "complex", multiValued: true, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none",
+      subAttributes: [
+        { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none" },
+        { name: "$ref", type: "reference", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none", referenceTypes: ["Group"] },
+        { name: "display", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none" },
+      ] },
+  ],
+  [ENTERPRISE]: [
+    { name: "department", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "employeeNumber", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+    { name: "manager", type: "complex", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none",
+      subAttributes: [
+        { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "$ref", type: "reference", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none", referenceTypes: ["User"] },
+        { name: "displayName", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none" },
+      ] },
+  ],
+  [GROUP]: [
+    { name: "displayName", type: "string", multiValued: false, required: true, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "server" },
+    { name: "members", type: "complex", multiValued: true, required: false, caseExact: false, mutability: "readWrite", returned: "request", uniqueness: "none",
+      subAttributes: [
+        { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "request", uniqueness: "none" },
+        { name: "$ref", type: "reference", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "request", uniqueness: "none", referenceTypes: ["User"] },
+        { name: "display", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "request", uniqueness: "none" },
+      ] },
+  ],
+};
+
 scimServer.get("/scim/v2/Schemas", requireScope("directory:read"), (c) =>
-  c.json({ schemas: [LIST], totalResults: 3, Resources: [USER, ENTERPRISE, GROUP].map((id) => ({ schemas: ["urn:ietf:params:scim:schemas:core:2.0:Schema"], id })) })
+  c.json({
+    schemas: [LIST],
+    totalResults: 3,
+    Resources: [
+      { id: USER, name: "User", description: "User account" },
+      { id: ENTERPRISE, name: "EnterpriseUser", description: "Enterprise user extension" },
+      { id: GROUP, name: "Group", description: "Group" },
+    ].map((s) => ({ schemas: ["urn:ietf:params:scim:schemas:core:2.0:Schema"], ...s, attributes: SCHEMA_ATTRS[s.id] })),
+  })
 );
 
 // ----------------------------------------------------------------- mapping
@@ -229,13 +287,26 @@ function paging(c: Context<{ Bindings: Env }>) {
 
 // ------------------------------------------------------------------- Users
 
+/**
+ * RFC 7644 §3.4.2.3 sorting: an ORDER BY clause for the attributes clients
+ * actually sort on; anything else falls back to insertion order rather than
+ * erroring, so a provisioner sending an unsupported sortBy still works.
+ */
+function sorting(c: Context<{ Bindings: Env }>, map: Record<string, string>): string {
+  const col = map[(c.req.query("sortBy") ?? "").toLowerCase()];
+  if (!col) return " ORDER BY id";
+  const dir = (c.req.query("sortOrder") ?? "").toLowerCase() === "descending" ? "DESC" : "ASC";
+  return ` ORDER BY ${col} COLLATE NOCASE ${dir}`;
+}
+
 scimServer.get("/scim/v2/Users", requireScope("directory:read"), async (c) => {
   const f = parseFilter(c.req.query("filter"), { username: "upn", externalid: "external_id", "emails.value": "email" });
   const { startIndex, count } = paging(c);
   const where = f ? `WHERE ${f.column} = ?` : "";
   const args = f ? [f.column === "upn" || f.column === "email" ? f.value.toLowerCase() : f.value] : [];
+  const order = sorting(c, { username: "upn", displayname: "display_name" });
   const total = (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM users ${where}`).bind(...args).first<{ n: number }>())?.n ?? 0;
-  const { results } = await c.env.DB.prepare(`SELECT * FROM users ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...args, count, startIndex - 1).all<UserRow>();
+  const { results } = await c.env.DB.prepare(`SELECT * FROM users ${where}${order} LIMIT ? OFFSET ?`).bind(...args, count, startIndex - 1).all<UserRow>();
   return c.json({ schemas: [LIST], totalResults: total, startIndex, itemsPerPage: results.length, Resources: await Promise.all(results.map((u) => userResource(c.env, u))) });
 });
 
@@ -370,7 +441,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   const body = await c.req.json<ScimUserBody>();
   const { cols, emails, custom, userName: mappedName, photo } = await columnsFrom(c.env, body);
   const userName = String(mappedName ?? body.userName ?? "").trim().toLowerCase();
-  if (!userName) throw new ScimError(400, "userName is required.", "invalidValue");
+  if (!userName) throw new ScimError(400, "userName is required.", "invalidSyntax");
   const [local, domainPart] = userName.includes("@") ? userName.split("@") : [userName, await getDefaultDomain(c.env)];
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(local!)) throw new ScimError(400, `"${local}" is not a valid username.`, "invalidValue");
   if (!(await listDomains(c.env)).some((d) => d.domain === domainPart)) throw new ScimError(400, `The domain "${domainPart}" is not configured in FlareID.`, "invalidValue");
@@ -543,7 +614,8 @@ scimServer.get("/scim/v2/Groups", requireScope("directory:read"), async (c) => {
   const where = f ? "WHERE name = ?" : "";
   const args = f ? [f.value] : [];
   const total = (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM groups ${where}`).bind(...args).first<{ n: number }>())?.n ?? 0;
-  const { results } = await c.env.DB.prepare(`SELECT * FROM groups ${where} ORDER BY id LIMIT ? OFFSET ?`).bind(...args, count, startIndex - 1).all<GroupRow>();
+  const order = sorting(c, { displayname: "name" });
+  const { results } = await c.env.DB.prepare(`SELECT * FROM groups ${where}${order} LIMIT ? OFFSET ?`).bind(...args, count, startIndex - 1).all<GroupRow>();
   // The page's members in one pass (one directory read for all its dynamic
   // groups, one lookup for every member), and none at all when not asked for.
   let resources;
@@ -623,7 +695,7 @@ async function setMembers(env: Env, group: GroupRow, add: number[], remove: numb
 scimServer.post("/scim/v2/Groups", requireScope("directory:write"), async (c) => {
   const body = await c.req.json<{ displayName?: string; members?: { value?: string }[] }>();
   const name = String(body.displayName ?? "").trim();
-  if (!name) throw new ScimError(400, "displayName is required.", "invalidValue");
+  if (!name) throw new ScimError(400, "displayName is required.", "invalidSyntax");
   if ((await adminRoleGroupNames(c.env)).includes(name)) requireAdminFor(c, `Creating an admin role group`);
   if (await c.env.DB.prepare("SELECT 1 FROM groups WHERE name = ?").bind(name).first()) throw new ScimError(409, "A group with that displayName already exists.", "uniqueness");
   const row = await c.env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, NULL, '') RETURNING *").bind(name).first<GroupRow>();
