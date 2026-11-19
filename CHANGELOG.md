@@ -6,6 +6,30 @@ may break things.
 
 ## [Unreleased]
 
+- **Conformance: dedicated clients for the channel-logout plans** - the
+  shared static clients no longer register `frontchannel_logout_uri`/
+  `backchannel_logout_uri`. Those URIs are invoked by the OP on every logout,
+  and under the suite's single test alias a call lands on whichever module is
+  running, which logs it as an unexpected-request failure ("a path the test
+  does not serve") - that is what failed all three `oidcc-rp-initiated-*`
+  modules last run. The generator now seeds a dedicated client for each
+  channel plan (`conformance-<alias>-fc`/`-bc`, each carrying only its own
+  channel URI) and writes `fc-suite-config.json`/`bc-suite-config.json`
+  pointing `client` at them, so the only logout that ever fires a channel
+  URI belongs to the module that serves it.
+- **`redirect_uri` with a fragment is rejected at registration** - DCR (and
+  the shared post-logout validator) now refuse URI components that can never
+  be followed, per OIDC Core 3.1.2.1 - previously `oidcc-redirect-uri-regfrag`
+  got a 201 instead of the expected 400.
+- **Conformance: error-page coverage for the remaining redirect-uri
+  modules** - `oidcc-ensure-redirect-uri-in-authorization-request`,
+  `oidcc-redirect-uri-query-added` and `oidcc-redirect-uri-query-mismatch`
+  now snapshot our rendered error page like the earlier redirect-uri modules,
+  instead of crashing the scripted browser looking for a login form on it.
+- **Conformance: declared gaps in `expected-failures.json`** - the dynamic
+  profile's implicit-grant requirement, `request_uri` request objects, signed
+  (JWT) userinfo, and the manual key-rotation module are now documented
+  expected failures rather than surprise red.
 - **Conformance: RP-initiated-logout browser coverage** - the generated
   `suite-config.json` now includes a browser entry matching the
   `end_session_endpoint` URL. Without it the suite queued the logout URL for

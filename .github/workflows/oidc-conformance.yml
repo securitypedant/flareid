@@ -70,8 +70,8 @@ jobs:
             "oidcc-dynamic-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-3rdparty-init-login-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
-            "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
-            "oidcc-backchannel-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
+            "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/fc-suite-config.json" \
+            "oidcc-backchannel-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/bc-suite-config.json" \
             "oidcc-session-management-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
 
       - name: Scrub shared secrets from the suite exports
@@ -79,7 +79,7 @@ jobs:
         if: always()
         env:
           CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
-        run: node conformance/redact-exports.mjs conformance-results conformance/suite-config.json
+        run: node conformance/redact-exports.mjs conformance-results conformance/suite-config.json conformance/fc-suite-config.json conformance/bc-suite-config.json
 
       # Never upload unscrubbed exports: if the scrub step failed or never ran,
       # the artifact step is skipped rather than publishing secrets.

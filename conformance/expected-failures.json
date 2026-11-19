@@ -43,5 +43,95 @@
     "condition": "VerifyScopesReturnedInUserInfoClaims",
     "expected-result": "warning",
     "comment": "FlareID releases only the profile claims it holds (name, given_name, family_name, preferred_username)."
+  },
+  {
+    "test-name": "oidcc-discovery-endpoint-verification",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "OIDCCCheckDiscEndpointResponseTypesSupportedDynamic",
+    "expected-result": "failure",
+    "comment": "The 'dynamic' certification profile requires implicit response_types in the discovery document; FlareID is a code-only OP and does not advertise them."
+  },
+  {
+    "test-name": "oidcc-discovery-endpoint-verification",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "OIDCCCheckDiscEndpointGrantTypesSupportedDynamic",
+    "expected-result": "failure",
+    "comment": "As above: the dynamic profile requires the implicit grant type, which a code-only OP cannot truthfully advertise."
+  },
+  {
+    "test-name": "oidcc-request-uri-*",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "CheckDiscEndpointRequestUriParameterSupported",
+    "expected-result": "failure",
+    "comment": "request_uri (JWT request objects by reference) is not implemented; discovery correctly reports it unsupported."
+  },
+  {
+    "test-name": "oidcc-request-uri-*",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Consequence of the above: the authorize call that would use request_uri errors out, as it should."
+  },
+  {
+    "test-name": "oidcc-request-uri-signed-rs256",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "CheckDiscEndpointRequestObjectSigningAlgValuesSupportedContainsRS256",
+    "expected-result": "failure",
+    "comment": "request_object_signing_alg_values_supported is omitted because signed request objects are not accepted."
+  },
+  {
+    "test-name": "oidcc-userinfo-rs256",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "CheckDiscEndpointUserinfoSigningAlgValuesSupportedContainsRS256",
+    "expected-result": "failure",
+    "comment": "Signed (JWT) userinfo responses are not implemented; userinfo_signing_alg_values_supported is correctly absent."
+  },
+  {
+    "test-name": "oidcc-userinfo-rs256",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "EnsureContentTypeApplicationJwt",
+    "expected-result": "failure",
+    "comment": "As above: userinfo answers JSON claims, not a signed JWT."
+  },
+  {
+    "test-name": "oidcc-userinfo-rs256",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "ValidateUserInfoResponseSignature",
+    "expected-result": "failure",
+    "comment": "As above: there is no signature to validate on a JSON userinfo response."
+  },
+  {
+    "test-name": "oidcc-userinfo-rs256",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "ExtractSignedUserInfoFromUserInfoEndpointResponse",
+    "expected-result": "failure",
+    "comment": "As above: the response is not a JWT to parse."
+  },
+  {
+    "test-name": "oidcc-server-rotate-keys",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "current-block": "*",
+    "condition": "VerifyNewJwksHasNewSigningKey",
+    "expected-result": "failure",
+    "comment": "Manual-evidence module: the suite expects a human to trigger OP key rotation while the test waits (autoStart=false). FlareID supports rotation from the console; certification can self-attest it per the OIDF submission docs."
   }
 ]

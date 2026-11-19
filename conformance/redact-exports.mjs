@@ -7,14 +7,17 @@
 // What must not persist is the material that authenticates - client secrets,
 // the seeded user's password, the CONFORMANCE_TOKEN alias credential.
 //
-//   node conformance/redact-exports.mjs <export-dir> <suite-config.json>
+//   node conformance/redact-exports.mjs <export-dir> <suite-config.json> [more configs...]
+//
+// Pass every config a plan ran with: the fc/bc logout configs carry different
+// client secrets than the shared one, and all of them can appear in exports.
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [dir, configPath] = process.argv.slice(2);
-if (!dir || !configPath) {
-  console.error("usage: redact-exports.mjs <export-dir> <suite-config.json>");
+const [dir, ...configPaths] = process.argv.slice(2);
+if (!dir || !configPaths.length) {
+  console.error("usage: redact-exports.mjs <export-dir> <suite-config.json> [more configs...]");
   process.exit(2);
 }
 // A missing export dir means the suite produced nothing to scrub (e.g. the
@@ -60,8 +63,8 @@ function* files(root) {
   }
 }
 
-const config = JSON.parse(readFileSync(configPath, "utf8"));
-const secrets = [...collectSecrets(config)];
+const configs = configPaths.filter(existsSync).map((p) => JSON.parse(readFileSync(p, "utf8")));
+const secrets = [...collectSecrets(configs)];
 // The suite runner's API token is not in the config but can appear in logs.
 for (const extra of [process.env.CONFORMANCE_TOKEN]) if (extra && extra.length >= 6) secrets.push(extra);
 
@@ -87,7 +90,7 @@ for (const secret of secrets) {
   encoded.add(encodeURIComponent(secret));
   const json = JSON.stringify(secret).slice(1, -1);
   if (json !== secret) encoded.add(json);
-  for (const id of collectClientIds(config)) {
+  for (const id of collectClientIds(configs)) {
     const basic = Buffer.from(`${id}:${secret}`, "utf8").toString("base64");
     encoded.add(basic);
     encoded.add(b64url(`${id}:${secret}`));

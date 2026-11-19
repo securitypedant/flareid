@@ -48,6 +48,8 @@ function metadataError(message: string) {
 function validRedirectUri(u: string): boolean {
   try {
     const url = new URL(u);
+    // OIDC Core 3.1.2.1: a redirect_uri MUST NOT include a fragment component.
+    if (url.hash) return false;
     if (url.protocol === "https:") return true;
     return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   } catch {
@@ -68,6 +70,14 @@ function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok:
   }
   if (!isUpdate || body.redirect_uris !== undefined) {
     if (uris.length === 0) return { ok: false, message: "redirect_uris is required and must be non-empty." };
+    const frag = uris.find((u) => {
+      try {
+        return Boolean(new URL(u).hash);
+      } catch {
+        return false;
+      }
+    });
+    if (frag) return { ok: false, message: `redirect_uri "${frag}" must not contain a fragment component.` };
     const bad = uris.find((u) => !validRedirectUri(u));
     if (bad) return { ok: false, message: `redirect_uri "${bad}" must be https (or http on a loopback host).` };
   }

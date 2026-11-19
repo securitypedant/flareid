@@ -132,7 +132,8 @@ function isLoopback(url: URL): boolean {
 export function isValidPostLogoutUri(raw: string): boolean {
   try {
     const u = new URL(raw);
-    return u.protocol === "https:" || (u.protocol === "http:" && isLoopback(u));
+    // Like redirect_uri, a post-logout URI with a fragment can never be followed.
+    return !u.hash && (u.protocol === "https:" || (u.protocol === "http:" && isLoopback(u)));
   } catch {
     return false;
   }

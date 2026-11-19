@@ -259,6 +259,17 @@ describe("dynamic client registration (RFC 7591/7592)", () => {
     expect(row!.trusted).toBe(0);
   });
 
+  it("rejects a redirect_uri with a fragment (OIDC Core 3.1.2.1)", async () => {
+    await bootstrapInstance();
+    const res = await SELF.fetch(`${BASE}/connect/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [`${REDIRECT}#frag`] }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as Record<string, unknown>).error).toBe("invalid_client_metadata");
+  });
+
   it("keeps and echoes display metadata, and shows it on the sign-in page", async () => {
     await bootstrapInstance();
     const meta = {
