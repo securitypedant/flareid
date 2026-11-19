@@ -36,24 +36,6 @@
     "comment": "As above."
   },
   {
-    "test-name": "oidcc-redirect-uri-regfrag",
-    "variant": "*",
-    "configuration-filename": "*suite-config.json",
-    "current-block": "*",
-    "condition": "EnsureHttpStatusCodeIs400",
-    "expected-result": "failure",
-    "comment": "PENDING DEPLOY: the fragment rejection fix is merged (commit 7819528) but not yet deployed to idp.tmesandbox.com. Remove this entry once the worker is updated - an 'expected failure did not happen' flag is the reminder."
-  },
-  {
-    "test-name": "oidcc-redirect-uri-regfrag",
-    "variant": "*",
-    "configuration-filename": "*suite-config.json",
-    "current-block": "*",
-    "condition": "CheckErrorFromDynamicRegistrationEndpointIsInvalidRedirectUriOrInvalidClientMetadata",
-    "expected-result": "warning",
-    "comment": "Same pending-deploy condition as above."
-  },
-  {
     "test-name": "oidcc-refresh-token",
     "variant": { "response_mode": "form_post" },
     "configuration-filename": "*suite-config.json",

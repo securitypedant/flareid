@@ -157,6 +157,17 @@ function buildConfig(primary) {
     tasks: [{ task: "Capture the logout outcome", match: `${issuer}/oidc/logout*`, optional: true, commands: [capture(".+", true)] }],
   };
 
+  // The session-management plan's session_verify page is suite-side, not an
+  // OP URL: its iframes run the postMessage session check against our
+  // check_session endpoint, then the page navigates to .../session_result,
+  // which renders a result page with id="complete". Without a matching
+  // browser entry the URL is queued for manual interaction and the module
+  // sits in WAITING. The wait gives the iframe dance up to 30s to finish.
+  const sessionVerify = {
+    match: `${base}*session_verify`,
+    tasks: [{ task: "Run the session check", match: `${base}*session_verify`, optional: true, commands: [["wait", "id", "complete", 30]] }],
+  };
+
   const secondLogin = {
     ...login,
     tasks: login.tasks.map((t) => (t.task === "Sign in" ? { ...t, commands: [capture("Sign in", true), ...t.commands] } : t)),
@@ -194,7 +205,7 @@ function buildConfig(primary) {
     client: { ...primary, scope: "openid email profile address phone" },
     client2: { ...clients[1], scope: "openid email profile address phone" },
     client_secret_post: { ...primary },
-    browser: [login, logout],
+    browser: [login, logout, sessionVerify],
     override,
   };
 }
