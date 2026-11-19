@@ -98,6 +98,58 @@ oidcSession.post("/consent/:id", async (c) => {
  * query. It exists to be framed, hence the frame-ancestors marker (which the
  * security-headers middleware turns into the CSP allowance).
  */
+/**
+ * Self-contained SHA-256 for the check_session iframe. It deliberately avoids
+ * crypto.subtle / TextEncoder / Promise / Uint8Array: this page exists to be
+ * driven by arbitrary RP clients, including headless test browsers whose
+ * WebCrypto support is partial (the conformance suite's HtmlUnit rejects the
+ * digest call and we answer "error"). Inputs are always ASCII. Exported so a
+ * unit test can verify the exact shipped code against known vectors.
+ */
+export const CHECK_SESSION_SHA256_JS = `function sha256(a){
+ function rr(v,n){return(v>>>n)|(v<<(32-n));}
+ var mp=Math.pow,m232=mp(2,32),result="";
+ var words=[],ab=a.length*8;
+ var hh=sha256.h=sha256.h||[],kk=sha256.k=sha256.k||[],
+  primeCount=kk.length,comp={};
+ for(var cand=2;primeCount<64;cand++){
+  if(!comp[cand]){
+   for(var i=0;i<313;i+=cand)comp[i]=cand;
+   hh[primeCount]=(mp(cand,0.5)*m232)|0;
+   kk[primeCount++]=(mp(cand,1/3)*m232)|0;
+  }
+ }
+ a+="\\x80";
+ while(a.length%64-56)a+="\\x00";
+ for(var i=0;i<a.length;i++){
+  var j=a.charCodeAt(i);
+  if(j>>8)return"";
+  words[i>>2]|=j<<((3-i)%4)*8;
+ }
+ words[words.length]=(ab/m232)|0;
+ words[words.length]=ab;
+ for(var j2=0;j2<words.length;){
+  var w=words.slice(j2,j2+=16),oldH=hh;
+  hh=hh.slice(0,8);
+  for(var i=0;i<64;i++){
+   var w15=w[i-15],w2=w[i-2],hv=hh[0],he=hh[4];
+   var t1=hh[7]+(rr(he,6)^rr(he,11)^rr(he,25))+((he&hh[5])^((~he)&hh[6]))+kk[i]
+    +(w[i]=(i<16)?w[i]:(w[i-16]+(rr(w15,7)^rr(w15,18)^(w15>>>3))+w[i-7]+(rr(w2,17)^rr(w2,19)^(w2>>>10)))|0);
+   var t2=(rr(hv,2)^rr(hv,13)^rr(hv,22))+((hv&hh[1])^(hv&hh[2])^(hh[1]&hh[2]));
+   hh=[(t1+t2)|0].concat(hh);
+   hh[4]=(hh[4]+t1)|0;
+  }
+  for(var i=0;i<8;i++)hh[i]=(hh[i]+oldH[i])|0;
+ }
+ for(var i=0;i<8;i++){
+  for(var j=3;j+1;j--){
+   var b=(hh[i]>>(j*8))&255;
+   result+=((b<16)?"0":"")+b.toString(16);
+  }
+ }
+ return result;
+}`;
+
 oidcSession.get("/check_session", async (c) => {
   // The marker cookie is what actually reaches this handler inside a
   // cross-origin iframe (SameSite=None); the real session cookie is Lax and
@@ -107,15 +159,13 @@ oidcSession.get("/check_session", async (c) => {
   const session = marked ? null : await getSession(c.req.raw, c.env);
   const sid = marked ?? (session ? await oidcSid(session.id) : "");
   const script = `var OP_SID=document.body.getAttribute("data-sid")||"";
+${CHECK_SESSION_SHA256_JS}
 window.addEventListener("message",function(e){
  var p=String(e.data).split(" "),cid=p[0],st=(p[1]||"").split("."),salt=st[1];
  function reply(m){if(e.source&&e.origin!=="null")e.source.postMessage(m,e.origin);}
  if(!cid||!salt){reply("error");return;}
  if(!OP_SID){reply("changed");return;}
- crypto.subtle.digest("SHA-256",new TextEncoder().encode(cid+" "+e.origin+" "+OP_SID+" "+salt)).then(function(d){
-  var hex=Array.prototype.map.call(new Uint8Array(d),function(b){return("0"+b.toString(16)).slice(-2);}).join("");
-  reply(hex===st[0]?"unchanged":"changed");
- }).catch(function(){reply("error");});
+ reply(sha256(cid+" "+e.origin+" "+OP_SID+" "+salt)===st[0]?"unchanged":"changed");
 });`;
   c.header("X-FlareID-Frame-Ancestors", "*");
   return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body data-sid="${escapeHtml(sid)}">${scriptTag(script)}</body></html>`);

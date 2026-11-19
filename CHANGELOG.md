@@ -6,6 +6,16 @@ may break things.
 
 ## [Unreleased]
 
+## [4.1.3] - 2026-11-19
+
+- **check_session: replaced WebCrypto with a self-contained SHA-256** - the
+  iframe's `crypto.subtle.digest` promise was rejected by the conformance
+  suite's headless browser (partial WebCrypto), so the session check answered
+  "error" instead of "unchanged" (`oidcc-session-management-rp-initiated-logout`,
+  OIDCSM-3.1). The page now carries a synchronous ES5-safe sha256 with no
+  Promise, TextEncoder, or crypto dependencies, verified against known
+  digests. All ASCII inputs (client_id, origin, derived sid, salt).
+
 ## [4.1.2] - 2026-11-19
 
 - **Session management: check_session can now see the session inside the

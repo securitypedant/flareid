@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
+import { CHECK_SESSION_SHA256_JS } from "../src/routes/oidc-session.js";
 import { sha256Hex } from "../src/lib/tokens.js";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 
@@ -169,6 +170,17 @@ describe("session management", () => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${client.client_id} ${new URL(REDIRECT).origin} ${sid} ${salt}`));
     const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     expect(hex).toBe(hash);
+  });
+
+  it("ships a self-contained sha256 in the check_session page", async () => {
+    // The iframe JS can't rely on WebCrypto - conformance clients run in
+    // headless browsers whose crypto.subtle rejects digest calls - so the
+    // page carries a synchronous implementation.
+    await bootstrapInstance();
+    const html = await (await SELF.fetch(`${BASE}/check_session`)).text();
+    expect(html).toContain("function sha256");
+    expect(html).not.toContain("crypto.subtle");
+    expect(CHECK_SESSION_SHA256_JS).toContain("function sha256");
   });
 });
 

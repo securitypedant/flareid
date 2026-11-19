@@ -91,7 +91,7 @@ export async function createSession(
   // setCookie stays as the primary session cookie alone for the many callers
   // that only want its value (tests, header inspection); setCookies is what a
   // response actually writes.
-  return { sessionId, setCookie: setCookies[0], setCookies };
+  return { sessionId, setCookie: setCookies[0]!, setCookies };
 }
 
 export function clearSessionCookies(): string[] {
