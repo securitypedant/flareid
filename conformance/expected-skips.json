@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "FlareID does not support the 'request' parameter at all and rejects it with request_not_supported, so the module skips rather than passes - unsigned request objects are neither accepted nor exercisable."
+  },
+  {
+    "test-name": "oidcc-idtoken-unsigned",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "id_token_signing_alg_values_supported deliberately omits 'none'; the module skips when unsigned id_tokens are not advertised."
+  },
+  {
+    "test-name": "oidcc-registration-sector-uri",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "FlareID issues only 'public' subject identifiers; the module skips because pairwise (sector_identifier_uri) is not advertised."
+  },
+  {
+    "test-name": "oidcc-registration-sector-bad",
+    "variant": "*",
+    "configuration-filename": "*suite-config.json",
+    "comment": "As above - no pairwise subject type, so the bad-sector-identifier registration path cannot be exercised."
+  }
+]
