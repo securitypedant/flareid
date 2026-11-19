@@ -70,7 +70,7 @@ jobs:
             "oidcc-dynamic-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-3rdparty-init-login-certification-test-plan[response_type=code]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
             "oidcc-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json" \
-            "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/fc-suite-config.json" \
+            "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/fc-suite-config.json" \
             "oidcc-backchannel-rp-initiated-logout-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/bc-suite-config.json" \
             "oidcc-session-management-certification-test-plan[response_type=code][client_registration=static_client]" "$GITHUB_WORKSPACE/conformance/suite-config.json"
 

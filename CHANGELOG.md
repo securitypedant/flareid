@@ -29,7 +29,11 @@ may break things.
 - **Conformance: declared gaps in `expected-failures.json`** - the dynamic
   profile's implicit-grant requirement, `request_uri` request objects, signed
   (JWT) userinfo, and the manual key-rotation module are now documented
-  expected failures rather than surprise red.
+  expected failures rather than surprise red. The scope/email warnings are
+  declared variant-wide (they fire in the form_post plan too),
+  `oidcc-redirect-uri-regfrag` is declared pending deployment of the fragment
+  fix, and the form_post refresh-token WebRunner flake (a transient
+  mid-flow 500, under investigation) is documented as expected.
 - **Conformance: RP-initiated-logout browser coverage** - the generated
   `suite-config.json` now includes a browser entry matching the
   `end_session_endpoint` URL. Without it the suite queued the logout URL for
