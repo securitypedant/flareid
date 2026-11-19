@@ -6,7 +6,7 @@
     "comment": "FlareID accepts only signed request objects (RFC 9101): request_object_signing_alg_values_supported lists RS256/ES256 without 'none', so the module skips - an unsigned object can neither be accepted nor exercised."
   },
   {
-    "test-name": "oidcc-request-uri-unsigned-supported-correctly-or-rejected-as-unsupported",
+    "test-name": "oidcc-request-uri-unsigned",
     "variant": "*",
     "configuration-filename": "*suite-config.json",
     "comment": "As above: unsigned objects are rejected, and the module skips when 'none' is not in request_object_signing_alg_values_supported."
