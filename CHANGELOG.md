@@ -6,6 +6,11 @@ may break things.
 
 ## [Unreleased]
 
+- **CI now runs the e2e layers** - a second job builds the container image and
+  runs `e2e/smoke.mjs` (full product surface over real HTTP), `e2e/ux.spec.mjs`
+  (Chromium), and the new `e2e/proxy-check.mjs`, which drives a real
+  oauth2-proxy RP through the whole sign-in flow and asserts the upstream
+  receives the user's identity headers.
 - **Relying-party display metadata on the sign-in page** - dynamic clients
   can register `logo_uri`, `policy_uri`, `tos_uri` and `client_uri` (RFC
   7591, echoed per RFC 7592); the sign-in page then names the app, shows its

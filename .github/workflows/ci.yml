@@ -47,3 +47,52 @@ jobs:
         run: npx wrangler deploy --dry-run --outdir /tmp/flareid-build
         env:
           CLOUDFLARE_ACCOUNT_ID: "0000000000000000000000000000000000"
+
+  # Runs the packaged artifact the way a deploy does - wrangler dev in a
+  # container - through its real HTTP surface, a real Chromium browser, and a
+  # real third-party OIDC RP. Catches the class of bugs vitest (same-process
+  # bindings, no HTTP) cannot: cookies, redirects, interop.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      # The lab issuer is http://host.docker.internal:8787 so that both the app
+      # containers (via extra_hosts) and these drivers can reach the same name.
+      # Docker Desktop resolves it on the host; Linux runners need the entry.
+      - name: Map host.docker.internal to loopback
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
+
+      - name: Start FlareID (e2e image)
+        run: |
+          mkdir -p e2e/state
+          touch e2e/state/saml-cert.pem e2e/state/saml-key.pem e2e/state/oauth2-proxy.env
+          docker compose -f e2e/compose.yml up -d --build flareid
+
+      - name: Container smoke
+        run: node e2e/smoke.mjs
+
+      - name: Browser checks (Chromium)
+        run: |
+          npm i --no-save playwright
+          npx playwright install --with-deps chromium
+          node e2e/ux.spec.mjs
+
+      - name: Seed real-app lab
+        run: node e2e/real-apps.mjs
+
+      - name: oauth2-proxy end-to-end
+        run: |
+          docker compose -f e2e/compose.yml up -d oauth2-proxy whoami
+          node e2e/proxy-check.mjs
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose -f e2e/compose.yml logs --tail=200 flareid oauth2-proxy

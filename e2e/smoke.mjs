@@ -9,10 +9,15 @@
 //
 // Exit code is the number of failed checks (0 = clean).
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const BASE = (process.env.BASE ?? "http://localhost:8787").replace(/\/$/, "");
 const BOOTSTRAP = process.env.BOOTSTRAP_TOKEN ?? "e2e-bootstrap-token";
 const ADMIN_PW = "Adm1n-Gr0up-Of-Tw0!";
 const USER_PW = "Ada-Test-Pw-4";
+const STATE = join(dirname(fileURLToPath(import.meta.url)), "state");
 
 let passed = 0, failed = 0;
 function check(name, ok, detail = "") {
@@ -88,6 +93,14 @@ check("GET /health", true);
 const mint = await api("/api-keys", BOOTSTRAP, { method: "POST", body: { name: "e2e-smoke", scopes: ["*"] } });
 check("mint admin API key (bootstrap token)", mint.status === 200 && !!mint.json.token, JSON.stringify(mint.json));
 const KEY = mint.json.token;
+// /setup below retires the bootstrap token; persist the key so follow-on
+// seeders (e2e/real-apps.mjs reads exactly this file) can keep driving the API.
+if (KEY) {
+  try {
+    mkdirSync(STATE, { recursive: true });
+    writeFileSync(join(STATE, "lab-key.json"), JSON.stringify({ key: KEY }));
+  } catch { /* read-only checkout etc. - follow-ons will mint their own */ }
+}
 
 const setup = await api("/setup", KEY, {
   method: "POST",

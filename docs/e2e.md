@@ -62,6 +62,28 @@ node e2e/smoke.mjs   # first, so the users exist
 node e2e/ux.spec.mjs
 ```
 
+## Third-party RP check
+
+`e2e/proxy-check.mjs` drives the compose lab's oauth2-proxy leg end to end —
+unauthenticated request to the protected upstream, bounce through FlareID's
+sign-in, and back to the upstream asserting it received
+`X-Forwarded-Email`/`X-Forwarded-Groups`. Needs the lab up and seeded:
+
+```sh
+docker compose -f e2e/compose.yml up -d flareid
+node e2e/smoke.mjs && node e2e/real-apps.mjs
+docker compose -f e2e/compose.yml up -d oauth2-proxy whoami
+node e2e/proxy-check.mjs
+```
+
+## In CI
+
+The `e2e` job in `.github/workflows/ci.yml` runs all of the above on every
+push and pull request: container build → smoke → Chromium spec → lab seed →
+oauth2-proxy flow. `smoke.mjs` saves its minted admin key to
+`e2e/state/lab-key.json` so `real-apps.mjs` can reuse it after `/setup`
+retires the bootstrap token.
+
 ## Caveats
 
 - `wrangler dev` prints `Unable to fetch the Request.cf object` behind some

@@ -20,12 +20,16 @@ const check = (n, ok) => { ok ? passed++ : failed++; console.log(` ${ok ? "ok  "
 
 const browser = await chromium.launch();
 try {
-  const page = await browser.newPage();
-
-  await page.goto(`${BASE}/login`);
-  check("/login renders the sign-in card", await page.locator("input[name=upn]").isVisible());
+  const probe = await browser.newPage();
+  await probe.goto(`${BASE}/login`);
+  check("/login renders the sign-in card", await probe.locator("input[name=upn]").isVisible());
+  await probe.close();
 
   for (const u of USERS) {
+    // A fresh context per user: /login redirects away when a session cookie is
+    // present, so reusing one page hides the form after the first sign-in.
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
     await page.goto(`${BASE}/login`);
     await page.fill("input[name=upn]", u.upn);
     await page.fill("input[name=password]", u.password);
@@ -36,11 +40,15 @@ try {
       await page.goto(`${BASE}/admin`);
       check("admin console renders", await page.locator("text=Dashboard").first().isVisible());
     }
+    await ctx.close();
   }
 
   // Localized login: ?lang=es should switch the form strings.
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
   await page.goto(`${BASE}/login?lang=es`);
-  check("Spanish locale loads", (await page.locator("button[type=submit].primary").innerText()).length > 0);
+  check("Spanish locale loads", (await page.locator("button[type=submit].primary").innerText()).trim() === "Iniciar sesión");
+  await ctx.close();
 } finally {
   await browser.close();
 }
