@@ -13,6 +13,7 @@ import { getSession } from "../lib/sessions.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed, sessionState } from "../lib/oidc.js";
 import { formPostPage } from "../lib/saml/post-form.js";
+import { decodeJwt } from "jose";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -180,8 +181,19 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
     return fail("invalid_request", "response_mode must be query or form_post.");
   }
   // Request objects are not supported (discovery says so): refuse rather than
-  // silently ignore parameters the client put only inside one.
-  if (url.searchParams.has("request")) return fail("request_not_supported", "Request objects are not supported.");
+  // silently ignore parameters the client put only inside one. A client that
+  // moved response_mode inside the object still gets its error the way it
+  // asked - the payload is decoded unverified only to pick the response mode,
+  // which is safe: the redirect_uri above was already allowlist-checked, and
+  // the claim can change the encoding of the error we send there, nothing more.
+  const objectResponseMode = (): "form_post" | undefined => {
+    try {
+      return decodeJwt(url.searchParams.get("request") ?? "").response_mode === "form_post" ? "form_post" : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  if (url.searchParams.has("request")) return respondAuthorize(c, authorizeErrorRedirect(c.env.ISSUER_URL, redirectUri, "request_not_supported", state, "Request objects are not supported."), responseMode === "form_post" ? "form_post" : objectResponseMode());
   if (url.searchParams.has("request_uri")) return fail("request_uri_not_supported", "request_uri is not supported.");
 
   // PKCE is S256 only. "plain" sends the verifier's equivalent in the clear, and

@@ -17,6 +17,11 @@ may break things.
   identifies the client from the assertion's `iss` when `client_id` is
   omitted, as RFC 7523 allows (and the OIDF conformance suite exercises).
   Previously every assertion-only token request was refused `invalid_client`.
+- **`request_not_supported` honours an in-object `response_mode`** - when a
+  client put `response_mode=form_post` inside an (unsupported) request
+  object, the error was returned as a query redirect; it is now posted back
+  the way the client asked (the unverified payload is only read to pick the
+  response encoding - the redirect URI was already allowlist-checked).
 
 **Migration `0044_client_display_metadata.sql`** - `oauth_clients.logo_uri`,
 `policy_uri`, `tos_uri` and `client_uri`, the RFC 7591 display metadata

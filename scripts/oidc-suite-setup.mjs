@@ -121,6 +121,13 @@ const secondLogin = {
   tasks: login.tasks.map((t) => (t.task === "Sign in" ? { ...t, commands: [capture("Sign in", true), ...t.commands] } : t)),
 };
 const errorPage = { match: `${issuer}/authorize*`, tasks: [{ task: "Expect an error page", match: `${issuer}/authorize*`, commands: [capture("This app can.t sign you in")] }] };
+// The registration display tests end at the sign-in page: they want a
+// screenshot of it showing the metadata the client registered
+// (login_page_placeholder), not a completed sign-in.
+const snapshotLogin = (text) => ({
+  match: `${issuer}/authorize*`,
+  tasks: [{ task: "Snapshot the sign-in page", match: `${issuer}/authorize*`, commands: [capture(text)] }],
+});
 const override = {
   // prompt=login / max_age=1: the second authorization must show the sign-in page again.
   "oidcc-prompt-login": { browser: [secondLogin] },
@@ -128,6 +135,11 @@ const override = {
   // An unregistered redirect_uri, or one only inside a request object, must end on an error page, not a redirect.
   "oidcc-ensure-registered-redirect-uri": { browser: [errorPage] },
   "oidcc-ensure-request-object-with-redirect-uri": { browser: [errorPage] },
+  // RFC 7591 display metadata: the sign-in page shows the registered logo
+  // ("Continue to <name>" sits under it) and links to the policy/TOS documents.
+  "oidcc-registration-logo-uri": { browser: [snapshotLogin("Continue to")] },
+  "oidcc-registration-policy-uri": { browser: [snapshotLogin("Privacy policy")] },
+  "oidcc-registration-tos-uri": { browser: [snapshotLogin("Terms of service")] },
 };
 
 const config = {
