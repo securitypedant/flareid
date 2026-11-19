@@ -73,4 +73,39 @@ describe("SCIM 2.0 server", () => {
     expect((await scim(dw, `/Groups/${sa}`, "PATCH", { schemas: [PATCH], Operations: [{ op: "add", path: "members", value: [{ value: self.body.id }] }] })).status).toBe(403);
     expect((await scim("flareid_sk_nope", "/Users")).status).toBe(401);
   });
+
+  it("describes its attribute surface in /Schemas (RFC 7643 §7)", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const { body } = await scim(apiKey, "/Schemas");
+    const user = body.Resources.find((s: { id: string }) => s.id === "urn:ietf:params:scim:schemas:core:2.0:User");
+    const group = body.Resources.find((s: { id: string }) => s.id === "urn:ietf:params:scim:schemas:core:2.0:Group");
+    const ent = body.Resources.find((s: { id: string }) => s.id === "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User");
+    expect(user.attributes.find((a: { name: string }) => a.name === "userName").required).toBe(true);
+    expect(group.attributes.find((a: { name: string }) => a.name === "displayName").required).toBe(true);
+    expect(ent.attributes.map((a: { name: string }) => a.name)).toEqual(expect.arrayContaining(["department", "employeeNumber", "manager"]));
+  });
+
+  it("honors sortBy/sortOrder on list endpoints (RFC 7644 §3.4.2.3)", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    for (const u of ["zoe@horizon.test", "amy@horizon.test", "mia@horizon.test"]) await scim(apiKey, "/Users", "POST", { userName: u, active: true });
+    const asc = await scim(apiKey, "/Users?sortBy=userName");
+    const names = asc.body.Resources.map((r: { userName: string }) => r.userName);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    const desc = await scim(apiKey, "/Users?sortBy=userName&sortOrder=descending");
+    expect(desc.body.Resources.map((r: { userName: string }) => r.userName)).toEqual([...names].reverse());
+    for (const g of ["Zeta", "alpha", "Beta"]) await scim(apiKey, "/Groups", "POST", { displayName: g });
+    const gsorted = await scim(apiKey, "/Groups?sortBy=displayName");
+    const gnames = gsorted.body.Resources.map((r: { displayName: string }) => r.displayName);
+    expect(gnames).toEqual([...gnames].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())));
+  });
+
+  it("reports missing required attributes as invalidSyntax", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const noUser = await scim(apiKey, "/Users", "POST", { displayName: "Nobody" });
+    expect(noUser.status).toBe(400);
+    expect(noUser.body.scimType).toBe("invalidSyntax");
+    const noGroup = await scim(apiKey, "/Groups", "POST", { schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"] });
+    expect(noGroup.status).toBe(400);
+    expect(noGroup.body.scimType).toBe("invalidSyntax");
+  });
 });
