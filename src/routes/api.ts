@@ -1127,8 +1127,10 @@ defineRoute({
     const mgf = ep.mgf === undefined ? (prev.mgf ?? null) : ep.mgf;
     if (!["sha1", "sha256", "sha384", "sha512"].includes(digest)) return c.json(badRequest(`Unsupported OAEP digest "${digest}".`), 400);
     if (mgf !== null && !["sha1", "sha256", "sha384", "sha512"].includes(mgf)) return c.json(badRequest(`Unsupported MGF1 hash "${mgf}".`), 400);
-    // WebCrypto applies one hash to OAEP data and MGF1 mask; the pair cannot diverge.
-    if (mgf !== null && mgf !== digest) return c.json(badRequest("mgf must match digest or be omitted."), 400);
+    // rsa-oaep-mgf1p fixes the mask to MGF1-SHA1 (XML Enc 1.0 §5.4.1); an
+    // explicit MGF is only declarable under the 1.1 parameterized URI.
+    if (transport !== "http://www.w3.org/2009/xmlenc11#rsa-oaep" && mgf !== null && mgf !== "sha1")
+      return c.json(badRequest("rsa-oaep-mgf1p fixes the MGF to MGF1-SHA1; select transport rsa-oaep to set an MGF."), 400);
     encryptionPolicy = JSON.stringify({ content: content ?? "http://www.w3.org/2009/xmlenc11#aes256-gcm", transport: transport ?? "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p", digest, mgf });
   } else encryptionPolicy = undefined;
 

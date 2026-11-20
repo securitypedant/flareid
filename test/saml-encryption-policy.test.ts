@@ -58,12 +58,84 @@ async function ssoResponse(upn: string): Promise<{ xml: string; form: { acsUrl: 
   return { form: { acsUrl, samlResponse }, xml: samlResponse ? new TextDecoder().decode(b64decode(samlResponse)) : "" };
 }
 
+const sha = async (name: string, d: Uint8Array) => new Uint8Array(await crypto.subtle.digest(name, d));
+
+async function mgf1(seed: Uint8Array, outLen: number, hash: string, hLen: number): Promise<Uint8Array> {
+  const out = new Uint8Array(outLen);
+  const counter = new Uint8Array(seed.length + 4);
+  counter.set(seed);
+  for (let i = 0, off = 0; off < outLen; i++, off += hLen) {
+    counter[seed.length] = i >>> 24;
+    counter[seed.length + 1] = (i >>> 16) & 0xff;
+    counter[seed.length + 2] = (i >>> 8) & 0xff;
+    counter[seed.length + 3] = i & 0xff;
+    out.set((await sha(hash, counter)).subarray(0, Math.min(hLen, outLen - off)), off);
+  }
+  return out;
+}
+
+function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  let result = 1n;
+  for (let b = base % mod, x = exp; x > 0n; x >>= 1n, b = (b * b) % mod) {
+    if (x & 1n) result = (result * b) % mod;
+  }
+  return result;
+}
+
+/** RSAES-OAEP-DECRYPT with independent md/MGF hashes - verifies wraps WebCrypto cannot express. */
+async function decryptOaep(ciphertext: Uint8Array, pkcs8: Uint8Array, mdHash: string, mdLen: number, mgfHash: string, mgfLen: number): Promise<Uint8Array> {
+  let pos = 0;
+  const hdr = () => {
+    let len = pkcs8[pos + 1]!;
+    pos += 2;
+    if (len & 0x80) { const nb = len & 0x7f; len = 0; for (let i = 0; i < nb; i++) len = (len << 8) | pkcs8[pos++]!; }
+    return { len, start: pos };
+  };
+  hdr(); // PKCS#8 SEQUENCE
+  const ver = hdr();
+  pos = ver.start + ver.len; // version INTEGER
+  const alg = hdr();
+  pos = alg.start + alg.len; // algorithmIdentifier SEQUENCE
+  const os = hdr();
+  pos = os.start; // privateKey OCTET STRING -> RSAPrivateKey
+  hdr(); // RSAPrivateKey SEQUENCE
+  const int = () => { const h = hdr(); pos = h.start + h.len; return pkcs8.subarray(h.start, h.start + h.len); };
+  int(); // version
+  const nB = int();
+  int(); // e
+  const dB = int();
+  let n = 0n;
+  let d = 0n;
+  for (const b of nB) n = (n << 8n) | BigInt(b);
+  for (const b of dB) d = (d << 8n) | BigInt(b);
+  const k = ciphertext.length;
+  let c = 0n;
+  for (const b of ciphertext) c = (c << 8n) | BigInt(b);
+  const em = new Uint8Array(k);
+  for (let m = modPow(c, d, n), i = k - 1; i >= 0; i--, m >>= 8n) em[i] = Number(m & 0xffn);
+  const seedMask = await mgf1(em.subarray(1 + mdLen), mdLen, mgfHash, mgfLen);
+  const seed = em.subarray(1, 1 + mdLen).map((b, i) => b ^ seedMask[i]!);
+  const dbMask = await mgf1(seed, k - 1 - mdLen, mgfHash, mgfLen);
+  const db = em.subarray(1 + mdLen).map((b, i) => b ^ dbMask[i]!);
+  const lHash = await sha(mdHash, new Uint8Array(0));
+  expect([...db.subarray(0, mdLen)]).toEqual([...lHash]);
+  let i = mdLen;
+  while (db[i] === 0) i++;
+  expect(db[i]).toBe(1);
+  return db.subarray(i + 1);
+}
+
 /** Decrypts the EncryptedAssertion with the SP's key; returns the plaintext and wrapper shape. */
-async function decrypt(xml: string, hash: string, mode: "gcm" | "cbc" = "gcm"): Promise<{ plain: string; xml: string }> {
+async function decrypt(xml: string, hash: string, mode: "gcm" | "cbc" = "gcm", mgfHash?: string): Promise<{ plain: string; xml: string }> {
   const values = [...xml.matchAll(/<xenc:CipherValue>([^<]+)<\/xenc:CipherValue>/g)].map((m) => b64decode(m[1]!));
   const der = b64decode(TEST_SAML_SP_KEY_PKCS8.replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""));
-  const rsa = await crypto.subtle.importKey("pkcs8", der as BufferSource, { name: "RSA-OAEP", hash }, false, ["decrypt"]);
-  const cek = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, rsa, values[0] as BufferSource);
+  const lens: Record<string, number> = { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 };
+  const cek = !mgfHash || mgfHash === hash
+    ? new Uint8Array(await crypto.subtle.decrypt(
+        { name: "RSA-OAEP" },
+        await crypto.subtle.importKey("pkcs8", der as BufferSource, { name: "RSA-OAEP", hash }, false, ["decrypt"]),
+        values[0] as BufferSource))
+    : await decryptOaep(new Uint8Array(values[0]!), new Uint8Array(der), hash, lens[hash]!, mgfHash, lens[mgfHash]!);
   const data = values[1]!;
   const ivLen = mode === "gcm" ? 12 : 16;
   const algo = mode === "gcm" ? { name: "AES-GCM", iv: data.slice(0, ivLen), tagLength: 128 } : { name: "AES-CBC", iv: data.slice(0, ivLen) };
@@ -100,20 +172,35 @@ describe("per-SP encryption policy", () => {
     expect(plain).toMatch(/^<saml:Assertion /);
   });
 
-  it("emits sha256 OAEP with an explicit MGF element", async () => {
+  it("emits mgf1p with a sha256 digest wrapped by the fixed MGF1-SHA1 mask", async () => {
     const { upn } = await seed({
       encrypt_assertions: true,
       encryption_cert: TEST_SAML_SP_CERT_PEM,
-      encryption_policy: { digest: "sha256", mgf: "sha256" },
+      encryption_policy: { digest: "sha256" },
     });
     const { xml } = await ssoResponse(upn);
     expect(xml).toContain(`Algorithm="${XENC}rsa-oaep-mgf1p"`);
     // RFC 4051 URI (xmlenc#sha256), not xmldsig#sha256 - only the former is
     // registered so peers can map it to a JCE digest.
     expect(xml).toContain(`<ds:DigestMethod Algorithm="${XENC}sha256">`);
-    // The 1.0 URI's MGF is fixed to MGF1 keyed by the digest's hash - no
-    // xenc11:MGF child is emitted under rsa-oaep-mgf1p.
+    // The 1.0 URI fixes the mask to MGF1-SHA1 - no xenc11:MGF child is
+    // emitted, and WebCrypto cannot express the mismatched pair, so the wrap
+    // is verified by manual OAEP decode: SHA-256 label hash, MGF1-SHA1 mask.
     expect(xml).not.toContain("xenc11:MGF");
+    const { plain } = await decrypt(xml, "SHA-256", "gcm", "SHA-1");
+    expect(plain).toMatch(/^<saml:Assertion /);
+  });
+
+  it("emits sha256 OAEP with an explicit mgf1sha256 under the 1.1 URI", async () => {
+    const { upn } = await seed({
+      encrypt_assertions: true,
+      encryption_cert: TEST_SAML_SP_CERT_PEM,
+      encryption_policy: { transport: "rsa-oaep", digest: "sha256", mgf: "sha256" },
+    });
+    const { xml } = await ssoResponse(upn);
+    expect(xml).toContain(`Algorithm="${XENC11}rsa-oaep"`);
+    expect(xml).toContain(`<ds:DigestMethod Algorithm="${XENC}sha256">`);
+    expect(xml).toContain(`<xenc11:MGF xmlns:xenc11="${XENC11}" Algorithm="${XENC11}mgf1sha256"></xenc11:MGF>`);
     const { plain } = await decrypt(xml, "SHA-256");
     expect(plain).toMatch(/^<saml:Assertion /);
   });
@@ -138,12 +225,14 @@ describe("per-SP encryption policy", () => {
     expect(plain).toMatch(/^<saml:Assertion /);
   });
 
-  it("rejects an mgf that disagrees with the digest", async () => {
+  it("rejects a non-sha1 MGF under rsa-oaep-mgf1p", async () => {
     const { apiKey } = await seed({ encrypt_assertions: true, encryption_cert: TEST_SAML_SP_CERT_PEM });
     const res = await apiCall("/api/v1/saml/service-providers", {
       token: apiKey,
-      body: { entity_id: SP_ENTITY_ID, encryption_policy: { digest: "sha1", mgf: "sha256" } },
+      body: { entity_id: SP_ENTITY_ID, encryption_policy: { digest: "sha256", mgf: "sha256" } },
     });
+    // The default transport is rsa-oaep-mgf1p, whose MGF is fixed to
+    // MGF1-SHA1 - declaring mgf1sha256 under it is a false declaration.
     expect(res.status).toBe(400);
   });
 });

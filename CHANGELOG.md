@@ -6,6 +6,15 @@ may break things.
 
 ## [Unreleased]
 
+## [4.5.3] - 2026-11-20
+
+- **Fixed**: `rsa-oaep-mgf1p` with a non-SHA-1 `digest` emitted wraps that no
+  peer can decrypt - the 2001 URI fixes the mask to MGF1-SHA1 (XML Enc 1.0
+  §5.4.1), but WebCrypto ties the MGF1 hash to the digest hash. Mismatched
+  (digest, MGF) pairs are now wrapped by a manual PKCS#1 v2.1
+  RSAES-OAEP-ENCRYPT. Explicit `mgf` selections other than `sha1` are rejected
+  under `rsa-oaep-mgf1p`; use `rsa-oaep` (1.1) to declare an MGF.
+
 ## [4.5.2] - 2026-11-21
 
 - **Fixed**: assertion encryption declared non-standard digest URIs
