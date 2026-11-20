@@ -156,6 +156,10 @@ export const DOCS_NAV: DocSection[] = [
       {
         "slug": "upgrading",
         "title": "Upgrading"
+      },
+      {
+        "slug": "conformance",
+        "title": "Conformance testing"
       }
     ]
   },
@@ -942,6 +946,14 @@ export const DOCS_PAGES: Record<string, DocPage> = {
       "before-you-upgrade",
       "after-you-upgrade"
     ]
+  },
+  "conformance": {
+    "slug": "conformance",
+    "title": "Conformance testing",
+    "description": "FlareID is continuously verified by three independent conformance harnesses:",
+    "headings": [],
+    "html": "<p>FlareID is continuously verified by three independent conformance harnesses:</p>\n<ul>\n<li><strong>OpenID Foundation conformance suite</strong> — nine OP certification plans\n(basic, config, form_post, dynamic registration, 3rd-party-initiated login,\nRP-initiated logout front/back-channel, session management) run in CI\nagainst the deployed IdP. Expected warnings and skips are declared in\n<code>conformance/expected-failures.json</code> and <code>expected-skips.json</code>; each entry\ndocuments why, and the run fails if a declaration stops applying.</li>\n<li><strong>SCIM Verify</strong> — the pinned SCIM 2.0 checker gates CI on the provisioning\nAPI, with one declared upstream-expectation mismatch (FlareID emits the\nerror <code>status</code> as a JSON string, per RFC 7643).</li>\n<li><strong>SAMLscope</strong> — Kantara IIP-profile SAML IdP conformance. The current run\nreports 54 PASS / 33 WARNING / 4 FAIL / 70 NOT_VERIFIED; the four failures\nare genuine capability gaps (no configurable prevented-algorithm set, fixed\nattribute <code>NameFormat</code>, no <code>NameID</code> omission option). Run artifacts are kept\nin <code>conformance/samlscope/</code>.</li>\n</ul>\n<p>For the full results, per-case verdicts, and methodology notes, see\n<code>docs/conformance.md</code> in the repository.</p>",
+    "ids": []
   },
   "api": {
     "slug": "api",

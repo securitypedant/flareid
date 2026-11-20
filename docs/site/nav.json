@@ -1,10 +1,69 @@
 [
-  { "section": "Getting started", "pages": ["index", "deploy", "my-account"] },
-  { "section": "Directory", "pages": ["users", "groups", "importing", "domains", "schemas"] },
-  { "section": "Applications", "pages": ["oidc", "saml", "cloudflare-access", "ldap"] },
-  { "section": "Provisioning and federation", "pages": ["scim", "federation", "cloudflare-one", "shared-signals"] },
-  { "section": "Security", "pages": ["security", "policies", "roles", "signing-keys"] },
-  { "section": "Customisation", "pages": ["branding", "email"] },
-  { "section": "Operations", "pages": ["monitoring", "backup", "upgrading"] },
-  { "section": "API", "pages": ["api"] }
+  {
+    "section": "Getting started",
+    "pages": [
+      "index",
+      "deploy",
+      "my-account"
+    ]
+  },
+  {
+    "section": "Directory",
+    "pages": [
+      "users",
+      "groups",
+      "importing",
+      "domains",
+      "schemas"
+    ]
+  },
+  {
+    "section": "Applications",
+    "pages": [
+      "oidc",
+      "saml",
+      "cloudflare-access",
+      "ldap"
+    ]
+  },
+  {
+    "section": "Provisioning and federation",
+    "pages": [
+      "scim",
+      "federation",
+      "cloudflare-one",
+      "shared-signals"
+    ]
+  },
+  {
+    "section": "Security",
+    "pages": [
+      "security",
+      "policies",
+      "roles",
+      "signing-keys"
+    ]
+  },
+  {
+    "section": "Customisation",
+    "pages": [
+      "branding",
+      "email"
+    ]
+  },
+  {
+    "section": "Operations",
+    "pages": [
+      "monitoring",
+      "backup",
+      "upgrading",
+      "conformance"
+    ]
+  },
+  {
+    "section": "API",
+    "pages": [
+      "api"
+    ]
+  }
 ]
