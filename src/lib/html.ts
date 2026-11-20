@@ -180,6 +180,15 @@ const STYLES = `
      between the self-service pages and the console. */
   .topbar nav a.nav-admin { background: var(--fi-accent); color: #ffffff; font-weight: 600; }
   .topbar nav a.nav-admin:hover { background: var(--fi-accent-dark); color: #ffffff; }
+  /* Burger menu on narrow screens: the inline links collapse into it.
+     .nav-links is display:contents so the desktop flex row is unchanged. */
+  .topbar nav .nav-links { display: contents; }
+  .topbar nav .nav-burger { display: none; }
+  .topbar nav .nav-burger .nav-menu-list { min-width: 200px; }
+  @media (max-width: 760px) {
+    .topbar nav .nav-links { display: none; }
+    .topbar nav .nav-burger { display: inline-block; }
+  }
 
   /* top-bar dropdown menus: the account menu and the notifications bell */
   .nav-menu { position: relative; display: inline-block; }
@@ -1395,11 +1404,23 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
     <nav>
       ${THEME_TOGGLE_BUTTON}
       ${bell}
-      <a href="/account">Account</a>
-      <a href="/account/applications">Applications</a>
-      <a href="/account/groups">Groups</a>
-      <a href="/account/security">Security</a>
-      ${isAdmin ? '<a href="/admin" class="nav-admin">Admin</a>' : ""}
+      <span class="nav-links">
+        <a href="/account">Account</a>
+        <a href="/account/applications">Applications</a>
+        <a href="/account/groups">Groups</a>
+        <a href="/account/security">Security</a>
+      </span>
+      ${isAdmin ? '<span class="nav-links"><a href="/admin" class="nav-admin">Admin</a></span>' : ""}
+      <div class="nav-menu nav-burger" data-nav-menu>
+        <button class="nav-menu-btn" type="button" aria-haspopup="true" aria-label="Menu"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
+        <div class="nav-menu-list">
+          <a href="/account">Account</a>
+          <a href="/account/applications">Applications</a>
+          <a href="/account/groups">Groups</a>
+          <a href="/account/security">Security</a>
+          ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
+        </div>
+      </div>
       <div class="nav-menu" data-nav-menu>
         <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
