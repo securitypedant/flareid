@@ -6,6 +6,21 @@ may break things.
 
 ## [Unreleased]
 
+## [4.4.1] - 2026-11-20
+
+- **Fixed**: signed SAML responses carried an invalid Response-level
+  signature. The emitted document was not the canonicalization of itself:
+  `xmlns:saml` was hoisted to the `<samlp:Response>` apex instead of the
+  elements that use the prefix (`<saml:Issuer>`, `<saml:Assertion>`),
+  `<ds:SignedInfo>` re-declared an in-scope `xmlns:ds`, and the encrypted
+  path used self-closing tags - exclusive C14N rewrites all three, so every
+  Response digest mismatched and the outer signature failed verification
+  for any conforming SP (the inner Assertion signature was unaffected and
+  did verify). Emission now places each namespace declaration where
+  exclusive C14N renders it and expands empty elements; verified
+  byte-for-byte against an independent canonicalizer plus xml-crypto.
+
+
 ## [4.4.0] - 2026-11-20
 
 - **Added**: `IsPassive` handling on both SSO bindings. A passive

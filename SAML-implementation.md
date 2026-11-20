@@ -270,6 +270,26 @@ When the service provider verifies, it parses our bytes, strips the Signature,
 canonicalizes, and must arrive back at the string from step 1. That only holds
 if our serializer emits genuinely canonical form.
 
+**Where a namespace declaration belongs.** Apex rendering does not mean "put
+every `xmlns` on the root." Exclusive C14N renders a declaration on the first
+element that *visibly utilises* the prefix (its name or an attribute name) and
+whose in-scope ancestors did not already render it - and a sibling's scope
+closes when its end tag passes. So in a `<samlp:Response>` the canonical form
+declares only `xmlns:samlp` at the apex (`samlp:` is what Response itself
+uses); `xmlns:saml` appears on the `<saml:Issuer>` and again on the
+`<saml:Assertion>`, because the Issuer's scope closed before the Assertion
+opened. Emitting `xmlns:saml` on the Response apex - the natural human
+layout - produces bytes whose canonicalization differs from the emitted
+document, and every outer signature fails to verify while the inner
+Assertion's still passes.
+
+The same rule applies inside `<ds:Signature>`: the `ds:` declaration on
+`<ds:Signature>` covers `<ds:SignedInfo>`, so the SignedInfo we emit carries
+**no** `xmlns:ds`. The SignedInfo we *sign* keeps it, because a verifier
+extracts SignedInfo and canonicalizes it as its own apex, which renders the
+declaration back. Signed bytes and emitted bytes differ by exactly that one
+attribute - deliberately.
+
 ### The traps
 
 Every one of these is silently wrong if guessed, and "silently" is the

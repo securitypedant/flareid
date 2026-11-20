@@ -2,6 +2,7 @@ import { b64encode, pemToBase64Der } from "./xml.js";
 
 const NS_XENC = "http://www.w3.org/2001/04/xmlenc#";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
+const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
 const AES256_GCM = "http://www.w3.org/2009/xmlenc11#aes256-gcm";
 const RSA_OAEP = "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p";
 
@@ -57,12 +58,15 @@ export async function encryptAssertion(assertionXml: string, certPem: string): P
   cipher.set(iv);
   cipher.set(sealed, iv.length);
 
+  // Every element here is canonical-form emission (the whole subtree sits
+  // inside the signed Response): xmlns on each usage apex, no self-closing
+  // tags - C14N renders <x></x>, never <x/>.
   return (
-    `<saml:EncryptedAssertion>` +
+    `<saml:EncryptedAssertion xmlns:saml="${NS_SAML}">` +
     `<xenc:EncryptedData xmlns:xenc="${NS_XENC}" Type="${NS_XENC}Element">` +
-    `<xenc:EncryptionMethod Algorithm="${AES256_GCM}"/>` +
+    `<xenc:EncryptionMethod Algorithm="${AES256_GCM}"></xenc:EncryptionMethod>` +
     `<ds:KeyInfo xmlns:ds="${NS_DS}">` +
-    `<xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="${RSA_OAEP}"><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/></xenc:EncryptionMethod>` +
+    `<xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="${RSA_OAEP}"><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></ds:DigestMethod></xenc:EncryptionMethod>` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(wrapped)}</xenc:CipherValue></xenc:CipherData></xenc:EncryptedKey>` +
     `</ds:KeyInfo>` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(cipher)}</xenc:CipherValue></xenc:CipherData>` +

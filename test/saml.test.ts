@@ -161,12 +161,18 @@ async function expectSignaturesVerify(xml: string): Promise<void> {
   const key = await certToVerifyKey(TEST_SAML_IDP_CERT_PEM);
   expect(key, "fixture cert should import").not.toBeNull();
 
-  // Every ds:Signature in the document: its SignedInfo bytes are what was
-  // signed, so verify them directly.
+  // Every ds:Signature in the document: a verifier canonicalizes the
+  // SignedInfo it extracts, which renders xmlns:ds at that element's apex -
+  // our emitted SignedInfo correctly omits the redundant in-scope
+  // declaration, so restore it to reproduce the canonical bytes that were
+  // actually signed.
   const signatures = xml.match(/<ds:Signature xmlns:ds="[^"]*">.*?<\/ds:Signature>/g) ?? [];
   expect(signatures.length).toBeGreaterThan(0);
   for (const sig of signatures) {
-    const signedInfo = /<ds:SignedInfo[\s\S]*?<\/ds:SignedInfo>/.exec(sig)?.[0] ?? "";
+    const extracted = /<ds:SignedInfo[\s\S]*?<\/ds:SignedInfo>/.exec(sig)?.[0] ?? "";
+    const signedInfo = extracted.startsWith(`<ds:SignedInfo>`)
+      ? `<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">` + extracted.slice("<ds:SignedInfo>".length)
+      : extracted;
     const signatureValue = /<ds:SignatureValue>([^<]*)<\/ds:SignatureValue>/.exec(sig)?.[1] ?? "";
     const ok = await crypto.subtle.verify(
       "RSASSA-PKCS1-v1_5",
@@ -524,7 +530,7 @@ describe("SAML v3: metadata import, encryption, Single Logout", () => {
     const { query } = await ssoQuery(authnRequestXml());
     const { html } = await ssoViaLogin(query, upn);
     const xml = decodeResponse(postFormFields(html).samlResponse!);
-    expect(xml).toContain("<saml:EncryptedAssertion>");
+    expect(xml).toContain("<saml:EncryptedAssertion ");
     expect(xml).not.toContain("<saml:Assertion");
     expect(xml).not.toContain(upn);
 

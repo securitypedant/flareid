@@ -147,8 +147,11 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
   const responseId = samlId();
   const assertionXml = await buildAssertion(env, p);
 
+  // xmlns:saml belongs on the Issuer, not the Response apex: exclusive C14N
+  // renders a namespace on the first element that visibly uses the prefix,
+  // so this is where the verifier's canonical form puts it.
   const inner =
-    el("saml:Issuer", {}, escapeXmlText(idpEntityId(env))) +
+    el("saml:Issuer", { "xmlns:saml": NS_SAML }, escapeXmlText(idpEntityId(env))) +
     el(
       "samlp:Status",
       {},
@@ -159,7 +162,6 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
   const unsigned = el(
     "samlp:Response",
     {
-      "xmlns:saml": NS_SAML,
       "xmlns:samlp": NS_SAMLP,
       Destination: p.acsUrl,
       ID: responseId,
@@ -186,7 +188,7 @@ export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestI
   const responseId = samlId();
   const detail = p.statusDetail ?? "RequestDenied";
   const inner =
-    el("saml:Issuer", {}, escapeXmlText(idpEntityId(env))) +
+    el("saml:Issuer", { "xmlns:saml": NS_SAML }, escapeXmlText(idpEntityId(env))) +
     el(
       "samlp:Status",
       {},
@@ -200,7 +202,6 @@ export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestI
   const unsigned = el(
     "samlp:Response",
     {
-      "xmlns:saml": NS_SAML,
       "xmlns:samlp": NS_SAMLP,
       Destination: p.acsUrl,
       ID: responseId,

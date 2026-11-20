@@ -59,8 +59,14 @@ export async function signSubtree(env: Env, canonicalXml: string, referenceId: s
 
   const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(signedInfo));
 
+  // The emitted SignedInfo drops its xmlns:ds: inside <ds:Signature> the prefix
+  // is already in scope, so canonicalization strips the redeclaration - the
+  // emitted form must match what the verifier's exc-c14n produces. The signed
+  // bytes keep it, because a verifier canonicalizes the extracted SignedInfo
+  // as its own apex and renders xmlns:ds there regardless.
+  const embeddedSignedInfo = signedInfo.replace(`<ds:SignedInfo xmlns:ds="${NS_DS}">`, "<ds:SignedInfo>");
   return (
-    `<ds:Signature xmlns:ds="${NS_DS}">${signedInfo}` +
+    `<ds:Signature xmlns:ds="${NS_DS}">${embeddedSignedInfo}` +
     `<ds:SignatureValue>${b64encode(signature)}</ds:SignatureValue>` +
     `<ds:KeyInfo><ds:X509Data><ds:X509Certificate>${idpCertBase64(env)}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>` +
     `</ds:Signature>`
