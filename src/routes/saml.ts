@@ -249,8 +249,9 @@ async function continueSsoRequest(
     // A session that did not use the second factor the user's policy needs is not reused: they sign in again.
     if (session && user && user.status === "active" && gate !== "login" && (await canSignIn(c.env, user.id))) {
       // Same rule as /authorize: a password-only session minted before forced
-      // enrolment parks the request and goes through MFA setup first.
-      if (gate === "enrol") {
+      // enrolment parks the request and goes through MFA setup first - but
+      // IsPassive forbids that UI, so it falls through to the NoPassive error.
+      if (gate === "enrol" && !request.isPassive) {
         const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending, resumeFor: user.id });
         return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
       }
@@ -259,6 +260,16 @@ async function continueSsoRequest(
       await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: request.id, sso: true }, c.req.raw);
       return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
     }
+  }
+
+  // IsPassive forbids any IdP-driven UI: when the request cannot be answered
+  // from the existing session - no session, a required factor missing, or the
+  // SP asked for fresh authentication - the SP gets a protocol-level NoPassive
+  // response at its ACS, not a login form.
+  if (request.isPassive) {
+    await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason: "is_passive_no_session" }, c.req.raw);
+    const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl, requestId: request.id, statusDetail: "NoPassive" }));
+    return c.html(samlPostForm(c.get("appName"), acsUrl, samlResponse, relayState));
   }
 
   if (!(await isSetupCompleted(c.env))) {

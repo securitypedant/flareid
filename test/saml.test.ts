@@ -64,6 +64,7 @@ function authnRequestXml(opts: {
   acsUrl?: string | null;
   destination?: string | null;
   forceAuthn?: boolean;
+  isPassive?: boolean;
   version?: string;
 } = {}): string {
   const id = opts.id ?? `_req-${Math.random().toString(16).slice(2)}`;
@@ -76,6 +77,7 @@ function authnRequestXml(opts: {
     (acs ? ` AssertionConsumerServiceURL="${acs}"` : "") +
     (destination ? ` Destination="${destination}"` : "") +
     (opts.forceAuthn ? ` ForceAuthn="true"` : "") +
+    (opts.isPassive ? ` IsPassive="true"` : "") +
     `><saml:Issuer>${issuer}</saml:Issuer></samlp:AuthnRequest>`
   );
 }
@@ -569,12 +571,14 @@ describe("SAML v3: metadata import, encryption, Single Logout", () => {
 });
 
 describe("HTTP-POST binding", () => {
-  function postSso(xml: string, relayState?: string): Promise<Response> {
+  function postSso(xml: string, opts: { relayState?: string; cookie?: string } = {}): Promise<Response> {
     const body = new URLSearchParams({ SAMLRequest: b64encode(xml) });
-    if (relayState !== undefined) body.set("RelayState", relayState);
+    if (opts.relayState !== undefined) body.set("RelayState", opts.relayState);
+    const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+    if (opts.cookie) headers.Cookie = opts.cookie;
     return SELF.fetch(`${BASE}/saml/sso`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers,
       body: body.toString(),
       redirect: "manual",
     });
@@ -599,7 +603,7 @@ describe("HTTP-POST binding", () => {
 
   /** Drives POST /saml/sso -> login form -> POST /login, returning the auto-POST fields. */
   async function postSsoViaLogin(xml: string, upn: string, relayState?: string): Promise<{ acsUrl: string | null; samlResponse: string | null; relayState: string | null; status: number; html: string }> {
-    const first = await postSso(xml, relayState);
+    const first = await postSso(xml, { relayState });
     const firstHtml = await first.text();
     const flowId = /name="flow_id" value="([^"]*)"/.exec(firstHtml)?.[1];
     if (!flowId) return { acsUrl: null, samlResponse: null, relayState: null, status: first.status, html: firstHtml };
@@ -716,5 +720,71 @@ describe("HTTP-POST binding", () => {
     );
     const response = await postSso(signed);
     expectErrorResponse(await response.text(), requestId);
+  });
+});
+
+
+describe("IsPassive", () => {
+  it("answers a passive request with no session using a signed NoPassive response, no login form", async () => {
+    await seedServiceProvider();
+    const xml = authnRequestXml({ isPassive: true });
+    const requestId = /ID="([^"]+)"/.exec(xml)![1]!;
+    const response = await SELF.fetch(`${BASE}/saml/sso`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ SAMLRequest: b64encode(xml) }).toString(),
+      redirect: "manual",
+    });
+    const html = await response.text();
+    const fields = postFormFields(html);
+    expect(fields.acsUrl, "NoPassive response posts to the registered ACS").toBe(SP_ACS);
+    expect(fields.samlResponse).toBeTruthy();
+    const responseXml = decodeResponse(fields.samlResponse!);
+    expect(responseXml).toContain("urn:oasis:names:tc:SAML:2.0:status:Responder");
+    expect(responseXml).toContain("urn:oasis:names:tc:SAML:2.0:status:NoPassive");
+    expect(responseXml).toContain(`InResponseTo="${requestId}"`);
+    expect(responseXml).not.toContain("<saml:Assertion");
+    expect(responseXml).toContain("<ds:Signature");
+  });
+
+  it("answers a passive request on the redirect binding the same way", async () => {
+    await seedServiceProvider();
+    const { query, requestId } = await ssoQuery(authnRequestXml({ isPassive: true }));
+    const response = await SELF.fetch(`${BASE}/saml/sso?${query}`, { redirect: "manual" });
+    const fields = postFormFields(await response.text());
+    expect(fields.acsUrl).toBe(SP_ACS);
+    const responseXml = decodeResponse(fields.samlResponse!);
+    expect(responseXml).toContain("urn:oasis:names:tc:SAML:2.0:status:NoPassive");
+    expect(responseXml).toContain(`InResponseTo="${requestId}"`);
+  });
+
+  it("answers a passive request from a live session without any UI", async () => {
+    const { upn } = await seedServiceProvider();
+    const login = await ssoViaLogin((await ssoQuery(authnRequestXml())).query, upn);
+    expect(login.sessionCookie).toBeTruthy();
+    const { query } = await ssoQuery(authnRequestXml({ isPassive: true }));
+    const response = await SELF.fetch(`${BASE}/saml/sso?${query}`, {
+      redirect: "manual",
+      headers: { Cookie: login.sessionCookie! },
+    });
+    const fields = postFormFields(await response.text());
+    expect(fields.acsUrl).toBe(SP_ACS);
+    expect(decodeResponse(fields.samlResponse!)).toContain("status:Success");
+  });
+
+  it("answers NoPassive when ForceAuthn would demand fresh credentials", async () => {
+    const { upn } = await seedServiceProvider();
+    const login = await ssoViaLogin((await ssoQuery(authnRequestXml())).query, upn);
+    expect(login.sessionCookie).toBeTruthy();
+    const { query } = await ssoQuery(authnRequestXml({ isPassive: true, forceAuthn: true }));
+    const response = await SELF.fetch(`${BASE}/saml/sso?${query}`, {
+      redirect: "manual",
+      headers: { Cookie: login.sessionCookie! },
+    });
+    const fields = postFormFields(await response.text());
+    expect(fields.acsUrl).toBe(SP_ACS);
+    const responseXml = decodeResponse(fields.samlResponse!);
+    expect(responseXml).toContain("urn:oasis:names:tc:SAML:2.0:status:NoPassive");
+    expect(responseXml).not.toContain("<saml:Assertion");
   });
 });

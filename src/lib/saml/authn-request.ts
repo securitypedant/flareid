@@ -20,6 +20,7 @@ export interface ParsedAuthnRequest {
   issuer: string;
   acsUrl: string | null;
   forceAuthn: boolean;
+  isPassive: boolean;
   nameIdFormat: string | null;
   destination: string | null;
 }
@@ -133,6 +134,7 @@ export function parseAuthnRequestXml(xml: string): ParsedAuthnRequest {
     issuer,
     acsUrl: root.getAttribute("AssertionConsumerServiceURL")?.trim() || null,
     forceAuthn: ["true", "1"].includes((root.getAttribute("ForceAuthn") ?? "").trim()),
+    isPassive: ["true", "1"].includes((root.getAttribute("IsPassive") ?? "").trim()),
     nameIdFormat: policyEls.length > 0 ? policyEls[0]!.getAttribute("Format") : null,
     destination: root.getAttribute("Destination")?.trim() || null,
   };

@@ -182,8 +182,9 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
  * second-level RequestDenied, the profile-preferred pair for a refused
  * authentication. Always signed: an unsigned error invites downgrade.
  */
-export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestId: string }): Promise<string> {
+export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestId: string; statusDetail?: string }): Promise<string> {
   const responseId = samlId();
+  const detail = p.statusDetail ?? "RequestDenied";
   const inner =
     el("saml:Issuer", {}, escapeXmlText(idpEntityId(env))) +
     el(
@@ -192,7 +193,7 @@ export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestI
       el(
         "samlp:StatusCode",
         { Value: "urn:oasis:names:tc:SAML:2.0:status:Responder" },
-        el("samlp:StatusCode", { Value: "urn:oasis:names:tc:SAML:2.0:status:RequestDenied" })
+        el("samlp:StatusCode", { Value: `urn:oasis:names:tc:SAML:2.0:status:${detail}` })
       )
     );
 

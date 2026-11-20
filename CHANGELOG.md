@@ -6,6 +6,17 @@ may break things.
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-11-20
+
+- **Added**: `IsPassive` handling on both SSO bindings. A passive
+  AuthnRequest is answered from the existing session when one already
+  satisfies it; otherwise - no session, a required factor missing, or
+  `ForceAuthn` demanding fresh credentials - the SP receives a signed
+  `Responder`/`NoPassive` response at its ACS instead of any IdP UI
+  (login form or forced MFA enrolment). Found by SAMLscope probe
+  IIP-IDP05, which observed a login form where the spec requires the
+  protocol error.
+
 ## [4.3.1] - 2026-11-20
 
 - **Fix**: `ecdsa-sha*` AuthnRequest signatures on the POST binding now
