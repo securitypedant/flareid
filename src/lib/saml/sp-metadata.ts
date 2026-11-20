@@ -2,6 +2,7 @@ import { DOMParser, type Element as XmlElement } from "@xmldom/xmldom";
 import { normalizeCertPem } from "./x509.js";
 import { logAudit } from "../audit.js";
 import { encryptionPolicyFromUris } from "./service-providers.js";
+import { getDisabledAlgorithms } from "../settings.js";
 
 const NS_MD = "urn:oasis:names:tc:SAML:2.0:metadata";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
@@ -186,7 +187,9 @@ export async function fetchSpMetadata(url: string): Promise<ParsedSpMetadata> {
 export async function upsertSpFromMetadata(env: import("../../env.js").Env, meta: ParsedSpMetadata, name?: string, metadataUrl?: string): Promise<number> {
   const now = new Date().toISOString();
   const existing = await env.DB.prepare("SELECT id FROM saml_service_providers WHERE entity_id = ?").bind(meta.entityId).first<{ id: number }>();
-  const encChoice = encryptionPolicyFromUris(meta.encryptionMethods);
+  // Deny-listed advertised URIs are skipped at import (IIP-ALG08.b) - a
+  // policy that still resolves to one fails closed at emission.
+  const encChoice = encryptionPolicyFromUris(meta.encryptionMethods, await getDisabledAlgorithms(env));
   const encryptionPolicy = encChoice
     ? JSON.stringify({ ...encChoice, digest: "sha1", mgf: null, advertised: meta.encryptionMethods })
     : null;

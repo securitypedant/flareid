@@ -4,7 +4,54 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [4.6.0] - 2026-11-23
+
+SAML protocol conformance (SAMLscope obligations) plus a federation JIT
+group policy, and a documented edge-security deployment.
+
+- **SAML: spec-correct request handling.**
+  - `RequestedAuthnContext` is now honored: the `exact`/`minimum`/`maximum`/
+    `better` comparison matrix is evaluated against the asserted class set —
+    unsatisfiable requests get a signed `NoAuthnContext` error response posted
+    to the ACS instead of a misleading success.
+  - `NameIDPolicy` is enforced: an unsupported `Format` →
+    `InvalidNameIDPolicy`; `SPNameQualifier` is echoed on the emitted NameID;
+    `SPProvidedID` is used for persistent identifiers (and refused without a
+    persistent format).
+  - A request `<saml:Subject>` names a specific principal — FlareID cannot
+    assert a different session user, so it now returns `UnknownPrincipal`
+    (previously the request Subject was ignored and a Success + assertion for
+    the session user was returned — the SAMLscope
+    `error_response_contains_assertion` finding).
+  - `<xenc:EncryptedKey>` now carries `Recipient` = the destination ACS URL.
+- **SAML: new conformance capabilities.**
+  - Instance `disabled_algorithms` deny-list (**Applications → SAML →
+    Settings** / `GET`+`PUT /api/v1/saml/settings`): any attempt to configure a
+    denied algorithm — by URI, fragment or token — is rejected at write time,
+    denied advertised URIs are skipped on metadata import, and a resolved
+    policy still selecting one fails closed at emission (IIP-ALG08).
+  - Per-SP **attribute definitions**: each released attribute can carry an
+    arbitrary SAML `Name` and optional `NameFormat` (API + console JSON
+    field); when present they replace `attribute_map` (IIP-IDP01). Migration
+    `0049`.
+  - `nameid_format: "none"` omits `<saml:NameID>` from the assertion's
+    Subject entirely (IIP-IDP11).
+- **Federation: JIT group policy.** Upstream IdPs can name groups that
+  just-in-time provisioned accounts join at creation; groups granting a
+  write-capable admin role are refused — read-only role groups are permitted
+  (e.g. demo observers federated in via Cloudflare Access). Migration `0050`.
+- **Security docs + edge deployment.** `SECURITY.md`, `docs/security.md`
+  (posture), `docs/secure-edge.md` (runbook), and `terraform/` — a Terraform
+  module deploying the zone security stack in front of the IdP: custom WAF
+  rules, rate limiting, API Shield schema validation from the generated
+  OpenAPI doc, zone TLS hardening. Site guide: Security → Security posture.
+- **App assignment + user launchpad.** OIDC clients and SAML service
+  providers can be restricted to groups (`assigned_groups`, empty =
+  everyone): an unauthorized OIDC authorization redirects with
+  `access_denied`, a SAML SSO gets a signed `RequestDenied` posted to the
+  ACS, and IdP-initiated launches are refused. The account page now shows
+  "My apps" — a launchpad of the apps each user can see — and the admin
+  console and provisioning API expose the assignment. Migration `0051`.
 
 ## [4.5.4] - 2026-11-22
 

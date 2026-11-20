@@ -1,0 +1,33 @@
+{
+  "slug": "aws-sso",
+  "name": "AWS IAM Identity Center",
+  "protocol": "saml",
+  "website": "https://aws.amazon.com/iam/identity-center/",
+  "instructions": {
+    "app": [
+      "In the IAM Identity Center console go to Settings > Identity source, then Actions > Change identity source > External identity provider.",
+      "Under 'Service provider metadata' AWS shows its Assertion Consumer Service (ACS) URL and issuer, or a metadata file to download - copy both into the FlareID service provider. The ACS looks like https://{region}.signin.aws.amazon.com/platform/saml/acs/{id} (check your app's current UI; the host varies by region).",
+      "Under 'Identity provider metadata' either upload the file from {idp_metadata_url} or type the values: IdP SSO URL = {idp_sso_url}, IdP issuer URL = {idp_entity_id}, and the signing certificate from {idp_cert_url}.",
+      "Type CONFIRM when prompted to finish the identity-source change.",
+      "Provision users into Identity Center (SCIM or manual). A user's Identity Center username must equal the SAML NameID FlareID sends - by default that is the user's email address."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {region} and {id} in the ACS URL with the 'Service provider metadata' values AWS shows, and fix the entity ID if AWS reports something other than urn:amazon:webservices.",
+      "Keep NameID format emailAddress so the subject matches Identity Center usernames; no extra attributes are needed for sign-in.",
+      "Only add attribute definitions if you also enable 'Attributes for access control' (ABAC) in Identity Center."
+    ]
+  },
+  "saml": {
+    "entity_id": "urn:amazon:webservices",
+    "acs_urls": ["https://{region}.signin.aws.amazon.com/platform/saml/acs/{id}"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

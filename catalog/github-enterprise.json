@@ -1,0 +1,37 @@
+{
+  "slug": "github-enterprise",
+  "name": "GitHub Enterprise",
+  "protocol": "saml",
+  "website": "https://github.com/enterprise",
+  "instructions": {
+    "app": [
+      "GitHub Enterprise Server: in the Management Console go to Authentication and select SAML. GitHub Enterprise Cloud: on github.com go to your enterprise > Settings > Authentication security and enable SAML SSO (check your app's current UI).",
+      "Set the Sign-on URL to {idp_sso_url} and the Issuer to {idp_entity_id}, then paste the public certificate from {idp_cert_url}.",
+      "Choose signature method RSA-SHA256 and digest method SHA-256 when asked.",
+      "GitHub's own values: the entity ID is https://{host} and the consumer URL is https://{host}/saml/consume. For Enterprise Cloud on github.com use https://github.com/enterprises/{enterprise} and https://github.com/enterprises/{enterprise}/saml/consume (check your app's current UI).",
+      "Save and test authentication - on Enterprise Cloud keep 'Require SAML SSO authentication' off until the test passes."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {host} with the GHES hostname, or with github.com/enterprises/{enterprise} for Enterprise Cloud - entity ID and ACS URL must both change.",
+      "The template uses a persistent NameID (the user's stable external id) and sends username/full_name/emails attributes, which is the attribute vocabulary GitHub Enterprise Server reads (check your app's current UI).",
+      "If your GitHub matches on email instead, switch NameID format to emailAddress."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://{host}",
+    "acs_urls": ["https://{host}/saml/consume"],
+    "nameid_format": "persistent",
+    "attribute_definitions": [
+      { "name": "username", "field": "username" },
+      { "name": "full_name", "field": "name" },
+      { "name": "emails", "field": "email" }
+    ],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

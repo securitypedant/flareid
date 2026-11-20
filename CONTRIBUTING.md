@@ -71,6 +71,38 @@ native speaker has been through the whole file. A new English string needs its
 key in every locale file in the same change. See [docs/i18n.md](docs/i18n.md)
 for how the language is chosen and what is translated.
 
+## Adding an app to the catalog
+
+`catalog/` holds one JSON onboarding template per well-known application -
+the values the admin console pre-fills when creating a SAML service provider
+or OIDC client, plus instructions for both sides of the integration.
+
+1. Copy `catalog/_template.json` to `catalog/<slug>.json` (`slug` is
+   lowercase, hyphen-separated, and must equal the file name).
+2. Fill in `name`, `protocol`, `website`, and the block matching the
+   protocol (`saml` or `oidc`; the other stays `null`). Use `{placeholders}`
+   for tenant-specific parts - `{team}`, `{host}`, `{domain}`, `{sub}` - and
+   the published `{idp_*}` tokens (`{idp_sso_url}`, `{idp_cert_url}`,
+   `{idp_metadata_url}`, `{idp_entity_id}`, `{idp_issuer}`, `{idp_slo_url}`,
+   `{idp_discovery_url}`, `{idp_authorize_url}`, `{idp_token_url}`,
+   `{idp_userinfo_url}`, `{idp_jwks_url}`, `{idp_logout_url}`) where the app
+   asks for FlareID's endpoints.
+3. `instructions` must cover both sides: `app` is the ordered set of steps in
+   the target application's own admin UI, `flareid` is what the administrator
+   checks or changes in FlareID after applying the template. Write what you
+   have verified; where a vendor moves fields between UI versions, say so with
+   "(check your app's current UI)" rather than guessing.
+4. Import the new file in `src/lib/catalog.ts` and add it to `ENTRIES`, and
+   add the slug to `EXPECTED_SLUGS` in `test/catalog.test.ts`.
+5. Run `npm test`: `test/catalog.test.ts` validates every entry against
+   `catalog/schema.json`, checks the per-protocol required fields, that every
+   `{idp_*}` placeholder used is one the renderer knows, and that template
+   attribute fields are in the user-attribute vocabulary the console accepts.
+
+Accuracy matters more than coverage here - an entry that tells an
+administrator the wrong entity ID costs them a debugging session. When in
+doubt, mark it "(check your app's current UI)".
+
 ## House style
 
 A couple of conventions that are not obvious from the code:

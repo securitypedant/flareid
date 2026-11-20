@@ -1,0 +1,38 @@
+{
+  "slug": "zoom",
+  "name": "Zoom",
+  "protocol": "saml",
+  "website": "https://zoom.us",
+  "instructions": {
+    "app": [
+      "In the Zoom web portal go to Admin > Advanced > Single Sign-On (a vanity URL https://{sub}.zoom.us must be approved first), then Configure SSO Manually (check your app's current UI).",
+      "Sign-in page URL = {idp_sso_url}; sign-out page URL = {idp_slo_url} if offered.",
+      "Identity provider certificate: paste the certificate body from {idp_cert_url} (without the BEGIN/END lines).",
+      "Issuer (IDP Entity ID) = {idp_entity_id}; Service Provider (SP) Entity ID = https://{sub}.zoom.us.",
+      "Binding can stay default (http-post or http-redirect - FlareID answers both); set the signature hash algorithm to SHA-256 and turn 'Sign SAML request' off.",
+      "Save, then under Security > Sign-in methods allow Single Sign-On and test with a non-admin user."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {sub} with the approved vanity subdomain in both the entity ID and ACS URL.",
+      "Keep NameID format emailAddress - Zoom matches the assertion to a Zoom account strictly by email address.",
+      "The optional first_name/last_name/email attributes feed Zoom's SAML response mapping; adjust the names to what your Zoom mapping page expects (check your app's current UI)."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://{sub}.zoom.us",
+    "acs_urls": ["https://{sub}.zoom.us/saml/SSO"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [
+      { "name": "email", "field": "email" },
+      { "name": "first_name", "field": "given_name" },
+      { "name": "last_name", "field": "family_name" }
+    ],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

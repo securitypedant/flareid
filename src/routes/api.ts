@@ -38,19 +38,19 @@ import {
   defaultSchemaId,
 } from "../lib/schemas.js";
 import { isValidDomain, addDomain, applyDomainToAllUsers, getDefaultDomain, listDomains, setDefaultDomain } from "../lib/domains.js";
-import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, updateUpstreamIdp, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
+import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, MAX_JIT_GROUPS, updateUpstreamIdp, upstreamJitGroups, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { logAudit } from "../lib/audit.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
-import { getAppName, isSetupCompleted } from "../lib/settings.js";
+import { getAppName, getDisabledAlgorithms, isSetupCompleted, normalizeDisabledAlgorithms, setDisabledAlgorithms } from "../lib/settings.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, replaceScimMappings, setCorrelationKeys, setMasteredFields } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
 import { CONTENT_ALGORITHMS, TRANSPORT_ALGORITHMS } from "../lib/saml/encrypt.js";
-import { spEncryptionPolicy } from "../lib/saml/service-providers.js";
+import { disabledAlgorithmInPolicy, normalizeAttributeDefinitions, parseAssignedGroupIds, spAttributeDefinitions, spEncryptionPolicy } from "../lib/saml/service-providers.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -507,10 +507,10 @@ defineRoute({
 
 defineRoute({
   method: "get", path: "/api/v1/clients", tag: "OIDC clients", permission: "oidc:read", summary: "List OIDC clients",
-  response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), created_at: z.string() })) }),
+  response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()), created_at: z.string() })) }),
 }, async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, created_at FROM oauth_clients ORDER BY name"
+    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, assigned_groups, created_at FROM oauth_clients ORDER BY name"
   ).all<Omit<OAuthClientRow, "client_secret_hash">>();
 
   return c.json({
@@ -520,6 +520,7 @@ defineRoute({
       name: cl.name,
       redirect_uris: JSON.parse(cl.redirect_uris) as string[],
       id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
+      assigned_groups: parseAssignedGroupIds(cl.assigned_groups),
       created_at: cl.created_at,
     })),
   });
@@ -554,8 +555,9 @@ defineRoute({
     backchannel_logout_uri: z.string().optional(),
     initiate_login_uri: z.string().optional(),
     id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed (default RS256)." }),
+    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction." }),
   }),
-  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS) }),
+  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
   const body = await readJson<{
     name?: string;
@@ -570,6 +572,7 @@ defineRoute({
     backchannel_logout_uri?: string;
     initiate_login_uri?: string;
     id_token_signed_response_alg?: string;
+    assigned_groups?: number[] | null;
   }>(c);
   const isPublic = body.client_type === "public";
   if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
@@ -612,8 +615,11 @@ defineRoute({
     return c.json(badRequest(`client_secret is ${seededSecret.length} characters; at least 24 are required.`), 400);
   }
 
+  // undefined keeps the stored restriction; null and [] both mean everyone.
+  const assigned = body.assigned_groups === undefined ? undefined : Array.isArray(body.assigned_groups) ? JSON.stringify(body.assigned_groups.filter((n) => Number.isInteger(n))) : null;
+
   const existing = seededId
-    ? await c.env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(seededId).first<{ id: number }>()
+    ? await c.env.DB.prepare("SELECT id, assigned_groups FROM oauth_clients WHERE client_id = ?").bind(seededId).first<{ id: number; assigned_groups: string | null }>()
     : null;
 
   const clientId = seededId || `flareid_${randomToken(8)}`;
@@ -632,9 +638,10 @@ defineRoute({
     if (bcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE client_id = ?").bind(bcl, clientId).run();
     if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
     if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(idTokenAlg, existing.id).run();
+    if (assigned !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE id = ?").bind(assigned, existing.id).run();
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
-    return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256" });
+    return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256", assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
   }
 
   const result = await c.env.DB.prepare(
@@ -648,6 +655,7 @@ defineRoute({
   if (bcl !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE client_id = ?").bind(bcl, clientId).run();
   if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
   if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE client_id = ?").bind(idTokenAlg, clientId).run();
+  if (assigned !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE client_id = ?").bind(assigned, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({
@@ -661,6 +669,7 @@ defineRoute({
     client_type: isPublic ? "public" : "confidential",
     redirect_uris: redirectUris,
     id_token_signed_response_alg: idTokenAlg ?? "RS256",
+    assigned_groups: parseAssignedGroupIds(assigned ?? null),
   });
 });
 
@@ -921,10 +930,13 @@ const UpstreamIdpBody = z.object({
   enabled: z.boolean().optional(),
   jit: z.boolean().optional(),
   jit_domain: z.string().optional(),
+  jit_groups: z.array(z.number().int().positive()).max(MAX_JIT_GROUPS).optional().openapi({
+    description: "Group ids every JIT-provisioned account joins at creation. A group may grant a read-only admin role; one granting a write-capable role is refused.",
+  }),
   config: z.record(z.string(), z.union([z.string(), z.record(z.string(), z.string())])),
 });
 
-function upstreamInput(body: { name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }, existing?: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
+function upstreamInput(body: { name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; jit_groups?: number[]; config?: Record<string, unknown> }, existing?: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
   const cfg: Record<string, string | Record<string, string>> = existing ? { ...(idpConfig(existing) as unknown as Record<string, string | Record<string, string>>) } : {};
   for (const [k, v] of Object.entries(body.config ?? {})) {
     if (typeof v === "string") cfg[k] = v;
@@ -935,6 +947,7 @@ function upstreamInput(body: { name?: string; protocol?: string; enabled?: boole
     protocol: (body.protocol ?? existing?.protocol ?? "oidc") === "saml" ? "saml" : "oidc",
     jit: body.jit ?? (existing ? existing.jit === 1 : false),
     jitDomain: body.jit_domain ?? existing?.jit_domain ?? "",
+    jitGroups: body.jit_groups ?? (existing ? upstreamJitGroups(existing) : []),
     enabled: body.enabled ?? (existing ? existing.enabled === 1 : true),
     keepSecret: existing != null && cfg.client_secret === undefined,
     config: cfg,
@@ -944,10 +957,10 @@ function upstreamInput(body: { name?: string; protocol?: string; enabled?: boole
 defineRoute({
   method: "post", path: "/api/v1/federation/idps", tag: "Federation", permission: "admin", summary: "Add an upstream identity provider",
   description:
-    "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.",
+    "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches; `jit_groups` lists the groups every such account joins. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.",
   body: UpstreamIdpBody, errors: [400, 409],
 }, async (c) => {
-  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }>(c);
+  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; jit_groups?: number[]; config?: Record<string, unknown> }>(c);
   try {
     const created = await createUpstreamIdp(c.env, upstreamInput(body));
     await logAudit(c.env, auditActor(c.get("apiActor")), "federation.idp_created", created.name, { protocol: created.protocol }, c.req.raw);
@@ -965,7 +978,7 @@ defineRoute({
   const id = Number(c.req.param("id"));
   const existing = await getUpstreamIdp(c.env, id);
   if (!existing) return notFound(c, "No such upstream identity provider.");
-  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; config?: Record<string, unknown> }>(c);
+  const body = await readJson<{ name?: string; protocol?: string; enabled?: boolean; jit?: boolean; jit_domain?: string; jit_groups?: number[]; config?: Record<string, unknown> }>(c);
   try {
     const updated = await updateUpstreamIdp(c.env, id, upstreamInput(body, existing));
     await logAudit(c.env, auditActor(c.get("apiActor")), "federation.idp_updated", updated.name, { protocol: updated.protocol, enabled: updated.enabled }, c.req.raw);
@@ -1001,6 +1014,7 @@ function spJson(sp: SamlServiceProviderRow) {
     default_acs_url: sp.default_acs_url,
     nameid_format: sp.nameid_format,
     attribute_map: JSON.parse(sp.attribute_map) as Record<string, string>,
+    attribute_definitions: spAttributeDefinitions(sp).map((d) => ({ name: d.name, field: d.field, name_format: d.nameFormat ?? null })),
     sign_response: sp.sign_response === 1,
     sign_assertion: sp.sign_assertion === 1,
     want_authn_requests_signed: sp.want_authn_requests_signed === 1,
@@ -1008,6 +1022,7 @@ function spJson(sp: SamlServiceProviderRow) {
     slo_url: sp.slo_url,
     encryption_cert: sp.encryption_cert,
     encrypt_assertions: sp.encrypt_assertions === 1,
+    assigned_groups: parseAssignedGroupIds(sp.assigned_groups),
     created_at: sp.created_at,
     updated_at: sp.updated_at,
   };
@@ -1021,6 +1036,36 @@ defineRoute({
   return c.json({ service_providers: results.map(spJson) });
 });
 
+const SamlSettingsSchema = z.object({
+  disabled_algorithms: z.array(z.string()).openapi({
+    description: "Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission.",
+  }),
+});
+
+defineRoute({
+  method: "get", path: "/api/v1/saml/settings", tag: "SAML", permission: "saml:read", summary: "Read the instance SAML settings",
+  response: SamlSettingsSchema,
+}, async (c) => c.json({ disabled_algorithms: await getDisabledAlgorithms(c.env) }));
+
+defineRoute({
+  method: "put", path: "/api/v1/saml/settings", tag: "SAML", permission: "saml:write", summary: "Set the SAML algorithm deny list",
+  description:
+    "Entries are XML Encryption URIs or short tokens, matched against content, key-transport, OAEP digest and MGF choices alike (a URI's #-fragment counts too). Replaces the whole list. A service provider whose encryption policy resolves to a denied algorithm cannot be saved, and one already stored fails closed at emission.",
+  body: SamlSettingsSchema, errors: [400], response: SamlSettingsSchema,
+}, async (c) => {
+  const body = await readJson<{ disabled_algorithms?: unknown }>(c);
+  if (!Array.isArray(body.disabled_algorithms)) return c.json(badRequest("disabled_algorithms must be an array of strings."), 400);
+  let saved: string[];
+  try {
+    saved = normalizeDisabledAlgorithms(body.disabled_algorithms);
+  } catch (e) {
+    return c.json(badRequest(e instanceof RangeError ? e.message : "Invalid disabled_algorithms."), 400);
+  }
+  await setDisabledAlgorithms(c.env, saved);
+  await logAudit(c.env, auditActor(c.get("apiActor")), "saml.disabled_algorithms_changed", undefined, { count: saved.length }, c.req.raw);
+  return c.json({ disabled_algorithms: saved });
+});
+
 interface SpUpsertBody {
   subject_id?: "" | "subject-id" | "pairwise-id";
   entity_id?: string;
@@ -1029,6 +1074,7 @@ interface SpUpsertBody {
   default_acs_url?: string;
   nameid_format?: string;
   attribute_map?: Record<string, string>;
+  attribute_definitions?: { name?: string; field?: string; name_format?: string }[] | null;
   sign_response?: boolean;
   sign_assertion?: boolean;
   want_authn_requests_signed?: boolean;
@@ -1037,6 +1083,7 @@ interface SpUpsertBody {
   encryption_cert?: string | null;
   encrypt_assertions?: boolean;
   encryption_policy?: { content?: string; transport?: string; digest?: string; mgf?: string | null } | null;
+  assigned_groups?: number[] | null;
 }
 
 /**
@@ -1054,8 +1101,13 @@ defineRoute({
     name: z.string().optional(),
     acs_urls: z.array(z.string()).optional(),
     default_acs_url: z.string().optional(),
-    nameid_format: z.string().optional(),
+    nameid_format: z.string().optional().openapi({ description: 'transient, emailAddress, persistent - or "none" to omit <saml:NameID> from the Subject entirely.' }),
     attribute_map: StringMap.optional(),
+    attribute_definitions: z
+      .array(z.object({ name: z.string(), field: z.string(), name_format: z.string().optional() }))
+      .nullable()
+      .optional()
+      .openapi({ description: "Released attributes with an arbitrary SAML Name and optional NameFormat per entry; replaces attribute_map when non-empty. null clears it back to the map." }),
     sign_response: z.boolean().optional(),
     sign_assertion: z.boolean().optional(),
     want_authn_requests_signed: z.boolean().optional(),
@@ -1070,8 +1122,9 @@ defineRoute({
       mgf: z.string().nullable().optional(),
     }).nullable().optional(),
     subject_id: z.enum(["", "subject-id", "pairwise-id"]).optional(),
+    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction." }),
   }),
-  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string() }),
+  response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string(), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
   const body = await readJson<SpUpsertBody>(c);
   const entityId = String(body.entity_id ?? "").trim();
@@ -1089,12 +1142,28 @@ defineRoute({
   if (defaultAcs && !acsUrls.includes(defaultAcs)) return c.json(badRequest("default_acs_url must be one of the acs_urls."), 400);
 
   const nameidFormat = body.nameid_format ?? existing?.nameid_format ?? "transient";
-  if (!nameIdFormatUri(nameidFormat)) return c.json(badRequest(`Unsupported nameid_format "${nameidFormat}".`), 400);
+  // "none" (IIP-IDP11) is a stored format too: the Subject then carries no NameID.
+  if (nameidFormat !== "none" && !nameIdFormatUri(nameidFormat)) return c.json(badRequest(`Unsupported nameid_format "${nameidFormat}".`), 400);
 
   const attributeMap = body.attribute_map ?? (existing ? (JSON.parse(existing.attribute_map) as Record<string, string>) : {});
+  const validField = (field: string) => USER_ATTRIBUTE_FIELDS.includes(field as (typeof USER_ATTRIBUTE_FIELDS)[number]);
   for (const field of Object.values(attributeMap)) {
-    if (!USER_ATTRIBUTE_FIELDS.includes(field as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
+    if (!validField(field)) {
       return c.json(badRequest(`"${field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`), 400);
+    }
+  }
+
+  // Attribute definitions: null clears back to the plain map; undefined keeps the stored value.
+  let attributeDefinitions: string | null | undefined;
+  if (body.attribute_definitions !== undefined) {
+    if (body.attribute_definitions === null) attributeDefinitions = null;
+    else {
+      const norm = normalizeAttributeDefinitions(body.attribute_definitions);
+      if ("error" in norm) return c.json(badRequest(norm.error), 400);
+      for (const def of norm.defs) {
+        if (!validField(def.field)) return c.json(badRequest(`"${def.field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`), 400);
+      }
+      attributeDefinitions = JSON.stringify(norm.defs);
     }
   }
 
@@ -1137,10 +1206,16 @@ defineRoute({
     // explicit MGF is only declarable under the 1.1 parameterized URI.
     if (transport !== "http://www.w3.org/2009/xmlenc11#rsa-oaep" && mgf !== null && mgf !== "sha1")
       return c.json(badRequest("rsa-oaep-mgf1p fixes the MGF to MGF1-SHA1; select transport rsa-oaep to set an MGF."), 400);
-    encryptionPolicy = JSON.stringify({ content: content ?? "http://www.w3.org/2009/xmlenc11#aes256-gcm", transport: transport ?? "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p", digest, mgf });
+    const resolved = { content: content ?? "http://www.w3.org/2009/xmlenc11#aes256-gcm", transport: transport ?? "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p", digest, mgf };
+    // IIP-ALG08.a: selecting a deny-listed algorithm fails at write time.
+    const denied = disabledAlgorithmInPolicy(resolved, await getDisabledAlgorithms(c.env));
+    if (denied) return c.json(badRequest(`Encryption ${denied.field} algorithm "${denied.value}" is disabled for this instance.`), 400);
+    encryptionPolicy = JSON.stringify(resolved);
   } else encryptionPolicy = undefined;
 
   const name = String(body.name ?? existing?.name ?? entityId).trim();
+  // undefined keeps the stored restriction; null and [] both mean everyone.
+  const assigned = body.assigned_groups === undefined ? undefined : Array.isArray(body.assigned_groups) ? JSON.stringify(body.assigned_groups.filter((n) => Number.isInteger(n))) : null;
   const now = new Date().toISOString();
   const values = [
     entityId,
@@ -1160,25 +1235,27 @@ defineRoute({
 
   if (existing) {
     await c.env.DB.prepare(
-      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, encryption_policy = ?, updated_at = ? WHERE id = ?`
+      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, encryption_policy = ?, attribute_definitions = ?, updated_at = ? WHERE id = ?`
     )
-      .bind(...values, encryptionPolicy === undefined ? (existing.encryption_policy ?? null) : encryptionPolicy, now, existing.id)
+      .bind(...values, encryptionPolicy === undefined ? (existing.encryption_policy ?? null) : encryptionPolicy, attributeDefinitions === undefined ? (existing.attribute_definitions ?? null) : attributeDefinitions, now, existing.id)
       .run();
     if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
+    if (assigned !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_groups = ? WHERE id = ?").bind(assigned, existing.id).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
-    return c.json({ ok: true, created: false, id: existing.id, entity_id: entityId });
+    return c.json({ ok: true, created: false, id: existing.id, entity_id: entityId, assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
   }
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, encryption_policy, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, encryption_policy, attribute_definitions, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(...values, encryptionPolicy ?? null, now, now)
+    .bind(...values, encryptionPolicy ?? null, attributeDefinitions ?? null, now, now)
     .run();
 
   if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
+  if (assigned !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_groups = ? WHERE id = ?").bind(assigned, result.meta.last_row_id).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.created", name, { entity_id: entityId }, c.req.raw);
-  return c.json({ ok: true, created: true, id: result.meta.last_row_id, entity_id: entityId });
+  return c.json({ ok: true, created: true, id: result.meta.last_row_id, entity_id: entityId, assigned_groups: parseAssignedGroupIds(assigned ?? null) });
 });
 
 // Keyed on the numeric row id, not entity_id: entity IDs are URLs, and a

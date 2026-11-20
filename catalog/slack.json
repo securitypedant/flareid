@@ -1,0 +1,38 @@
+{
+  "slug": "slack",
+  "name": "Slack",
+  "protocol": "saml",
+  "website": "https://slack.com",
+  "instructions": {
+    "app": [
+      "In the Slack workspace admin (https://{team}.slack.com/admin) go to Settings & permissions > Authentication and choose Configure next to SAML authentication (custom SAML needs a paid plan).",
+      "Set SAML 2.0 Endpoint (HTTP) to {idp_sso_url}.",
+      "Set Identity Provider Issuer to {idp_entity_id}.",
+      "Paste the public certificate from {idp_cert_url} - Slack wants the base64 body between the BEGIN/END lines (check your app's current UI).",
+      "Expand Advanced options if offered: leave 'AuthnRequests signed' off, and choose whether the whole response or only the assertion must be signed - this template signs both, so either works.",
+      "Save, then use Test Configuration before requiring SSO for the workspace."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {team} in the ACS URL with the workspace subdomain - the entity ID is https://slack.com for every workspace.",
+      "Keep NameID format emailAddress: Slack identifies members by email, which is also what the first_name/last_name attributes personalize.",
+      "Both 'Sign the Response' and 'Sign the Assertion' stay on - Slack accepts either, and signing both is what most IdPs ship."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://slack.com",
+    "acs_urls": ["https://{team}.slack.com/sso/saml"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [
+      { "name": "email", "field": "email" },
+      { "name": "first_name", "field": "given_name" },
+      { "name": "last_name", "field": "family_name" }
+    ],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

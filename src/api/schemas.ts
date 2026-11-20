@@ -98,11 +98,20 @@ export const ClientSchema = z
     frontchannel_logout_uri: z.string().nullable(),
     trusted: z.boolean(),
     allowed_claims: z.array(z.string()).nullable().openapi({ description: "Claim groups released to this client; null = every group." }),
+    assigned_groups: z.array(z.number()).openapi({ description: "Group ids whose members may see and sign in to this app; [] = everyone." }),
     id_token_signed_response_alg: z.enum(["RS256", "ES256"]).openapi({ description: "How this client's id_tokens are signed." }),
     created_at: z.string(),
   })
   .passthrough()
   .openapi("OidcClient");
+
+const AttributeDefinitionSchema = z
+  .object({
+    name: z.string().openapi({ description: "The saml:Attribute Name - an arbitrary string." }),
+    field: z.string().openapi({ description: "The user field feeding it (same vocabulary as attribute_map values)." }),
+    name_format: z.string().nullable().openapi({ description: "The saml:Attribute NameFormat - an arbitrary URI; null = the IdP default (attrname-format:uri)." }),
+  })
+  .openapi("SamlAttributeDefinition");
 
 export const ServiceProviderSchema = z
   .object({
@@ -111,8 +120,9 @@ export const ServiceProviderSchema = z
     name: z.string(),
     acs_urls: z.array(z.string()),
     default_acs_url: z.string().nullable(),
-    nameid_format: z.string(),
+    nameid_format: z.string().openapi({ description: 'transient, emailAddress, persistent - or "none": the Subject carries no <saml:NameID>.' }),
     attribute_map: StringMap,
+    attribute_definitions: z.array(AttributeDefinitionSchema).openapi({ description: "Released attributes with arbitrary Name/NameFormat; overrides attribute_map when non-empty." }),
     sign_response: z.boolean(),
     sign_assertion: z.boolean(),
     want_authn_requests_signed: z.boolean(),
@@ -120,6 +130,7 @@ export const ServiceProviderSchema = z
     slo_url: z.string().nullable(),
     encryption_cert: z.string().nullable(),
     encrypt_assertions: z.boolean(),
+    assigned_groups: z.array(z.number()).openapi({ description: "Group ids whose members may see and SSO into this app; [] = everyone." }),
     created_at: z.string(),
     updated_at: z.string(),
   })

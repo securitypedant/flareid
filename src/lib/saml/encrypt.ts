@@ -1,4 +1,4 @@
-import { b64encode, pemToBase64Der } from "./xml.js";
+import { b64encode, escapeXmlAttr, pemToBase64Der } from "./xml.js";
 
 const NS_XENC = "http://www.w3.org/2001/04/xmlenc#";
 const NS_XENC11 = "http://www.w3.org/2009/xmlenc11#";
@@ -174,8 +174,11 @@ async function rsaOaepWrap(message: Uint8Array, spki: Uint8Array, md: { subtle: 
  * explicit `xenc11:MGF` and defaults an omitted one to MGF1-SHA1 (§5.4.2).
  * WebCrypto uses one OAEP hash for both the data hash and the MGF1 mask, so
  * mismatched (digest, mgf) pairs are wrapped by rsaOaepWrap instead.
+ *
+ * `recipient` is the destination ACS URL, emitted as the EncryptedKey's
+ * Recipient attribute (XML Encryption: the entity the key is intended for).
  */
-export async function encryptAssertion(assertionXml: string, certPem: string, policy?: Partial<EncryptionPolicy>): Promise<string> {
+export async function encryptAssertion(assertionXml: string, certPem: string, policy?: Partial<EncryptionPolicy>, recipient?: string): Promise<string> {
   const p = { ...DEFAULT_ENCRYPTION_POLICY, ...(policy ?? {}) };
   const content = CONTENT_ALGORITHMS[p.content];
   const digest = DIGEST_URIS[p.digest];
@@ -238,7 +241,7 @@ export async function encryptAssertion(assertionXml: string, certPem: string, po
     `<xenc:EncryptedData xmlns:xenc="${NS_XENC}" Type="${NS_XENC}Element">` +
     `<xenc:EncryptionMethod Algorithm="${p.content}"></xenc:EncryptionMethod>` +
     `<ds:KeyInfo xmlns:ds="${NS_DS}">` +
-    `<xenc:EncryptedKey>${transportMethod}` +
+    `<xenc:EncryptedKey${recipient ? ` Recipient="${escapeXmlAttr(recipient)}"` : ""}>${transportMethod}` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(wrapped)}</xenc:CipherValue></xenc:CipherData></xenc:EncryptedKey>` +
     `</ds:KeyInfo>` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(cipher)}</xenc:CipherValue></xenc:CipherData>` +

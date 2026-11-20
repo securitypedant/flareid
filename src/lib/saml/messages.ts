@@ -1,23 +1,30 @@
 import { encryptAssertion } from "./encrypt.js";
-import { spEncryptionPolicy } from "./service-providers.js";
+import { spEncryptionPolicy, spOmitsNameId } from "./service-providers.js";
+import { getDisabledAlgorithms } from "../settings.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { sha256Hex } from "../tokens.js";
 import { el, escapeXmlText, samlId, samlInstant } from "./xml.js";
 import { insertSignatureAfterIssuer, signSubtree } from "./sign.js";
-import { resolveAttributes } from "./attributes.js";
+import { resolveAttributes, type ResolvedAttribute } from "./attributes.js";
 
 export const NS_SAMLP = "urn:oasis:names:tc:SAML:2.0:protocol";
 export const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
 
-const NAMEID_FORMAT_URIS: Record<string, string> = {
+export const NAMEID_FORMAT_URIS: Record<string, string> = {
   transient: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
   emailAddress: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
   persistent: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
 };
 
+/** URI -> short name, for resolving a NameIDPolicy/@Format into something nameId() can emit. */
+export const NAMEID_FORMAT_BY_URI: Record<string, string> = Object.fromEntries(
+  Object.entries(NAMEID_FORMAT_URIS).map(([name, uri]) => [uri, name])
+);
+
 const NAMEID_FORMAT_NAMES = Object.keys(NAMEID_FORMAT_URIS);
-const AUTHN_CONTEXT = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport";
+/** The only AuthnContextClassRef this IdP ever asserts - the comparison matrix in saml.ts is built on it. */
+export const AUTHN_CONTEXT = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport";
 const ATTR_NAME_FORMAT = "urn:oasis:names:tc:SAML:2.0:attrname-format:uri";
 
 /** The IdP's entityID - the issuer URL, the same thing OIDC already identifies this deployment by. */
@@ -27,6 +34,11 @@ export function idpEntityId(env: Env): string {
 
 export function supportedNameIdFormats(): string[] {
   return NAMEID_FORMAT_NAMES;
+}
+
+/** The Format URIs the responder can actually produce - a NameIDPolicy naming anything else gets InvalidNameIDPolicy. */
+export function supportedNameIdFormatUris(): string[] {
+  return Object.values(NAMEID_FORMAT_URIS);
 }
 
 export function nameIdFormatUri(format: string): string | null {
@@ -44,6 +56,10 @@ export interface IssueParams {
   sessionId: string;
   /** When authentication actually happened: session creation for SSO, now for a fresh login. */
   authnInstant: Date;
+  /** The request's NameIDPolicy (validated in saml.ts): a Format URI we support, the SP namespace, and the SP-chosen persistent value. */
+  nameIdFormat?: string | null;
+  nameIdSpNameQualifier?: string | null;
+  nameIdSpProvidedId?: string | null;
 }
 
 const ASSERTION_TTL_MS = 5 * 60 * 1000;
@@ -65,12 +81,12 @@ export async function sessionIdentifiers(sessionId: string, entityId: string): P
   return { nameId: `_${hash}`, sessionIndex: `_${hash}` };
 }
 
-function attributeStatement(attributes: { name: string; values: string[] }[]): string {
+function attributeStatement(attributes: ResolvedAttribute[]): string {
   const inner = attributes
     .map((a) =>
       el(
         "saml:Attribute",
-        { Name: a.name, NameFormat: ATTR_NAME_FORMAT },
+        { Name: a.name, NameFormat: a.nameFormat ?? ATTR_NAME_FORMAT },
         a.values.map((v) => el("saml:AttributeValue", {}, escapeXmlText(v))).join("")
       )
     )
@@ -78,12 +94,32 @@ function attributeStatement(attributes: { name: string; values: string[] }[]): s
   return el("saml:AttributeStatement", {}, inner);
 }
 
-async function nameId(env: Env, sp: SamlServiceProviderRow, user: UserRow, sessionId: string): Promise<{ format: string; value: string }> {
-  const format = NAMEID_FORMAT_URIS[sp.nameid_format] ? sp.nameid_format : "transient";
-  if (format === "emailAddress") return { format: NAMEID_FORMAT_URIS[format]!, value: user.upn };
-  if (format === "persistent") return { format: NAMEID_FORMAT_URIS[format]!, value: user.external_id };
-  const { nameId } = await sessionIdentifiers(sessionId, sp.entity_id);
-  return { format: NAMEID_FORMAT_URIS[format]!, value: nameId };
+async function nameId(
+  env: Env,
+  sp: SamlServiceProviderRow,
+  user: UserRow,
+  sessionId: string,
+  req?: { format?: string | null; spNameQualifier?: string | null; spProvidedId?: string | null }
+): Promise<{ format: string; value: string; spNameQualifier?: string }> {
+  // An explicit NameIDPolicy/@Format overrides the SP's configured default:
+  // SAML Core 3.4.1.4 requires the returned identifier to conform to the
+  // accepted policy (unsupported formats are refused earlier, in saml.ts).
+  const requested = req?.format ? NAMEID_FORMAT_BY_URI[req.format] : undefined;
+  const format = requested ?? (NAMEID_FORMAT_URIS[sp.nameid_format] ? sp.nameid_format : "transient");
+  const out: { format: string; value: string; spNameQualifier?: string } = {
+    format: NAMEID_FORMAT_URIS[format]!,
+    value: "",
+    spNameQualifier: req?.spNameQualifier ?? undefined,
+  };
+  if (format === "emailAddress") {
+    out.value = user.upn;
+  } else if (format === "persistent") {
+    // SPProvidedID is the SP's own choice of persistent value (Core 3.4.1.1).
+    out.value = req?.spProvidedId ?? user.external_id;
+  } else {
+    out.value = (await sessionIdentifiers(sessionId, sp.entity_id)).nameId;
+  }
+  return out;
 }
 
 async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
@@ -93,7 +129,15 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
   const notBefore = samlInstant(new Date(Date.now() - CLOCK_SKEW_MS));
   const notOnOrAfter = samlInstant(new Date(Date.now() + ASSERTION_TTL_MS));
   const { sessionIndex } = await sessionIdentifiers(sessionId, sp.entity_id);
-  const nid = await nameId(env, sp, user, sessionId);
+  // nameid_format "none" (IIP-IDP11): the Subject carries only
+  // SubjectConfirmation - no <saml:NameID> element at all.
+  const nid = spOmitsNameId(sp)
+    ? null
+    : await nameId(env, sp, user, sessionId, {
+        format: p.nameIdFormat,
+        spNameQualifier: p.nameIdSpNameQualifier,
+        spProvidedId: p.nameIdSpProvidedId,
+      });
   const attributes = await resolveAttributes(env, sp, user);
 
   const inner =
@@ -101,7 +145,7 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
     el(
       "saml:Subject",
       {},
-      el("saml:NameID", { Format: nid.format }, escapeXmlText(nid.value)) +
+      (nid ? el("saml:NameID", { Format: nid.format, SPNameQualifier: nid.spNameQualifier }, escapeXmlText(nid.value)) : "") +
         el(
           "saml:SubjectConfirmation",
           { Method: "urn:oasis:names:tc:SAML:2.0:cm:bearer" },
@@ -132,7 +176,8 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
 
   const finished = sp.sign_assertion ? insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, assertionId)) : unsigned;
   // Sign, then encrypt: the SP decrypts and then verifies the assertion's own signature.
-  if (sp.encrypt_assertions && sp.encryption_cert) return encryptAssertion(finished, sp.encryption_cert, spEncryptionPolicy(sp));
+  // The wrapped key names its Recipient - the ACS endpoint the whole response is destined for.
+  if (sp.encrypt_assertions && sp.encryption_cert) return encryptAssertion(finished, sp.encryption_cert, spEncryptionPolicy(sp, await getDisabledAlgorithms(env)), acsUrl);
   return finished;
 }
 

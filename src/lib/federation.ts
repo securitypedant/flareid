@@ -2,7 +2,7 @@ import { DOMParser, type Element as XmlElement, type Node as XmlNode } from "@xm
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { SignedXml } from "xml-crypto";
 import { normalizeCertPem } from "./saml/x509.js";
-import { grantsAdminRoleGroup } from "./admin-roles.js";
+import { grantsAdminRoleGroup, grantsWritePermission, rolePermissions } from "./admin-roles.js";
 import type { Env } from "../env.js";
 import { defaultSchemaId } from "./schemas.js";
 import { getUserByLoginIdentifier } from "./db.js";
@@ -33,6 +33,8 @@ export interface UpstreamIdpRow {
   config: string;
   jit: number;
   jit_domain: string | null;
+  /** JSON array of group ids every JIT-provisioned account joins at creation. */
+  jit_groups: string;
   created_at: string;
   updated_at: string;
 }
@@ -81,6 +83,21 @@ export interface UpstreamIdpInput {
   config: Record<string, string | Record<string, string>>;
   jit: boolean;
   jitDomain: string;
+  /** Group ids every JIT account joins; absent means none. */
+  jitGroups?: number[];
+}
+
+/** The most groups one provider's JIT list may name. */
+export const MAX_JIT_GROUPS = 32;
+
+/** The group ids a provider's JIT accounts join, parsed from the stored JSON. */
+export function upstreamJitGroups(idp: Pick<UpstreamIdpRow, "jit_groups">): number[] {
+  try {
+    const v = JSON.parse(idp.jit_groups || "[]") as unknown;
+    return Array.isArray(v) ? v.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Validates and normalizes an upstream IdP definition; throws FederationError on bad input. */
@@ -91,6 +108,31 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
   if (dup) throw new FederationError(`An upstream IdP named "${name}" already exists.`);
   const jitDomain = input.jitDomain.trim().toLowerCase();
   if (jitDomain && !(await domainExists(env, jitDomain))) throw new FederationError(`"${jitDomain}" is not a managed domain - JIT accounts could never be created under it.`);
+
+  // jit_groups: the admin's explicit pick of groups every JIT account joins.
+  // Each id must be a real group, and - unlike the claim-derived rules
+  // checked at provisioning time - a group may grant an admin role, but only
+  // a read-only one: a write-capable role would let whoever can save this
+  // provider hand admin write power to every account the upstream asserts.
+  const jitGroups = [...new Set((input.jitGroups ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (jitGroups.length > MAX_JIT_GROUPS) throw new FederationError(`At most ${MAX_JIT_GROUPS} JIT groups.`);
+  if (jitGroups.length) {
+    const { results: groups } = await env.DB.prepare("SELECT id FROM groups WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(jitGroups)).all<{ id: number }>();
+    const found = new Set(groups.map((g) => g.id));
+    const missing = jitGroups.filter((id) => !found.has(id));
+    if (missing.length) throw new FederationError(`Unknown group id${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+    const { results: roleGrants } = await env.DB
+      .prepare(
+        `SELECT g.name AS group_name, r.name AS role_name, r.permissions
+         FROM admin_role_groups rg JOIN admin_roles r ON r.id = rg.role_id JOIN groups g ON g.id = rg.group_id
+         WHERE rg.group_id IN (SELECT value FROM json_each(?))`
+      )
+      .bind(JSON.stringify(jitGroups))
+      .all<{ group_name: string; role_name: string; permissions: string }>();
+    const bad = roleGrants.find((r) => grantsWritePermission(rolePermissions(r)));
+    if (bad) throw new FederationError(`The group "${bad.group_name}" grants the "${bad.role_name}" role, which can change things - pick a group whose roles are read-only (*:read), or make the role read-only first.`);
+  }
+  const jitGroupsJson = JSON.stringify(jitGroups);
 
   if (input.protocol === "oidc") {
     const cfg = input.config as Partial<OidcIdpConfig>;
@@ -103,7 +145,7 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
       client_secret: cfg.client_secret ? await sealMaybe(env, cfg.client_secret) : "",
       ...(cfg.scopes?.trim() ? { scopes: cfg.scopes.trim() } : {}),
     };
-    return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, created_at: "", updated_at: "" };
+    return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, created_at: "", updated_at: "" };
   }
 
   const cfg = input.config as Partial<SamlIdpConfig>;
@@ -118,14 +160,14 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
     ...(cfg.nameid_format?.trim() ? { nameid_format: cfg.nameid_format.trim() } : {}),
     ...(cfg.attr_map && Object.keys(cfg.attr_map).length ? { attr_map: cfg.attr_map } : {}),
   };
-  return { id: existingId ?? 0, name, protocol: "saml", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, created_at: "", updated_at: "" };
+  return { id: existingId ?? 0, name, protocol: "saml", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, created_at: "", updated_at: "" };
 }
 
 export async function createUpstreamIdp(env: Env, input: UpstreamIdpInput): Promise<UpstreamIdpRow> {
   const v = await validateUpstreamIdp(env, input);
   const t = now();
-  const { meta } = await env.DB.prepare("INSERT INTO upstream_idps (name, protocol, enabled, config, jit, jit_domain, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?)")
-    .bind(v.name, v.protocol, v.config, v.jit, v.jit_domain, t, t)
+  const { meta } = await env.DB.prepare("INSERT INTO upstream_idps (name, protocol, enabled, config, jit, jit_domain, jit_groups, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)")
+    .bind(v.name, v.protocol, v.config, v.jit, v.jit_domain, v.jit_groups, t, t)
     .run();
   return (await getUpstreamIdp(env, Number(meta.last_row_id)))!;
 }
@@ -139,8 +181,8 @@ export async function updateUpstreamIdp(env: Env, id: number, input: UpstreamIdp
     const merged = { ...(idpConfig<OidcIdpConfig>(v as UpstreamIdpRow)), client_secret: idpConfig<OidcIdpConfig>(existing).client_secret };
     v.config = JSON.stringify(merged);
   }
-  await env.DB.prepare("UPDATE upstream_idps SET name = ?, protocol = ?, enabled = ?, config = ?, jit = ?, jit_domain = ?, updated_at = ? WHERE id = ?")
-    .bind(v.name, v.protocol, input.enabled ? 1 : 0, v.config, v.jit, v.jit_domain, now(), id)
+  await env.DB.prepare("UPDATE upstream_idps SET name = ?, protocol = ?, enabled = ?, config = ?, jit = ?, jit_domain = ?, jit_groups = ?, updated_at = ? WHERE id = ?")
+    .bind(v.name, v.protocol, input.enabled ? 1 : 0, v.config, v.jit, v.jit_domain, v.jit_groups, now(), id)
     .run();
   return (await getUpstreamIdp(env, id))!;
 }
@@ -574,6 +616,14 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
       await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, ?, 'work', 1, ?)").bind(userId, jitEmail, t).run();
       await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(jitEmail, userId).run();
     }
+  }
+  // jit_groups: the admin's explicit list, applied at creation only (later
+  // changes to it don't touch already-provisioned accounts). Deliberately
+  // exempt from the dynamic-rule check above: these ids come from stored
+  // configuration, not from attacker-influenceable claims, and the save-time
+  // validation keeps the list to groups with no write-capable role.
+  for (const gid of upstreamJitGroups(idp)) {
+    await env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId).run();
   }
   await linkIdentity(env, idp.id, profile, userId);
   return (await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>())!;

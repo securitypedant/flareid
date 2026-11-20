@@ -1,0 +1,34 @@
+{
+  "slug": "salesforce",
+  "name": "Salesforce",
+  "protocol": "saml",
+  "website": "https://www.salesforce.com",
+  "instructions": {
+    "app": [
+      "Confirm a My Domain is deployed for the org (Setup > Company Settings > My Domain); SP-initiated SSO needs it.",
+      "In Setup > Identity > Single Sign-On Settings enable SAML, then New - or 'New from Metadata URL' and paste {idp_metadata_url} to prefill (check your app's current UI).",
+      "Manually: Issuer = {idp_entity_id}, Identity Provider Login URL = {idp_sso_url}, upload the Identity Provider Certificate from {idp_cert_url}; optional Identity Provider Logout URL = {idp_slo_url}.",
+      "Entity ID: with a My Domain use https://{domain}.my.salesforce.com; without one use https://saml.salesforce.com.",
+      "Pick the SAML Identity Type that matches your rollout - 'Assertion contains the Federation ID from the User object' is the usual choice, 'the User's salesforce.com username' works when usernames equal email addresses - and keep 'Identity is in the NameIdentifier element of the Subject statement' (check your app's current UI).",
+      "Save, then note the Salesforce Login URL Salesforce displays - that is the ACS URL the FlareID side must allow."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {domain} with your My Domain name, or set both the entity ID and ACS URL to the values Salesforce reports after saving (https://saml.salesforce.com / https://login.salesforce.com without a My Domain).",
+      "If you chose 'Federation ID' in Salesforce, populate that field on each user and keep NameID format emailAddress only when the Federation ID is the email; otherwise the NameID must equal whatever the identity type compares against.",
+      "Leave 'Require signed AuthnRequests' off unless you uploaded a Salesforce request-signing certificate there."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://{domain}.my.salesforce.com",
+    "acs_urls": ["https://{domain}.my.salesforce.com"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

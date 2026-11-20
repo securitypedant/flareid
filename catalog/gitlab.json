@@ -1,0 +1,39 @@
+{
+  "slug": "gitlab",
+  "name": "GitLab",
+  "protocol": "saml",
+  "website": "https://gitlab.com",
+  "instructions": {
+    "app": [
+      "gitlab.com: in your top-level group go to Settings > SAML SSO. Self-managed: configure the SAML OmniAuth provider in the GitLab Rails config or Admin > Settings > General (check your app's current UI).",
+      "GitLab shows its assertion consumer service URL - https://{host}/users/auth/saml/callback - and an identifier/issuer, https://{host}. Copy both into the FlareID service provider.",
+      "Set the IdP SSO target URL to {idp_sso_url} and upload the certificate or paste its SHA fingerprint from {idp_cert_url}; where offered, point GitLab at {idp_metadata_url}.",
+      "Require the NameID format urn:oasis:names:tc:SAML:2.0:nameid-format:persistent - GitLab expects a stable identifier per user.",
+      "Save and sign in once with a GitLab-linked account before enforcing SAML for the group or instance."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {host} with gitlab.com for SaaS group SSO or your self-managed hostname.",
+      "Keep NameID format persistent. Users link their GitLab account by email on first sign-in, so the email/name/username attributes stay configured.",
+      "The groups attribute lets GitLab group-sync read memberships where that feature is enabled; remove it if unwanted."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://{host}",
+    "acs_urls": ["https://{host}/users/auth/saml/callback"],
+    "metadata_url": "https://{host}/users/auth/saml/metadata",
+    "nameid_format": "persistent",
+    "attribute_definitions": [
+      { "name": "email", "field": "email" },
+      { "name": "name", "field": "name" },
+      { "name": "username", "field": "username" },
+      { "name": "groups", "field": "groups" }
+    ],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

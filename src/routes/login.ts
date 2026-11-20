@@ -14,7 +14,7 @@ import { matchLocale, t, type MessageKey } from "../lib/i18n.js";
 import { brandFor, domainFromHint, type Brand } from "../lib/brands.js";
 import { accessFor } from "../lib/admin-roles.js";
 import { grants } from "../lib/permissions.js";
-import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
+import { getUserById, getUserByLoginIdentifier, getUserGroupIds } from "../lib/db.js";
 import { turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { timed } from "../lib/metrics.js";
@@ -35,7 +35,9 @@ import {
 import { clearSessionCookies, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
-import { getSpById } from "../lib/saml/service-providers.js";
+import { appVisibleTo, getSpById, parseAssignedGroupIds } from "../lib/saml/service-providers.js";
+import { buildErrorResponse } from "../lib/saml/messages.js";
+import { b64encode } from "../lib/saml/xml.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
@@ -252,6 +254,13 @@ export async function completeLoginFlow(
     const sp = await getSpById(env, flow.request.spId);
     const fullUser = await getUserById(env, userId);
     if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookies };
+    // App assignment, re-evaluated after authentication like the signin
+    // permission above: the request gets a signed RequestDenied at its ACS.
+    if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(env, fullUser.id))) {
+      await logAudit(env, fullUser, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned" }, request);
+      const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+      return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
+    }
     const issued = await issueSamlResponse(env, sp, flow.request, fullUser, sessionId, new Date());
     // Already answered (a replayed request): the sign-in still stands, but no second response.
     if (!issued) return { outcome: { type: "redirect", to: "/account" }, setCookies };

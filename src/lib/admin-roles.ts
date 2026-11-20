@@ -167,6 +167,38 @@ export async function adminRoleGroupIds(env: Env): Promise<Set<number>> {
   return new Set(results.filter((r) => rolePermissions(r).some((p) => p !== "signin" && !p.startsWith("account:"))).map((r) => r.group_id));
 }
 
+/**
+ * Whether a permission set can change anything beyond the holder's own
+ * account: "*" or any "<area>:write". The self-service permissions ("signin",
+ * "account:*") don't count. Used where a feature may grant a read-only admin
+ * role but never a write-capable one (JIT group assignment on upstream IdPs).
+ */
+export function grantsWritePermission(perms: Iterable<string>): boolean {
+  return [...expand(perms)].some((p) => (p === "*" || p.endsWith(":write")) && !p.startsWith("account:"));
+}
+
+/**
+ * The admin roles each group grants and whether any of them can write, keyed
+ * by group - for pickers that show the grant and must refuse write-capable
+ * groups. Roles with only signin/self-service permissions don't count, the
+ * same rule groupRolesMap applies.
+ */
+export async function groupRoleWriteMap(env: Env): Promise<Map<number, { roles: string[]; writable: boolean }>> {
+  const { results } = await env.DB
+    .prepare("SELECT rg.group_id, r.name, r.permissions FROM admin_role_groups rg JOIN admin_roles r ON r.id = rg.role_id ORDER BY r.name")
+    .all<{ group_id: number; name: string; permissions: string }>();
+  const map = new Map<number, { roles: string[]; writable: boolean }>();
+  for (const r of results) {
+    const perms = rolePermissions(r);
+    if (!perms.some((p) => p !== "signin" && !p.startsWith("account:"))) continue;
+    const e = map.get(r.group_id) ?? { roles: [], writable: false };
+    e.roles.push(r.name);
+    e.writable ||= grantsWritePermission(perms);
+    map.set(r.group_id, e);
+  }
+  return map;
+}
+
 /** The admin roles each group grants, keyed by group - roles with only signin/self-service permissions don't count. */
 export async function groupRolesMap(env: Env): Promise<Map<number, { name: string; description: string }[]>> {
   const { results } = await env.DB

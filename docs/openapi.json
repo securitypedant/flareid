@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.5.3",
+    "version": "4.6.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -721,6 +721,13 @@
             },
             "description": "Claim groups released to this client; null = every group."
           },
+          "assigned_groups": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "Group ids whose members may see and sign in to this app; [] = everyone."
+          },
           "id_token_signed_response_alg": {
             "type": "string",
             "enum": [
@@ -743,6 +750,7 @@
           "frontchannel_logout_uri",
           "trusted",
           "allowed_claims",
+          "assigned_groups",
           "id_token_signed_response_alg",
           "created_at"
         ],
@@ -773,13 +781,21 @@
             ]
           },
           "nameid_format": {
-            "type": "string"
+            "type": "string",
+            "description": "transient, emailAddress, persistent - or \"none\": the Subject carries no <saml:NameID>."
           },
           "attribute_map": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "attribute_definitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SamlAttributeDefinition"
+            },
+            "description": "Released attributes with arbitrary Name/NameFormat; overrides attribute_map when non-empty."
           },
           "sign_response": {
             "type": "boolean"
@@ -811,6 +827,13 @@
           "encrypt_assertions": {
             "type": "boolean"
           },
+          "assigned_groups": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "Group ids whose members may see and SSO into this app; [] = everyone."
+          },
           "created_at": {
             "type": "string"
           },
@@ -826,6 +849,7 @@
           "default_acs_url",
           "nameid_format",
           "attribute_map",
+          "attribute_definitions",
           "sign_response",
           "sign_assertion",
           "want_authn_requests_signed",
@@ -833,10 +857,36 @@
           "slo_url",
           "encryption_cert",
           "encrypt_assertions",
+          "assigned_groups",
           "created_at",
           "updated_at"
         ],
         "additionalProperties": {}
+      },
+      "SamlAttributeDefinition": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The saml:Attribute Name - an arbitrary string."
+          },
+          "field": {
+            "type": "string",
+            "description": "The user field feeding it (same vocabulary as attribute_map values)."
+          },
+          "name_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The saml:Attribute NameFormat - an arbitrary URI; null = the IdP default (attrname-format:uri)."
+          }
+        },
+        "required": [
+          "name",
+          "field",
+          "name_format"
+        ]
       },
       "ApiKey": {
         "type": "object",
@@ -7489,6 +7539,13 @@
                               "null"
                             ]
                           },
+                          "jit_groups": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "description": "Group ids every JIT-provisioned account joins at creation."
+                          },
                           "config": {
                             "type": "object",
                             "additionalProperties": {
@@ -7516,6 +7573,7 @@
                           "enabled",
                           "jit",
                           "jit_domain",
+                          "jit_groups",
                           "config"
                         ]
                       }
@@ -7565,7 +7623,7 @@
           "Federation"
         ],
         "summary": "Add an upstream identity provider",
-        "description": "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.",
+        "description": "FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches; `jit_groups` lists the groups every such account joins. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.",
         "security": [
           {
             "bearer": []
@@ -7599,6 +7657,15 @@
                   },
                   "jit_domain": {
                     "type": "string"
+                  },
+                  "jit_groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "maxItems": 32,
+                    "description": "Group ids every JIT-provisioned account joins at creation. A group may grant a read-only admin role; one granting a write-capable role is refused."
                   },
                   "config": {
                     "type": "object",
@@ -7738,6 +7805,13 @@
                         "null"
                       ]
                     },
+                    "jit_groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "description": "Group ids every JIT-provisioned account joins at creation."
+                    },
                     "config": {
                       "type": "object",
                       "additionalProperties": {
@@ -7765,6 +7839,7 @@
                     "enabled",
                     "jit",
                     "jit_domain",
+                    "jit_groups",
                     "config"
                   ]
                 }
@@ -7864,6 +7939,15 @@
                   },
                   "jit_domain": {
                     "type": "string"
+                  },
+                  "jit_groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "maxItems": 32,
+                    "description": "Group ids every JIT-provisioned account joins at creation. A group may grant a read-only admin role; one granting a write-capable role is refused."
                   },
                   "config": {
                     "type": "object",
@@ -15948,6 +16032,12 @@
                               "ES256"
                             ]
                           },
+                          "assigned_groups": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            }
+                          },
                           "created_at": {
                             "type": "string"
                           }
@@ -15958,6 +16048,7 @@
                           "name",
                           "redirect_uris",
                           "id_token_signed_response_alg",
+                          "assigned_groups",
                           "created_at"
                         ]
                       }
@@ -16077,6 +16168,16 @@
                       "ES256"
                     ],
                     "description": "How this client's id_tokens are signed (default RS256)."
+                  },
+                  "assigned_groups": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction."
                   }
                 },
                 "required": [
@@ -16128,6 +16229,12 @@
                         "RS256",
                         "ES256"
                       ]
+                    },
+                    "assigned_groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
                     }
                   },
                   "required": [
@@ -16136,7 +16243,8 @@
                     "id",
                     "client_id",
                     "redirect_uris",
-                    "id_token_signed_response_alg"
+                    "id_token_signed_response_alg",
+                    "assigned_groups"
                   ]
                 }
               }
@@ -16912,13 +17020,39 @@
                     "type": "string"
                   },
                   "nameid_format": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "transient, emailAddress, persistent - or \"none\" to omit <saml:NameID> from the Subject entirely."
                   },
                   "attribute_map": {
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
                     }
+                  },
+                  "attribute_definitions": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "field": {
+                          "type": "string"
+                        },
+                        "name_format": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "field"
+                      ]
+                    },
+                    "description": "Released attributes with an arbitrary SAML Name and optional NameFormat per entry; replaces attribute_map when non-empty. null clears it back to the map."
                   },
                   "sign_response": {
                     "type": "boolean"
@@ -16980,6 +17114,16 @@
                       "subject-id",
                       "pairwise-id"
                     ]
+                  },
+                  "assigned_groups": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction."
                   }
                 },
                 "required": [
@@ -17011,13 +17155,177 @@
                     },
                     "entity_id": {
                       "type": "string"
+                    },
+                    "assigned_groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
                     }
                   },
                   "required": [
                     "ok",
                     "created",
                     "id",
-                    "entity_id"
+                    "entity_id",
+                    "assigned_groups"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/saml/settings": {
+      "get": {
+        "tags": [
+          "SAML"
+        ],
+        "summary": "Read the instance SAML settings",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "saml:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "disabled_algorithms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission."
+                    }
+                  },
+                  "required": [
+                    "disabled_algorithms"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "SAML"
+        ],
+        "summary": "Set the SAML algorithm deny list",
+        "description": "Entries are XML Encryption URIs or short tokens, matched against content, key-transport, OAEP digest and MGF choices alike (a URI's #-fragment counts too). Replaces the whole list. A service provider whose encryption policy resolves to a denied algorithm cannot be saved, and one already stored fails closed at emission.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "saml:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "disabled_algorithms": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission."
+                  }
+                },
+                "required": [
+                  "disabled_algorithms"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "disabled_algorithms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission."
+                    }
+                  },
+                  "required": [
+                    "disabled_algorithms"
                   ]
                 }
               }

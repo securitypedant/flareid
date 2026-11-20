@@ -20,7 +20,7 @@ Or enter the details by hand:
 |---|---|
 | **Entity ID (Issuer)** | The app's entity ID, from its SAML settings. |
 | **Assertion Consumer Service URLs** | Where FlareID posts the sign-in response. |
-| **NameID format** | How the person is identified: email address, persistent or transient. |
+| **NameID format** | How the person is identified: email address, persistent or transient — or **none** to omit the NameID from the assertion entirely. |
 | **Attribute map** | Which attributes the app receives. Leave empty for email, name and groups. |
 | **SP signing certificates** | Only if the app signs its requests. |
 | **Single Logout URL** | Only if the app supports single logout. |
@@ -48,6 +48,25 @@ The attribute map is JSON that names each attribute the app receives and where i
 ```
 
 Values can be `email`, `upn`, `username`, `name`, `given_name`, `family_name`, `groups`, the HR fields such as `job_title` and `department`, or your own [schema](schemas.md) attributes.
+
+For full control over what goes on the wire, **Attribute definitions** (JSON, on the same form) lets each released attribute carry an arbitrary SAML `Name` and an optional `NameFormat`:
+
+```json
+[
+  { "name": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress", "field": "email" },
+  { "name": "memberOf", "field": "groups", "name_format": "urn:oasis:names:tc:SAML:2.0:attrname-format:basic" }
+]
+```
+
+When definitions are present they replace the map entirely; the field values use the same vocabulary.
+
+## Restrict who can use the app
+
+**Restrict to groups** limits the app to members of the chosen groups; empty means everyone. Restricted apps are hidden from other people's My account launchpad, and a sign-in from someone outside the groups is answered with a SAML `RequestDenied` status instead of an assertion.
+
+## Instance settings
+
+On **Applications → SAML → Settings**, **Disabled algorithms** lists signature/encryption algorithms this instance refuses — by URI, fragment or short name (`sha1`, `rsa-1_5`). Choosing a denied algorithm anywhere is rejected, and an SP whose policy resolves to one fails closed rather than emitting it.
 
 ## Good to know
 

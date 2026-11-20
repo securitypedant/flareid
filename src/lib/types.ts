@@ -121,6 +121,8 @@ export interface OAuthClientRow {
   request_uris: string | null;
   /** OIDC Registration 2: alg the client wants /userinfo signed with; NULL = plain JSON. */
   userinfo_signed_response_alg: string | null;
+  /** JSON array of group ids allowed to see and SSO into this app; NULL/'[]' = everyone. */
+  assigned_groups: string | null;
 }
 
 export interface SamlServiceProviderRow {
@@ -129,8 +131,11 @@ export interface SamlServiceProviderRow {
   name: string;
   acs_urls: string; // JSON array of absolute URLs - the exact-match allowlist
   default_acs_url: string | null;
+  /** 'transient' | 'emailAddress' | 'persistent', or 'none' (omit <saml:NameID> from the Subject - IIP-IDP11). */
   nameid_format: string;
   attribute_map: string; // JSON object: SAML attribute name -> user field
+  /** JSON array of {name, field, nameFormat?}: arbitrary Name + NameFormat per released attribute (IIP-IDP01). NULL/[] = use attribute_map. */
+  attribute_definitions: string | null;
   sign_response: number;
   sign_assertion: number;
   want_authn_requests_signed: number;
@@ -146,6 +151,8 @@ export interface SamlServiceProviderRow {
   metadata_valid_until: string | null;
   /** '' | 'subject-id' | 'pairwise-id' (SAML Subject Identifier Attributes Profile). */
   subject_id: string;
+  /** JSON array of group ids allowed to see and SSO into this app; NULL/'[]' = everyone. */
+  assigned_groups: string | null;
   created_at: string;
   updated_at: string;
 }

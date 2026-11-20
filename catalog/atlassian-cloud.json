@@ -1,0 +1,33 @@
+{
+  "slug": "atlassian-cloud",
+  "name": "Atlassian Cloud",
+  "protocol": "saml",
+  "website": "https://www.atlassian.com",
+  "instructions": {
+    "app": [
+      "In Atlassian Administration (admin.atlassian.com) select your organization, then Security > User security > Identity providers, pick your directory and choose Set up SAML single sign-on (needs Atlassian Guard; check your app's current UI).",
+      "Paste the three IdP details: Identity provider Entity ID = {idp_entity_id}, Identity provider SSO URL = {idp_sso_url}, and the public x509 certificate from {idp_cert_url}.",
+      "Atlassian then shows its 'Service provider entity URL' and 'Service provider assertion consumer service URL' - copy them exactly (including the ACS query string) into the FlareID service provider. They typically look like https://auth.atlassian.com/saml/{id} and https://auth.atlassian.com/login/callback?connection=saml-{id}.",
+      "Link the verified domains that should sign in through this directory, then save.",
+      "Test with a user whose Atlassian account email exactly matches their FlareID address - the NameID must be the email address, case included."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace the entity ID and ACS URL with the two values Atlassian shows after you save its side - each directory gets its own {id}.",
+      "Keep NameID format emailAddress; Atlassian rejects assertions whose NameID is not the account email.",
+      "No extra attributes are required for sign-in; display names sync through SCIM instead."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://auth.atlassian.com/saml/{id}",
+    "acs_urls": ["https://auth.atlassian.com/login/callback?connection=saml-{id}"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

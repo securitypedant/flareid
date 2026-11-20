@@ -1,0 +1,29 @@
+{
+  "slug": "app-slug",
+  "name": "App Name",
+  "protocol": "saml",
+  "website": "https://example.com",
+  "instructions": {
+    "app": [
+      "Ordered steps to enable SSO in the target app.",
+      "Placeholders the renderer fills in: {idp_entity_id} {idp_sso_url} {idp_slo_url} {idp_cert_url} {idp_metadata_url} (SAML); {idp_issuer} {idp_authorize_url} {idp_token_url} {idp_userinfo_url} {idp_jwks_url} {idp_discovery_url} {idp_logout_url} (OIDC).",
+      "{client_id} and {client_secret} stay as placeholders - they are generated when the FlareID client is created. App-side values like {team} or {domain} stay marked too.",
+      "Mark anything that varies between app versions or tenants with (check your app's current UI)."
+    ],
+    "flareid": [
+      "What the admin checks or changes in FlareID after applying the template - which placeholder to replace, which claim or attribute matters, what to test."
+    ]
+  },
+  "saml": {
+    "entity_id": "https://{host}/saml/entity-id",
+    "acs_urls": ["https://{host}/saml/acs"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

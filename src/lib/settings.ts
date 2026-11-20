@@ -508,6 +508,53 @@ export async function setSessionPolicy(env: Env, policy: SessionPolicy): Promise
   return clean;
 }
 
+/**
+ * The instance-wide algorithm deny list (IIP-ALG08): SAML algorithm URIs or
+ * short tokens (e.g. the aes256-cbc XML Encryption URI, or just "sha1") that
+ * the IdP must refuse to configure on a service provider and must never emit.
+ * Stored in idp_settings as a JSON array of strings; an empty list denies
+ * nothing. Matching is done by lib/saml/service-providers.ts (URI, fragment
+ * and token spellings all count).
+ */
+export const DISABLED_ALGORITHMS_KEY = "disabled_algorithms";
+export const DISABLED_ALGORITHMS_MAX = 100;
+const DISABLED_ALGORITHM_MAX_LENGTH = 200;
+
+export async function getDisabledAlgorithms(env: Env): Promise<string[]> {
+  const raw = await getSetting(env, DISABLED_ALGORITHMS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    // A malformed stored value denies nothing rather than breaking SSO reads.
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.trim() !== "") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Write-path normalization shared by the console textarea (one entry per
+ * line) and the API array: trims, drops blanks, dedupes. Throws a RangeError
+ * on a non-string or oversized entry.
+ */
+export function normalizeDisabledAlgorithms(input: unknown[]): string[] {
+  const out: string[] = [];
+  for (const entry of input) {
+    if (typeof entry !== "string") throw new RangeError('Every disabled algorithm must be a string - a URI like "http://www.w3.org/2001/04/xmlenc#aes256-cbc" or a token like "sha1".');
+    const v = entry.trim();
+    if (!v) continue;
+    if (v.length > DISABLED_ALGORITHM_MAX_LENGTH) throw new RangeError(`An algorithm name is at most ${DISABLED_ALGORITHM_MAX_LENGTH} characters.`);
+    if (!out.includes(v)) out.push(v);
+  }
+  if (out.length > DISABLED_ALGORITHMS_MAX) throw new RangeError(`At most ${DISABLED_ALGORITHMS_MAX} algorithms can be disabled.`);
+  return out;
+}
+
+/** Stores an already-normalized list (see normalizeDisabledAlgorithms). */
+export async function setDisabledAlgorithms(env: Env, algorithms: string[]): Promise<void> {
+  await setSetting(env, DISABLED_ALGORITHMS_KEY, JSON.stringify(algorithms));
+}
+
 /** "At least 12 characters, with an uppercase letter and a number." - the policy as a sentence, shown next to password fields. */
 export function passwordPolicySummary(policy: PasswordPolicy, locale: Locale = DEFAULT_LOCALE): string {
   const needs = (

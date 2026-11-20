@@ -38,6 +38,7 @@
   {
     "section": "Security",
     "pages": [
+      "security-posture",
       "security",
       "policies",
       "roles",

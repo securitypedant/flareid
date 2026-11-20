@@ -2,8 +2,19 @@ import { randomToken, sha256Hex } from "../tokens.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { getManagerEmail, getUserGroupNames } from "../db.js";
-import { spAttributeMap } from "./service-providers.js";
+import { spAttributeDefinitions, spAttributeMap, type SpAttributeDefinition } from "./service-providers.js";
 import { parseCustomAttributes } from "../schemas.js";
+
+/**
+ * One attribute for the AttributeStatement: the SAML Name, its optional
+ * NameFormat (absent = the IdP's default attrname-format:uri), and values.
+ * messages.ts emits `NameFormat: a.nameFormat ?? ATTR_NAME_FORMAT`.
+ */
+export interface ResolvedAttribute {
+  name: string;
+  nameFormat?: string;
+  values: string[];
+}
 
 /**
  * Maps a user onto SAML attributes for one service provider.
@@ -13,6 +24,9 @@ import { parseCustomAttributes } from "../schemas.js";
  * claims use where they overlap, so an operator configuring both protocols
  * writes one vocabulary. An empty map falls back to DEFAULT_ATTRIBUTE_MAP,
  * which is what Cloudflare Access expects out of the box.
+ *
+ * A non-empty attribute_definitions column (arbitrary Name plus optional
+ * arbitrary NameFormat per attribute - IIP-IDP01) replaces the map entirely.
  */
 
 const DEFAULT_ATTRIBUTE_MAP: Record<string, string> = {
@@ -46,9 +60,12 @@ export async function resolveAttributes(
   env: Env,
   sp: SamlServiceProviderRow,
   user: UserRow
-): Promise<{ name: string; values: string[] }[]> {
+): Promise<ResolvedAttribute[]> {
+  const definitions = spAttributeDefinitions(sp);
   const configured = spAttributeMap(sp);
   const map = Object.keys(configured).length > 0 ? configured : DEFAULT_ATTRIBUTE_MAP;
+  // attribute_definitions wins over the plain map when any are configured.
+  const wanted: SpAttributeDefinition[] = definitions.length > 0 ? definitions : Object.entries(map).map(([name, field]) => ({ name, field }));
 
   const groups = await getUserGroupNames(env, user.id);
   const fields: Record<string, string | string[] | null> = {
@@ -71,15 +88,15 @@ export async function resolveAttributes(
   };
 
   const custom = parseCustomAttributes(user.custom_attributes);
-  const attributes: { name: string; values: string[] }[] = [];
-  for (const [samlName, field] of Object.entries(map)) {
+  const attributes: ResolvedAttribute[] = [];
+  for (const def of wanted) {
     // Fields outside the fixed vocabulary resolve against custom attributes -
     // that is how schema-defined attributes reach an SP.
-    const value = field in fields ? fields[field] : custom[field];
+    const value = def.field in fields ? fields[def.field] : custom[def.field];
     if (value === undefined || value === null) continue;
     const values = (Array.isArray(value) ? value : [value]).filter((v) => v !== "");
     if (values.length === 0) continue;
-    attributes.push({ name: samlName, values });
+    attributes.push(def.nameFormat ? { name: def.name, nameFormat: def.nameFormat, values } : { name: def.name, values });
   }
   const subject = await subjectIdentifier(env, sp, user);
   if (subject) attributes.push(subject);
@@ -94,7 +111,7 @@ export const PAIRWISE_ID = "urn:oasis:names:tc:SAML:attribute:pairwise-id";
  * pairwise-id: a per-SP value (HMAC-style hash with an instance secret) so
  * two SPs cannot correlate a user. Both scopes are published as shibmd:Scope.
  */
-async function subjectIdentifier(env: Env, sp: SamlServiceProviderRow, user: UserRow): Promise<{ name: string; values: string[] } | null> {
+async function subjectIdentifier(env: Env, sp: SamlServiceProviderRow, user: UserRow): Promise<ResolvedAttribute | null> {
   if (sp.subject_id !== "subject-id" && sp.subject_id !== "pairwise-id") return null;
   const scope = user.upn.split("@")[1]?.toLowerCase() ?? "";
   if (!scope) return null;

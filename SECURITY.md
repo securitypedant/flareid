@@ -2,67 +2,32 @@
 
 ## Reporting a vulnerability
 
-Please report security issues privately, using GitHub's
-[private vulnerability reporting](https://github.com/securitypedant/flareid/security/advisories/new)
-on this repository. Do not open a public issue for anything that affects the
-security of a deployment.
+Please report suspected vulnerabilities privately — do not open a public issue.
 
-I will acknowledge a report within a few days. This is a personal project
-without a staffed security team, so please be realistic about response times -
-and please do say if you intend to publish, so the timing can be coordinated.
+- Email: **security@cloudflare.com** (subject prefix `[FlareID]`), or
+- GitHub private vulnerability reporting on this repository, if enabled.
 
-## This is not an official Cloudflare product
+Include the affected version/commit, reproduction steps or proof-of-concept,
+and the security impact you believe applies. We aim to acknowledge reports
+within 3 business days and will coordinate disclosure timing with you.
 
-FlareID runs on Cloudflare Workers but is not built, maintained or supported by
-Cloudflare, Inc. Do not report FlareID vulnerabilities to Cloudflare. If you
-believe you have found a vulnerability in the Cloudflare *platform*, that
-belongs in [their programme](https://hackerone.com/cloudflare) instead.
+## Supported versions
 
-## What is in scope
+Security fixes land on the latest release line (`v4.x`). Older releases are
+not backpatched — upgrade to the current release.
 
-A deployed FlareID instance, running the code in this repository as documented.
-In particular: the OIDC endpoints, the session and MFA implementation, the
-provisioning API and its authentication, the admin and account interfaces, and
-the SQL and template handling behind them.
+## Scope
 
-## Known gaps - please do not report these as findings
+In scope: the FlareID worker, its D1/KV/Secrets data, the admin console and
+APIs, the SAML/OIDC/SCIM/LDAP protocol surfaces, and the deployment
+artifacts in this repository (`wrangler.jsonc`, `terraform/`).
 
-[ROADMAP.md](ROADMAP.md) is deliberately explicit about where this project is
-not yet production-grade, and the P0 list there is already known. At the time of
-writing that includes:
+Out of scope: the Cloudflare platform itself, operator-managed
+infrastructure, and social engineering.
 
-- **Password hashing** is PBKDF2-HMAC-SHA256 at 100,000 iterations, below the
-  600,000 OWASP currently recommends.
-- **No CSRF tokens or `Origin` checks** on state-changing forms. `SameSite=Lax`
-  covers the cross-site case, but a same-site sibling origin is not covered.
-- **No security headers** - no CSP, `frame-ancestors`, `Referrer-Policy` or
-  HSTS.
-- **No garbage collection** of expired authorization codes, access tokens,
-  sessions or trusted devices.
-- **PKCE is optional**, and `plain` is still advertised.
-- **Refresh tokens** neither expire nor rotate.
+## Security posture
 
-Novel findings, or anything materially worse than the above, are very welcome.
-
-## Things that are deliberate, and why
-
-- **A deployment starts with no users and no default password.** There is no
-  shipped credential to find. The first administrator is created at `/setup`
-  or through the provisioning API using the `BOOTSTRAP_TOKEN` Worker secret,
-  which stops working once setup completes. Until then `/setup` is public, and
-  the token is all that guards it - so a deployer sets it before anyone else
-  knows the address, and the `replace-me` placeholders are refused.
-- **With `ISSUER_URL` empty, the issuer comes from the request until setup
-  completes**, then is stored and fixed. Only hostnames routed to the Worker
-  reach it, and only https origins (or http on localhost) are accepted.
-- **`BOOTSTRAP_TOKEN` keeps answering one route after setup**
-  (`POST /api/v1/recovery/admin-reset`), because the alternative for a
-  locked-out deployment is hand-editing the database. It is audited loudly, and
-  deleting the secret removes the route's only key.
-- **A private key is committed** at `test/fixtures/signing-key.ts`. It signs
-  test fixtures only. Tests that assert an `id_token` verifies against
-  `/jwks.json` need both halves of a keypair, and a key generated at test time
-  cannot be in a static Worker config.
-- **OIDC client secrets are stored as unsalted SHA-256.** They are
-  high-entropy machine-generated values, not passwords, so a slow KDF buys
-  nothing here. Access and refresh tokens are handled the same way.
+The implemented security model — platform isolation, protocol hardening,
+cryptography, the edge security stack (`terraform/`), conformance testing,
+and the audit process — is documented in [docs/security.md](docs/security.md),
+with the edge deployment runbook in [docs/secure-edge.md](docs/secure-edge.md).

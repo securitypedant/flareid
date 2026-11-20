@@ -4,7 +4,9 @@ import { SignedXml } from "xml-crypto";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { TEST_SAML_IDP_CERT_PEM, TEST_SAML_IDP_KEY_PKCS8, TEST_SAML_SP_CERT_PEM, TEST_SAML_SP_KEY_PKCS8 } from "./fixtures/saml-keys.js";
-import { createUpstreamIdp, FederationError, getUpstreamIdp, profileFromClaims, resolveFederatedUser, verifySamlResponse, NoLocalAccount, type SamlIdpConfig } from "../src/lib/federation.js";
+import { createUpstreamIdp, FederationError, getUpstreamIdp, profileFromClaims, resolveFederatedUser, updateUpstreamIdp, verifySamlResponse, NoLocalAccount, type SamlIdpConfig } from "../src/lib/federation.js";
+import { accessFor } from "../src/lib/admin-roles.js";
+import { createSession } from "../src/lib/sessions.js";
 import { sealLoginFlow } from "../src/lib/authorize-state.js";
 import { b64encode } from "../src/lib/saml/xml.js";
 import { unsealMaybe } from "../src/lib/sealed.js";
@@ -193,6 +195,84 @@ describe("resolveFederatedUser", () => {
   });
 });
 
+describe("JIT group assignment", () => {
+  const jitProfile = { subject: "sub-jit", email: "new.person@else.test", username: "new.person", givenName: "New", familyName: "Person", displayName: "New Person" };
+  const oidcInput = (jitGroups: number[]) => ({ name: "U", protocol: "oidc" as const, config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test", jitGroups });
+
+  async function group(name: string): Promise<number> {
+    return (await env.DB.prepare("INSERT INTO groups (name) VALUES (?) RETURNING id").bind(name).first<{ id: number }>())!.id;
+  }
+  async function linkRole(groupId: number, roleName: string): Promise<void> {
+    await env.DB.prepare("INSERT INTO admin_role_groups (role_id, group_id) SELECT id, ? FROM admin_roles WHERE name = ?").bind(groupId, roleName).run();
+  }
+  async function memberGroupIds(userId: number): Promise<number[]> {
+    const { results } = await env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ? ORDER BY group_id").bind(userId).all<{ group_id: number }>();
+    return results.map((r) => r.group_id);
+  }
+
+  it("puts a JIT-provisioned account in each configured group", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const gid = await group("Demo Observers");
+    const gid2 = await group("Everyone Else");
+    const idp = await createUpstreamIdp(env, oidcInput([gid, gid2]));
+    const user = await resolveFederatedUser(env, idp, jitProfile);
+    expect(user.username).toBe("new.person");
+    expect(await memberGroupIds(user.id)).toEqual([gid, gid2]);
+  });
+
+  it("accepts a group that grants a read-only admin role, and the account holds it", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const gid = await group("Read-Only Observers");
+    await linkRole(gid, "Auditor"); // every permission the Auditor role holds is *:read
+    const idp = await createUpstreamIdp(env, oidcInput([gid]));
+    const user = await resolveFederatedUser(env, idp, jitProfile);
+    expect(await memberGroupIds(user.id)).toEqual([gid]);
+    expect((await accessFor(env, user.id)).roles).toContain("Auditor");
+  });
+
+  it("refuses a group that grants a write-capable role, on create and on update", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const gid = await group("Directory Crew");
+    await linkRole(gid, "Directory Admin");
+    await expect(createUpstreamIdp(env, oidcInput([gid]))).rejects.toThrow(/read-only/i);
+    const idp = await createUpstreamIdp(env, oidcInput([]));
+    await expect(updateUpstreamIdp(env, idp.id, { ...oidcInput([gid]), enabled: true })).rejects.toThrow(/read-only/i);
+  });
+
+  it("refuses a group id that does not exist", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    await expect(createUpstreamIdp(env, oidcInput([424242]))).rejects.toThrow(/[Uu]nknown group/);
+  });
+
+  it("console: the provider form lists the groups and saves the selection", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const gid = await group("Demo Observers");
+    const roGid = await group("Read-Only Observers");
+    await linkRole(roGid, "Auditor");
+    const adminId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
+    const cookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+
+    const page = await SELF.fetch(`${BASE}/admin/integrations/federation/new`, { headers: { Cookie: cookie } });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Groups JIT accounts join");
+    expect(html).toContain("grants Auditor");
+
+    const form = new URLSearchParams({ protocol: "oidc", name: "Corp", issuer: "https://i.test", client_id: "c", client_secret: "s", jit: "1" });
+    form.append("jit_groups", String(gid));
+    form.append("jit_groups", String(roGid));
+    const res = await SELF.fetch(`${BASE}/admin/federation/idps`, {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded", Origin: BASE },
+      body: form.toString(),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    const saved = await env.DB.prepare("SELECT jit_groups FROM upstream_idps WHERE name = 'Corp'").first<{ jit_groups: string }>();
+    expect(JSON.parse(saved!.jit_groups).sort()).toEqual([gid, roGid].sort());
+  });
+});
+
 describe("federation API", () => {
   it("creates, reads, changes and removes a provider without exposing the secret", async () => {
     const { apiKey, idpId } = await seedIdp({ name: "Entra", protocol: "oidc", jit: true, config: { issuer: "https://login.test/t", client_id: "cid", client_secret: "shh" } });
@@ -231,6 +311,28 @@ describe("federation API", () => {
     expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated, method: "PATCH", body: { enabled: false } })).status).toBe(403);
     expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated, method: "DELETE" })).status).toBe(403);
     expect((await apiCall(`/api/v1/federation/idps/${idpId}`, { token: delegated })).status).toBe(200);
+  });
+
+  it("accepts and returns jit_groups, keeps them on unrelated PATCHes, and refuses a write-role group", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const gid = (await env.DB.prepare("INSERT INTO groups (name) VALUES ('Demo Observers') RETURNING id").first<{ id: number }>())!.id;
+    const created = await apiCall("/api/v1/federation/idps", { token: apiKey, body: { name: "Entra", protocol: "oidc", jit: true, jit_groups: [gid], config: { issuer: "https://login.test", client_id: "c" } } });
+    expect(created.status).toBe(200);
+    const id = created.body.id as number;
+    expect((await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey })).body.jit_groups).toEqual([gid]);
+    // An unrelated patch keeps the list; an empty array clears it.
+    expect((await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey, method: "PATCH", body: { enabled: false } })).status).toBe(200);
+    expect((await getUpstreamIdp(env, id))?.jit_groups).toBe(`[${gid}]`);
+    expect((await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey, method: "PATCH", body: { jit_groups: [] } })).status).toBe(200);
+    expect((await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey })).body.jit_groups).toEqual([]);
+    // A group granting a write-capable role is refused at save.
+    const writeGid = (await env.DB.prepare("INSERT INTO groups (name) VALUES ('Directory Crew') RETURNING id").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO admin_role_groups (role_id, group_id) SELECT id, ? FROM admin_roles WHERE name = 'Directory Admin'").bind(writeGid).run();
+    const refused = await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey, method: "PATCH", body: { jit_groups: [writeGid] } });
+    expect(refused.status).toBe(400);
+    expect(String(refused.body.message ?? refused.body.error ?? refused.body)).toMatch(/read-only/i);
+    // So is an unknown group id.
+    expect((await apiCall(`/api/v1/federation/idps/${id}`, { token: apiKey, method: "PATCH", body: { jit_groups: [424242] } })).status).toBe(400);
   });
 
   it("rejects bad issuer URLs and duplicate names", async () => {
@@ -332,6 +434,58 @@ describe("the sign-in round trip", () => {
     // The identity is linked for next time.
     const link = await env.DB.prepare("SELECT user_id FROM federated_identities WHERE idp_id = ? AND subject = 'oidc-sub-1'").bind(idpId).first();
     expect(link).toBeTruthy();
+  });
+
+  it("JIT-provisions an account into the configured groups on sign-in, with a session", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const gid = (await env.DB.prepare("INSERT INTO groups (name) VALUES ('Demo Observers') RETURNING id").first<{ id: number }>())!.id;
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = await exportJWK(publicKey);
+    jwk.kid = "test-kid";
+    const issuer = "https://upstream.test/jit";
+    const res = await apiCall("/api/v1/federation/idps", {
+      token: apiKey,
+      body: { name: "Corp OIDC", protocol: "oidc", jit: true, jit_domain: "horizon.test", jit_groups: [gid], config: { issuer, client_id: "flareid", client_secret: "cs" } },
+    });
+    expect(res.status).toBe(200);
+    const idpId = res.body.id as number;
+
+    let capturedNonce = "";
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url === `${issuer}/.well-known/openid-configuration`) {
+        return Response.json({ issuer, authorization_endpoint: `${issuer}/auth`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks` });
+      }
+      if (url === `${issuer}/jwks`) return Response.json({ keys: [jwk] });
+      if (url === `${issuer}/token`) {
+        const idToken = await new SignJWT({ email: "rookie@else.test", nonce: capturedNonce })
+          .setProtectedHeader({ alg: "RS256", kid: "test-kid" })
+          .setIssuer(issuer)
+          .setAudience("flareid")
+          .setSubject("oidc-jit-1")
+          .setIssuedAt()
+          .setExpirationTime("5m")
+          .sign(privateKey);
+        return Response.json({ id_token: idToken });
+      }
+      return new Response("unexpected fetch " + url, { status: 500 });
+    });
+
+    const flowId = await sealLoginFlow(env, { kind: "direct", next: "/account" });
+    const start = await SELF.fetch(`${BASE}/login/federated/${idpId}?flow=${encodeURIComponent(flowId)}`, { redirect: "manual" });
+    expect(start.status).toBe(302);
+    const authUrl = new URL(start.headers.get("Location")!);
+    capturedNonce = authUrl.searchParams.get("nonce")!;
+    const state = authUrl.searchParams.get("state")!;
+    const cb = await SELF.fetch(`${BASE}/federation/oidc/callback?code=abc&state=${encodeURIComponent(state)}`, { redirect: "manual" });
+    spy.mockRestore();
+    expect(cb.status).toBe(302);
+    expect(cb.headers.get("Set-Cookie")).toContain("__Host-flareid_session=");
+    // The account exists, is linked, and is in the configured group.
+    const user = await env.DB.prepare("SELECT id FROM users WHERE upn = 'rookie@horizon.test'").first<{ id: number }>();
+    expect(user).toBeTruthy();
+    expect(await env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(gid, user!.id).first()).toBeTruthy();
+    expect(await env.DB.prepare("SELECT 1 FROM federated_identities WHERE idp_id = ? AND user_id = ?").bind(idpId, user!.id).first()).toBeTruthy();
   });
 
   it("rejects a callback with an unknown or consumed state", async () => {

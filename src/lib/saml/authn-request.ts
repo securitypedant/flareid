@@ -14,6 +14,12 @@ const SIGALG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 
 export class AuthnRequestError extends Error {}
 
+export interface RequestedAuthnContext {
+  /** exact | minimum | maximum | better - "exact" when the attribute is absent (SAML Core 3.3.2.2.1). */
+  comparison: string;
+  classRefs: string[];
+}
+
 export interface ParsedAuthnRequest {
   id: string;
   /** The SP's entityID - the <saml:Issuer> of the request. */
@@ -22,6 +28,13 @@ export interface ParsedAuthnRequest {
   forceAuthn: boolean;
   isPassive: boolean;
   nameIdFormat: string | null;
+  /** NameIDPolicy/@SPNameQualifier - the SP namespace the identifier should be created for. */
+  nameIdSpNameQualifier: string | null;
+  /** NameIDPolicy/@SPProvidedID - an SP-chosen value for a persistent identifier. */
+  nameIdSpProvidedId: string | null;
+  /** The NameID inside a <saml:Subject> directly under the request - the principal the assertion must be about. */
+  subjectNameId: string | null;
+  requestedAuthnContext: RequestedAuthnContext | null;
   destination: string | null;
 }
 
@@ -128,6 +141,34 @@ export function parseAuthnRequestXml(xml: string): ParsedAuthnRequest {
   if (!issuer) throw new AuthnRequestError("The AuthnRequest has no Issuer.");
 
   const policyEls = root.getElementsByTagNameNS(NS_SAMLP, "NameIDPolicy");
+  const policy = policyEls.length > 0 ? policyEls[0]! : null;
+
+  // Only direct children of the AuthnRequest carry request semantics: a
+  // Subject or RequestedAuthnContext nested inside <samlp:Extensions> is
+  // advice data, not a processing instruction (SAML Core 3.4.1, 3.3.2.2.1).
+  const directChild = (ns: string, local: string) =>
+    Array.from(root.childNodes).filter(
+      (n): n is typeof root => n.nodeType === 1 && (n as typeof root).namespaceURI === ns && (n as typeof root).localName === local
+    );
+
+  let subjectNameId: string | null = null;
+  const subjectEls = directChild(NS_SAML, "Subject");
+  if (subjectEls.length > 0) {
+    const nid = subjectEls[0]!.getElementsByTagNameNS(NS_SAML, "NameID")[0];
+    subjectNameId = nid?.textContent?.trim() || null;
+  }
+
+  let requestedAuthnContext: RequestedAuthnContext | null = null;
+  const racEls = directChild(NS_SAMLP, "RequestedAuthnContext");
+  if (racEls.length > 0) {
+    const rac = racEls[0]!;
+    requestedAuthnContext = {
+      comparison: (rac.getAttribute("Comparison") ?? "exact").trim() || "exact",
+      classRefs: Array.from(rac.getElementsByTagNameNS(NS_SAML, "AuthnContextClassRef"))
+        .map((e) => e.textContent?.trim() ?? "")
+        .filter(Boolean),
+    };
+  }
 
   return {
     id,
@@ -135,7 +176,11 @@ export function parseAuthnRequestXml(xml: string): ParsedAuthnRequest {
     acsUrl: root.getAttribute("AssertionConsumerServiceURL")?.trim() || null,
     forceAuthn: ["true", "1"].includes((root.getAttribute("ForceAuthn") ?? "").trim()),
     isPassive: ["true", "1"].includes((root.getAttribute("IsPassive") ?? "").trim()),
-    nameIdFormat: policyEls.length > 0 ? policyEls[0]!.getAttribute("Format") : null,
+    nameIdFormat: policy?.getAttribute("Format") ?? null,
+    nameIdSpNameQualifier: policy?.getAttribute("SPNameQualifier") ?? null,
+    nameIdSpProvidedId: policy?.getAttribute("SPProvidedID") ?? null,
+    subjectNameId,
+    requestedAuthnContext,
     destination: root.getAttribute("Destination")?.trim() || null,
   };
 }

@@ -3,7 +3,8 @@ import type { Env } from "../env.js";
 import { authPage, loginAppearance, msg, renderAuthMessage } from "../lib/login-views.js";
 import { t, type MessageKey } from "../lib/i18n.js";
 import { escapeHtml } from "../lib/html.js";
-import { getClientByClientId, getUserById } from "../lib/db.js";
+import { getClientByClientId, getUserById, getUserGroupIds } from "../lib/db.js";
+import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
 import { getSession } from "../lib/sessions.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
@@ -180,7 +181,10 @@ device.post("/device/approve", async (c) => {
   if (!stillPending(row)) return renderAuthMessage(c, 400, CODE_EXPIRED);
 
   const client = await getClientByClientId(c.env, row.client_id);
-  const approve = decision === "approve" && !!client;
+  // App assignment, same bar as /authorize: a restricted client stamps the
+  // code denied for anyone outside its groups - audited as app_denied below.
+  const allowed = !!client && (parseAssignedGroupIds(client.assigned_groups).length === 0 || (await appVisibleTo(client.assigned_groups, await getUserGroupIds(c.env, session.userId))));
+  const approve = decision === "approve" && allowed;
   // Only a pending row flips; a second tab racing the same code loses and
   // the answer it already gave stands.
   const stamped = await c.env.DB.prepare(
@@ -190,7 +194,7 @@ device.post("/device/approve", async (c) => {
     .run();
   if (Number(stamped.meta.changes) !== 1) return renderAuthMessage(c, 400, CODE_EXPIRED);
 
-  await logAudit(c.env, { id: session.userId, upn: (await getUserById(c.env, session.userId))?.upn ?? "" }, approve ? "oauth.device_approved" : "oauth.device_denied", client?.name ?? row.client_id, { client_id: row.client_id }, c.req.raw);
+  await logAudit(c.env, { id: session.userId, upn: (await getUserById(c.env, session.userId))?.upn ?? "" }, approve ? "oauth.device_approved" : decision === "approve" && !allowed ? "oauth.app_denied" : "oauth.device_denied", client?.name ?? row.client_id, { client_id: row.client_id }, c.req.raw);
 
   return c.html(
     authPage(

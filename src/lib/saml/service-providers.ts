@@ -41,10 +41,158 @@ export function spAttributeMap(sp: SamlServiceProviderRow): Record<string, strin
   return parseJson<Record<string, string>>(sp.attribute_map, {});
 }
 
-/** The md:EncryptionMethod URIs an SP advertised, mapped onto what this Worker can emit. */
-export function encryptionPolicyFromUris(uris: string[]): { content: EncryptionPolicy["content"]; transport: EncryptionPolicy["transport"] } | null {
-  const content = uris.find((u) => u in CONTENT_ALGORITHMS) as EncryptionPolicy["content"] | undefined;
-  const transport = uris.find((u) => u in TRANSPORT_ALGORITHMS) as EncryptionPolicy["transport"] | undefined;
+/** A released attribute as configured per SP: arbitrary SAML Name, optional NameFormat, and the user field feeding it (IIP-IDP01). */
+export interface SpAttributeDefinition {
+  name: string;
+  field: string;
+  nameFormat?: string;
+}
+
+export const ATTRIBUTE_DEFINITIONS_MAX = 64;
+
+/**
+ * The SP's attribute definitions - the richer alternative to attribute_map:
+ * each entry names the released attribute (arbitrary xs:string), its optional
+ * NameFormat (arbitrary xs:anyURI) and the user field feeding it. Stored as a
+ * JSON array; a malformed row resolves to [] so a hand edit cannot break SSO.
+ */
+export function spAttributeDefinitions(sp: SamlServiceProviderRow): SpAttributeDefinition[] {
+  const raw = parseJson<unknown>(sp.attribute_definitions, []);
+  if (!Array.isArray(raw)) return [];
+  const out: SpAttributeDefinition[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const d = item as Record<string, unknown>;
+    const name = typeof d.name === "string" ? d.name : "";
+    const field = typeof d.field === "string" ? d.field : "";
+    if (!name || !field) continue;
+    const nameFormat = typeof d.nameFormat === "string" && d.nameFormat ? d.nameFormat : typeof d.name_format === "string" && d.name_format ? d.name_format : undefined;
+    out.push(nameFormat ? { name, field, nameFormat } : { name, field });
+  }
+  return out;
+}
+
+/**
+ * Write-path validation for attribute_definitions (console textarea JSON and
+ * the API array): returns the normalized entries or an error message for the
+ * administrator. `field` vocabulary is the caller's check
+ * (USER_ATTRIBUTE_FIELDS), so this only rules on shape.
+ */
+export function normalizeAttributeDefinitions(input: unknown): { defs: SpAttributeDefinition[] } | { error: string } {
+  if (!Array.isArray(input)) return { error: 'attribute_definitions must be a JSON array of {"name": ..., "field": ..., "name_format": ...}.' };
+  const defs: SpAttributeDefinition[] = [];
+  const seen = new Set<string>();
+  for (const item of input) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { error: 'Each attribute definition must be an object {"name": ..., "field": ..., "name_format": ...}.' };
+    const d = item as Record<string, unknown>;
+    const name = String(d.name ?? "").trim();
+    // Name is an arbitrary xs:string - the only rule is that there is one.
+    if (!name) return { error: "Every attribute definition needs a non-empty name." };
+    const field = typeof d.field === "string" ? d.field.trim() : "";
+    if (!field) return { error: `Attribute "${name}" needs a field.` };
+    // NameFormat is an arbitrary xs:anyURI; absent means the IdP default.
+    const nameFormat = String(d.name_format ?? d.nameFormat ?? "").trim();
+    if (seen.has(name)) return { error: `Attribute "${name}" is defined twice.` };
+    seen.add(name);
+    defs.push(nameFormat ? { name, field, nameFormat } : { name, field });
+  }
+  if (defs.length > ATTRIBUTE_DEFINITIONS_MAX) return { error: `At most ${ATTRIBUTE_DEFINITIONS_MAX} attribute definitions per service provider.` };
+  return { defs };
+}
+
+/**
+ * nameid_format "none" (IIP-IDP11): the assertion's <saml:Subject> carries
+ * only SubjectConfirmation - no <saml:NameID> at all.
+ */
+export function spOmitsNameId(sp: Pick<SamlServiceProviderRow, "nameid_format">): boolean {
+  return sp.nameid_format === "none";
+}
+
+/**
+ * Every spelling a configured algorithm can be recognised by in the
+ * disabled_algorithms deny list: the full URI, its #-fragment and the short
+ * token the API accepts (aes256-cbc, rsa-oaep, sha256).
+ */
+function algorithmAliases(value: string): Set<string> {
+  const aliases = new Set([value]);
+  const hash = value.indexOf("#");
+  if (hash >= 0) aliases.add(value.slice(hash + 1));
+  const content = CONTENT_ALGORITHMS[value as keyof typeof CONTENT_ALGORITHMS];
+  if (content) aliases.add(content.token);
+  const transport = TRANSPORT_ALGORITHMS[value as keyof typeof TRANSPORT_ALGORITHMS];
+  if (transport) aliases.add(transport.token);
+  return aliases;
+}
+
+/** Whether `algorithm` (URI, fragment or token) is on the deny list. */
+export function isAlgorithmDisabled(disabled: readonly string[], algorithm: string | null | undefined): boolean {
+  if (!algorithm) return false;
+  const aliases = algorithmAliases(algorithm);
+  return disabled.some((entry) => {
+    const d = entry.trim();
+    if (aliases.has(d)) return true;
+    const hash = d.indexOf("#");
+    return hash >= 0 && aliases.has(d.slice(hash + 1));
+  });
+}
+
+/** The mask hash the policy emits, mirroring encryptAssertion: mgf1p fixes MGF1-SHA1; the parameterized URI takes the declared mgf, defaulting to SHA-1. */
+function effectiveMgf(transport: string, mgf: string | null | undefined): string {
+  return TRANSPORT_ALGORITHMS[transport as keyof typeof TRANSPORT_ALGORITHMS]?.parameterized ? (mgf ?? "sha1") : "sha1";
+}
+
+/**
+ * The first deny-listed algorithm the policy would emit once the defaults
+ * fill its gaps, or null when the resolved policy is clean. Fields are
+ * resolved exactly as emission resolves them - an unset content algorithm is
+ * the default aes256-gcm, an unset MGF is the effective mask hash.
+ */
+export function disabledAlgorithmInPolicy(
+  policy: { content?: string | null; transport?: string | null; digest?: string | null; mgf?: string | null },
+  disabled: readonly string[]
+): { field: "content" | "transport" | "digest" | "mgf"; value: string } | null {
+  const content = policy.content ?? DEFAULT_ENCRYPTION_POLICY.content;
+  const transport = policy.transport ?? DEFAULT_ENCRYPTION_POLICY.transport;
+  const digest = policy.digest ?? DEFAULT_ENCRYPTION_POLICY.digest;
+  if (isAlgorithmDisabled(disabled, content)) return { field: "content", value: content };
+  if (isAlgorithmDisabled(disabled, transport)) return { field: "transport", value: transport };
+  if (isAlgorithmDisabled(disabled, digest)) return { field: "digest", value: digest };
+  const mgf = effectiveMgf(transport, policy.mgf);
+  if (isAlgorithmDisabled(disabled, mgf)) return { field: "mgf", value: mgf };
+  return null;
+}
+
+/**
+ * The group ids an app is restricted to, from its `assigned_groups` column.
+ * NULL, unparseable or '[]' all mean "everyone" - a hand-edited row degrades
+ * to open, matching how every other JSON column here resolves malformed.
+ */
+export function parseAssignedGroupIds(raw: string | null | undefined): number[] {
+  const parsed = parseJson<unknown>(raw ?? null, []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((id): id is number => typeof id === "number" && Number.isInteger(id));
+}
+
+/**
+ * Whether an app with this assignment list is visible to a user holding
+ * `userGroupIds` (their effective memberships, static and dynamic). An empty
+ * assignment is everyone; otherwise one shared group is enough.
+ */
+export function appVisibleTo(assignedJson: string | null | undefined, userGroupIds: readonly number[]): boolean {
+  const ids = parseAssignedGroupIds(assignedJson);
+  if (ids.length === 0) return true;
+  return ids.some((id) => userGroupIds.includes(id));
+}
+
+/**
+ * The md:EncryptionMethod URIs an SP advertised, mapped onto what this Worker
+ * can emit. `disabled` is the instance deny list (getDisabledAlgorithms):
+ * denied URIs are skipped rather than selected (IIP-ALG08).
+ */
+export function encryptionPolicyFromUris(uris: string[], disabled?: readonly string[]): { content: EncryptionPolicy["content"]; transport: EncryptionPolicy["transport"] } | null {
+  const allowed = (u: string) => !disabled || !isAlgorithmDisabled(disabled, u);
+  const content = uris.find((u) => u in CONTENT_ALGORITHMS && allowed(u)) as EncryptionPolicy["content"] | undefined;
+  const transport = uris.find((u) => u in TRANSPORT_ALGORITHMS && allowed(u)) as EncryptionPolicy["transport"] | undefined;
   return content || transport ? { content: content ?? DEFAULT_ENCRYPTION_POLICY.content, transport: transport ?? DEFAULT_ENCRYPTION_POLICY.transport } : null;
 }
 
@@ -52,8 +200,12 @@ export function encryptionPolicyFromUris(uris: string[]): { content: EncryptionP
  * The SP's encryption choice for EncryptedAssertion emission: the stored
  * policy merged over the defaults. Malformed fields fall back individually -
  * a hand-edited row must not break SSO issuance.
+ *
+ * `disabled` is the instance deny list (getDisabledAlgorithms): when given,
+ * a resolved policy that selects a denied algorithm throws instead of being
+ * returned - fail closed at emission (IIP-ALG08.a).
  */
-export function spEncryptionPolicy(sp: SamlServiceProviderRow): Partial<EncryptionPolicy> {
+export function spEncryptionPolicy(sp: SamlServiceProviderRow, disabled?: readonly string[]): Partial<EncryptionPolicy> {
   const raw = parseJson<Record<string, unknown>>(sp.encryption_policy, {});
   const out: Partial<EncryptionPolicy> = {};
   if (typeof raw.content === "string" && raw.content in CONTENT_ALGORITHMS) out.content = raw.content as EncryptionPolicy["content"];
@@ -61,6 +213,10 @@ export function spEncryptionPolicy(sp: SamlServiceProviderRow): Partial<Encrypti
   if (raw.digest === "sha1" || raw.digest === "sha256" || raw.digest === "sha384" || raw.digest === "sha512") out.digest = raw.digest;
   if (raw.mgf === "sha1" || raw.mgf === "sha256" || raw.mgf === "sha384" || raw.mgf === "sha512") out.mgf = raw.mgf;
   if (raw.mgf === null) out.mgf = null;
+  if (disabled && disabled.length > 0) {
+    const bad = disabledAlgorithmInPolicy(out, disabled);
+    if (bad) throw new Error(`SAML encryption ${bad.field} algorithm "${bad.value}" is disabled by this instance's disabled_algorithms policy.`);
+  }
   return out;
 }
 

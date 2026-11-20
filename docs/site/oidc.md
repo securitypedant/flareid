@@ -21,6 +21,7 @@ The client's page lists the URLs the app needs, each with a copy button.
 | **Post-logout redirect URIs** | Where FlareID may send people after the app signs them out. |
 | **ID token signing algorithm** | `RS256` works everywhere. Choose `ES256` only if the app supports it. |
 | **Front-channel logout URI** | Loaded in a hidden frame when someone signs out, so the app can end its session too. |
+| **Restrict to groups** | Only members of the chosen groups see the app on their My account launchpad and may sign in to it. Empty means everyone. |
 | **Trusted first-party app** | Skips the consent screen. Untick it for third-party apps. |
 | **Claims this app may receive** | Limits what the app can learn about people. |
 

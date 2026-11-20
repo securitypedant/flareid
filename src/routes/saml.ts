@@ -6,14 +6,22 @@ import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginAppearance, msg, renderAuthMessage, sendLoginForm, type AuthMessage } from "../lib/login-views.js";
 import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
-import { getUserById } from "../lib/db.js";
+import { getUserById, getUserGroupIds } from "../lib/db.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { logAudit } from "../lib/audit.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { idpMetadataXml } from "../lib/saml/metadata.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
-import { buildErrorResponse, buildSignedResponse, idpEntityId } from "../lib/saml/messages.js";
+import {
+  AUTHN_CONTEXT,
+  NAMEID_FORMAT_BY_URI,
+  NAMEID_FORMAT_URIS,
+  buildErrorResponse,
+  buildSignedResponse,
+  idpEntityId,
+  supportedNameIdFormatUris,
+} from "../lib/saml/messages.js";
 import {
   AuthnRequestError,
   decodePostAuthnRequest,
@@ -23,9 +31,10 @@ import {
   verifyPostSignature,
   verifyRedirectSignature,
   type ParsedAuthnRequest,
+  type RequestedAuthnContext,
   type SignatureCheck,
 } from "../lib/saml/authn-request.js";
-import { getSpByEntityId, getSpById, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
+import { appVisibleTo, getSpByEntityId, getSpById, parseAssignedGroupIds, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
 import type { SamlServiceProviderRow, UserRow } from "../lib/types.js";
 
 export const saml = new Hono<{ Bindings: Env }>();
@@ -60,6 +69,14 @@ export async function issueSamlResponse(
   // The marker is an atomic D1 claim - the KV get+put it replaces raced by
   // minutes of propagation time, and its row outlives REQUEST_ID_TTL anyway.
   if (!(await markConsumed(env, replayKey))) return null;
+  // The NameIDPolicy the request asked for was validated before the flow was
+  // stored and rides along as extra fields (the flow is JSON-serialised, so
+  // they survive the login that may happen in between).
+  const extra = request as PendingSamlRequest & {
+    nameIdFormat?: string | null;
+    nameIdSpNameQualifier?: string | null;
+    nameIdSpProvidedId?: string | null;
+  };
   const xml = await buildSignedResponse(env, {
     sp,
     user,
@@ -67,6 +84,9 @@ export async function issueSamlResponse(
     acsUrl: request.acsUrl,
     sessionId,
     authnInstant,
+    nameIdFormat: extra.nameIdFormat,
+    nameIdSpNameQualifier: extra.nameIdSpNameQualifier,
+    nameIdSpProvidedId: extra.nameIdSpProvidedId,
   });
   return { acsUrl: request.acsUrl, samlResponse: b64encode(xml), relayState: request.relayState };
 }
@@ -124,6 +144,13 @@ saml.get("/saml/idp-initiated", async (c) => {
   // 'login' re-authenticates, 'enrol' goes to factor setup and retries the link.
   if (gate === "login") return c.redirect(`/login?next=${encodeURIComponent(self.pathname + self.search)}`, 302);
   if (gate === "enrol") return c.redirect("/account/mfa/setup", 302);
+
+  // App assignment: an SP restricted to groups is not for this user. There is
+  // no AuthnRequest to answer, so the denial is a page, not a posted status.
+  if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+    await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned", idp_initiated: true }, c.req.raw);
+    return renderAuthMessage(c, 403, appConfigError("Your account is not allowed to use this application."));
+  }
 
   let relayState: string | null = null;
   if (c.req.query("RelayState") !== undefined) {
@@ -224,6 +251,16 @@ saml.get("/saml/complete", async (c) => {
   const sp = await getSpById(c.env, flow.request.spId);
   if (!sp) return renderAuthMessage(c, 400, appConfigError("Unknown service provider."));
 
+  // Same re-evaluation rule as the signin permission above: assignment is
+  // checked at redemption. The denial answers the request in protocol - a
+  // signed RequestDenied posted to the registered ACS.
+  if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+    await deleteLoginFlow(c.env, flowId);
+    await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned" }, c.req.raw);
+    const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+    return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
+  }
+
   await deleteLoginFlow(c.env, flowId);
   const issued = await issueSamlResponse(c.env, sp, flow.request, user, session.id, new Date(session.createdAt));
   if (!issued) return renderAuthMessage(c, 400, ALREADY_ANSWERED);
@@ -265,6 +302,45 @@ async function rejectSignature(
   );
 }
 
+/**
+ * The AuthnContext comparison matrix (SAML Core 3.3.2.2.1). FlareID asserts
+ * exactly one class - PasswordProtectedTransport - so comparisons are judged
+ * against that single class: "exact" matches only itself; "minimum"/"maximum"
+ * are met when it is inside the requested set (it is at least/at most as
+ * strong as itself) and undecidable otherwise; "better" can never be met
+ * because no stronger class exists to assert. An empty class list or an
+ * element without refs places no constraint.
+ */
+function authnContextSatisfiable(rac: RequestedAuthnContext): boolean {
+  if (rac.classRefs.length === 0) return true;
+  const inSet = rac.classRefs.includes(AUTHN_CONTEXT);
+  switch (rac.comparison) {
+    case "exact":
+      return inSet;
+    case "minimum":
+    case "maximum":
+      return inSet;
+    case "better":
+      return false;
+    default:
+      return false;
+  }
+}
+
+/** Posts a signed error <samlp:Response> to the registered ACS - the protocol-level refusal for an unsatisfiable request. */
+async function postProtocolError(
+  c: Context<{ Bindings: Env }>,
+  request: ParsedAuthnRequest,
+  acsUrl: string,
+  relayState: string | null,
+  statusDetail: string,
+  reason: string
+): Promise<Response> {
+  await logAudit(c.env, null, "saml.request_rejected", request.issuer, { reason }, c.req.raw);
+  const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl, requestId: request.id, statusDetail }));
+  return c.html(samlPostForm(c.get("appName"), acsUrl, samlResponse, relayState));
+}
+
 /** The flow both bindings converge on once the request and its signature check out. */
 async function continueSsoRequest(
   c: Context<{ Bindings: Env }>,
@@ -283,7 +359,38 @@ async function continueSsoRequest(
     return renderAuthMessage(c, 400, ALREADY_ANSWERED);
   }
 
+  // SAML Core 3.4.1.4: the responder must answer with assertions meeting the
+  // request's specifications, or with a Status describing the error. Every
+  // unsatisfiable specification is refused here - a login form cannot change
+  // the answer, so the signed error goes straight to the ACS.
+  const specifiedFormat = request.nameIdFormat ? NAMEID_FORMAT_BY_URI[request.nameIdFormat] : undefined;
+  if (request.nameIdFormat && !specifiedFormat && request.nameIdFormat !== "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified") {
+    return postProtocolError(c, request, acsUrl, relayState, "InvalidNameIDPolicy", "unsupported_nameid_format");
+  }
+  // The format actually emitted: the request's choice when it is one we can
+  // produce, otherwise the SP's configured default.
+  const resolvedFormatName = specifiedFormat ?? (NAMEID_FORMAT_URIS[sp.nameid_format] ? sp.nameid_format : "transient");
+  if (request.nameIdSpProvidedId && resolvedFormatName !== "persistent") {
+    return postProtocolError(c, request, acsUrl, relayState, "InvalidNameIDPolicy", "spprovidedid_without_persistent");
+  }
+  if (request.subjectNameId) {
+    // A <saml:Subject> demands an assertion about that specific principal; the
+    // IdP authenticates the session user and cannot map an opaque identifier
+    // onto a different one - the principal is not recognized.
+    return postProtocolError(c, request, acsUrl, relayState, "UnknownPrincipal", "unrecognized_subject");
+  }
+  if (request.requestedAuthnContext && !authnContextSatisfiable(request.requestedAuthnContext)) {
+    return postProtocolError(c, request, acsUrl, relayState, "NoAuthnContext", "unsatisfiable_authn_context");
+  }
+
   const pending: PendingSamlRequest = { spId: sp.id, requestId: request.id, acsUrl, relayState };
+  // What issuance must honour from the request: only a format we can actually
+  // emit, the SP namespace to echo, and the SP-chosen persistent value.
+  Object.assign(pending, {
+    nameIdFormat: specifiedFormat ? request.nameIdFormat : null,
+    nameIdSpNameQualifier: request.nameIdSpNameQualifier,
+    nameIdSpProvidedId: resolvedFormatName === "persistent" ? request.nameIdSpProvidedId : null,
+  });
 
   // SSO: a live session answers the request without a login form, unless the
   // SP asked for a fresh authentication.
@@ -293,6 +400,12 @@ async function continueSsoRequest(
     const gate = session && user ? await secondFactorGate(c.env, user, session.amr) : "ok";
     // A session that did not use the second factor the user's policy needs is not reused: they sign in again.
     if (session && user && user.status === "active" && gate !== "login" && (await canSignIn(c.env, user.id))) {
+      // App assignment: the user is authenticated, but this SP is restricted
+      // to groups they are not in - a protocol-level RequestDenied, same
+      // delivery as every other refusal here.
+      if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+        return postProtocolError(c, request, acsUrl, relayState, "RequestDenied", "app_not_assigned");
+      }
       // Same rule as /authorize: a password-only session minted before forced
       // enrolment parks the request and goes through MFA setup first - but
       // IsPassive forbids that UI, so it falls through to the NoPassive error.

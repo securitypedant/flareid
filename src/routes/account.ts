@@ -29,11 +29,11 @@ import { requireSession } from "../lib/middleware.js";
 import { attr, attrGrid, attrHtml, avatar, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, paginationControls, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
-import { getUserById, getUserGroupNames } from "../lib/db.js";
+import { getUserById, getUserGroupIds, getUserGroupNames } from "../lib/db.js";
 import { attributeInput, getSchemaAttributes, parseCustomAttributes, ruleAttributeNames, splitUserAttributes, userAttributeValue, type SchemaAttributeRow } from "../lib/schemas.js";
 import { getMasteredFields, masteringKeyFor } from "../lib/scim-mapping.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
-import type { UserRow } from "../lib/types.js";
+import type { OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
@@ -53,6 +53,7 @@ import { notificationFeedFor } from "../lib/notifications.js";
 import { avatarUrl, deleteUserPhoto, getUserPhoto, getUserPhotoVersion, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { consoleCtx, ServiceError } from "../services/context.js";
 import { addGroupMembers, getGroupById, groupMembers, removeGroupMember } from "../services/groups.js";
+import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
 import { assertMayManageGroup } from "../services/guards.js";
 
 export const account = new Hono<{ Bindings: Env }>();
@@ -164,14 +165,65 @@ async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttrib
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const [editable, mastered, photoV] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id)]);
+  const [editable, mastered, photoV, clients, sps] = await Promise.all([
+    editableAttributes(c.env, user),
+    getMasteredFields(c.env),
+    getUserPhotoVersion(c.env, user.id),
+    c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>(),
+    c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>(),
+  ]);
   const photoMastered = mastered.includes("photo");
+  // Memberships are only worth fetching when at least one app is restricted.
+  const myGroupIds =
+    clients.results.some((cl) => parseAssignedGroupIds(cl.assigned_groups).length > 0) || sps.results.some((sp) => parseAssignedGroupIds(sp.assigned_groups).length > 0)
+      ? await getUserGroupIds(c.env, user.id)
+      : [];
+
+  // The launchpad: every app this person may sign in to - unrestricted apps,
+  // plus assigned apps whose groups intersect theirs. Each tile is the app's
+  // own launch URL: a SAML SP's unsolicited-SSO endpoint, an OIDC client's
+  // third-party login URI, else a bare authorization request.
+  const launchpad = [
+    ...clients.results
+      .filter((cl) => appVisibleTo(cl.assigned_groups, myGroupIds))
+      .map((cl) => {
+        const firstRedirect = (JSON.parse(cl.redirect_uris || "[]") as string[])[0];
+        const href =
+          cl.initiate_login_uri ||
+          (firstRedirect ? `/authorize?${new URLSearchParams({ client_id: cl.client_id, redirect_uri: firstRedirect, response_type: "code", scope: "openid" }).toString()}` : "");
+        return { name: cl.name, logo: cl.logo_uri, href };
+      }),
+    ...sps.results
+      .filter((sp) => appVisibleTo(sp.assigned_groups, myGroupIds))
+      .map((sp) => ({ name: sp.name, logo: null as string | null, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}` })),
+  ];
+  // External client logos need their exact URLs admitted to img-src for this
+  // response - security-headers reads the marker (same as the sign-in page).
+  const logos = [...new Set(launchpad.map((a) => a.logo).filter((u): u is string => Boolean(u)))];
+  if (logos.length) c.header("X-FlareID-Img-Src", logos.join(" "));
+
   return c.html(
     layout(
       c,
       `${user.display_name}`,
       `
       ${savedBanner(c)}
+      ${cardSection(`
+        <h2>My apps</h2>
+        ${
+          launchpad.length
+            ? `<ul style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:10px;">
+                ${launchpad
+                  .map((a) => {
+                    const inner = `${a.logo ? `<img src="${escapeHtml(a.logo)}" alt="" style="width:20px; height:20px; object-fit:contain;" data-hide-on-error />` : ""}${escapeHtml(a.name)}`;
+                    const tile = 'style="display:inline-flex; align-items:center; gap:8px; border:1px solid var(--fi-line); border-radius:8px; padding:8px 14px; font-weight:550; font-size:0.875rem; color:var(--fi-body); text-decoration:none;"';
+                    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" ${tile}` : `<span ${tile}`}>${inner}${a.href ? "</a>" : "</span>"}</li>`;
+                  })
+                  .join("")}
+              </ul>`
+            : '<p class="muted">No apps assigned yet.</p>'
+        }
+      `)}
       ${cardSection(`
         <div class="row between" style="align-items:flex-start; gap:18px;">
           <div style="flex:1; min-width:0;">

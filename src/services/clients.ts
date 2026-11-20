@@ -17,6 +17,11 @@ export const ID_TOKEN_ALGS = ["RS256", "ES256"] as const;
 export type IdTokenAlg = (typeof ID_TOKEN_ALGS)[number];
 export const isIdTokenAlg = (v: unknown): v is IdTokenAlg => (ID_TOKEN_ALGS as readonly unknown[]).includes(v);
 
+// App assignment is shared between OIDC clients and SAML service providers;
+// the helpers live with the SP row utilities. Re-exported so callers touching
+// either app kind use one spelling.
+export { appVisibleTo, parseAssignedGroupIds } from "../lib/saml/service-providers.js";
+
 export async function getClientById(env: Env, id: number): Promise<OAuthClientRow | null> {
   return env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
 }
@@ -35,6 +40,8 @@ export interface ClientSettings {
   initiateLoginUri?: string;
   /** id_token signing algorithm; omitted keeps the current one. */
   idTokenAlg?: IdTokenAlg;
+  /** JSON array of group ids allowed to use the app ('[]' = everyone); omitted keeps the current one. */
+  assignedGroups?: string;
 }
 
 /** Saves a client's editable settings; its id, type and secret stay as they are. */
@@ -46,6 +53,7 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
   if (s.backchannelLogoutUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE id = ?").bind(s.backchannelLogoutUri, id).run();
   if (s.initiateLoginUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE id = ?").bind(s.initiateLoginUri, id).run();
   if (s.idTokenAlg) await ctx.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(s.idTokenAlg, id).run();
+  if (s.assignedGroups !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE id = ?").bind(s.assignedGroups, id).run();
   await audit(ctx, "oidc_client.updated", s.name);
 }
 

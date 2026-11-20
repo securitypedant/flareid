@@ -7,7 +7,7 @@ import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, stashPendingAction, STEP_UP_WINDOW_MINUTES, takePendingAction } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
 import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
-import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
+import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRoleWriteMap, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
 import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
@@ -32,7 +32,7 @@ import {
 import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
-import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
+import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
@@ -54,7 +54,7 @@ import {
   SESSION_IDLE_MINUTES_RANGE,
   SESSION_MAX_HOURS_RANGE,
 } from "../lib/settings.js";
-import { setSetting } from "../lib/settings.js";
+import { getDisabledAlgorithms, normalizeDisabledAlgorithms, setDisabledAlgorithms, setSetting } from "../lib/settings.js";
 import { getLdapAppBySlug, listLdapApps, revokeLdapApp, revealLdapSecret, rotateLdapSecret, writeLdapApp, appGroupIds, LDAP_SECRET_PREFIX, type LdapAppInput } from "../ldap/apps.js";
 import { disableLdap, domainToBaseDn, enableLdap, getLdapSettings } from "../ldap/settings.js";
 import type { LdapAppRow } from "../lib/types.js";
@@ -70,6 +70,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
+import { normalizeAttributeDefinitions, parseAssignedGroupIds, spAttributeDefinitions, type SpAttributeDefinition } from "../lib/saml/service-providers.js";
 import { resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
 import {
   listSchemas,
@@ -3466,6 +3467,7 @@ admin.get("/admin/integrations/oidc", async (c) => {
 
 admin.get("/admin/integrations/saml", async (c) => {
   const { results: sps } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
+  const disabledAlgorithms = await getDisabledAlgorithms(c.env);
   return c.html(
     layout(
       c,
@@ -3490,10 +3492,32 @@ admin.get("/admin/integrations/saml", async (c) => {
               </table>`
         }
       `)}
+      ${cardSection(`
+        <h2>Disabled algorithms</h2>
+        <p class="muted">An instance-wide deny list for SAML assertion encryption (IIP-ALG08): a service provider whose encryption policy selects a listed algorithm cannot be saved, and one already stored fails rather than emitting it. Entries match the content, key-transport, OAEP digest and MGF choices - a full URI or its short token (<code>aes256-cbc</code>, <code>rsa-oaep-mgf1p</code>, <code>sha1</code>) counts the same.</p>
+        <form method="POST" action="/admin/saml/settings">
+          <label for="disabled_algorithms">Algorithm URIs or tokens, one per line</label>
+          <textarea id="disabled_algorithms" name="disabled_algorithms" rows="4" placeholder="http://www.w3.org/2001/04/xmlenc#aes256-cbc">${escapeHtml(disabledAlgorithms.join("\n"))}</textarea>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
       `,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SAML apps" }]
     )
   );
+});
+
+admin.post("/admin/saml/settings", async (c) => {
+  const body = await c.req.parseBody();
+  let saved: string[];
+  try {
+    saved = normalizeDisabledAlgorithms(String(body.disabled_algorithms ?? "").split("\n"));
+  } catch (e) {
+    return consoleError(c, e instanceof RangeError ? e.message : "Invalid algorithm list.", 400);
+  }
+  await setDisabledAlgorithms(c.env, saved);
+  await logAudit(c.env, c.get("user"), "saml.disabled_algorithms_changed", undefined, { count: saved.length }, c.req.raw);
+  return c.redirect("/admin/integrations/saml?saved=1", 302);
 });
 
 admin.get("/admin/integrations/api-keys", async (c) => {
@@ -3984,12 +4008,13 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
 });
 
 /** The v3 client settings, shared by the new and edit forms. */
-function clientSettingsFields(client?: OAuthClientRow): string {
+function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[]): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
   const logoutUris: string[] = client ? JSON.parse(client.post_logout_redirect_uris || "[]") : [];
   const redirectUris: string[] = client ? JSON.parse(client.redirect_uris || "[]") : [];
   const trusted = client ? client.trusted === 1 : true;
   const alg = client?.id_token_signed_response_alg ?? "RS256";
+  const assigned = new Set(client ? parseAssignedGroupIds(client.assigned_groups) : []);
   return `
     <div class="field-row">
       <div>
@@ -4017,6 +4042,9 @@ function clientSettingsFields(client?: OAuthClientRow): string {
       </div>
     </div>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
+    <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
+    <p class="muted" style="margin-top:-6px;">Only members of the selected groups see this app on their launchpad and may sign in to it.</p>
+    ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), assigned, "Search groups...")}
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
     ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}`;
@@ -4025,6 +4053,7 @@ function clientSettingsFields(client?: OAuthClientRow): string {
 function readClientSettings(body: Record<string, string | File | (string | File)[]>) {
   const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(String);
   return {
+    assignedGroups: JSON.stringify(list(body.assigned_group_ids).map(Number).filter((n) => Number.isInteger(n) && n > 0)),
     trusted: body.trusted ? 1 : 0,
     allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => list(body.allowed_claims).includes(g))),
     // Unusable entries are dropped rather than stored: /oidc/logout follows only exact, valid matches.
@@ -4043,6 +4072,7 @@ function readClientSettings(body: Record<string, string | File | (string | File)
 // validFrontchannelUri lives in services/clients.ts (re-exported above).
 
 admin.get("/admin/clients/new", async (c) => {
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
   return c.html(
     layout(
       c,
@@ -4054,7 +4084,7 @@ admin.get("/admin/clients/new", async (c) => {
           <label>Client type</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="confidential" checked style="width:auto; display:inline; margin-right:6px;" /> Confidential &mdash; a server that can keep a secret (Cloudflare Access, a web backend)</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="public" style="width:auto; display:inline; margin-right:6px;" /> Public &mdash; a single-page or native app: no secret, PKCE required, loopback redirects on any port</label>
-          ${clientSettingsFields()}
+          ${clientSettingsFields(undefined, groups)}
           <div class="form-actions end">${cancelLink("/admin/integrations/oidc")}<button class="primary" type="submit">Create client</button></div>
         </form>
       `),
@@ -4102,7 +4132,7 @@ admin.post("/admin/clients", async (c) => {
   )
     .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris)
     .run();
-  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, settings.idTokenAlg, clientId).run();
+  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, assigned_groups = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, settings.idTokenAlg, settings.assignedGroups, clientId).run();
 
   await logAudit(c.env, c.get("user"), "oidc_client.created", name, undefined, c.req.raw);
 
@@ -4125,6 +4155,7 @@ admin.get("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
   if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
 
   return c.html(
     layout(
@@ -4138,7 +4169,7 @@ admin.get("/admin/clients/:id", async (c) => {
           <label for="name">Name</label>
           <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
           <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
-          ${clientSettingsFields(client)}
+          ${clientSettingsFields(client, groups)}
           <div class="form-actions end">${cancelLink(`/admin/clients/${id}`)}<button class="primary" type="submit">Save</button></div>
         </form>
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
@@ -4251,6 +4282,7 @@ interface SpFormValues {
   defaultAcsUrl: string;
   nameidFormat: string;
   attributeMap: Record<string, string>;
+  attributeDefinitions: SpAttributeDefinition[];
   signResponse: boolean;
   signAssertion: boolean;
   wantSigned: boolean;
@@ -4259,6 +4291,8 @@ interface SpFormValues {
   encryptionCert: string;
   subjectId: string;
   encryptAssertions: boolean;
+  /** Group ids this SP is restricted to; [] = everyone. */
+  assignedGroups: number[];
 }
 
 /** Parses and validates the new/edit SP form. Returns the values, or a message for the admin. */
@@ -4277,7 +4311,8 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
   if (defaultAcsUrl && !acsUrls.includes(defaultAcsUrl)) return "The default ACS URL must be one of the registered ACS URLs.";
 
   const nameidFormat = String(body.nameid_format ?? "transient");
-  if (!nameIdFormatUri(nameidFormat)) return `Unsupported NameID format "${nameidFormat}".`;
+  // "none" (IIP-IDP11): the assertion's Subject carries no <saml:NameID>.
+  if (nameidFormat !== "none" && !nameIdFormatUri(nameidFormat)) return `Unsupported NameID format "${nameidFormat}".`;
 
   let attributeMap: Record<string, string> = {};
   const rawMap = String(body.attribute_map ?? "").trim();
@@ -4295,6 +4330,25 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
       if (typeof e === "string") return e;
       return "attribute_map must be a JSON object of {\"saml-attribute-name\": \"field\"}.";
     }
+  }
+
+  let attributeDefinitions: SpAttributeDefinition[] = [];
+  const rawDefs = String(body.attribute_definitions ?? "").trim();
+  if (rawDefs) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawDefs);
+    } catch {
+      return 'attribute_definitions must be a JSON array of {"name": ..., "field": ..., "name_format": ...}.';
+    }
+    const norm = normalizeAttributeDefinitions(parsed);
+    if ("error" in norm) return norm.error;
+    for (const def of norm.defs) {
+      if (!USER_ATTRIBUTE_FIELDS.includes(def.field as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
+        return `"${def.field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
+      }
+    }
+    attributeDefinitions = norm.defs;
   }
 
   const { certs, invalid } = parseCertsInput(String(body.signing_certs ?? ""));
@@ -4317,6 +4371,7 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     defaultAcsUrl,
     nameidFormat,
     attributeMap,
+    attributeDefinitions,
     signResponse: !!body.sign_response,
     signAssertion: !!body.sign_assertion,
     wantSigned: !!body.want_authn_requests_signed,
@@ -4325,10 +4380,15 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     encryptionCert: encryptionCert ?? "",
     encryptAssertions: !!body.encrypt_assertions,
     subjectId: ["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "",
+    assignedGroups: (Array.isArray(body.assigned_group_ids) ? body.assigned_group_ids : body.assigned_group_ids ? [body.assigned_group_ids] : [])
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0),
   };
 }
 
-function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): string {
+function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[]): string {
+  // Shown back in the write shape (name_format), not the stored one.
+  const defsJson = (v.attributeDefinitions ?? []).map((d) => ({ name: d.name, field: d.field, ...(d.nameFormat ? { name_format: d.nameFormat } : {}) }));
   return `
     <form method="POST" action="${escapeHtml(action)}">
       <div class="field-row">
@@ -4354,12 +4414,16 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
             ${supportedNameIdFormats()
               .map((f) => `<option value="${f}" ${(v.nameidFormat ?? "transient") === f ? "selected" : ""}>${f}</option>`)
               .join("")}
+            <option value="none" ${v.nameidFormat === "none" ? "selected" : ""}>none (no &lt;saml:NameID&gt; in the Subject)</option>
           </select>
         </div>
       </div>
       <label for="attribute_map">Attribute map (JSON - leave empty for the default email/name/groups map)</label>
       <textarea id="attribute_map" name="attribute_map" rows="4" placeholder='{"email": "email", "department": "department"}'>${escapeHtml(Object.keys(v.attributeMap ?? {}).length ? JSON.stringify(v.attributeMap, null, 2) : "")}</textarea>
       <p class="muted" style="margin:-8px 0 14px;">Field names: <code>${USER_ATTRIBUTE_FIELDS.join("</code>, <code>")}</code></p>
+      <label for="attribute_definitions">Attribute definitions (JSON - optional; when set it replaces the map above)</label>
+      <textarea id="attribute_definitions" name="attribute_definitions" rows="4" placeholder='[{"name": "http://schemas.example/claims/dept", "field": "department", "name_format": "urn:oasis:names:tc:SAML:2.0:attrname-format:uri"}]'>${escapeHtml(defsJson.length ? JSON.stringify(defsJson, null, 2) : "")}</textarea>
+      <p class="muted" style="margin:-8px 0 14px;">One object per released attribute: an arbitrary <code>name</code>, the user <code>field</code> feeding it and an optional <code>name_format</code> (the default is <code>urn:oasis:names:tc:SAML:2.0:attrname-format:uri</code>).</p>
       <label for="signing_certs">SP signing certificates (PEM, one or more - leave empty if requests are unsigned)</label>
       <textarea id="signing_certs" name="signing_certs" rows="6" placeholder="-----BEGIN CERTIFICATE-----">${escapeHtml((v.signingCerts ?? []).join("\n"))}</textarea>
       <label style="font-weight:400;"><input type="checkbox" name="sign_response" value="1" ${v.signResponse !== false ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Sign the Response</label>
@@ -4376,11 +4440,15 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string): 
         ${[["", "None"], ["pairwise-id", "pairwise-id (different for every SP; recommended)"], ["subject-id", "subject-id (the same for every SP)"]].map(([val, label]) => `<option value="${val}" ${(v.subjectId ?? "") === val ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <p class="muted" style="margin:-8px 0 14px;">SAML V2.0 Subject Identifier Attributes Profile. Set automatically when the SP's metadata asks for one.</p>
+      <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
+      <p class="muted" style="margin-top:-6px;">Only members of the selected groups see this app on their launchpad and may sign in to it.</p>
+      ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), new Set(v.assignedGroups ?? []), "Search groups...")}
       <div class="form-actions end">${cancelLink("/admin/integrations/saml")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
 
 admin.get("/admin/saml/new", async (c) => {
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
   return c.html(
     layout(
       c,
@@ -4400,7 +4468,7 @@ admin.get("/admin/saml/new", async (c) => {
           <div class="form-actions end"><button class="primary" type="submit">Import metadata</button></div>
         </form>
       `)}
-      ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider")}`)}`,
+      ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider", groups)}`)}`,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: "New service provider" }]
     )
   );
@@ -4421,15 +4489,15 @@ admin.post("/admin/saml/import-metadata", async (c) => {
 });
 
 admin.post("/admin/saml", async (c) => {
-  const v = parseSpForm(await c.req.parseBody());
+  const v = parseSpForm(await c.req.parseBody({ all: true }));
   if (typeof v === "string") return consoleError(c, v, 400);
 
   const now = new Date().toISOString();
   const result = await c.env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, assigned_groups, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, now, now)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, JSON.stringify(v.assignedGroups), now, now)
     .run();
 
   await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
@@ -4441,6 +4509,7 @@ admin.get("/admin/saml/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
 
   return c.html(
     layout(
@@ -4458,6 +4527,7 @@ admin.get("/admin/saml/:id", async (c) => {
             defaultAcsUrl: sp.default_acs_url ?? "",
             nameidFormat: sp.nameid_format,
             attributeMap: JSON.parse(sp.attribute_map),
+            attributeDefinitions: spAttributeDefinitions(sp),
             signResponse: !!sp.sign_response,
             signAssertion: !!sp.sign_assertion,
             wantSigned: !!sp.want_authn_requests_signed,
@@ -4466,9 +4536,11 @@ admin.get("/admin/saml/:id", async (c) => {
             encryptionCert: sp.encryption_cert ?? "",
             subjectId: sp.subject_id ?? "",
             encryptAssertions: !!sp.encrypt_assertions,
+            assignedGroups: parseAssignedGroupIds(sp.assigned_groups),
           },
           `/admin/saml/${id}`,
-          "Save"
+          "Save",
+          groups
         )}
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
           <form method="POST" action="/admin/saml/${id}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
@@ -4487,13 +4559,13 @@ admin.post("/admin/saml/:id", async (c) => {
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
-  const v = parseSpForm(await c.req.parseBody());
+  const v = parseSpForm(await c.req.parseBody({ all: true }));
   if (typeof v === "string") return consoleError(c, v, 400);
 
   await c.env.DB.prepare(
-    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ? WHERE id = ?`
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, assigned_groups = ?, updated_at = ? WHERE id = ?`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, new Date().toISOString(), id)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, JSON.stringify(v.assignedGroups), new Date().toISOString(), id)
     .run();
 
   await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, id).run();
@@ -6398,7 +6470,13 @@ admin.post("/admin/scim/sync", async (c) => {
 
 // ---------- Federation (upstream identity providers) ----------
 
-function upstreamFormFields(idp: UpstreamIdpRow | null, protocol: "oidc" | "saml", error?: string): string {
+function upstreamFormFields(
+  idp: UpstreamIdpRow | null,
+  protocol: "oidc" | "saml",
+  groups: { id: number; name: string }[],
+  roleGrants: Map<number, { roles: string[]; writable: boolean }>,
+  error?: string
+): string {
   const cfg = idp ? idpConfig(idp) : ({} as Record<string, string>);
   const v = (k: string) => escapeHtml((cfg as Record<string, string>)[k] ?? "");
   const oidc = protocol === "oidc";
@@ -6449,6 +6527,18 @@ function upstreamFormFields(idp: UpstreamIdpRow | null, protocol: "oidc" | "saml
       <label style="font-weight:400;"><input type="checkbox" name="jit" value="1" ${idp?.jit ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Just-in-time provisioning &mdash; create an account for an upstream identity nobody here has</label>
       <label for="jit_domain">JIT domain <span class="muted">(optional - else the claim's email domain when managed, or the default)</span></label>
       <input type="text" id="jit_domain" name="jit_domain" value="${escapeHtml(idp?.jit_domain ?? "")}" placeholder="example.com" />
+      <label>Groups JIT accounts join <span class="muted">(optional - applied when the account is created)</span></label>
+      ${multiSelect(
+        "jit_groups",
+        groups.map((g) => {
+          const grant = roleGrants.get(g.id);
+          const note = grant ? ` — grants ${grant.roles.join(", ")}${grant.writable ? " (write role - cannot be used here)" : ""}` : "";
+          return { id: g.id, label: `${g.name}${note}` };
+        }),
+        new Set(idp ? upstreamJitGroups(idp) : []),
+        "Search groups..."
+      )}
+      <p class="muted">Every account this provider provisions is added to these groups at creation - including, deliberately, groups that grant a read-only admin role. A group whose role can <em>write</em> is refused on save; give it a read-only role (like Auditor) instead.</p>
       ${
         idp
           ? `<label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${idp.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; offered on the sign-in page</label>`
@@ -6464,11 +6554,13 @@ function upstreamFormFields(idp: UpstreamIdpRow | null, protocol: "oidc" | "saml
 
 function upstreamInputFrom(body: Record<string, unknown>, idp: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
   const protocol = String(body.protocol ?? "") === "saml" ? "saml" : "oidc";
+  const jitGroups = (Array.isArray(body.jit_groups) ? body.jit_groups : body.jit_groups === undefined ? [] : [body.jit_groups]).map(Number).filter((n) => Number.isInteger(n) && n > 0);
   return {
     name: String(body.name ?? ""),
     protocol,
     jit: String(body.jit ?? "") === "1",
     jitDomain: String(body.jit_domain ?? ""),
+    jitGroups,
     enabled: String(body.enabled ?? "") === "1" || !idp,
     keepSecret: idp !== null && String(body.client_secret ?? "") === "",
     config: {
@@ -6526,6 +6618,7 @@ admin.get("/admin/integrations/federation", async (c) => {
 
 admin.get("/admin/integrations/federation/new", async (c) => {
   const protocol = c.req.query("protocol") === "saml" ? "saml" : "oidc";
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
   return c.html(
     layout(
       c,
@@ -6538,7 +6631,7 @@ admin.get("/admin/integrations/federation/new", async (c) => {
           <a href="/admin/integrations/federation/new?protocol=oidc"${protocol === "oidc" ? ' style="font-weight:600;"' : ""}>OIDC</a> &middot;
           <a href="/admin/integrations/federation/new?protocol=saml"${protocol === "saml" ? ' style="font-weight:600;"' : ""}>SAML</a>
         </p>
-        ${upstreamFormFields(null, protocol)}
+        ${upstreamFormFields(null, protocol, groups, await groupRoleWriteMap(c.env))}
       `)}
       ${cardSection(`
         <h2>Registering with the provider</h2>
@@ -6561,6 +6654,7 @@ admin.get("/admin/integrations/federation/:id", async (c) => {
   const { results: links } = await c.env.DB.prepare(
     "SELECT f.subject, f.email, f.last_login_at, u.upn FROM federated_identities f JOIN users u ON u.id = f.user_id WHERE f.idp_id = ? ORDER BY f.last_login_at DESC LIMIT 50"
   ).bind(idp.id).all<{ subject: string; email: string | null; last_login_at: string | null; upn: string }>();
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
   const origin = new URL(c.req.url).origin;
   const registration =
     idp.protocol === "oidc"
@@ -6586,7 +6680,7 @@ admin.get("/admin/integrations/federation/:id", async (c) => {
         </div>
         <h3 style="margin-top:0;">Give the provider</h3>
         ${registration}
-        ${upstreamFormFields(idp, idp.protocol)}
+        ${upstreamFormFields(idp, idp.protocol, groups, await groupRoleWriteMap(c.env))}
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
           <form method="POST" action="/admin/federation/idps/${idp.id}/delete" ${confirmAttrs(
             `Deleting "${idp.name}" removes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`,
@@ -6621,7 +6715,7 @@ admin.get("/admin/integrations/federation/:id", async (c) => {
 });
 
 admin.post("/admin/federation/idps", async (c) => {
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
   try {
     const created = await createUpstreamIdp(c.env, upstreamInputFrom(body, null));
     await logAudit(c.env, c.get("user"), "federation.idp_created", created.name, { protocol: created.protocol }, c.req.raw);
@@ -6633,7 +6727,7 @@ admin.post("/admin/federation/idps", async (c) => {
 
 admin.post("/admin/federation/idps/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
   try {
     const updated = await updateUpstreamIdp(c.env, id, upstreamInputFrom(body, await getUpstreamIdp(c.env, id)));
     await logAudit(c.env, c.get("user"), "federation.idp_updated", updated.name, { protocol: updated.protocol, enabled: updated.enabled }, c.req.raw);

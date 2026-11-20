@@ -1,0 +1,30 @@
+{
+  "slug": "cloudflare-access",
+  "name": "Cloudflare Access",
+  "protocol": "oidc",
+  "website": "https://www.cloudflare.com/products/access/",
+  "instructions": {
+    "app": [
+      "In Cloudflare Zero Trust (one.dash.cloudflare.com) go to Settings > Authentication > Login methods and choose Add new > OIDC.",
+      "Name the login method (e.g. \"FlareID\") and paste the App ID / Client ID {client_id} and Client secret {client_secret} from the FlareID client you created.",
+      "Set Auth URL to {idp_authorize_url}, Token URL to {idp_token_url} and Certificate URL to {idp_jwks_url}.",
+      "Save, then press Test on the login method - Access redeems a code and shows the claims it received.",
+      "Add the login method to the Access policies where it should be offered (check your app's current UI)."
+    ],
+    "flareid": [
+      "Create an OIDC client (Admin > Applications > OIDC clients > New) and apply this template: a confidential client with redirect URI https://{team}.cloudflareaccess.com/cdn-cgi/access/callback.",
+      "Replace {team} with your Zero Trust team name - it is shown under Settings > General > Team name in the Cloudflare dashboard.",
+      "Keep the email and profile claims enabled: Access identifies users by the email claim. Enable groups if Access policies should match FlareID group names (the 'groups' claim).",
+      "Copy the generated client_id and client_secret into the Access login method before pressing Test."
+    ]
+  },
+  "saml": null,
+  "oidc": {
+    "redirect_uris": ["https://{team}.cloudflareaccess.com/cdn-cgi/access/callback"],
+    "claims": ["email", "profile", "groups"],
+    "grant_types": ["authorization_code"],
+    "client_type": "confidential",
+    "trusted": false
+  },
+  "connector": null
+}

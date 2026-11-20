@@ -63,6 +63,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/clients/:id/rotate-secret": "POST /api/v1/clients/{client_id}/rotate-secret",
   "POST /admin/clients/:id/delete": "DELETE /api/v1/clients/{client_id}",
   "POST /admin/saml/import-metadata": "POST /api/v1/saml/service-providers/import-metadata",
+  "POST /admin/saml/settings": "PUT /api/v1/saml/settings",
   "POST /admin/saml": "POST /api/v1/saml/service-providers",
   // The API's register call is an upsert keyed on entity_id.
   "POST /admin/saml/:id": "POST /api/v1/saml/service-providers",

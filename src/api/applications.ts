@@ -3,9 +3,10 @@ import { hasScope, isApiScope, listApiKeys, parseScopes } from "../lib/api-keys.
 import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimTarget, listScimTargets, type ScimTarget } from "../lib/scim-targets.js";
-import { getUpstreamIdp, idpConfig, listUpstreamIdps, type UpstreamIdpRow } from "../lib/federation.js";
+import { getUpstreamIdp, idpConfig, listUpstreamIdps, upstreamJitGroups, type UpstreamIdpRow } from "../lib/federation.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
+import { spAttributeDefinitions } from "../lib/saml/service-providers.js";
 import { apiCtx } from "../services/context.js";
 import { removeDomain, revokeKey, updateKey } from "../services/platform.js";
 import { badRequest, defineRoute, forbidden, notFound, param, readJson, type ApiContext } from "./openapi.js";
@@ -169,6 +170,7 @@ defineRoute(
       default_acs_url: sp.default_acs_url,
       nameid_format: sp.nameid_format,
       attribute_map: JSON.parse(sp.attribute_map) as Record<string, string>,
+      attribute_definitions: spAttributeDefinitions(sp).map((d) => ({ name: d.name, field: d.field, name_format: d.nameFormat ?? null })),
       sign_response: sp.sign_response === 1,
       sign_assertion: sp.sign_assertion === 1,
       want_authn_requests_signed: sp.want_authn_requests_signed === 1,
@@ -345,6 +347,7 @@ const UpstreamIdpSchema = z.object({
   enabled: z.boolean(),
   jit: z.boolean(),
   jit_domain: z.string().nullable(),
+  jit_groups: z.array(z.number()).openapi({ description: "Group ids every JIT-provisioned account joins at creation." }),
   config: z.record(z.string(), z.union([z.string(), z.boolean(), z.record(z.string(), z.string())])),
 });
 
@@ -359,6 +362,7 @@ function idpJson(u: UpstreamIdpRow) {
     enabled: u.enabled === 1,
     jit: u.jit === 1,
     jit_domain: u.jit_domain,
+    jit_groups: upstreamJitGroups(u),
     config: { ...cfg, ...(u.protocol === "oidc" ? { secret_set: secretSet } : {}) },
   };
 }

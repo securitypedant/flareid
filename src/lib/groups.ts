@@ -153,13 +153,23 @@ export async function resolveManyGroupMemberUserIds(env: Env, groups: GroupRow[]
   return out;
 }
 
-/** Groups whose rule matches a user, for membership resolution everywhere claims need it. */
-export async function dynamicGroupNamesForUser(env: Env, user: UserRow): Promise<string[]> {
+/** Every dynamic group whose rule matches a user - the shared scan behind the name/id views. */
+async function dynamicGroupsForUser(env: Env, user: UserRow): Promise<GroupRow[]> {
   const { results: groups } = await env.DB.prepare("SELECT * FROM groups WHERE rule != ''").all<GroupRow>();
   // A stored rule the parser refuses (legacy, oversized) matches nobody - it
   // must never break group resolution for every request.
   return groups.filter((g) => {
     const rule = parseRule(g.rule);
     return rule !== null && userMatchesRule(user, rule);
-  }).map((g) => g.name);
+  });
+}
+
+/** Groups whose rule matches a user, for membership resolution everywhere claims need it. */
+export async function dynamicGroupNamesForUser(env: Env, user: UserRow): Promise<string[]> {
+  return (await dynamicGroupsForUser(env, user)).map((g) => g.name);
+}
+
+/** The id-side of dynamicGroupNamesForUser - for app assignment checks, which key on group ids. */
+export async function dynamicGroupIdsForUser(env: Env, user: UserRow): Promise<number[]> {
+  return (await dynamicGroupsForUser(env, user)).map((g) => g.id);
 }

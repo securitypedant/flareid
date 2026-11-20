@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in. Required:
+zone_name     = "example.com"
+idp_hostname  = "idp.example.com"
+worker_service = "flareid-idp"
+
+# Optional hardening:
+# admin_allowed_ips    = ["203.0.113.0/24"]   # restrict /admin + /api/admin
+# waf_mitigation       = "block"               # block | challenge | log
+# rate_limit_threshold = 60                    # req/10s/src-IP on login+token+SSO+SCIM
+# enable_managed_rules = false                 # enable after OWASP exception tuning
+# enable_api_shield    = false                 # requires API Shield entitlement
+# openapi_schema_path  = "../docs/openapi.json"
+# api_shield_mitigation = "log"                # roll out log -> verify -> block

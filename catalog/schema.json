@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flareid.app/schemas/app-catalog-entry.json",
+  "title": "FlareID app catalog entry",
+  "description": "One onboarding template for a third-party application: the SAML service-provider or OIDC client values the admin console pre-fills, plus instructions for both sides of the integration. Placeholders look like {name}; {idp_*} names are substituted from the deployment's issuer at render time, everything else is an app-side value the admin fills in.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "name", "protocol", "website", "instructions", "saml", "oidc", "connector"],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "The file name without .json and the id in API/URLs."
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "protocol": { "type": "string", "enum": ["saml", "oidc"] },
+    "website": { "type": "string", "pattern": "^https://" },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app", "flareid"],
+      "properties": {
+        "app": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Ordered steps in the target application."
+        },
+        "flareid": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "What the admin checks or changes in FlareID after applying the template."
+        }
+      }
+    },
+    "saml": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "entity_id",
+        "acs_urls",
+        "nameid_format",
+        "attribute_definitions",
+        "want_authn_requests_signed",
+        "sign_response",
+        "sign_assertion",
+        "encrypt_assertions"
+      ],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "acs_urls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^https://" },
+          "description": "The exact-match ACS allowlist; the first entry is the conventional default."
+        },
+        "default_acs_url": { "type": "string", "description": "Optional; must also appear in acs_urls." },
+        "nameid_format": { "type": "string", "enum": ["transient", "emailAddress", "persistent", "none"] },
+        "attribute_map": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "SAML attribute name -> user field. Prefer attribute_definitions for new entries."
+        },
+        "attribute_definitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "field"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "field": { "type": "string", "minLength": 1, "description": "A USER_ATTRIBUTE_FIELDS name (or a custom attribute)." },
+              "name_format": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "want_authn_requests_signed": { "type": "boolean" },
+        "sign_response": { "type": "boolean" },
+        "sign_assertion": { "type": "boolean" },
+        "encrypt_assertions": { "type": "boolean" },
+        "slo_url": { "type": "string" },
+        "metadata_url": { "type": "string", "description": "Where the app publishes its SP metadata, when known." },
+        "subject_id": { "type": "string", "enum": ["", "subject-id", "pairwise-id"] }
+      }
+    },
+    "oidc": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["redirect_uris", "claims", "grant_types", "trusted"],
+      "properties": {
+        "redirect_uris": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "post_logout_redirect_uris": { "type": "array", "items": { "type": "string" } },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["email", "profile", "address", "phone", "hr", "custom", "groups"]
+          },
+          "description": "Claim-group names - the same vocabulary as the client's allowed_claims checkboxes."
+        },
+        "grant_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "client_type": { "type": "string", "enum": ["confidential", "public"] },
+        "trusted": { "type": "boolean" }
+      }
+    },
+    "connector": {
+      "type": ["object", "null"],
+      "description": "Reserved for apps provisioned through a dedicated connector rather than SAML/OIDC. null today."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "protocol": { "const": "saml" } }, "required": ["protocol"] },
+      "then": {
+        "properties": {
+          "saml": { "type": "object", "minProperties": 1 },
+          "oidc": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "protocol": { "const": "oidc" } }, "required": ["protocol"] },
+      "then": {
+        "properties": {
+          "oidc": { "type": "object", "minProperties": 1 },
+          "saml": { "type": "null" }
+        }
+      }
+    }
+  ]
+}

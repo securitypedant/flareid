@@ -1,6 +1,6 @@
 import type { Env } from "../env.js";
 import type { OAuthClientRow, UserRow } from "./types.js";
-import { dynamicGroupNamesForUser } from "./groups.js";
+import { dynamicGroupIdsForUser, dynamicGroupNamesForUser } from "./groups.js";
 import { getUserByAnyEmail } from "./user-emails.js";
 
 export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
@@ -47,6 +47,24 @@ export async function getUserGroupNames(env: Env, userId: number): Promise<strin
     for (const name of await dynamicGroupNamesForUser(env, dynamic)) names.add(name);
   }
   return [...names];
+}
+
+/**
+ * The id-side of getUserGroupNames: explicit memberships plus the dynamic
+ * groups whose rules match. App assignment (oauth_clients.assigned_groups,
+ * saml_service_providers.assigned_groups) stores ids, so this is what the
+ * launchpad and the SSO gates intersect against.
+ */
+export async function getUserGroupIds(env: Env, userId: number): Promise<number[]> {
+  const [explicit, user] = await Promise.all([
+    env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?").bind(userId).all<{ group_id: number }>(),
+    env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<UserRow>(),
+  ]);
+  const ids = new Set(explicit.results.map((r) => r.group_id));
+  if (user) {
+    for (const id of await dynamicGroupIdsForUser(env, user)) ids.add(id);
+  }
+  return [...ids];
 }
 
 export function getUserByExternalId(env: Env, externalId: string): Promise<UserRow | null> {

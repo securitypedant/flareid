@@ -1,0 +1,30 @@
+{
+  "slug": "grafana",
+  "name": "Grafana",
+  "protocol": "oidc",
+  "website": "https://grafana.com",
+  "instructions": {
+    "app": [
+      "In grafana.ini (or environment variables GF_AUTH_GENERIC_OAUTH_*) configure the [auth.generic_oauth] section: enabled = true, name = FlareID, client_id = {client_id}, client_secret = {client_secret}.",
+      "Set auth_url = {idp_authorize_url}, token_url = {idp_token_url} and api_url = {idp_userinfo_url}; scopes = openid email profile groups (check your app's current UI - Grafana Cloud configures this under Administration > Authentication > Generic OAuth).",
+      "Point Grafana at the issuer where it can discover metadata itself: the sign-in page links it to {idp_discovery_url} when you prefer discovery over the three endpoint fields.",
+      "Restart Grafana and use the 'Sign in with FlareID' button on the login page to test.",
+      "Optional: map FlareID groups to Grafana roles with role_attribute_path, e.g. contains(groups, 'Grafana Admins') && 'Admin' || 'Viewer' (JMESPath; check your Grafana version's syntax)."
+    ],
+    "flareid": [
+      "Create an OIDC client (Admin > Applications > OIDC clients > New) and apply this template: a confidential client with redirect URI https://{host}/login/generic_oauth.",
+      "Replace {host} with the Grafana hostname (root_url in grafana.ini, without the trailing slash).",
+      "Keep the email and profile claims enabled - Grafana reads email/name from userinfo; enable groups when you use role_attribute_path.",
+      "Copy the generated client_id and client_secret into the Grafana config before restarting."
+    ]
+  },
+  "saml": null,
+  "oidc": {
+    "redirect_uris": ["https://{host}/login/generic_oauth"],
+    "claims": ["email", "profile", "groups"],
+    "grant_types": ["authorization_code"],
+    "client_type": "confidential",
+    "trusted": false
+  },
+  "connector": null
+}

@@ -6,7 +6,7 @@ import type { Env } from "../env.js";
 import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { domainFromHint } from "../lib/brands.js";
 import { uiLocalesPreference } from "../lib/i18n.js";
-import { getClientByClientId, getUserById } from "../lib/db.js";
+import { getClientByClientId, getUserById, getUserGroupIds } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
 import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
@@ -15,6 +15,8 @@ import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAl
 import { formPostPage } from "../lib/saml/post-form.js";
 import { decodeJwt } from "jose";
 import { resolveRequestObject } from "../lib/request-object.js";
+import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
+import { logAudit } from "../lib/audit.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
 
@@ -59,6 +61,15 @@ export async function finishOidcAuthorize(
   opts: { consented?: boolean } = {}
 ): Promise<{ redirectTo: string }> {
   const client = await getClientByClientId(env, req.clientId);
+  // App assignment: a client restricted to groups refuses anyone outside them,
+  // whichever path got here (reused session, fresh login, consent, MFA resume).
+  // The redirect_uri was validated when the request was parked, so the denial
+  // goes back to the client per RFC 6749 4.1.2.1. The membership fetch is
+  // skipped for the common unrestricted app.
+  if (client && parseAssignedGroupIds(client.assigned_groups).length > 0 && !appVisibleTo(client.assigned_groups, await getUserGroupIds(env, userId))) {
+    await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id });
+    return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "Your account is not allowed to use this application.") };
+  }
   const prompts = new Set((req.prompt ?? "").split(/\s+/).filter(Boolean));
   if (client && !opts.consented && (!client.trusted || prompts.has("consent"))) {
     const requestedGroups = [...effectiveClaimGroups(client, req.scope, [...(req.claimGroups?.id_token ?? []), ...(req.claimGroups?.userinfo ?? [])])];

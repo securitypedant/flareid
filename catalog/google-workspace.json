@@ -1,0 +1,33 @@
+{
+  "slug": "google-workspace",
+  "name": "Google Workspace",
+  "protocol": "saml",
+  "website": "https://workspace.google.com",
+  "instructions": {
+    "app": [
+      "In the Google Admin console (admin.google.com) go to Security > Access and data control > SSO with third-party IdP and open the SSO profile (check your app's current UI - older consoles show it under Security > Set up single sign-on).",
+      "Set the sign-in page URL to {idp_sso_url} and the sign-out page URL to {idp_logout_url}, then upload the verification certificate from {idp_cert_url}.",
+      "Decide on the issuer: with 'Use a domain-specific issuer' checked Google's entity ID is google.com/a/{domain}; unchecked it is plain google.com - the FlareID entity_id must match whichever you choose.",
+      "Google signs users in by their primary email address, so the SAML NameID must be that address.",
+      "Assign the SSO profile to all users or to specific organizational units, then test with a non-admin account."
+    ],
+    "flareid": [
+      "Add a SAML service provider (Admin > Applications > SAML service providers > New) and apply this template.",
+      "Replace {domain} in the entity ID and ACS URL with the Workspace primary domain, or set entity_id to google.com if you did not check the domain-specific issuer box.",
+      "Keep NameID format emailAddress - Google matches it to the user's primary email.",
+      "No attribute statements are required; Google ignores extra attributes for basic SSO."
+    ]
+  },
+  "saml": {
+    "entity_id": "google.com/a/{domain}",
+    "acs_urls": ["https://www.google.com/a/{domain}/acs"],
+    "nameid_format": "emailAddress",
+    "attribute_definitions": [],
+    "want_authn_requests_signed": false,
+    "sign_response": true,
+    "sign_assertion": true,
+    "encrypt_assertions": false
+  },
+  "oidc": null,
+  "connector": null
+}

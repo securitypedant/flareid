@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.5.3.
+API version 4.6.0.
 
 ## Contents
 
@@ -1333,6 +1333,7 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
+| `assigned_groups` | number[] | yes | Group ids whose members may see and sign in to this app; [] = everyone. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1379,6 +1380,7 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
+| `assigned_groups` | number[] | yes | Group ids whose members may see and sign in to this app; [] = everyone. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1466,6 +1468,7 @@ Request body:
 | `backchannel_logout_uri` | string | no |  |
 | `initiate_login_uri` | string | no |  |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed (default RS256). |
+| `assigned_groups` | array \| null | no | Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction. |
 
 Response `200`:
 
@@ -1479,6 +1482,7 @@ Response `200`:
 | `client_type` | string | no |  |
 | `redirect_uris` | string[] | yes |  |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes |  |
+| `assigned_groups` | number[] | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -1492,6 +1496,8 @@ SAML service providers.
 | `DELETE` | `/api/v1/saml/service-providers/{id}` | `saml:write` | Delete a service provider |
 | `GET` | `/api/v1/saml/service-providers` | `saml:read` | List SAML service providers |
 | `POST` | `/api/v1/saml/service-providers` | `saml:write` | Register or update a service provider (keyed on entity_id) |
+| `GET` | `/api/v1/saml/settings` | `saml:read` | Read the instance SAML settings |
+| `PUT` | `/api/v1/saml/settings` | `saml:write` | Set the SAML algorithm deny list |
 | `POST` | `/api/v1/saml/service-providers/import-metadata` | `saml:write` | Register or update a service provider from its metadata |
 
 ### `GET /api/v1/saml/service-providers/{id}`
@@ -1517,8 +1523,9 @@ Response `200`:
 | `name` | string | yes |  |
 | `acs_urls` | string[] | yes |  |
 | `default_acs_url` | string \| null | yes |  |
-| `nameid_format` | string | yes |  |
+| `nameid_format` | string | yes | transient, emailAddress, persistent - or "none": the Subject carries no <saml:NameID>. |
 | `attribute_map` | map of string | yes |  |
+| `attribute_definitions` | SamlAttributeDefinition[] | yes | Released attributes with arbitrary Name/NameFormat; overrides attribute_map when non-empty. |
 | `sign_response` | boolean | yes |  |
 | `sign_assertion` | boolean | yes |  |
 | `want_authn_requests_signed` | boolean | yes |  |
@@ -1526,6 +1533,7 @@ Response `200`:
 | `slo_url` | string \| null | yes |  |
 | `encryption_cert` | string \| null | yes |  |
 | `encrypt_assertions` | boolean | yes |  |
+| `assigned_groups` | number[] | yes | Group ids whose members may see and SSO into this app; [] = everyone. |
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 
@@ -1581,8 +1589,9 @@ Request body:
 | `name` | string | no |  |
 | `acs_urls` | string[] | no |  |
 | `default_acs_url` | string | no |  |
-| `nameid_format` | string | no |  |
+| `nameid_format` | string | no | transient, emailAddress, persistent - or "none" to omit <saml:NameID> from the Subject entirely. |
 | `attribute_map` | map of string | no |  |
+| `attribute_definitions` | array \| null | no | Released attributes with an arbitrary SAML Name and optional NameFormat per entry; replaces attribute_map when non-empty. null clears it back to the map. |
 | `sign_response` | boolean | no |  |
 | `sign_assertion` | boolean | no |  |
 | `want_authn_requests_signed` | boolean | no |  |
@@ -1592,6 +1601,7 @@ Request body:
 | `encrypt_assertions` | boolean | no |  |
 | `encryption_policy` | object \| null { content, transport, digest, mgf } | no |  |
 | `subject_id` | "" \| "subject-id" \| "pairwise-id" | no |  |
+| `assigned_groups` | array \| null | no | Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction. |
 
 Response `200`:
 
@@ -1601,6 +1611,43 @@ Response `200`:
 | `created` | boolean | yes |  |
 | `id` | number | yes |  |
 | `entity_id` | string | yes |  |
+| `assigned_groups` | number[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/saml/settings`
+
+Read the instance SAML settings.
+
+Permission: `saml:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `disabled_algorithms` | string[] | yes | Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/saml/settings`
+
+Set the SAML algorithm deny list.
+
+Entries are XML Encryption URIs or short tokens, matched against content, key-transport, OAEP digest and MGF choices alike (a URI's #-fragment counts too). Replaces the whole list. A service provider whose encryption policy resolves to a denied algorithm cannot be saved, and one already stored fails closed at emission.
+
+Permission: `saml:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `disabled_algorithms` | string[] | yes | Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission. |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `disabled_algorithms` | string[] | yes | Instance-wide algorithm deny list (IIP-ALG08): full URIs or short tokens (aes256-cbc, rsa-oaep-mgf1p, sha1). A denied algorithm cannot be selected on a service provider and fails closed at emission. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -2214,7 +2261,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Add an upstream identity provider.
 
-FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.
+FlareID as the relying party. OIDC `config`: issuer, client_id, client_secret (write-only), scopes. SAML `config`: sso_url, certificate (PEM or base64), idp_entity_id, nameid_format, attr_map. `jit` creates an account on first sign-in when no local user matches; `jit_groups` lists the groups every such account joins. Registering an IdP trusts its claims for every account here, so this needs an admin-scoped key - not delegated federation write.
 
 Permission: `admin`
 
@@ -2227,6 +2274,7 @@ Request body:
 | `enabled` | boolean | no |  |
 | `jit` | boolean | no |  |
 | `jit_domain` | string | no |  |
+| `jit_groups` | integer[] | no | Group ids every JIT-provisioned account joins at creation. A group may grant a read-only admin role; one granting a write-capable role is refused. |
 | `config` | map of string \| map of string | yes |  |
 
 Response `200`:
@@ -2259,6 +2307,7 @@ Response `200`:
 | `enabled` | boolean | yes |  |
 | `jit` | boolean | yes |  |
 | `jit_domain` | string \| null | yes |  |
+| `jit_groups` | number[] | yes | Group ids every JIT-provisioned account joins at creation. |
 | `config` | map of string \| boolean \| map of string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
@@ -2284,6 +2333,7 @@ Request body:
 | `enabled` | boolean | no |  |
 | `jit` | boolean | no |  |
 | `jit_domain` | string | no |  |
+| `jit_groups` | integer[] | no | Group ids every JIT-provisioned account joins at creation. A group may grant a read-only admin role; one granting a write-capable role is refused. |
 | `config` | map of string \| map of string | no |  |
 
 Response `200`:
