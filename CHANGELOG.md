@@ -6,6 +6,33 @@ may break things.
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-11-19
+
+- **SAML HTTP-POST request binding**: `POST /saml/sso` now accepts
+  AuthnRequests delivered uncompressed in a form field, with the embedded
+  XML-DSig verified under the full XSW hardening checklist from
+  SAML-implementation.md section 4 - exactly one `ds:Signature` as a direct
+  child of the root, a single ID-only `ds:Reference` covering the document
+  element, no duplicated referenced IDs, no security-meaning elements outside
+  the signed subtree, transforms restricted to enveloped-signature and
+  (exclusive) C14N, SHA-2 algorithm allowlists, and verification pinned to
+  the SP's registered certificates (the message's own `KeyInfo` is never
+  consulted for key material). IdP metadata now advertises the POST
+  `SingleSignOnService` alongside HTTP-Redirect.
+
+- **Protocol-level request rejection**: a POST-binding AuthnRequest that
+  fails signature checks (or arrives unsigned against `want_authn_requests_signed`)
+  is now answered with a signed `<samlp:Response>` carrying
+  `Responder` + `RequestDenied` posted to the registered ACS - the error an
+  SP (and a conformance harness) can observe, rather than an opaque HTML
+  page. Redirect-binding refusals keep their HTML error pages; the binding
+  defines no error channel back to the SP.
+
+- Unblocks Cloudflare Access "Signed AuthN" (the documented exception in
+  SAML-implementation.md section 4) and the SAMLscope metadata/probe
+  campaigns, which deliver signed requests over the POST binding.
+
+
 ## [4.2.1] - 2026-11-19
 
 - **Fix**: SP metadata import-by-URL was broken on Workers - 

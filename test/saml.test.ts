@@ -4,6 +4,7 @@ import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { TEST_SAML_IDP_CERT_PEM, TEST_SAML_IDP_KEY_PKCS8, TEST_SAML_SP_CERT_PEM, TEST_SAML_SP_KEY_PKCS8 } from "./fixtures/saml-keys.js";
 import { certToVerifyKey } from "../src/lib/saml/x509.js";
 import { b64decode, b64encode } from "../src/lib/saml/xml.js";
+import { SignedXml } from "xml-crypto";
 
 beforeEach(resetDatabase);
 
@@ -203,7 +204,7 @@ describe("metadata", () => {
     expect(xml).toContain(`entityID="${BASE}"`);
     expect(xml).toContain(`Location="${BASE}/saml/sso"`);
     expect(xml).toContain("HTTP-Redirect");
-    expect(xml).not.toContain("HTTP-POST");
+    expect(xml).toContain("HTTP-POST");
     expect(xml).toContain("nameid-format:transient");
     expect(xml).toContain(TEST_SAML_IDP_CERT_PEM.replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""));
   });
@@ -343,14 +344,14 @@ describe("request validation", () => {
     expect(await response.text()).toMatch(/Destination/);
   });
 
-  it("rejects the POST binding outright", async () => {
+  it("rejects a malformed POST-binding request", async () => {
     const response = await SELF.fetch(`${BASE}/saml/sso`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: "SAMLRequest=anything",
     });
     expect(response.status).toBe(400);
-    expect(await response.text()).toMatch(/HTTP-POST request binding is not supported/);
+    expect(await response.text()).toMatch(/well-formed XML|SAML request/i);
   });
 });
 
@@ -564,5 +565,156 @@ describe("SAML v3: metadata import, encryption, Single Logout", () => {
     await seedServiceProvider();
     const xml = await (await SELF.fetch(`${BASE}/saml/metadata`)).text();
     expect(xml).toContain(`<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${BASE}/saml/slo"`);
+  });
+});
+
+describe("HTTP-POST binding", () => {
+  function postSso(xml: string, relayState?: string): Promise<Response> {
+    const body = new URLSearchParams({ SAMLRequest: b64encode(xml) });
+    if (relayState !== undefined) body.set("RelayState", relayState);
+    return SELF.fetch(`${BASE}/saml/sso`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      redirect: "manual",
+    });
+  }
+
+  /** Embedded XML-DSig over the AuthnRequest root - the POST binding's signature form. */
+  function embeddedSign(xml: string): string {
+    const sig = new SignedXml({
+      privateKey: TEST_SAML_SP_KEY_PKCS8,
+      publicCert: TEST_SAML_SP_CERT_PEM,
+      signatureAlgorithm: "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+      canonicalizationAlgorithm: "http://www.w3.org/2001/10/xml-exc-c14n#",
+    });
+    sig.addReference({
+      xpath: "//*[local-name(.)='AuthnRequest']",
+      transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/2001/10/xml-exc-c14n#"],
+      digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+    });
+    sig.computeSignature(xml, { location: { reference: "//*[local-name(.)='AuthnRequest']/*[local-name(.)='Issuer']", action: "after" } });
+    return sig.getSignedXml();
+  }
+
+  /** Drives POST /saml/sso -> login form -> POST /login, returning the auto-POST fields. */
+  async function postSsoViaLogin(xml: string, upn: string, relayState?: string): Promise<{ acsUrl: string | null; samlResponse: string | null; relayState: string | null; status: number; html: string }> {
+    const first = await postSso(xml, relayState);
+    const firstHtml = await first.text();
+    const flowId = /name="flow_id" value="([^"]*)"/.exec(firstHtml)?.[1];
+    if (!flowId) return { acsUrl: null, samlResponse: null, relayState: null, status: first.status, html: firstHtml };
+    const submitted = await SELF.fetch(`${BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ flow_id: flowId, upn, password: USER_PASSWORD }).toString(),
+      redirect: "manual",
+    });
+    const html = await submitted.text();
+    return { ...postFormFields(html), status: submitted.status, html };
+  }
+
+  /** A signature rejection answers with a signed Responder+RequestDenied response posted to the registered ACS. */
+  function expectErrorResponse(html: string, requestId: string): string {
+    const fields = postFormFields(html);
+    expect(fields.acsUrl, "error form posts to the registered ACS").toBe(SP_ACS);
+    expect(fields.samlResponse).toBeTruthy();
+    const xml = decodeResponse(fields.samlResponse!);
+    expect(xml).toContain("urn:oasis:names:tc:SAML:2.0:status:Responder");
+    expect(xml).toContain("urn:oasis:names:tc:SAML:2.0:status:RequestDenied");
+    expect(xml).toContain(`InResponseTo="${requestId}"`);
+    return xml;
+  }
+
+  it("accepts an unsigned request", async () => {
+    const { upn } = await seedServiceProvider();
+    const result = await postSsoViaLogin(authnRequestXml(), upn);
+    expect(result.samlResponse).toBeTruthy();
+    expect(decodeResponse(result.samlResponse!)).toContain("status:Success");
+  });
+
+  it("accepts a correctly embedded-signed request and echoes RelayState", async () => {
+    const { upn } = await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM], want_authn_requests_signed: true });
+    const result = await postSsoViaLogin(embeddedSign(authnRequestXml()), upn, "rs-post");
+    expect(result.samlResponse).toBeTruthy();
+    expect(result.relayState).toBe("rs-post");
+    expect(decodeResponse(result.samlResponse!)).toContain("status:Success");
+  });
+
+  it("answers a corrupted signature with a signed RequestDenied to the ACS", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const corrupted = embeddedSign(unsigned).replace(/<SignatureValue>[^<]*/, `<SignatureValue>${b64encode("tampered")}`);
+    const response = await postSso(corrupted);
+    const xml = expectErrorResponse(await response.text(), requestId);
+    expect(xml).toContain("<ds:Signature");
+    expect(xml).not.toContain("<saml:Assertion");
+  });
+
+  it("answers an unsigned request with RequestDenied when the SP requires signing", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM], want_authn_requests_signed: true });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const response = await postSso(unsigned);
+    expectErrorResponse(await response.text(), requestId);
+  });
+
+  it("rejects a signature signed with the IdP's own key", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const sig = new SignedXml({
+      privateKey: TEST_SAML_IDP_KEY_PKCS8,
+      publicCert: TEST_SAML_IDP_CERT_PEM,
+      signatureAlgorithm: "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+      canonicalizationAlgorithm: "http://www.w3.org/2001/10/xml-exc-c14n#",
+    });
+    sig.addReference({
+      xpath: "//*[local-name(.)='AuthnRequest']",
+      transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/2001/10/xml-exc-c14n#"],
+      digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+    });
+    sig.computeSignature(unsigned, { location: { reference: "//*[local-name(.)='AuthnRequest']/*[local-name(.)='Issuer']", action: "after" } });
+    const response = await postSso(sig.getSignedXml());
+    expectErrorResponse(await response.text(), requestId);
+  });
+
+  it("rejects a signature whose Reference does not cover the AuthnRequest root", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const signed = embeddedSign(unsigned).replace(`URI="#${requestId}"`, 'URI="#_other"');
+    const response = await postSso(signed);
+    expectErrorResponse(await response.text(), requestId);
+  });
+
+  it("rejects a document carrying a second AuthnRequest", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const signed = embeddedSign(unsigned).replace("</samlp:AuthnRequest>", `${authnRequestXml({ id: "_forged" })}</samlp:AuthnRequest>`);
+    const response = await postSso(signed);
+    expectErrorResponse(await response.text(), requestId);
+  });
+
+  it("rejects a document with a second element carrying the referenced ID", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const signed = embeddedSign(unsigned).replace("</samlp:AuthnRequest>", `<x:Decoy xmlns:x="urn:x" ID="${requestId}"/></samlp:AuthnRequest>`);
+    const response = await postSso(signed);
+    expectErrorResponse(await response.text(), requestId);
+  });
+
+  it("rejects a signature carrying a disallowed transform", async () => {
+    await seedServiceProvider({ signing_certs: [TEST_SAML_SP_CERT_PEM] });
+    const unsigned = authnRequestXml();
+    const requestId = /ID="([^"]+)"/.exec(unsigned)![1]!;
+    const signed = embeddedSign(unsigned).replace(
+      '<Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>',
+      '<Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><Transform Algorithm="http://www.w3.org/TR/1999/REC-xpath-19991116"/>'
+    );
+    const response = await postSso(signed);
+    expectErrorResponse(await response.text(), requestId);
   });
 });

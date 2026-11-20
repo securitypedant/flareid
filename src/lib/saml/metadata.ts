@@ -8,6 +8,7 @@ const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
 const NS_SHIBMD = "urn:mace:shibboleth:metadata:1.0";
 const NS_MDUI = "urn:oasis:names:tc:SAML:metadata:ui";
 const BINDING_REDIRECT = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
+const BINDING_POST = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 const NAMEID_TRANSIENT = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient";
 const NAMEID_EMAIL = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress";
 const NAMEID_PERSISTENT = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
@@ -17,8 +18,7 @@ const NAMEID_PERSISTENT = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
  *
  * Deliberately not signed: a service provider that fetches it over verified
  * HTTPS has what saml2int [SDP-MD02] requires, and a signature would only add
- * a second trust path to maintain. Only the HTTP-Redirect SSO endpoint is
- * advertised - metadata must not offer the POST binding we reject.
+ * a second trust path to maintain. Both request bindings are advertised.
  */
 export interface IdpMetadataExtras {
   /** UPN domains, published as shibmd:Scope (the scopes of subject-id/pairwise-id). */
@@ -59,6 +59,10 @@ export function idpMetadataXml(env: Env, appName: string, extras: IdpMetadataExt
       el("md:NameIDFormat", {}, NAMEID_PERSISTENT) +
       el("md:SingleSignOnService", {
         Binding: BINDING_REDIRECT,
+        Location: `${entityId}/saml/sso`,
+      }) +
+      el("md:SingleSignOnService", {
+        Binding: BINDING_POST,
         Location: `${entityId}/saml/sso`,
       })
   );

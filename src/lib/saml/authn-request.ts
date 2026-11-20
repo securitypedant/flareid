@@ -1,4 +1,5 @@
 import { DOMParser } from "@xmldom/xmldom";
+import { SignedXml } from "xml-crypto";
 import type { SamlServiceProviderRow } from "../types.js";
 import { b64decode } from "./xml.js";
 import { certToVerifyKey } from "./x509.js";
@@ -6,6 +7,7 @@ import { spSigningCerts } from "./service-providers.js";
 
 export const NS_SAMLP = "urn:oasis:names:tc:SAML:2.0:protocol";
 export const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
+const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
 const BINDING_HTTP_POST = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 const SIGALG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 
@@ -178,6 +180,100 @@ export async function verifyRedirectSignature(sp: SamlServiceProviderRow, raw: R
     const key = await certToVerifyKey(pem);
     if (key && (await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature as BufferSource, data))) {
       return "ok";
+    }
+  }
+  return "bad";
+}
+
+/** base64 only - the HTTP-POST binding delivers the XML uncompressed in a form field. */
+export function decodePostAuthnRequest(encoded: string): string {
+  try {
+    return new TextDecoder().decode(b64decode(encoded));
+  } catch {
+    throw new AuthnRequestError("SAMLRequest is not valid base64.");
+  }
+}
+
+const OK_TRANSFORMS = new Set([
+  "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
+  "http://www.w3.org/2001/10/xml-exc-c14n#",
+  "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+]);
+const OK_C14N = new Set([
+  "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+  "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+  "http://www.w3.org/2001/10/xml-exc-c14n#",
+  "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+]);
+const OK_POST_SIGALGS = new Set([
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384",
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512",
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256",
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384",
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512",
+]);
+const OK_POST_DIGESTS = new Set([
+  "http://www.w3.org/2001/04/xmlenc#sha256",
+  "http://www.w3.org/2001/04/xmldsig-more#sha384",
+  "http://www.w3.org/2001/04/xmldsig-more#sha512",
+]);
+
+/**
+ * Verifies the embedded XML-DSig of a POST-binding AuthnRequest.
+ *
+ * This is the only place FlareID verifies a signature over foreign XML - the
+ * XSW hardening from SAML-implementation.md section 4, applied in order:
+ *
+ * - exactly one <ds:Signature>, a direct child of the signed document element
+ * - one <ds:Reference>, an ID-only URI resolving to the document element's ID
+ * - no second element anywhere carrying the referenced ID value
+ * - no element carrying security meaning outside the signed subtree (with the
+ *   root as the signed node, that means no second AuthnRequest and no Assertion)
+ * - Transforms limited to enveloped-signature and (exclusive) C14N; anything
+ *   else - including a second, unexpected transform - is rejected
+ * - verification is pinned to the SP's registered certificates; KeyInfo inside
+ *   the message is never consulted for key material
+ */
+export async function verifyPostSignature(sp: SamlServiceProviderRow, xml: string, request: ParsedAuthnRequest): Promise<SignatureCheck> {
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  const root = doc.documentElement;
+  const sigEls = doc.getElementsByTagNameNS(NS_DS, "Signature");
+  if (sigEls.length === 0) return "unsigned";
+
+  if (sigEls.length !== 1 || sigEls[0]!.parentNode !== root) return "bad";
+  const sigEl = sigEls[0]!;
+
+  const sigAlg = sigEl.getElementsByTagNameNS(NS_DS, "SignatureMethod")[0]?.getAttribute("Algorithm") ?? "";
+  if (!OK_POST_SIGALGS.has(sigAlg)) return "unsupported-alg";
+  const c14nAlg = sigEl.getElementsByTagNameNS(NS_DS, "CanonicalizationMethod")[0]?.getAttribute("Algorithm") ?? "";
+  if (!OK_C14N.has(c14nAlg)) return "bad";
+
+  const refs = sigEl.getElementsByTagNameNS(NS_DS, "Reference");
+  if (refs.length !== 1) return "bad";
+  if ((refs[0]!.getAttribute("URI") ?? "") !== `#${request.id}`) return "bad";
+  const digestAlg = refs[0]!.getElementsByTagNameNS(NS_DS, "DigestMethod")[0]?.getAttribute("Algorithm") ?? "";
+  if (!OK_POST_DIGESTS.has(digestAlg)) return "unsupported-alg";
+  const transforms = Array.from(refs[0]!.getElementsByTagNameNS(NS_DS, "Transform")).map((t) => t.getAttribute("Algorithm") ?? "");
+  if (transforms.some((t) => !OK_TRANSFORMS.has(t))) return "bad";
+
+  let idCount = 0;
+  for (const node of Array.from(doc.getElementsByTagName("*"))) {
+    if (["ID", "Id", "id"].some((attr) => node.getAttribute(attr) === request.id)) idCount++;
+  }
+  if (idCount !== 1) return "bad";
+  if (doc.getElementsByTagNameNS(NS_SAMLP, "AuthnRequest").length !== 1) return "bad";
+  if (doc.getElementsByTagNameNS(NS_SAML, "Assertion").length !== 0) return "bad";
+
+  const certs = spSigningCerts(sp);
+  if (certs.length === 0) return "no-key";
+  for (const pem of certs) {
+    const sig = new SignedXml({ publicCert: pem, getCertFromKeyInfo: () => null });
+    try {
+      sig.loadSignature(sigEl.toString());
+      if (sig.checkSignature(xml)) return "ok";
+    } catch {
+      // A cert that cannot even load this signature moves to the next candidate.
     }
   }
   return "bad";

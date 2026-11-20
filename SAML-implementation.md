@@ -110,8 +110,9 @@ assertions.
 
 Never claim bare "SAML 2.0 support" in a README. State the profile:
 
-> SAML 2.0 Web Browser SSO, service-provider-initiated, HTTP-Redirect for
-> requests and HTTP-POST for responses, conformant with saml2int section 4.1.
+> SAML 2.0 Web Browser SSO, service-provider-initiated, HTTP-Redirect and
+> HTTP-POST for requests and HTTP-POST for responses, conformant with
+> saml2int section 4.1.
 > Not implemented: HTTP-Artifact binding, SOAP back-channel, ECP/PAOS, Name
 > Identifier Management, Assertion Query/Request.
 
@@ -185,20 +186,12 @@ query-string signature. Cloudflare's documentation is explicit:
 An embedded signature in a POSTed `AuthnRequest` is an XML-DSig over foreign
 XML. Supporting it means implementing problem 3.
 
-### What v1 does about it
+### What the implementation does about it
 
-**v1 does not support Signed AuthN.** FlareID will reject POST-binding
-`AuthnRequest` messages outright and document that `sign_request` must be left
-at its default of `false` in the Access identity provider configuration. This
-costs nothing for the demo suite and nothing for the overwhelming majority of
-real deployments, because signed authentication requests are rarely required -
-the SP is not the party making a security claim in this exchange.
-
-### What it would take to support it later
-
-If it is ever wanted, the implementation must follow the full XSW hardening
-checklist. Listing it here so that it is not reinvented badly under time
-pressure:
+POST-binding `AuthnRequest` messages are accepted, with the embedded signature
+verified under the full XSW hardening checklist (this is also what Cloudflare
+Access's Signed AuthN and most enterprise SPs emit). The checklist, kept here
+because it is the security contract of `verifyPostSignature`:
 
 - Require **exactly one** `<ds:Signature>` element in the document. More than
   one is an attack, not a configuration.
@@ -531,7 +524,7 @@ free second implementation to differential-test our own output against in CI
 |---|---|---|
 | `GET` | `/saml/metadata` | IdP metadata: entity ID, SSO endpoints, signing certificate(s), NameID formats, `mdui:UIInfo`, contact, `errorURL` |
 | `GET` | `/saml/sso` | HTTP-Redirect binding - the normal SP-initiated entry point |
-| `POST` | `/saml/sso` | HTTP-POST binding. **Rejected in v1** (see section 4) |
+| `POST` | `/saml/sso` | HTTP-POST binding - embedded-signature AuthnRequests, verified under the section-4 checklist |
 | `GET` | `/saml/slo` | HTTP-Redirect `LogoutRequest` / `LogoutResponse` receipt (v1.5) |
 | `GET` | `/admin/saml` | Service provider registry UI |
 

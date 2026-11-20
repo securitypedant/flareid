@@ -173,3 +173,41 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
   if (!p.sp.sign_response) return unsigned;
   return insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, responseId));
 }
+
+/**
+ * A signed <samlp:Response> carrying a SAML error status instead of an
+ * assertion - the protocol-level rejection an SP expects when its
+ * AuthnRequest itself cannot be honored (bad signature, required signature
+ * missing). Top-level Responder (the IdP cannot fulfill the request) with a
+ * second-level RequestDenied, the profile-preferred pair for a refused
+ * authentication. Always signed: an unsigned error invites downgrade.
+ */
+export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestId: string }): Promise<string> {
+  const responseId = samlId();
+  const inner =
+    el("saml:Issuer", {}, escapeXmlText(idpEntityId(env))) +
+    el(
+      "samlp:Status",
+      {},
+      el(
+        "samlp:StatusCode",
+        { Value: "urn:oasis:names:tc:SAML:2.0:status:Responder" },
+        el("samlp:StatusCode", { Value: "urn:oasis:names:tc:SAML:2.0:status:RequestDenied" })
+      )
+    );
+
+  const unsigned = el(
+    "samlp:Response",
+    {
+      "xmlns:saml": NS_SAML,
+      "xmlns:samlp": NS_SAMLP,
+      Destination: p.acsUrl,
+      ID: responseId,
+      InResponseTo: p.requestId,
+      IssueInstant: samlInstant(new Date()),
+      Version: "2.0",
+    },
+    inner
+  );
+  return insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, responseId));
+}
