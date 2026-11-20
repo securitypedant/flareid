@@ -185,6 +185,9 @@ const STYLES = `
   .topbar nav .nav-links { display: contents; }
   .topbar nav .nav-burger { display: none; }
   .topbar nav .nav-burger .nav-menu-list { min-width: 200px; }
+  /* Admin stays a button inside the burger too, not a plain menu row. */
+  .nav-menu-list a.nav-admin { background: var(--fi-accent); color: #ffffff; font-weight: 600; text-align: center; }
+  .nav-menu-list a.nav-admin:hover { background: var(--fi-accent-dark); color: #ffffff; }
   @media (max-width: 760px) {
     /* One menu on mobile: nav links + Admin + Theme + Sign out all live in
        the burger; the avatar dropdown and inline links hide, as do the
@@ -1427,7 +1430,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
           <a href="/account/applications">Applications</a>
           <a href="/account/groups">Groups</a>
           <a href="/account/security">Security</a>
-          ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
+          ${isAdmin ? '<a href="/admin" class="nav-admin">Admin</a>' : ""}
           <hr class="nav-menu-divider" />
           ${THEME_TOGGLE_BUTTON}
           <form method="POST" action="/logout" style="margin:0;"><button class="nav-item signout" type="submit">Sign out</button></form>
