@@ -176,6 +176,10 @@ const STYLES = `
   .topbar nav a:hover, .topbar nav .link-button:hover { background: var(--fi-line-soft); color: var(--fi-ink); text-decoration: none; }
   .topbar nav a.signout, .topbar nav .link-button.signout { color: var(--fi-muted); }
   .topbar nav a.signout:hover, .topbar nav .link-button.signout:hover { color: var(--fi-red); background: var(--fi-red-soft); }
+  /* The Admin entry is a button, not a nav link: a deliberate visual break
+     between the self-service pages and the console. */
+  .topbar nav a.nav-admin { background: var(--fi-accent); color: #ffffff; font-weight: 600; }
+  .topbar nav a.nav-admin:hover { background: var(--fi-accent-dark); color: #ffffff; }
 
   /* top-bar dropdown menus: the account menu and the notifications bell */
   .nav-menu { position: relative; display: inline-block; }
@@ -1391,15 +1395,14 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
     <nav>
       ${THEME_TOGGLE_BUTTON}
       ${bell}
-      ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
+      <a href="/account">Account</a>
+      <a href="/account/applications">Applications</a>
+      <a href="/account/groups">Groups</a>
+      <a href="/account/security">Security</a>
+      ${isAdmin ? '<a href="/admin" class="nav-admin">Admin</a>' : ""}
       <div class="nav-menu" data-nav-menu>
         <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
-          <a href="/account">Account</a>
-          <a href="/account/applications">Applications</a>
-          <a href="/account/groups">Groups</a>
-          <a href="/account/security">Security</a>
-          <hr class="nav-menu-divider" />
           <form method="POST" action="/logout" style="margin:0;"><button class="nav-item signout" type="submit">Sign out</button></form>
         </div>
       </div>
