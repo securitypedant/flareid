@@ -20,7 +20,8 @@ Everyone can manage their own account at `/account`:
 
 | Page | What people can do |
 |---|---|
-| **Account** | Edit the profile fields their schema allows, and upload a photo. **My apps** is a launchpad of the apps they may use — every app, or only the ones their groups are assigned to when an app restricts access. |
+| **Account** | Edit the profile fields their schema allows, and upload a photo. |
+| **Applications** | A launchpad of the apps they may use — every app, or only the ones their groups are assigned to when an app restricts access. Each app opens from its card. |
 | **Security** | Change their password; set up an authenticator app, passkeys, email codes or security questions; regenerate backup codes; see active sessions, remembered devices and connected apps, and sign any of them out. |
 | **Groups** | See their groups, request access to groups that allow it, and manage groups they're a [manager](groups.md#group-managers) of. |
 

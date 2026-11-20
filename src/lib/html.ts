@@ -1396,6 +1396,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
         <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
           <a href="/account">Account</a>
+          <a href="/account/applications">Applications</a>
           <a href="/account/groups">Groups</a>
           <a href="/account/security">Security</a>
           <hr class="nav-menu-divider" />

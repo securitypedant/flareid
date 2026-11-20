@@ -165,42 +165,8 @@ async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttrib
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const [editable, mastered, photoV, clients, sps] = await Promise.all([
-    editableAttributes(c.env, user),
-    getMasteredFields(c.env),
-    getUserPhotoVersion(c.env, user.id),
-    c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>(),
-    c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>(),
-  ]);
+  const [editable, mastered, photoV] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id)]);
   const photoMastered = mastered.includes("photo");
-  // Memberships are only worth fetching when at least one app is restricted.
-  const myGroupIds =
-    clients.results.some((cl) => parseAssignedGroupIds(cl.assigned_groups).length > 0) || sps.results.some((sp) => parseAssignedGroupIds(sp.assigned_groups).length > 0)
-      ? await getUserGroupIds(c.env, user.id)
-      : [];
-
-  // The launchpad: every app this person may sign in to - unrestricted apps,
-  // plus assigned apps whose groups intersect theirs. Each tile is the app's
-  // own launch URL: a SAML SP's unsolicited-SSO endpoint, an OIDC client's
-  // third-party login URI, else a bare authorization request.
-  const launchpad = [
-    ...clients.results
-      .filter((cl) => appVisibleTo(cl.assigned_groups, myGroupIds))
-      .map((cl) => {
-        const firstRedirect = (JSON.parse(cl.redirect_uris || "[]") as string[])[0];
-        const href =
-          cl.initiate_login_uri ||
-          (firstRedirect ? `/authorize?${new URLSearchParams({ client_id: cl.client_id, redirect_uri: firstRedirect, response_type: "code", scope: "openid" }).toString()}` : "");
-        return { name: cl.name, logo: cl.logo_uri, href };
-      }),
-    ...sps.results
-      .filter((sp) => appVisibleTo(sp.assigned_groups, myGroupIds))
-      .map((sp) => ({ name: sp.name, logo: null as string | null, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}` })),
-  ];
-  // External client logos need their exact URLs admitted to img-src for this
-  // response - security-headers reads the marker (same as the sign-in page).
-  const logos = [...new Set(launchpad.map((a) => a.logo).filter((u): u is string => Boolean(u)))];
-  if (logos.length) c.header("X-FlareID-Img-Src", logos.join(" "));
 
   return c.html(
     layout(
@@ -208,22 +174,6 @@ account.get("/account", async (c) => {
       `${user.display_name}`,
       `
       ${savedBanner(c)}
-      ${cardSection(`
-        <h2>My apps</h2>
-        ${
-          launchpad.length
-            ? `<ul style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:10px;">
-                ${launchpad
-                  .map((a) => {
-                    const inner = `${a.logo ? `<img src="${escapeHtml(a.logo)}" alt="" style="width:20px; height:20px; object-fit:contain;" data-hide-on-error />` : ""}${escapeHtml(a.name)}`;
-                    const tile = 'style="display:inline-flex; align-items:center; gap:8px; border:1px solid var(--fi-line); border-radius:8px; padding:8px 14px; font-weight:550; font-size:0.875rem; color:var(--fi-body); text-decoration:none;"';
-                    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" ${tile}` : `<span ${tile}`}>${inner}${a.href ? "</a>" : "</span>"}</li>`;
-                  })
-                  .join("")}
-              </ul>`
-            : '<p class="muted">No apps assigned yet.</p>'
-        }
-      `)}
       ${cardSection(`
         <div class="row between" style="align-items:flex-start; gap:18px;">
           <div style="flex:1; min-width:0;">
@@ -282,6 +232,67 @@ account.get("/account", async (c) => {
       }
       `,
       user.upn
+    )
+  );
+});
+
+account.get("/account/applications", async (c) => {
+  const user = c.get("user");
+  const [clients, sps] = await Promise.all([
+    c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>(),
+    c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>(),
+  ]);
+  // Memberships are only worth fetching when at least one app is restricted.
+  const myGroupIds =
+    clients.results.some((cl) => parseAssignedGroupIds(cl.assigned_groups).length > 0) || sps.results.some((sp) => parseAssignedGroupIds(sp.assigned_groups).length > 0)
+      ? await getUserGroupIds(c.env, user.id)
+      : [];
+
+  // The launchpad: every app this person may sign in to - unrestricted apps,
+  // plus assigned apps whose groups intersect theirs. Each card is the app's
+  // own launch URL: a SAML SP's unsolicited-SSO endpoint, an OIDC client's
+  // third-party login URI, else a bare authorization request.
+  const launchpad = [
+    ...clients.results
+      .filter((cl) => appVisibleTo(cl.assigned_groups, myGroupIds))
+      .map((cl) => {
+        const firstRedirect = (JSON.parse(cl.redirect_uris || "[]") as string[])[0];
+        const href =
+          cl.initiate_login_uri ||
+          (firstRedirect ? `/authorize?${new URLSearchParams({ client_id: cl.client_id, redirect_uri: firstRedirect, response_type: "code", scope: "openid" }).toString()}` : "");
+        return { name: cl.name, logo: cl.logo_uri, href, kind: "OIDC" };
+      }),
+    ...sps.results
+      .filter((sp) => appVisibleTo(sp.assigned_groups, myGroupIds))
+      .map((sp) => ({ name: sp.name, logo: null as string | null, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
+  ];
+  // External client logos need their exact URLs admitted to img-src for this
+  // response - security-headers reads the marker (same as the sign-in page).
+  const logos = [...new Set(launchpad.map((a) => a.logo).filter((u): u is string => Boolean(u)))];
+  if (logos.length) c.header("X-FlareID-Img-Src", logos.join(" "));
+
+  const card = (a: (typeof launchpad)[number]) => {
+    const inner = `
+      <div style="width:40px; height:40px; border-radius:10px; background:var(--fi-bg, #f4f5f7); border:1px solid var(--fi-line); display:flex; align-items:center; justify-content:center; margin-bottom:10px;">
+        ${a.logo ? `<img src="${escapeHtml(a.logo)}" alt="" style="width:26px; height:26px; object-fit:contain;" data-hide-on-error />` : `<span style="font-weight:650; font-size:1rem; color:var(--fi-muted, #64748b);">${escapeHtml(a.name.trim().charAt(0).toUpperCase() || "?")}</span>`}
+      </div>
+      <div style="font-weight:600; font-size:0.9rem; color:var(--fi-body); line-height:1.25;">${escapeHtml(a.name)}</div>
+      <div class="muted" style="font-size:0.72rem; margin-top:3px; letter-spacing:0.03em; text-transform:uppercase;">${a.kind}</div>`;
+    const style =
+      'style="display:block; width:150px; border:1px solid var(--fi-line); border-radius:10px; padding:14px; background:var(--fi-card-bg, #fff); color:var(--fi-body); text-decoration:none; transition:border-color .12s ease;"';
+    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" ${style}>${inner}</a>` : `<div ${style}>${inner}</div>`}</li>`;
+  };
+
+  return c.html(
+    layout(
+      c,
+      "Applications",
+      cardSection(`
+        ${launchpad.length
+          ? `<ul style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:12px;">${launchpad.map(card).join("")}</ul>`
+          : '<p class="muted">No apps assigned yet. Applications your administrator gives you access to will appear here.</p>'}
+      `),
+      `${launchpad.length} app${launchpad.length === 1 ? "" : "s"}`
     )
   );
 });

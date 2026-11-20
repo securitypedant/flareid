@@ -246,7 +246,7 @@ describe("launchpad", () => {
     await createSp(apiKey, SP_ENTITY_ID, [execGroupId]);
     await createSp(apiKey, "https://other.test/saml", [otherGroupId]);
 
-    const adaPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: await sessionFor(await userId("ada.kowalski")) } })).text();
+    const adaPage = await (await SELF.fetch(`${BASE}/account/applications`, { headers: { Cookie: await sessionFor(await userId("ada.kowalski")) } })).text();
     expect(adaPage).toContain("Exec OIDC App");
     expect(adaPage).toContain("Everyone OIDC App");
     expect(adaPage).toContain("/saml/idp-initiated?sp=");
@@ -254,7 +254,7 @@ describe("launchpad", () => {
     expect(adaPage).not.toContain("Other OIDC App");
     expect(adaPage).not.toContain("https://other.test/saml");
 
-    const conPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: await sessionFor(await userId("con.tractor")) } })).text();
+    const conPage = await (await SELF.fetch(`${BASE}/account/applications`, { headers: { Cookie: await sessionFor(await userId("con.tractor")) } })).text();
     expect(conPage).toContain("Everyone OIDC App");
     expect(conPage).not.toContain("Exec OIDC App");
     expect(conPage).not.toContain(SP_ENTITY_ID);
@@ -263,7 +263,7 @@ describe("launchpad", () => {
   it("shows the empty state when nothing is visible", async () => {
     const { apiKey, execGroupId } = await seedDirectory();
     await createClient(apiKey, "Exec OIDC App", [execGroupId]);
-    const conPage = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: await sessionFor(await userId("con.tractor")) } })).text();
+    const conPage = await (await SELF.fetch(`${BASE}/account/applications`, { headers: { Cookie: await sessionFor(await userId("con.tractor")) } })).text();
     expect(conPage).toContain("No apps assigned yet.");
     expect(conPage).not.toContain("Exec OIDC App");
   });
