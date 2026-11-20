@@ -3,6 +3,7 @@
   "name": "Google Workspace",
   "protocol": "saml",
   "website": "https://workspace.google.com",
+  "logo": "icons/google.svg",
   "instructions": {
     "app": [
       "In the Google Admin console (admin.google.com) go to Security > Access and data control > SSO with third-party IdP and open the SSO profile (check your app's current UI - older consoles show it under Security > Set up single sign-on).",

@@ -3,6 +3,7 @@
   "name": "Cloudflare Access",
   "protocol": "oidc",
   "website": "https://www.cloudflare.com/products/access/",
+  "logo": "icons/cloudflare.svg",
   "instructions": {
     "app": [
       "In Cloudflare Zero Trust (one.dash.cloudflare.com) go to Settings > Authentication > Login methods and choose Add new > OIDC.",

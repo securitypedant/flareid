@@ -36,7 +36,8 @@
     "test-data": "node scripts/generate-test-directory.mjs",
     "oidc:conformance": "node scripts/oidc-conformance.mjs",
     "docs:api": "node scripts/api-docs.mjs",
-    "docs:site": "node scripts/docs-site.mjs"
+    "docs:site": "node scripts/docs-site.mjs",
+    "catalog:icons": "node scripts/catalog-icons.mjs"
   },
   "cloudflare": {
     "bindings": {

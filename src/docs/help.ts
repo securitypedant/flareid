@@ -16,7 +16,6 @@ export const ADMIN_HELP: Record<string, string> = {
   applications: "/docs/applications",
   "applications/catalog": "/docs/applications#app-catalog",
   integrations: "/docs",
-  "integrations/oidc": "/docs/oidc",
   "integrations/saml": "/docs/saml",
   "integrations/api-keys": "/docs/api#api-keys",
   "integrations/scim": "/docs/scim",

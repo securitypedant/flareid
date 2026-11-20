@@ -3,6 +3,7 @@
   "name": "GitHub Enterprise",
   "protocol": "saml",
   "website": "https://github.com/enterprise",
+  "logo": "icons/github.svg",
   "instructions": {
     "app": [
       "GitHub Enterprise Server: in the Management Console go to Authentication and select SAML. GitHub Enterprise Cloud: on github.com go to your enterprise > Settings > Authentication security and enable SAML SSO (check your app's current UI).",

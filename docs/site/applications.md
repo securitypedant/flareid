@@ -22,7 +22,11 @@ The catalog under **Applications → App catalog** lists the templates that ship
 1. **In the app** — what to configure on the app's side.
 2. **In FlareID** — what the template creates, and the values only you know (`{team}`, `{host}` and so on).
 
-Applying a template creates the same record as the manual form — nothing is locked in afterwards; open the app and adjust anything. The generated client ID and secret appear once, when the record is created.
+Applying a template creates the same record as the manual form — nothing is locked in afterwards; open the app and adjust anything. The generated client ID and secret appear once, when the record is created. The entry's icon is set as the app's logo, so the tile shows it on the launchpad straight away.
+
+## App icons
+
+Every app can carry a **Logo URL** (on its page, https only) — the mark shown on its tile in users' **Applications** page, and for OIDC clients also on the sign-in page. Leave it empty for the default letter tile. Catalog apps get their icon automatically from `/catalog-icons/`.
 
 ## Provisioning
 

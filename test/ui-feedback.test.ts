@@ -21,7 +21,7 @@ describe("admin console feedback", () => {
     await bootstrapInstance({ domain: "horizon.test" });
     expect(VERSION).toBe(pkg.version);
     const html = await (await get("/admin", await adminCookie())).text();
-    expect(html).toContain(`(v${VERSION})`);
+    expect(html).toContain(`>v${VERSION}<`);
     expect(html).toContain("data-theme-toggle");
     expect(html).toContain("IdP performance");
     expect(await (await get("/admin/performance", await adminCookie())).text()).toContain("Turn on the performance dashboard");

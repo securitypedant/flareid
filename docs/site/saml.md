@@ -66,7 +66,7 @@ When definitions are present they replace the map entirely; the field values use
 
 ## Instance settings
 
-On **Integrations → SAML apps**, the **Disabled algorithms** card lists signature/encryption algorithms this instance refuses — by URI, fragment or short name (`sha1`, `rsa-1_5`). Choosing a denied algorithm anywhere is rejected, and an SP whose policy resolves to one fails closed rather than emitting it.
+On **Integrations → SAML**, the **Disabled algorithms** card lists signature/encryption algorithms this instance refuses — by URI, fragment or short name (`sha1`, `rsa-1_5`). Choosing a denied algorithm anywhere is rejected, and an SP whose policy resolves to one fails closed rather than emitting it.
 
 ## Good to know
 

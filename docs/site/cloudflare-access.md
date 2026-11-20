@@ -6,7 +6,7 @@ Replace `<flareid>` with your issuer URL (such as `https://idp.example.com`), an
 
 ## 1. Create the client in FlareID
 
-1. Go to **Integrations → OIDC clients → + New client**.
+1. Go to **Applications → New OIDC client** (or pick **Cloudflare Access** from **Applications → App catalog** to have the fields prefilled).
 2. Fill in:
    - **Name**: `Cloudflare Access`
    - **Client type**: Confidential

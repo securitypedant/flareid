@@ -3,6 +3,7 @@
   "name": "App Name",
   "protocol": "saml",
   "website": "https://example.com",
+  "logo": "icons/app-slug.svg",
   "instructions": {
     "app": [
       "Ordered steps to enable SSO in the target app.",

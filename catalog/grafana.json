@@ -3,6 +3,7 @@
   "name": "Grafana",
   "protocol": "oidc",
   "website": "https://grafana.com",
+  "logo": "icons/grafana.svg",
   "instructions": {
     "app": [
       "In grafana.ini (or environment variables GF_AUTH_GENERIC_OAUTH_*) configure the [auth.generic_oauth] section: enabled = true, name = FlareID, client_id = {client_id}, client_secret = {client_secret}.",

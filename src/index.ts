@@ -1,4 +1,5 @@
 import { errorResponse } from "./lib/html.js";
+import { CATALOG_ICONS } from "./lib/catalog-icons.generated.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
 import { getCfOne, sweepWatchlist, syncLists } from "./lib/cfone.js";
@@ -89,6 +90,16 @@ app.use("*", edgeRateLimit);
 app.use("*", recordRequestMetrics);
 
 app.get("/health", (c) => c.json({ status: "ok", service: "flareid-idp" }));
+
+// App-catalog icons: committed under catalog/icons/, bundled by
+// scripts/catalog-icons.mjs. Same-origin SVGs, so the launchpad and login
+// pages show them inside the default img-src policy; long cache is fine
+// because the bytes only change with a deploy.
+app.get("/catalog-icons/:file", (c) => {
+  const svg = CATALOG_ICONS[`icons/${c.req.param("file")}`];
+  if (!svg) return c.notFound();
+  return c.body(svg, 200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" });
+});
 
 // Mounted before the appName middleware: these are machine callers that never
 // render a page, and they include the only routes that work on an instance with

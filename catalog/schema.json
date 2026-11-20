@@ -5,7 +5,7 @@
   "description": "One onboarding template for a third-party application: the SAML service-provider or OIDC client values the admin console pre-fills, plus instructions for both sides of the integration. Placeholders look like {name}; {idp_*} names are substituted from the deployment's issuer at render time, everything else is an app-side value the admin fills in.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["slug", "name", "protocol", "website", "instructions", "saml", "oidc", "connector"],
+  "required": ["slug", "name", "protocol", "website", "logo", "instructions", "saml", "oidc", "connector"],
   "properties": {
     "slug": {
       "type": "string",
@@ -15,6 +15,11 @@
     "name": { "type": "string", "minLength": 1 },
     "protocol": { "type": "string", "enum": ["saml", "oidc"] },
     "website": { "type": "string", "pattern": "^https://" },
+    "logo": {
+      "type": "string",
+      "pattern": "^icons/[a-z0-9-]+\\.svg$",
+      "description": "The app's mark, committed under catalog/icons/ and served back from /catalog-icons/. Used for the app's tile on the user launchpad and to prefill the created record's logo."
+    },
     "instructions": {
       "type": "object",
       "additionalProperties": false,

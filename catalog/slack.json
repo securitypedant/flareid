@@ -3,6 +3,7 @@
   "name": "Slack",
   "protocol": "saml",
   "website": "https://slack.com",
+  "logo": "icons/slack.svg",
   "instructions": {
     "app": [
       "In the Slack workspace admin (https://{team}.slack.com/admin) go to Settings & permissions > Authentication and choose Configure next to SAML authentication (custom SAML needs a paid plan).",

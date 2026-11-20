@@ -143,6 +143,10 @@ const CONSOLE_ONLY: Record<string, string> = {
   "POST /admin/reauth": "step-up re-authentication (password or code)",
   "POST /admin/reauth/passkey": "step-up re-authentication (passkey)",
   "POST /admin/reauth/email/send": "step-up re-authentication (emailed code)",
+  // The catalog apply is an interactive wizard: it collects the template's
+  // {placeholders}, then inserts through the same validation the client/SP
+  // create operations use. A create-from-template API could come later.
+  "POST /admin/apps/catalog/:slug/apply": "catalog apply wizard (template + create)",
 };
 
 /** Routes on the API app that are not operations in the document. */

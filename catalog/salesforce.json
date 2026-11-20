@@ -3,6 +3,7 @@
   "name": "Salesforce",
   "protocol": "saml",
   "website": "https://www.salesforce.com",
+  "logo": "icons/salesforce.svg",
   "instructions": {
     "app": [
       "Confirm a My Domain is deployed for the org (Setup > Company Settings > My Domain); SP-initiated SSO needs it.",

@@ -38,6 +38,8 @@ export interface ClientSettings {
   /** Back-channel logout and third-party-initiated-login targets; omitted keeps the current ones. */
   backchannelLogoutUri?: string;
   initiateLoginUri?: string;
+  /** RFC 7591 logo_uri for the sign-in page and launchpad; omitted keeps the current one. */
+  logoUri?: string | null;
   /** id_token signing algorithm; omitted keeps the current one. */
   idTokenAlg?: IdTokenAlg;
   /** JSON array of group ids allowed to use the app ('[]' = everyone); omitted keeps the current one. */
@@ -52,6 +54,7 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
   await ctx.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ? WHERE id = ?").bind(s.frontchannelLogoutUri, id).run();
   if (s.backchannelLogoutUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE id = ?").bind(s.backchannelLogoutUri, id).run();
   if (s.initiateLoginUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE id = ?").bind(s.initiateLoginUri, id).run();
+  if (s.logoUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET logo_uri = ? WHERE id = ?").bind(s.logoUri, id).run();
   if (s.idTokenAlg) await ctx.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(s.idTokenAlg, id).run();
   if (s.assignedGroups !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE id = ?").bind(s.assignedGroups, id).run();
   await audit(ctx, "oidc_client.updated", s.name);

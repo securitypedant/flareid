@@ -98,7 +98,7 @@ describe("admin roles", () => {
     expect((await get("/admin/users", dora)).status).toBe(200);
     expect((await get("/admin/integrations/oidc", dora)).status).toBe(403);
     expect((await get("/admin/security", dora)).status).toBe(403);
-    expect((await get("/admin/integrations/oidc", apu)).status).toBe(200);
+    expect((await get("/admin/integrations/oidc", apu)).status).toBe(302); // redirects to /admin/apps
     expect((await get("/admin/users", apu)).status).toBe(403);
     expect((await get("/admin/users", audi)).status).toBe(200);
     expect((await get("/admin/integrations/scim", audi)).status).toBe(200);

@@ -70,6 +70,8 @@ export interface CatalogEntry {
   name: string;
   protocol: "saml" | "oidc";
   website: string;
+  /** The app's mark, catalog-relative ("icons/slack.svg"); served at /catalog-icons/<file>. */
+  logo: string;
   instructions: { app: string[]; flareid: string[] };
   saml: CatalogSaml | null;
   oidc: CatalogOidc | null;
@@ -97,6 +99,11 @@ export function listCatalog(): CatalogEntry[] {
 /** One entry by slug, or null. */
 export function getCatalogEntry(slug: string): CatalogEntry | null {
   return ENTRIES.find((e) => e.slug === slug) ?? null;
+}
+
+/** The URL an icon serves at on this deployment, e.g. for a created record's logo_uri. */
+export function catalogIconUrl(issuer: string, entry: CatalogEntry): string {
+  return `${issuer}/catalog-icons/${entry.logo.slice("icons/".length)}`;
 }
 
 const PLACEHOLDER = /\{([A-Za-z0-9_]+)\}/g;

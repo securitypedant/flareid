@@ -59,18 +59,19 @@ describe("unified applications list", () => {
     expect((await get("/admin/apps/catalog", sami)).status).toBe(200);
   });
 
-  it("keeps the old per-protocol list pages working", async () => {
+  it("redirects the old OIDC list and keeps the SAML settings page", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     await seedApps(apiKey);
     const cookie = await adminCookie();
-    for (const [path, title] of [
-      ["/admin/integrations/oidc", "OIDC clients"],
-      ["/admin/integrations/saml", "SAML apps"],
-    ] as const) {
-      const res = await get(path, cookie);
-      expect(res.status).toBe(200);
-      expect(await res.text()).toContain(`<h1>${title}</h1>`);
-    }
+    const res = await get("/admin/integrations/oidc", cookie);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/admin/apps");
+    const saml = await get("/admin/integrations/saml", cookie);
+    expect(saml.status).toBe(200);
+    const html = await saml.text();
+    expect(html).toContain("<h1>SAML</h1>");
+    expect(html).toContain("Disabled algorithms");
+    expect(html).toContain("/saml/metadata");
   });
 });
 
@@ -97,11 +98,13 @@ describe("app catalog", () => {
     expect(res.status).toBe(302);
     const loc = res.headers.get("Location")!;
     expect(loc).toMatch(/^\/admin\/saml\/\d+/);
-    const sp = await env.DB.prepare("SELECT * FROM saml_service_providers WHERE name = 'GitLab'").first<{ entity_id: string; acs_urls: string }>();
+    const sp = await env.DB.prepare("SELECT * FROM saml_service_providers WHERE name = 'GitLab'").first<{ entity_id: string; acs_urls: string; logo_uri: string | null }>();
     expect(sp).not.toBeNull();
     expect(sp!.entity_id).toContain("gitlab.example.com");
     expect(JSON.parse(sp!.acs_urls).join(" ")).toContain("gitlab.example.com");
     expect(sp!.entity_id).not.toContain("{host}");
+    // The entry's icon lands on the record so the launchpad shows it.
+    expect(sp!.logo_uri).toContain("/catalog-icons/gitlab.svg");
   });
 
   it("applies an OIDC template into a prefilled client and shows the secret once", async () => {
@@ -111,10 +114,11 @@ describe("app catalog", () => {
     expect(res.status).toBe(200); // the once-only "Client created" page
     const html = await res.text();
     expect(html).toContain("Client secret");
-    const cl = await env.DB.prepare("SELECT * FROM oauth_clients WHERE name = 'Grafana'").first<{ redirect_uris: string; grant_types: string | null }>();
+    const cl = await env.DB.prepare("SELECT * FROM oauth_clients WHERE name = 'Grafana'").first<{ redirect_uris: string; grant_types: string | null; logo_uri: string | null }>();
     expect(cl).not.toBeNull();
     expect(JSON.parse(cl!.redirect_uris)).toEqual(["https://grafana.example.com/login/generic_oauth"]);
     expect(cl!.grant_types).toBe('["authorization_code"]');
+    expect(cl!.logo_uri).toContain("/catalog-icons/grafana.svg");
   });
 });
 

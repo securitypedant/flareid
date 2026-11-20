@@ -3,6 +3,7 @@
   "name": "AWS IAM Identity Center",
   "protocol": "saml",
   "website": "https://aws.amazon.com/iam/identity-center/",
+  "logo": "icons/aws.svg",
   "instructions": {
     "app": [
       "In the IAM Identity Center console go to Settings > Identity source, then Actions > Change identity source > External identity provider.",

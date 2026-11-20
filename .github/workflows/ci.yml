@@ -37,6 +37,11 @@ jobs:
       - name: Docs site is current
         run: npm run docs:site -- --check
 
+      # The catalog icons bundle is generated from catalog/icons/*.svg;
+      # this fails on a stale module, a missing logo or an orphaned icon.
+      - name: Catalog icons are current
+        run: npm run catalog:icons -- --check
+
       - name: Test
         run: npm test
 

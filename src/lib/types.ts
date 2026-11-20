@@ -151,6 +151,8 @@ export interface SamlServiceProviderRow {
   metadata_valid_until: string | null;
   /** '' | 'subject-id' | 'pairwise-id' (SAML Subject Identifier Attributes Profile). */
   subject_id: string;
+  /** App icon shown on the user launchpad; absolute https URL, NULL = letter tile. */
+  logo_uri: string | null;
   /** JSON array of group ids allowed to see and SSO into this app; NULL/'[]' = everyone. */
   assigned_groups: string | null;
   created_at: string;

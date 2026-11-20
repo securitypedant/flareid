@@ -32,7 +32,7 @@ import {
 import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, listScimTargetsForApp, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
-import { getCatalogEntry, listCatalog, placeholdersIn, renderInstructions, templateToClientInput, templateToSpInput, type CatalogEntry } from "../lib/catalog.js";
+import { catalogIconUrl, getCatalogEntry, listCatalog, placeholdersIn, renderInstructions, templateToClientInput, templateToSpInput, type CatalogEntry } from "../lib/catalog.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
@@ -436,10 +436,14 @@ function layout(
         : (INTEGRATION_PAGES.find((p) => p.label === crumbs?.[2]?.label)?.key ?? "");
   const guide = adminHelp(section, sub, crumbs?.[2]?.label);
   const help = guide ? helpLink(guide.href, guide.title) : "";
+  const navMenu = adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined, c.get("accessPending") ?? 0);
   return page(
     `${title}`,
     `<div class="admin-shell">
-      <aside class="admin-side">${adminNav(section, sub, c.get("access") ? visibleSections(c.get("access")!) : undefined, c.get("accessPending") ?? 0)}</aside>
+      <aside class="admin-side admin-side-desktop">${navMenu.html}</aside>
+      <details class="admin-nav-mobile"><summary><span>${escapeHtml(navMenu.activeLabel)}</span><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <div class="admin-side">${navMenu.html}</div>
+      </details>
       <div class="admin-main">
         <div class="page-header">${crumbHtml}<div class="page-header-row"><div class="page-title"><h1>${escapeHtml(title)}</h1>${help}</div>${headerActions}</div></div>
         ${body}
@@ -473,8 +477,7 @@ function oidcEndpointsBlock(env: Env, clientId: string) {
 
 /** The Integrations pages, which the sidebar lists under their section. Labels double as the third breadcrumb. */
 const INTEGRATION_PAGES = [
-  { key: "oidc", label: "OIDC clients" },
-  { key: "saml", label: "SAML apps" },
+  { key: "saml", label: "SAML" },
   { key: "api-keys", label: "API keys" },
   { key: "scim", label: "SCIM provisioning" },
   { key: "ldap", label: "LDAP" },
@@ -514,7 +517,8 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
     ["schemas", "/admin/schemas", "Schemas"],
     ["audit", "/admin/audit", "Log"],
   ];
-  return items
+  const activeLabel = items.find(([k]) => k === active)?.[2] ?? "Overview";
+  const html = items
     .filter(([key]) => !visible || visible.has(key))
     .map(([key, href, label]) => {
       const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}${key === "groups" && active !== "groups" ? pendingBadge : ""}</a>`;
@@ -551,6 +555,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
       return link + children;
     })
     .join("") + DOCS_NAV_LINK;
+  return { html, activeLabel };
 }
 
 /** Last in the console menu, for every administrator: the public docs, in a new tab. */
@@ -813,11 +818,11 @@ admin.get("/admin", async (c) => {
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${users}</h2><p>Users</p></div></a>
         <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groups}</h2><p>Groups</p></div></a>
         <a class="stat-card" href="/admin/apps"><div class="card"><h2>${oidcClients}</h2><p>OIDC Clients</p></div></a>
-        ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>` : `<a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>`}
+        ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>` : `<a class="stat-card" href="/admin/apps"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>`}
       </div>
       <div class="stat-grid">
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${activeUsers}</h2><p>Active accounts</p></div></a>
-        ${monitor ? `<a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>` : ""}
+        ${monitor ? `<a class="stat-card" href="/admin/apps"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>` : ""}
         <a class="stat-card" href="/admin/integrations/api-keys"><div class="card"><h2>${apiKeys}</h2><p>Active API keys</p></div></a>
         ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${refreshLive}</h2><p>Live refresh grants</p></div></a>` : ""}
       </div>
@@ -2924,20 +2929,23 @@ admin.get("/admin/apps", async (c) => {
   const canSaml = access.isSuper || grants(access.perms, "saml:read");
   const [clients, sps] = await Promise.all([
     canOidc
-      ? c.env.DB.prepare("SELECT id, name, assigned_groups, created_at FROM oauth_clients").all<Pick<OAuthClientRow, "id" | "name" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      ? c.env.DB.prepare("SELECT id, name, logo_uri, assigned_groups, created_at FROM oauth_clients").all<Pick<OAuthClientRow, "id" | "name" | "logo_uri" | "assigned_groups" | "created_at">>().then((r) => r.results)
       : Promise.resolve([]),
     canSaml
-      ? c.env.DB.prepare("SELECT id, name, assigned_groups, created_at FROM saml_service_providers").all<Pick<SamlServiceProviderRow, "id" | "name" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      ? c.env.DB.prepare("SELECT id, name, logo_uri, assigned_groups, created_at FROM saml_service_providers").all<Pick<SamlServiceProviderRow, "id" | "name" | "logo_uri" | "assigned_groups" | "created_at">>().then((r) => r.results)
       : Promise.resolve([]),
   ]);
   const rows = [
-    ...clients.map((cl) => ({ name: cl.name, protocol: "OIDC", assignedGroups: cl.assigned_groups, createdAt: cl.created_at, href: `/admin/clients/${cl.id}` })),
-    ...sps.map((sp) => ({ name: sp.name, protocol: "SAML", assignedGroups: sp.assigned_groups, createdAt: sp.created_at, href: `/admin/saml/${sp.id}` })),
+    ...clients.map((cl) => ({ name: cl.name, logo: cl.logo_uri, protocol: "OIDC", assignedGroups: cl.assigned_groups, createdAt: cl.created_at, href: `/admin/clients/${cl.id}` })),
+    ...sps.map((sp) => ({ name: sp.name, logo: sp.logo_uri, protocol: "SAML", assignedGroups: sp.assigned_groups, createdAt: sp.created_at, href: `/admin/saml/${sp.id}` })),
   ].sort((a, b) => a.name.localeCompare(b.name));
   const restriction = (assignedGroups: string | null) => {
     const n = parseAssignedGroupIds(assignedGroups).length;
     return n === 0 ? "Everyone" : `${n} group${n === 1 ? "" : "s"}`;
   };
+  // External logo URLs need their exact origins in img-src for this response.
+  const logos = [...new Set(rows.map((r) => r.logo).filter((u): u is string => Boolean(u)))];
+  if (logos.length) c.header("X-FlareID-Img-Src", logos.join(" "));
   const headerActions = [
     canOidc || canSaml ? `<a href="/admin/apps/catalog"><button class="primary" type="button">Add from catalog</button></a>` : "",
     grants(access.perms, "oidc:write") ? `<a href="/admin/clients/new"><button class="secondary" type="button">New OIDC client</button></a>` : "",
@@ -2963,7 +2971,7 @@ admin.get("/admin/apps", async (c) => {
                   ${rows
                     .map(
                       (r) =>
-                        `<tr><td><a href="${r.href}">${escapeHtml(r.name)}</a></td><td><span class="badge">${r.protocol}</span></td><td>${restriction(r.assignedGroups)}</td><td class="muted">${ts(r.createdAt, { dateOnly: true })}</td></tr>`
+                        `<tr><td><span style="display:inline-flex; align-items:center; gap:8px;">${r.logo ? `<img src="${escapeHtml(r.logo)}" alt="" style="width:18px; height:18px; object-fit:contain;" data-hide-on-error />` : ""}<a href="${r.href}">${escapeHtml(r.name)}</a></span></td><td><span class="badge">${r.protocol}</span></td><td>${restriction(r.assignedGroups)}</td><td class="muted">${ts(r.createdAt, { dateOnly: true })}</td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -3001,8 +3009,9 @@ admin.get("/admin/apps/catalog", async (c) => {
           .map(
             (e) =>
               cardSection(`
-                <div class="row between" style="margin:0 0 10px 0;">
-                  <h2 style="margin:0;"><a href="/admin/apps/catalog/${escapeHtml(e.slug)}">${escapeHtml(e.name)}</a></h2>
+                <div class="row" style="margin:0 0 10px 0; align-items:center; gap:10px;">
+                  <img src="/catalog-icons/${escapeHtml(e.logo.slice(6))}" alt="" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;" />
+                  <h2 style="margin:0; flex:1;"><a href="/admin/apps/catalog/${escapeHtml(e.slug)}">${escapeHtml(e.name)}</a></h2>
                   <span class="badge">${e.protocol.toUpperCase()}</span>
                 </div>
                 <div style="margin-top:12px;"><a href="/admin/apps/catalog/${escapeHtml(e.slug)}">Set up ${escapeHtml(e.name)} &rarr;</a></div>
@@ -3027,7 +3036,7 @@ admin.get("/admin/apps/catalog/:slug", async (c) => {
       c,
       `${entry.name}`,
       `
-      <p class="muted" style="margin:-6px 0 16px;"><a href="${escapeHtml(entry.website)}" target="_blank" rel="noopener">${escapeHtml(entry.website.replace(/^https?:\/\//, ""))}</a> &middot; <span class="badge">${entry.protocol.toUpperCase()}</span></p>
+      <p class="muted" style="margin:-6px 0 16px; display:flex; align-items:center; gap:8px;"><img src="/catalog-icons/${escapeHtml(entry.logo.slice(6))}" alt="" style="width:22px; height:22px; object-fit:contain;" /> <a href="${escapeHtml(entry.website)}" target="_blank" rel="noopener">${escapeHtml(entry.website.replace(/^https?:\/\//, ""))}</a> &middot; <span class="badge">${entry.protocol.toUpperCase()}</span></p>
       <div class="two-col">
         ${cardSection(`<h2>In the app</h2>${steps(rendered.app)}`)}
         ${cardSection(`<h2>In FlareID</h2>${steps(rendered.flareid)}`)}
@@ -3069,6 +3078,7 @@ admin.post("/admin/apps/catalog/:slug/apply", async (c) => {
     // parseSpForm is the same validation the create form posts through.
     const v = parseSpForm({ ...tpl, signing_certs: "", encryption_cert: "", assigned_group_ids: [] });
     if (typeof v === "string") return consoleError(c, v, 400);
+    v.logoUri = catalogIconUrl(c.env.ISSUER_URL, entry);
     const id = await insertServiceProvider(c.env, v);
     await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId, via: `catalog:${entry.slug}` }, c.req.raw);
     return c.redirect(`/admin/saml/${id}?saved=1`, 302);
@@ -3087,6 +3097,7 @@ admin.post("/admin/apps/catalog/:slug/apply", async (c) => {
         .filter((u) => u && isValidPostLogoutUri(u))
     ),
     frontchannelLogoutUri: "",
+    logoUri: catalogIconUrl(c.env.ISSUER_URL, entry),
     idTokenAlg: "RS256",
   };
   const created = await insertClient(c.env, {
@@ -3127,7 +3138,7 @@ admin.post("/admin/apps/catalog/:slug/apply", async (c) => {
 // kind has its own page, listed under Integrations in the sidebar while you are
 // in the section; /admin/integrations is an overview of all four. The older
 // single-page paths still resolve so existing links and bookmarks survive.
-admin.get("/admin/clients", (c) => c.redirect("/admin/integrations/oidc", 302));
+admin.get("/admin/clients", (c) => c.redirect("/admin/apps", 302));
 admin.get("/admin/scim", (c) => c.redirect(`/admin/integrations/scim${new URL(c.req.url).search}`, 302));
 
 /** Page heading row: the page's description plus its primary action. */
@@ -3158,9 +3169,7 @@ function summaryCard(opts: { title: string; count: string; rows: string[]; empty
 }
 
 admin.get("/admin/integrations", async (c) => {
-  const [{ results: clients }, { results: sps }, apiKeys, scimTargets, ldapApps, ldapSettings, upstreamIdps] = await Promise.all([
-    c.env.DB.prepare("SELECT id, name, client_id FROM oauth_clients ORDER BY name").all<Pick<OAuthClientRow, "id" | "name" | "client_id">>(),
-    c.env.DB.prepare("SELECT id, name, entity_id FROM saml_service_providers ORDER BY name").all<Pick<SamlServiceProviderRow, "id" | "name" | "entity_id">>(),
+  const [apiKeys, scimTargets, ldapApps, ldapSettings, upstreamIdps] = await Promise.all([
     listApiKeys(c.env),
     listScimTargets(c.env),
     listLdapApps(c.env),
@@ -3175,25 +3184,7 @@ admin.get("/admin/integrations", async (c) => {
       c,
       "Integrations",
       `
-      <p class="muted" style="margin:-6px 0 16px;">Everything that connects to this directory: apps that sign users in, keys that automate it, and where users are provisioned.</p>
-      <div class="two-col">
-        ${summaryCard({
-          title: "OIDC clients",
-          count: `${clients.length} registered`,
-          rows: clients.map((cl) => `<tr><td><a href="/admin/clients/${cl.id}">${escapeHtml(cl.name)}</a></td><td><code>${escapeHtml(cl.client_id)}</code></td></tr>`),
-          empty: "No clients registered yet.",
-          manage: "oidc",
-          href: "/admin/apps",
-        })}
-        ${summaryCard({
-          title: "SAML apps",
-          count: `${sps.length} registered`,
-          rows: sps.map((sp) => `<tr><td><a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></td><td><code>${escapeHtml(sp.entity_id)}</code></td></tr>`),
-          empty: "No service providers registered yet.",
-          manage: "saml",
-          href: "/admin/apps",
-        })}
-      </div>
+      <p class="muted" style="margin:-6px 0 16px;">The connections into and out of this directory: global SAML settings, API keys that automate it, where users are provisioned, and the upstream IdPs people sign in through. The apps users sign in to are under <a href="/admin/apps">Applications</a>.</p>
       <div class="two-col">
         ${summaryCard({
           title: "API keys",
@@ -3231,6 +3222,13 @@ admin.get("/admin/integrations", async (c) => {
           ),
           empty: "Nobody signs in through an upstream IdP.",
           manage: "federation",
+        })}
+        ${summaryCard({
+          title: "SAML",
+          count: `<span class="badge ${isSamlConfigured(c.env) ? "badge-active" : "badge-disabled"}">${isSamlConfigured(c.env) ? "Configured" : "No signing cert"}</span>`,
+          rows: [`<tr><td>Entity ID</td><td><code>${escapeHtml(idpEntityId(c.env))}</code></td></tr>`, `<tr><td>SSO URL</td><td><code>${escapeHtml(idpEntityId(c.env))}/saml/sso</code></td></tr>`],
+          empty: "",
+          manage: "saml",
         })}
       </div>
       `,
@@ -3657,65 +3655,23 @@ admin.post(`${SIGNALS}/transmitters/:id/delete`, async (c) => {
   return c.redirect(`${SIGNALS}?saved=1`, 302);
 });
 
-admin.get("/admin/integrations/oidc", async (c) => {
-  const { results: clients } = await c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>();
-  return c.html(
-    layout(
-      c,
-      "OIDC clients",
-      `
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        ${integrationIntro("The relying parties allowed to sign users in with this directory over OpenID Connect &mdash; Cloudflare Access, for example. OIDC and SAML apps together are under <a href=\"/admin/apps\">Applications</a>.", { href: "/admin/clients/new", label: "+ New client" })}
-        ${
-          clients.length === 0
-            ? '<p class="muted">No clients registered yet.</p>'
-            : `<table>
-                <thead><tr><th>Name</th><th>Client ID</th><th>Redirect URIs</th></tr></thead>
-                <tbody>
-                  ${clients
-                    .map(
-                      (cl) =>
-                        `<tr><td><a href="/admin/clients/${cl.id}">${escapeHtml(cl.name)}</a></td><td><code>${escapeHtml(cl.client_id)}</code></td><td>${JSON.parse(cl.redirect_uris).map(escapeHtml).join("<br/>")}</td></tr>`
-                    )
-                    .join("")}
-                </tbody>
-              </table>`
-        }
-      `)}
-      `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "OIDC clients" }]
-    )
-  );
-});
+// Outbound app registrations live under Applications (/admin/apps); the old
+// list path still resolves so bookmarks survive.
+admin.get("/admin/integrations/oidc", (c) => c.redirect("/admin/apps", 302));
 
+// The instance-wide SAML settings: what this IdP publishes and the
+// algorithm policy every outbound assertion follows. Per-app service
+// providers are under Applications (/admin/apps).
 admin.get("/admin/integrations/saml", async (c) => {
-  const { results: sps } = await c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>();
   const disabledAlgorithms = await getDisabledAlgorithms(c.env);
   return c.html(
     layout(
       c,
-      "SAML apps",
+      "SAML",
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        ${integrationIntro("Service providers allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>. OIDC and SAML apps together are under <a href=\"/admin/apps\">Applications</a>.", { href: "/admin/saml/new", label: "+ New service provider" })}
-        ${
-          sps.length === 0
-            ? '<p class="muted">No service providers registered yet.</p>'
-            : `<table>
-                <thead><tr><th>Name</th><th>Entity ID</th><th>ACS URLs</th></tr></thead>
-                <tbody>
-                  ${sps
-                    .map(
-                      (sp) =>
-                        `<tr><td><a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></td><td><code>${escapeHtml(sp.entity_id)}</code></td><td>${JSON.parse(sp.acs_urls).map(escapeHtml).join("<br/>")}</td></tr>`
-                    )
-                    .join("")}
-                </tbody>
-              </table>`
-        }
-      `)}
+      ${integrationIntro("This directory's SAML 2.0 identity provider - the endpoints and certificate service providers are pointed at. Service providers themselves are registered under <a href=\"/admin/apps\">Applications</a>.")}
+      ${samlIdpBlock(c.env)}
       ${cardSection(`
         <h2>Disabled algorithms</h2>
         <p class="muted">An instance-wide deny list for SAML assertion encryption (IIP-ALG08): a service provider whose encryption policy selects a listed algorithm cannot be saved, and one already stored fails rather than emitting it. Entries match the content, key-transport, OAEP digest and MGF choices - a full URI or its short token (<code>aes256-cbc</code>, <code>rsa-oaep-mgf1p</code>, <code>sha1</code>) counts the same.</p>
@@ -3726,7 +3682,7 @@ admin.get("/admin/integrations/saml", async (c) => {
         </form>
       `)}
       `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SAML apps" }]
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SAML" }]
     )
   );
 });
@@ -4271,6 +4227,11 @@ function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<G
         <input type="text" id="frontchannel_logout_uri" name="frontchannel_logout_uri" value="${escapeHtml(client?.frontchannel_logout_uri ?? "")}" placeholder="https://app.example.com/logout/frontchannel" />
         <p class="muted" style="margin-top:2px;">Loaded in a hidden frame on sign-out so the app can end its session. https only.</p>
       </div>
+      <div>
+        <label for="logo_uri">Logo URL (launchpad icon)</label>
+        <input type="text" id="logo_uri" name="logo_uri" value="${escapeHtml(client?.logo_uri ?? "")}" placeholder="https://your-idp.example/catalog-icons/cloudflare.svg" />
+        <p class="muted" style="margin-top:2px;">Shown on the sign-in page and the app tile in the user's Applications page. https only.</p>
+      </div>
     </div>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
     <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
@@ -4295,6 +4256,7 @@ function readClientSettings(body: Record<string, string | File | (string | File)
         .filter((u) => u && isValidPostLogoutUri(u))
     ),
     frontchannelLogoutUri: validFrontchannelUri(String(body.frontchannel_logout_uri ?? "").trim()),
+    logoUri: validFrontchannelUri(String(body.logo_uri ?? "").trim()),
     // Anything unrecognised falls back to the default rather than being stored.
     idTokenAlg: isIdTokenAlg(body.id_token_signed_response_alg) ? body.id_token_signed_response_alg : ("RS256" as const),
   };
@@ -4350,7 +4312,7 @@ async function insertClient(
   )
     .bind(clientId, clientSecretHash, input.name, JSON.stringify(input.redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", input.settings.trusted, input.settings.allowedClaims, input.settings.postLogoutRedirectUris)
     .run();
-  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, assigned_groups = ? WHERE client_id = ?").bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.assignedGroups, clientId).run();
+  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, logo_uri = ?, assigned_groups = ? WHERE client_id = ?").bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.logoUri, input.settings.assignedGroups, clientId).run();
   if (input.grantTypes?.length) await env.DB.prepare("UPDATE oauth_clients SET grant_types = ? WHERE client_id = ?").bind(JSON.stringify(input.grantTypes), clientId).run();
   return { id: Number(result.meta.last_row_id), clientId, clientSecret };
 }
@@ -4555,6 +4517,8 @@ interface SpFormValues {
   encryptionCert: string;
   subjectId: string;
   encryptAssertions: boolean;
+  /** App icon for the launchpad; "" = letter tile. */
+  logoUri: string;
   /** Group ids this SP is restricted to; [] = everyone. */
   assignedGroups: number[];
 }
@@ -4623,6 +4587,8 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
 
   const sloUrl = String(body.slo_url ?? "").trim();
   if (sloUrl && !/^https:\/\//.test(sloUrl)) return "The Single Logout URL must be https.";
+  const logoUri = String(body.logo_uri ?? "").trim();
+  if (logoUri && !/^https:\/\//.test(logoUri)) return "The logo URL must be https.";
   const rawEnc = String(body.encryption_cert ?? "").trim();
   const encryptionCert = rawEnc ? normalizeCertPem(rawEnc) : "";
   if (rawEnc && !encryptionCert) return "The encryption certificate could not be parsed.";
@@ -4643,6 +4609,7 @@ function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
     sloUrl,
     encryptionCert: encryptionCert ?? "",
     encryptAssertions: !!body.encrypt_assertions,
+    logoUri,
     subjectId: ["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "",
     assignedGroups: (Array.isArray(body.assigned_group_ids) ? body.assigned_group_ids : body.assigned_group_ids ? [body.assigned_group_ids] : [])
       .map(Number)
@@ -4664,6 +4631,14 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
           <label for="entity_id">Entity ID (Issuer)</label>
           <input type="text" id="entity_id" name="entity_id" value="${escapeHtml(v.entityId ?? "")}" placeholder="https://your-team.cloudflareaccess.com" required />
         </div>
+      </div>
+      <div class="field-row">
+        <div>
+          <label for="logo_uri">Logo URL (launchpad icon)</label>
+          <input type="text" id="logo_uri" name="logo_uri" value="${escapeHtml(v.logoUri ?? "")}" placeholder="https://your-idp.example/catalog-icons/slack.svg" />
+          <p class="muted" style="margin-top:2px;">Shown on the app tile in the user's Applications page. https only; empty draws the app's initial.</p>
+        </div>
+        <div></div>
       </div>
       <label for="acs_urls">Assertion Consumer Service URLs (one per line)</label>
       <textarea id="acs_urls" name="acs_urls" rows="3" placeholder="https://your-team.cloudflareaccess.com/cdn-cgi/access/callback">${escapeHtml((v.acsUrls ?? []).join("\n"))}</textarea>
@@ -4756,10 +4731,10 @@ admin.post("/admin/saml/import-metadata", async (c) => {
 async function insertServiceProvider(env: Env, v: SpFormValues): Promise<number> {
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, assigned_groups, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, logo_uri, assigned_groups, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, JSON.stringify(v.assignedGroups), now, now)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), now, now)
     .run();
 
   await env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
@@ -4806,6 +4781,7 @@ admin.get("/admin/saml/:id", async (c) => {
             encryptionCert: sp.encryption_cert ?? "",
             subjectId: sp.subject_id ?? "",
             encryptAssertions: !!sp.encrypt_assertions,
+            logoUri: sp.logo_uri ?? "",
             assignedGroups: parseAssignedGroupIds(sp.assigned_groups),
           },
           `/admin/saml/${id}`,
@@ -4834,9 +4810,9 @@ admin.post("/admin/saml/:id", async (c) => {
   if (typeof v === "string") return consoleError(c, v, 400);
 
   await c.env.DB.prepare(
-    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, assigned_groups = ?, updated_at = ? WHERE id = ?`
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, logo_uri = ?, assigned_groups = ?, updated_at = ? WHERE id = ?`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, JSON.stringify(v.assignedGroups), new Date().toISOString(), id)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), new Date().toISOString(), id)
     .run();
 
   await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, id).run();

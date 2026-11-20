@@ -3,6 +3,7 @@
   "name": "GitLab",
   "protocol": "saml",
   "website": "https://gitlab.com",
+  "logo": "icons/gitlab.svg",
   "instructions": {
     "app": [
       "gitlab.com: in your top-level group go to Settings > SAML SSO. Self-managed: configure the SAML OmniAuth provider in the GitLab Rails config or Admin > Settings > General (check your app's current UI).",

@@ -197,14 +197,11 @@ describe("admin console navigation and pages", () => {
     expect(summary.status).toBe(200);
     const summaryHtml = await summary.text();
     expect(summaryHtml).toContain('href="/admin/integrations" class="sub active">Overview');
-    expect(summaryHtml).toContain("Cloudflare Access");
-    expect(summaryHtml).toContain("1 registered");
     expect(summaryHtml).toContain("test-suite"); // the bootstrap helper's admin key
     expect(summaryHtml).toContain("0 targets"); // SCIM
 
     for (const [path, title] of [
-      ["/admin/integrations/oidc", "OIDC clients"],
-      ["/admin/integrations/saml", "SAML apps"],
+      ["/admin/integrations/saml", "SAML"],
       ["/admin/integrations/api-keys", "API keys"],
       ["/admin/integrations/scim", "SCIM provisioning"],
     ] as const) {
@@ -214,9 +211,11 @@ describe("admin console navigation and pages", () => {
       expect(html).toContain(`<h1>${title}</h1>`);
       expect(html).toContain(`href="${path}" class="sub active"`);
     }
+    // The old OIDC clients list redirects to the unified Applications page.
+    expect((await get("/admin/integrations/oidc")).status).toBe(302);
 
     expect((await get("/admin/scim?x=1")).headers.get("Location")).toBe("/admin/integrations/scim?x=1");
-    expect((await get("/admin/clients")).headers.get("Location")).toBe("/admin/integrations/oidc");
+    expect((await get("/admin/clients")).headers.get("Location")).toBe("/admin/apps");
   });
 
   it("filters the log by actor type, action family and date", async () => {

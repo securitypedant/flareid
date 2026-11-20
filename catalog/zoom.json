@@ -3,6 +3,7 @@
   "name": "Zoom",
   "protocol": "saml",
   "website": "https://zoom.us",
+  "logo": "icons/zoom.svg",
   "instructions": {
     "app": [
       "In the Zoom web portal go to Admin > Advanced > Single Sign-On (a vanity URL https://{sub}.zoom.us must be approved first), then Configure SSO Manually (check your app's current UI).",

@@ -264,7 +264,7 @@ account.get("/account/applications", async (c) => {
       }),
     ...sps.results
       .filter((sp) => appVisibleTo(sp.assigned_groups, myGroupIds))
-      .map((sp) => ({ name: sp.name, logo: null as string | null, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
+      .map((sp) => ({ name: sp.name, logo: sp.logo_uri, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
   ];
   // External client logos need their exact URLs admitted to img-src for this
   // response - security-headers reads the marker (same as the sign-in page).

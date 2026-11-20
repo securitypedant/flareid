@@ -3,6 +3,7 @@
   "name": "Atlassian Cloud",
   "protocol": "saml",
   "website": "https://www.atlassian.com",
+  "logo": "icons/atlassian.svg",
   "instructions": {
     "app": [
       "In Atlassian Administration (admin.atlassian.com) select your organization, then Security > User security > Identity providers, pick your directory and choose Set up SAML single sign-on (needs Atlassian Guard; check your app's current UI).",

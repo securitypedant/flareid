@@ -99,7 +99,7 @@ describe("console links into the docs", () => {
     await bootstrapInstance({ domain: "docs.test" });
     const cookie = await adminCookie();
     const saml = await (await get("/admin/integrations/saml", { Cookie: cookie })).text();
-    expect(saml).toMatch(/<h1>SAML apps<\/h1><a class="help-link" href="\/docs\/saml" target="_blank" rel="noopener" title="Help: SAML apps"/);
+    expect(saml).toMatch(/<h1>SAML<\/h1><a class="help-link" href="\/docs\/saml" target="_blank" rel="noopener" title="Help: SAML apps"/);
     expect(saml).toContain('<a href="/docs" class="nav-docs" target="_blank"');
     // The menu ends with Log, then Docs.
     expect(saml.indexOf(">Log</a>")).toBeLessThan(saml.indexOf('class="nav-docs"'));
@@ -109,7 +109,7 @@ describe("console links into the docs", () => {
       ["/admin/users", "/docs/users"],
       ["/admin/users/import", "/docs/importing"],
       ["/admin/groups", "/docs/groups"],
-      ["/admin/integrations/oidc", "/docs/oidc"],
+      ["/admin/apps", "/docs/applications"],
       ["/admin/integrations/scim", "/docs/scim"],
       ["/admin/security/policies", "/docs/policies"],
       ["/admin/security/factors", "/docs/policies#second-factors"],
