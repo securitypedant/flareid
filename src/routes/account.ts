@@ -873,7 +873,7 @@ account.post("/account/profile", async (c) => {
   await logAudit(c.env, user, "user.profile_updated_self", user.upn, { fields: editable.map((a) => a.name) }, c.req.raw);
   if (await isScimConfigured(c.env)) {
     const fresh = await getUserById(c.env, user.id);
-    if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).then(() => undefined));
+    if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).catch((err) => console.error(JSON.stringify({ event: "scim_push_failed", error: String(err) }))));
   }
   return c.redirect("/account?saved=profile", 302);
 });

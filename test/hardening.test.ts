@@ -18,13 +18,15 @@ async function seedUser(apiKey: string, username: string): Promise<number> {
 }
 
 /** Stubs outbound fetch for the named hosts; other requests pass through. */
+/** See cfone.test.ts - captured once so a second stubHosts call cannot bind the spy to itself. */
+const realFetch = globalThis.fetch.bind(globalThis);
+
 function stubHosts(handler: (url: URL, init?: RequestInit) => Response, ...hosts: string[]) {
   const calls: { method: string; url: string }[] = [];
-  const real = globalThis.fetch.bind(globalThis);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const u = new URL(url);
-    if (!hosts.some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`))) return real(input as RequestInfo, init);
+    if (!hosts.some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`))) return realFetch(input as RequestInfo, init);
     calls.push({ method: init?.method ?? "GET", url });
     return handler(u, init);
   });

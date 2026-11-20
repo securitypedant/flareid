@@ -61,6 +61,6 @@ export async function applyScimScope(ctx: ServiceCtx, targetId: number, scope: S
       if (errors.length || groups.groupErrors) {
         await audit(later, "scim.user_sync_failed", target.name, { action: "scope_changed", error: errors.join("; ").slice(0, 500), group_errors: groups.groupErrors });
       }
-    })()
+    })().catch((err) => console.error(JSON.stringify({ event: "scim_scope_sync_failed", error: String(err) })))
   );
 }

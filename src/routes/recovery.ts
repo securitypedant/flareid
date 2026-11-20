@@ -230,7 +230,7 @@ recovery.post("/invite/:token", async (c) => {
   await logAudit(c.env, result.user, "user.invitation_accepted", result.user.upn, undefined, c.req.raw);
   if (await isScimConfigured(c.env)) {
     const user = await getUserById(c.env, result.user.id);
-    if (user) c.executionCtx.waitUntil(pushUser(c.env, user).then(() => undefined));
+    if (user) c.executionCtx.waitUntil(pushUser(c.env, user).catch((err) => console.error(JSON.stringify({ event: "scim_push_failed", error: String(err) }))));
   }
   return renderAuthMessage(c, 200, { title: msg("msg.accountReady.title"), message: msg("msg.accountReady.message"), action: { href: "/login", label: msg("common.signIn") } }, { userId: result.user.id });
 });

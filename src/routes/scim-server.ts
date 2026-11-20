@@ -58,7 +58,7 @@ function downstream(c: Context<{ Bindings: Env }>, work: () => Promise<ScimResul
       if (!(await isScimConfigured(c.env))) return;
       const result = await work().catch((e: unknown) => ({ ok: false, error: String(e) }) as ScimResult);
       if (!result.ok) await logAudit(c.env, auditActor(c.get("apiActor")), "scim.sync_failed", target, { action, error: result.error });
-    })()
+    })().catch((err) => console.error(JSON.stringify({ event: "scim_sync_downstream_failed", error: String(err) })))
   );
 }
 

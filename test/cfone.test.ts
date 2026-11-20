@@ -42,14 +42,16 @@ async function postLogin(upn: string, init?: RequestInit): Promise<Response> {
   });
 }
 
+/** The real fetch, captured before any spyOn - binding inside stubCfApi would capture the spy itself on a second call and recurse for pass-through hosts. */
+const realFetch = globalThis.fetch.bind(globalThis);
+
 /** Stubs outbound fetch for the CF API and Access JWKS hosts; returns what they saw. */
 function stubCfApi(handler?: (url: URL, method: string, body?: any) => Response) {
   const calls: { method: string; url: string; body: any }[] = [];
-  const real = globalThis.fetch.bind(globalThis);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const host = new URL(url).hostname;
-    if (host !== "api.cloudflare.com" && !host.endsWith(".cloudflareaccess.com")) return real(input as RequestInfo, init);
+    if (host !== "api.cloudflare.com" && !host.endsWith(".cloudflareaccess.com")) return realFetch(input as RequestInfo, init);
     let body: unknown;
     try {
       body = init?.body ? JSON.parse(String(init.body)) : undefined;
