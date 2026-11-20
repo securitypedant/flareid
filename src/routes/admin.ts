@@ -32,7 +32,7 @@ import {
 import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, listScimTargetsForApp, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
-import { catalogIconUrl, getCatalogEntry, listCatalog, placeholdersIn, renderInstructions, templateToClientInput, templateToSpInput, type CatalogEntry } from "../lib/catalog.js";
+import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructions, type CatalogEntry } from "../lib/catalog.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
@@ -112,6 +112,7 @@ import { groupManagers } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
 import { avatarUrl } from "../lib/photos.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
+import { applyCatalogEntry, insertClient, insertServiceProvider, parseSpForm, readClientSettings, type SpFormValues } from "../services/apps.js";
 import {
   addSecurityQuestion,
   applyDefaultPasswordToAll,
@@ -2987,15 +2988,6 @@ admin.get("/admin/apps", async (c) => {
 });
 
 /** App-side {placeholders} an administrator fills in before a catalog entry applies - {idp_*} resolve from the issuer, and {client_id}/{client_secret} only exist after the record is created. */
-function catalogValuePlaceholders(entry: CatalogEntry): string[] {
-  const texts = [...entry.instructions.app, ...entry.instructions.flareid];
-  if (entry.saml) texts.push(entry.saml.entity_id, ...entry.saml.acs_urls, entry.saml.default_acs_url ?? "", entry.saml.slo_url ?? "");
-  if (entry.oidc) texts.push(...entry.oidc.redirect_uris, ...(entry.oidc.post_logout_redirect_uris ?? []));
-  const names = new Set(texts.flatMap(placeholdersIn));
-  for (const n of [...names]) if (n.startsWith("idp_") || n === "client_id" || n === "client_secret") names.delete(n);
-  return [...names].sort();
-}
-
 admin.get("/admin/apps/catalog", async (c) => {
   const entries = listCatalog();
   return c.html(
@@ -3072,58 +3064,30 @@ admin.post("/admin/apps/catalog/:slug/apply", async (c) => {
     if (v) values[name] = v;
   }
 
-  if (entry.protocol === "saml") {
-    const tpl = templateToSpInput(entry, values);
-    if (!tpl) return consoleError(c, "That catalog entry has no SAML template.", 400);
-    // parseSpForm is the same validation the create form posts through.
-    const v = parseSpForm({ ...tpl, signing_certs: "", encryption_cert: "", assigned_group_ids: [] });
-    if (typeof v === "string") return consoleError(c, v, 400);
-    v.logoUri = catalogIconUrl(c.env.ISSUER_URL, entry);
-    const id = await insertServiceProvider(c.env, v);
-    await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId, via: `catalog:${entry.slug}` }, c.req.raw);
-    return c.redirect(`/admin/saml/${id}?saved=1`, 302);
+  // applyCatalogEntry (services/apps.ts) is the same path
+  // POST /api/v1/app-catalog/{slug}/apply takes.
+  const result = await applyCatalogEntry(c.env, entry, values, c.env.ISSUER_URL);
+  if (!result.ok) return consoleError(c, result.error, 400);
+
+  if (result.protocol === "saml") {
+    await logAudit(c.env, c.get("user"), "saml_sp.created", entry.name, { via: `catalog:${entry.slug}` }, c.req.raw);
+    return c.redirect(`/admin/saml/${result.id}?saved=1`, 302);
   }
 
-  const tpl = templateToClientInput(entry, values);
-  if (!tpl) return consoleError(c, "That catalog entry has no OIDC template.", 400);
-  const settings: ReturnType<typeof readClientSettings> = {
-    assignedGroups: "[]",
-    trusted: tpl.trusted ? 1 : 0,
-    allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => tpl.allowed_claims.includes(g))),
-    postLogoutRedirectUris: JSON.stringify(
-      tpl.post_logout_redirect_uris
-        .split("\n")
-        .map((s) => s.trim())
-        .filter((u) => u && isValidPostLogoutUri(u))
-    ),
-    frontchannelLogoutUri: "",
-    logoUri: catalogIconUrl(c.env.ISSUER_URL, entry),
-    idTokenAlg: "RS256",
-  };
-  const created = await insertClient(c.env, {
-    name: tpl.name,
-    clientType: tpl.client_type,
-    redirectUris: tpl.redirect_uris
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean),
-    settings,
-    grantTypes: tpl.grant_types.filter((g) => (CLIENT_GRANT_TYPES as readonly string[]).includes(g)),
-  });
-  await logAudit(c.env, c.get("user"), "oidc_client.created", tpl.name, { via: `catalog:${entry.slug}` }, c.req.raw);
+  await logAudit(c.env, c.get("user"), "oidc_client.created", entry.name, { via: `catalog:${entry.slug}` }, c.req.raw);
   // A confidential client's secret exists only in this response, so it gets
   // the same once-only page the create form ends on; a public client has no
   // secret and goes straight to the new record.
-  if (tpl.client_type === "public") return c.redirect(`/admin/clients/${created.id}?saved=1`, 302);
+  if (result.clientSecret === null) return c.redirect(`/admin/clients/${result.id}?saved=1`, 302);
   return c.html(
     layout(
       c,
       "Client created",
       cardSection(`
-        <p class="success">Created "${escapeHtml(tpl.name)}" from the catalog.</p>
-        ${secretBlock("Client secret", created.clientSecret)}
-        ${oidcEndpointsBlock(c.env, created.clientId)}
-        <a href="/admin/clients/${created.id}"><button class="primary" type="button">Continue</button></a>
+        <p class="success">Created "${escapeHtml(entry.name)}" from the catalog.</p>
+        ${secretBlock("Client secret", result.clientSecret)}
+        ${oidcEndpointsBlock(c.env, result.clientId)}
+        <a href="/admin/clients/${result.id}"><button class="primary" type="button">Continue</button></a>
       `),
       [{ label: "Admin", href: "/admin" }, APPS_CRUMB, APP_CATALOG_CRUMB, { label: entry.name, href: `/admin/apps/catalog/${entry.slug}` }, { label: "Client created" }]
     )
@@ -4242,81 +4206,6 @@ function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<G
     ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}`;
 }
 
-function readClientSettings(body: Record<string, string | File | (string | File)[]>) {
-  const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(String);
-  return {
-    assignedGroups: JSON.stringify(list(body.assigned_group_ids).map(Number).filter((n) => Number.isInteger(n) && n > 0)),
-    trusted: body.trusted ? 1 : 0,
-    allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => list(body.allowed_claims).includes(g))),
-    // Unusable entries are dropped rather than stored: /oidc/logout follows only exact, valid matches.
-    postLogoutRedirectUris: JSON.stringify(
-      String(body.post_logout_redirect_uris ?? "")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter((u) => u && isValidPostLogoutUri(u))
-    ),
-    frontchannelLogoutUri: validFrontchannelUri(String(body.frontchannel_logout_uri ?? "").trim()),
-    logoUri: validFrontchannelUri(String(body.logo_uri ?? "").trim()),
-    // Anything unrecognised falls back to the default rather than being stored.
-    idTokenAlg: isIdTokenAlg(body.id_token_signed_response_alg) ? body.id_token_signed_response_alg : ("RS256" as const),
-  };
-}
-
-// validFrontchannelUri lives in services/clients.ts (re-exported above).
-
-/** The grants a client may declare (RFC 7591 grant_types); the /token endpoint's list, kept for catalog templates that ship one. */
-const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code"] as const;
-
-/**
- * The client INSERT shared by the create form and catalog apply. Returns the
- * row id, the client_id and (for a confidential client) the plaintext secret,
- * which exists only in this response.
- *
- * Seeded credentials, for provisioning that has to know them in advance.
- *
- * A lab provisions Cloudflare Access with Terraform, which needs this client's
- * id and secret to create the Access identity provider - but Terraform cannot
- * read a value out of an app it has not deployed yet. So it generates the
- * credential, passes it in here, and the identity provider is correct on the
- * first apply with nothing having to flow back.
- *
- * No new privilege: this route is already admin-only and an admin can read a
- * generated secret anyway, so choosing one instead grants nothing. Both fields
- * must be present together and the secret has a floor, so a partial or
- * trivially short value falls back to a generated one rather than quietly
- * creating a weak client.
- */
-async function insertClient(
-  env: Env,
-  input: {
-    name: string;
-    clientType: "confidential" | "public";
-    redirectUris: string[];
-    settings: ReturnType<typeof readClientSettings>;
-    seededId?: string;
-    seededSecret?: string;
-    /** RFC 7591 grant_types to store; empty/undefined keeps NULL (every grant, the admin-created default). */
-    grantTypes?: string[];
-  }
-): Promise<{ id: number; clientId: string; clientSecret: string }> {
-  const isPublic = input.clientType === "public";
-  const seeded = (input.seededId ?? "") !== "" && (input.seededSecret ?? "").length >= 24;
-  const clientId = seeded ? input.seededId! : `flareid_${randomToken(8)}`;
-  // A public client has no secret at all - an empty hash never matches.
-  const clientSecret = isPublic ? "" : seeded ? input.seededSecret! : randomToken(24);
-  const clientSecretHash = isPublic ? "" : await sha256Hex(clientSecret);
-
-  const result = await env.DB.prepare(
-    `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(clientId, clientSecretHash, input.name, JSON.stringify(input.redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", input.settings.trusted, input.settings.allowedClaims, input.settings.postLogoutRedirectUris)
-    .run();
-  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, logo_uri = ?, assigned_groups = ? WHERE client_id = ?").bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.logoUri, input.settings.assignedGroups, clientId).run();
-  if (input.grantTypes?.length) await env.DB.prepare("UPDATE oauth_clients SET grant_types = ? WHERE client_id = ?").bind(JSON.stringify(input.grantTypes), clientId).run();
-  return { id: Number(result.meta.last_row_id), clientId, clientSecret };
-}
-
 admin.get("/admin/clients/new", async (c) => {
   const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
   return c.html(
@@ -4484,139 +4373,6 @@ function samlIdpBlock(env: Env) {
 }
 
 /** Every cert-shaped thing in a pasted textarea: PEM blocks, or a single bare base64 blob. */
-function parseCertsInput(input: string): { certs: string[]; invalid: boolean } {
-  const blocks = input.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
-  if (blocks.length === 0) {
-    if (!input.trim()) return { certs: [], invalid: false };
-    const single = normalizeCertPem(input);
-    return { certs: single ? [single] : [], invalid: !single };
-  }
-  const certs: string[] = [];
-  let invalid = false;
-  for (const block of blocks) {
-    const pem = normalizeCertPem(block);
-    if (pem) certs.push(pem);
-    else invalid = true;
-  }
-  return { certs, invalid };
-}
-
-interface SpFormValues {
-  name: string;
-  entityId: string;
-  acsUrls: string[];
-  defaultAcsUrl: string;
-  nameidFormat: string;
-  attributeMap: Record<string, string>;
-  attributeDefinitions: SpAttributeDefinition[];
-  signResponse: boolean;
-  signAssertion: boolean;
-  wantSigned: boolean;
-  signingCerts: string[];
-  sloUrl: string;
-  encryptionCert: string;
-  subjectId: string;
-  encryptAssertions: boolean;
-  /** App icon for the launchpad; "" = letter tile. */
-  logoUri: string;
-  /** Group ids this SP is restricted to; [] = everyone. */
-  assignedGroups: number[];
-}
-
-/** Parses and validates the new/edit SP form. Returns the values, or a message for the admin. */
-function parseSpForm(body: Record<string, unknown>): SpFormValues | string {
-  const name = String(body.name ?? "").trim();
-  const entityId = String(body.entity_id ?? "").trim();
-  if (!name || !entityId) return "name and entity_id are required.";
-
-  const acsUrls = String(body.acs_urls ?? "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (acsUrls.length === 0) return "At least one ACS URL is required.";
-  for (const u of acsUrls) if (!/^https:\/\//.test(u)) return `ACS URL "${u}" must be https - assertions are bearer credentials.`;
-  const defaultAcsUrl = String(body.default_acs_url ?? "").trim();
-  if (defaultAcsUrl && !acsUrls.includes(defaultAcsUrl)) return "The default ACS URL must be one of the registered ACS URLs.";
-
-  const nameidFormat = String(body.nameid_format ?? "transient");
-  // "none" (IIP-IDP11): the assertion's Subject carries no <saml:NameID>.
-  if (nameidFormat !== "none" && !nameIdFormatUri(nameidFormat)) return `Unsupported NameID format "${nameidFormat}".`;
-
-  let attributeMap: Record<string, string> = {};
-  const rawMap = String(body.attribute_map ?? "").trim();
-  if (rawMap) {
-    try {
-      const parsed = JSON.parse(rawMap);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
-      attributeMap = parsed as Record<string, string>;
-      for (const [k, v] of Object.entries(attributeMap)) {
-        if (!USER_ATTRIBUTE_FIELDS.includes(v as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
-          return `"${v}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
-        }
-      }
-    } catch (e) {
-      if (typeof e === "string") return e;
-      return "attribute_map must be a JSON object of {\"saml-attribute-name\": \"field\"}.";
-    }
-  }
-
-  let attributeDefinitions: SpAttributeDefinition[] = [];
-  const rawDefs = String(body.attribute_definitions ?? "").trim();
-  if (rawDefs) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawDefs);
-    } catch {
-      return 'attribute_definitions must be a JSON array of {"name": ..., "field": ..., "name_format": ...}.';
-    }
-    const norm = normalizeAttributeDefinitions(parsed);
-    if ("error" in norm) return norm.error;
-    for (const def of norm.defs) {
-      if (!USER_ATTRIBUTE_FIELDS.includes(def.field as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
-        return `"${def.field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
-      }
-    }
-    attributeDefinitions = norm.defs;
-  }
-
-  const { certs, invalid } = parseCertsInput(String(body.signing_certs ?? ""));
-  if (invalid) return "One of the pasted certificates could not be parsed.";
-  if (body.want_authn_requests_signed && certs.length === 0) {
-    return "Requiring signed requests needs at least one SP signing certificate.";
-  }
-
-  const sloUrl = String(body.slo_url ?? "").trim();
-  if (sloUrl && !/^https:\/\//.test(sloUrl)) return "The Single Logout URL must be https.";
-  const logoUri = String(body.logo_uri ?? "").trim();
-  if (logoUri && !/^https:\/\//.test(logoUri)) return "The logo URL must be https.";
-  const rawEnc = String(body.encryption_cert ?? "").trim();
-  const encryptionCert = rawEnc ? normalizeCertPem(rawEnc) : "";
-  if (rawEnc && !encryptionCert) return "The encryption certificate could not be parsed.";
-  if (body.encrypt_assertions && !encryptionCert) return "Encrypting assertions needs the SP's encryption certificate.";
-
-  return {
-    name,
-    entityId,
-    acsUrls,
-    defaultAcsUrl,
-    nameidFormat,
-    attributeMap,
-    attributeDefinitions,
-    signResponse: !!body.sign_response,
-    signAssertion: !!body.sign_assertion,
-    wantSigned: !!body.want_authn_requests_signed,
-    signingCerts: certs,
-    sloUrl,
-    encryptionCert: encryptionCert ?? "",
-    encryptAssertions: !!body.encrypt_assertions,
-    logoUri,
-    subjectId: ["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "",
-    assignedGroups: (Array.isArray(body.assigned_group_ids) ? body.assigned_group_ids : body.assigned_group_ids ? [body.assigned_group_ids] : [])
-      .map(Number)
-      .filter((n) => Number.isInteger(n) && n > 0),
-  };
-}
-
 function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[]): string {
   // Shown back in the write shape (name_format), not the stored one.
   const defsJson = (v.attributeDefinitions ?? []).map((d) => ({ name: d.name, field: d.field, ...(d.nameFormat ? { name_format: d.nameFormat } : {}) }));
@@ -4726,20 +4482,6 @@ admin.post("/admin/saml/import-metadata", async (c) => {
     throw e;
   }
 });
-
-/** The SP INSERT shared by the create form and catalog apply. Returns the new row id. */
-async function insertServiceProvider(env: Env, v: SpFormValues): Promise<number> {
-  const now = new Date().toISOString();
-  const result = await env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, logo_uri, assigned_groups, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), now, now)
-    .run();
-
-  await env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
-  return Number(result.meta.last_row_id);
-}
 
 admin.post("/admin/saml", async (c) => {
   const v = parseSpForm(await c.req.parseBody({ all: true }));

@@ -17,6 +17,7 @@ API version 4.6.0.
 - [Schemas](#schemas) - User and group attribute schemas.
 - [OIDC clients](#oidc-clients) - OpenID Connect relying parties.
 - [SAML](#saml) - SAML service providers.
+- [App catalog](#app-catalog) - Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
 - [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
 - [Federation](#federation) - Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
@@ -118,6 +119,9 @@ People in the directory.
 | `DELETE` | `/api/v1/users/{username}/passkeys/{credential_id}` | `users:write` | Remove a passkey |
 | `GET` | `/api/v1/users/{username}/apps` | `users:read` | List the OIDC apps holding tokens for a user |
 | `DELETE` | `/api/v1/users/{username}/apps/{client_id}` | `users:write` | Revoke an app's access |
+| `GET` | `/api/v1/users/{username}/photo` | `users:read` | Get the profile photo |
+| `PUT` | `/api/v1/users/{username}/photo` | `users:write` | Set the profile photo |
+| `DELETE` | `/api/v1/users/{username}/photo` | `users:write` | Remove the profile photo |
 | `POST` | `/api/v1/users/{username}/invite` | `users:write` | Email an invitation or a password reset link |
 
 ### `POST /api/v1/users`
@@ -478,6 +482,77 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
+### `GET /api/v1/users/{username}/photo`
+
+Get the profile photo.
+
+The stored image as base64 - the same bytes the console's /account/photo route serves browsers.
+
+Permission: `users:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `content_type` | string | yes |  |
+| `photo` | string | yes | Base64 image data. |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `PUT /api/v1/users/{username}/photo`
+
+Set the profile photo.
+
+Base64 PNG, JPEG, WebP or GIF, at most 1 MB decoded. Refused while `photo` is mastered by inbound provisioning.
+
+Permission: `users:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `photo` | string | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/users/{username}/photo`
+
+Remove the profile photo.
+
+Refused while `photo` is mastered by inbound provisioning.
+
+Permission: `users:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
 ### `POST /api/v1/users/{username}/invite`
 
 Email an invitation or a password reset link.
@@ -803,7 +878,9 @@ Access requests and certification campaigns over group membership.
 | Method | Path | Permission | Summary |
 |---|---|---|---|
 | `GET` | `/api/v1/access/requests` | `groups:read` | List access requests |
+| `POST` | `/api/v1/access/requests` | `groups:write` | File an access request |
 | `POST` | `/api/v1/access/requests/{id}` | `groups:write` | Approve or deny an access request |
+| `POST` | `/api/v1/access/requests/{id}/cancel` | `groups:write` | Withdraw a pending access request |
 | `GET` | `/api/v1/access/campaigns` | `groups:read` | List certification campaigns |
 | `POST` | `/api/v1/access/campaigns` | `groups:write` | Start a certification campaign |
 | `GET` | `/api/v1/access/campaigns/{id}` | `groups:read` | Get a campaign and its review items |
@@ -834,6 +911,30 @@ Response `200`:
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
+### `POST /api/v1/access/requests`
+
+File an access request.
+
+Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.
+
+Permission: `groups:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `username` | string | yes |  |
+| `group_id` | integer | yes |  |
+| `reason` | string | no |  |
+
+Response `201`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `request` | AccessRequest | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
+
 ### `POST /api/v1/access/requests/{id}`
 
 Approve or deny an access request.
@@ -852,6 +953,26 @@ Request body:
 |---|---|---|---|
 | `decision` | "approved" \| "denied" | yes |  |
 | `note` | string | no |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `request` | AccessRequest | yes |  |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
+
+### `POST /api/v1/access/requests/{id}/cancel`
+
+Withdraw a pending access request.
+
+Cancels a request still waiting for a decision. Withdrawing another user's request needs `*` (an admin key).
+
+Permission: `groups:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
 
 Response `200`:
 
@@ -1681,6 +1802,90 @@ Response `200`:
 | `refresh` | boolean | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+## App catalog
+
+Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/app-catalog` | `oidc:read or saml:read` | List the app catalog |
+| `GET` | `/api/v1/app-catalog/{slug}` | `oidc:read or saml:read` | Read a catalog entry |
+| `POST` | `/api/v1/app-catalog/{slug}/apply` | `oidc:write or saml:write` | Create an app from a catalog entry |
+
+### `GET /api/v1/app-catalog`
+
+List the app catalog.
+
+Templates for well-known applications: the placeholders each entry needs, ready for POST .../apply.
+
+Permission: `oidc:read or saml:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entries` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/app-catalog/{slug}`
+
+Read a catalog entry.
+
+The entry's setup instructions with the deployment's own values already substituted ({idp_*} tokens resolved); app-side placeholders stay wrapped in braces until apply supplies them. `saml`/`oidc` is the raw template the apply operation feeds.
+
+Permission: `oidc:read or saml:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `slug` | string | yes |  |
+| `name` | string | yes |  |
+| `protocol` | "saml" \| "oidc" | yes |  |
+| `website` | string | yes |  |
+| `logo_url` | string | yes | This deployment's URL for the entry's icon; applying the entry sets it as the created record's logo. |
+| `placeholders` | string[] | yes | The {name} tokens the caller supplies at apply time. |
+| `instructions` | object { app, flareid } | yes |  |
+| `saml` | map of any | no |  |
+| `oidc` | map of any | no |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `POST /api/v1/app-catalog/{slug}/apply`
+
+Create an app from a catalog entry.
+
+Builds the SAML service provider or OIDC client the entry templates - saml:write for a SAML entry, oidc:write for OIDC. `values` must fill every placeholder the entry lists. A confidential OIDC client's `client_secret` is returned once, here only.
+
+Permission: `oidc:write or saml:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `values` | map of string | no | {placeholder} names to values; every name the entry lists is required. |
+
+Response `201`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+| `protocol` | "saml" \| "oidc" | yes |  |
+| `id` | number | yes |  |
+| `client_id` | string | no |  |
+| `client_secret` | string | no | Only for a confidential OIDC client, and only in this response. |
+
+Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
 
 ## SCIM
 

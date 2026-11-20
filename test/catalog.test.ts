@@ -2,7 +2,9 @@
 // catalog/schema.json, carries the fields its protocol needs, and the
 // placeholder machinery in src/lib/catalog.ts resolves deployment facts while
 // leaving app-side values visibly marked.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import { apiCall, bootstrapInstance, resetDatabase } from "./helpers.js";
 import schemaJson from "../catalog/schema.json";
 import templateJson from "../catalog/_template.json";
 import {
@@ -17,6 +19,8 @@ import {
 } from "../src/lib/catalog.js";
 import { CLAIM_GROUPS } from "../src/lib/oidc.js";
 import { USER_ATTRIBUTE_FIELDS } from "../src/lib/saml/attributes.js";
+
+beforeEach(resetDatabase);
 
 // ---------------------------------------------------------------------------
 // A JSON Schema subset validator: the keywords catalog/schema.json uses
@@ -253,5 +257,70 @@ describe("templateToClientInput", () => {
 
   it("returns null for SAML entries", () => {
     expect(templateToClientInput(getCatalogEntry("slack")!)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The catalog API: browse + apply through the same service path as the
+// console's apply wizard (services/apps.ts applyCatalogEntry).
+// ---------------------------------------------------------------------------
+
+describe("catalog API", () => {
+  it("lists and describes entries for a read-scoped token", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const list = await apiCall("/api/v1/app-catalog", { token: apiKey });
+    expect(list.status).toBe(200);
+    expect((list.body.entries as unknown[]).length).toBeGreaterThanOrEqual(10);
+    const slack = (list.body.entries as { slug: string; placeholders: string[] }[]).find((e) => e.slug === "slack")!;
+    expect(slack.placeholders).toContain("team");
+
+    const detail = await apiCall("/api/v1/app-catalog/slack", { token: apiKey });
+    expect(detail.status).toBe(200);
+    // IdP-side facts are rendered in; app-side placeholders stay braced.
+    expect(detail.body.instructions.flareid.join("\n")).toContain("http");
+    expect(detail.body.saml.entity_id).toBeDefined();
+    expect(await apiCall("/api/v1/app-catalog/nope", { token: apiKey })).toMatchObject({ status: 404 });
+  });
+
+  it("applies a SAML entry into a service provider", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const res = await apiCall("/api/v1/app-catalog/slack/apply", { token: apiKey, body: { values: { team: "acme" } } });
+    expect(res.status).toBe(201);
+    expect(res.body.protocol).toBe("saml");
+    const sp = await env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(res.body.id).first<{ entity_id: string; acs_urls: string; logo_uri: string }>();
+    expect(sp!.entity_id).toBe("https://slack.com");
+    expect(JSON.parse(sp!.acs_urls)).toEqual(["https://acme.slack.com/sso/saml"]);
+    expect(sp!.logo_uri).toContain("/catalog-icons/slack.svg");
+  });
+
+  it("applies an OIDC entry and returns the once-only secret", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const res = await apiCall("/api/v1/app-catalog/cloudflare-access/apply", { token: apiKey, body: { values: { team: "acme" } } });
+    expect(res.status).toBe(201);
+    expect(res.body.protocol).toBe("oidc");
+    expect(res.body.client_id).toMatch(/^flareid_/);
+    expect(res.body.client_secret.length).toBeGreaterThanOrEqual(24);
+    // And once only: the client read never carries it.
+    const cl = await apiCall(`/api/v1/clients/${res.body.client_id}`, { token: apiKey });
+    expect(cl.body.client_secret).toBeUndefined();
+  });
+
+  it("requires values for every placeholder", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const res = await apiCall("/api/v1/app-catalog/slack/apply", { token: apiKey, body: { values: {} } });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("team");
+  });
+
+  it("gates reads and writes on the protocol's scope", async () => {
+    const { apiKey } = await bootstrapInstance();
+    // A users-only key can neither browse nor apply.
+    const usersKey = await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "users", scopes: ["users:read"] } });
+    expect((await apiCall("/api/v1/app-catalog", { token: usersKey.body.token })).status).toBe(403);
+    expect((await apiCall("/api/v1/app-catalog/slack/apply", { token: usersKey.body.token, body: { values: { team: "x" } } })).status).toBe(403);
+    // An oidc:write key passes the gate but cannot apply a SAML entry.
+    const oidcKey = await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "oidc", scopes: ["oidc:write"] } });
+    expect((await apiCall("/api/v1/app-catalog", { token: oidcKey.body.token })).status).toBe(200);
+    expect((await apiCall("/api/v1/app-catalog/slack/apply", { token: oidcKey.body.token, body: { values: { team: "x" } } })).status).toBe(403);
   });
 });

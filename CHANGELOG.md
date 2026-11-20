@@ -4,6 +4,28 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [Unreleased]
+
+API completeness: the console's app-creation paths and the self-service gaps
+now all have API operations, on one shared implementation.
+
+- **App catalog API.** `GET /api/v1/app-catalog` lists the templates,
+  `GET /api/v1/app-catalog/{slug}` returns one with the deployment's own
+  values substituted into its instructions, and
+  `POST /api/v1/app-catalog/{slug}/apply` creates the SAML service provider or
+  OIDC client it describes - the same apply the console wizard performs.
+  Reads need `oidc:read` or `saml:read`; apply needs the protocol's `:write`.
+- **Self-service coverage.** `POST /api/v1/access/requests` and
+  `POST /api/v1/access/requests/{id}/cancel` file and withdraw access
+  requests on a user's behalf; `GET`/`PUT`/`DELETE
+  `/api/v1/users/{username}/photo` manage the profile photo (mastered photos
+  still refuse). The parity test now scans the My account routes too: what
+  remains console-only needs a person at the keyboard or names a cookie-held
+  secret the API deliberately never exposes.
+- **Shared app services.** Client and service-provider create/validate moved
+  to `services/apps.ts`, used by the console forms, the API and catalog
+  apply - one implementation instead of parallel copies.
+
 ## [4.6.0] - 2026-11-23
 
 SAML protocol conformance (SAMLscope obligations) plus a federation JIT

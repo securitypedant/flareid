@@ -114,6 +114,20 @@ export function placeholdersIn(text: string): string[] {
 }
 
 /**
+ * The placeholders a caller must supply to apply an entry: every {name} in
+ * its instructions and URLs, minus the ones the IdP itself fills (idp_*,
+ * client_id, client_secret).
+ */
+export function catalogValuePlaceholders(entry: CatalogEntry): string[] {
+  const texts = [...entry.instructions.app, ...entry.instructions.flareid];
+  if (entry.saml) texts.push(entry.saml.entity_id, ...entry.saml.acs_urls, entry.saml.default_acs_url ?? "", entry.saml.slo_url ?? "");
+  if (entry.oidc) texts.push(...entry.oidc.redirect_uris, ...(entry.oidc.post_logout_redirect_uris ?? []));
+  const names = new Set(texts.flatMap(placeholdersIn));
+  for (const n of [...names]) if (n.startsWith("idp_") || n === "client_id" || n === "client_secret") names.delete(n);
+  return [...names].sort();
+}
+
+/**
  * The {idp_*} values a deployment can fill in from its issuer alone. These
  * are the endpoints already published in the OIDC discovery document and the
  * SAML metadata, spelled here so a template never hardcodes a path.

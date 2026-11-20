@@ -53,6 +53,10 @@
       "description": "SAML service providers."
     },
     {
+      "name": "App catalog",
+      "description": "Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in."
+    },
+    {
       "name": "SCIM",
       "description": "Outbound SCIM provisioning (FlareID as a SCIM client)."
     },
@@ -3720,6 +3724,270 @@
         }
       }
     },
+    "/api/v1/users/{username}/photo": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Get the profile photo",
+        "description": "The stored image as base64 - the same bytes the console's /account/photo route serves browsers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "content_type": {
+                      "type": "string"
+                    },
+                    "photo": {
+                      "type": "string",
+                      "description": "Base64 image data."
+                    }
+                  },
+                  "required": [
+                    "content_type",
+                    "photo"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Set the profile photo",
+        "description": "Base64 PNG, JPEG, WebP or GIF, at most 1 MB decoded. Refused while `photo` is mastered by inbound provisioning.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "photo": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "photo"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Remove the profile photo",
+        "description": "Refused while `photo` is mastered by inbound provisioning.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/groups": {
       "post": {
         "tags": [
@@ -5032,6 +5300,114 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "Access"
+        ],
+        "summary": "File an access request",
+        "description": "Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "groups:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "username",
+                  "group_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "request": {
+                      "$ref": "#/components/schemas/AccessRequest"
+                    }
+                  },
+                  "required": [
+                    "request"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/access/requests/{id}": {
@@ -5085,6 +5461,104 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "request": {
+                      "$ref": "#/components/schemas/AccessRequest"
+                    }
+                  },
+                  "required": [
+                    "request"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/access/requests/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Access"
+        ],
+        "summary": "Withdraw a pending access request",
+        "description": "Cancels a request still waiting for a decision. Withdrawing another user's request needs `*` (an admin key).",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "groups:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -8090,6 +8564,397 @@
           },
           "404": {
             "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app-catalog": {
+      "get": {
+        "tags": [
+          "App catalog"
+        ],
+        "summary": "List the app catalog",
+        "description": "Templates for well-known applications: the placeholders each entry needs, ready for POST .../apply.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "oidc:read or saml:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "slug": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "protocol": {
+                            "type": "string",
+                            "enum": [
+                              "saml",
+                              "oidc"
+                            ]
+                          },
+                          "website": {
+                            "type": "string"
+                          },
+                          "logo_url": {
+                            "type": "string",
+                            "description": "This deployment's URL for the entry's icon; applying the entry sets it as the created record's logo."
+                          },
+                          "placeholders": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The {name} tokens the caller supplies at apply time."
+                          }
+                        },
+                        "required": [
+                          "slug",
+                          "name",
+                          "protocol",
+                          "website",
+                          "logo_url",
+                          "placeholders"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "entries"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app-catalog/{slug}": {
+      "get": {
+        "tags": [
+          "App catalog"
+        ],
+        "summary": "Read a catalog entry",
+        "description": "The entry's setup instructions with the deployment's own values already substituted ({idp_*} tokens resolved); app-side placeholders stay wrapped in braces until apply supplies them. `saml`/`oidc` is the raw template the apply operation feeds.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "oidc:read or saml:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "enum": [
+                        "saml",
+                        "oidc"
+                      ]
+                    },
+                    "website": {
+                      "type": "string"
+                    },
+                    "logo_url": {
+                      "type": "string",
+                      "description": "This deployment's URL for the entry's icon; applying the entry sets it as the created record's logo."
+                    },
+                    "placeholders": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The {name} tokens the caller supplies at apply time."
+                    },
+                    "instructions": {
+                      "type": "object",
+                      "properties": {
+                        "app": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Steps to perform in the target application's admin console."
+                        },
+                        "flareid": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Steps to perform in FlareID."
+                        }
+                      },
+                      "required": [
+                        "app",
+                        "flareid"
+                      ]
+                    },
+                    "saml": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "oidc": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "slug",
+                    "name",
+                    "protocol",
+                    "website",
+                    "logo_url",
+                    "placeholders",
+                    "instructions"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app-catalog/{slug}/apply": {
+      "post": {
+        "tags": [
+          "App catalog"
+        ],
+        "summary": "Create an app from a catalog entry",
+        "description": "Builds the SAML service provider or OIDC client the entry templates - saml:write for a SAML entry, oidc:write for OIDC. `values` must fill every placeholder the entry lists. A confidential OIDC client's `client_secret` is returned once, here only.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "oidc:write or saml:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "values": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "{placeholder} names to values; every name the entry lists is required."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "enum": [
+                        "saml",
+                        "oidc"
+                      ]
+                    },
+                    "id": {
+                      "type": "number"
+                    },
+                    "client_id": {
+                      "type": "string"
+                    },
+                    "client_secret": {
+                      "type": "string",
+                      "description": "Only for a confidential OIDC client, and only in this response."
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "protocol",
+                    "id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing state.",
             "content": {
               "application/json": {
                 "schema": {

@@ -1,8 +1,9 @@
 import { z } from "@hono/zod-openapi";
-import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
+import { campaignItems, cancelAccessRequest, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns, requestAccess } from "../lib/access.js";
 import { apiCtx } from "../services/context.js";
 import { defineRoute, notFound, param, readJson } from "./openapi.js";
 import { IdParam } from "./schemas.js";
+import type { UserRow } from "../lib/types.js";
 
 /**
  * Access governance: the requests people file on My account, and the
@@ -103,6 +104,49 @@ defineRoute(
   async (c) => {
     const body = await readJson<{ decision: "approved" | "denied"; note?: string }>(c);
     return c.json({ request: await decideAccessRequest(apiCtx(c), Number(param(c, "id")), body.decision, body.note ?? "") });
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/access/requests",
+    tag: "Access",
+    permission: "groups:write",
+    summary: "File an access request",
+    description:
+      "Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.",
+    body: z.object({ username: z.string(), group_id: z.number().int(), reason: z.string().optional() }),
+    status: 201,
+    errors: [404, 409],
+    response: z.object({ request: RequestSchema }),
+  },
+  async (c) => {
+    const body = await readJson<{ username: string; group_id: number; reason?: string }>(c);
+    const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(String(body.username ?? "").toLowerCase()).first<UserRow>();
+    if (!user) return notFound(c, `No user "${body.username}".`);
+    // selfId is who the request is for; the token stays the audited actor.
+    const request = await requestAccess({ ...apiCtx(c), selfId: user.id }, Number(body.group_id), String(body.reason ?? ""));
+    return c.json({ request: (await getAccessRequest(c.env, request.id))! }, 201);
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/access/requests/{id}/cancel",
+    tag: "Access",
+    permission: "groups:write",
+    summary: "Withdraw a pending access request",
+    description: "Cancels a request still waiting for a decision. Withdrawing another user's request needs `*` (an admin key).",
+    params: IdParam,
+    errors: [404, 409],
+    response: z.object({ request: RequestSchema }),
+  },
+  async (c) => {
+    const id = Number(param(c, "id"));
+    await cancelAccessRequest(apiCtx(c), id);
+    return c.json({ request: (await getAccessRequest(c.env, id))! });
   }
 );
 

@@ -7,6 +7,9 @@ import { listPasskeys } from "../lib/passkeys.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes, userAttributeValue } from "../lib/schemas.js";
 import { getMasteredFields, masteredFieldsInBody } from "../lib/scim-mapping.js";
 import { listActiveSessionsForUser } from "../lib/sessions.js";
+import { deleteUserPhoto, getUserPhoto, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
+import { auditActor } from "../lib/api-auth.js";
+import { logAudit } from "../lib/audit.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { listUserEmailsFor, type UserEmailInput } from "../lib/user-emails.js";
 import { apiCtx, ServiceError } from "../services/context.js";
@@ -357,6 +360,88 @@ defineRoute(
     const client = await c.env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(param(c, "client_id")).first<{ id: number }>();
     if (!client) return notFound(c, `No OIDC client "${param(c, "client_id")}".`);
     await revokeUserAppAccess(apiCtx(c), user.id, client.id);
+    return c.json({ ok: true });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Profile photo
+// ---------------------------------------------------------------------------
+
+const photoToB64 = (buf: Uint8Array) => {
+  let s = "";
+  for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/users/{username}/photo",
+    tag: "Users",
+    permission: "users:read",
+    summary: "Get the profile photo",
+    description: "The stored image as base64 - the same bytes the console's /account/photo route serves browsers.",
+    errors: [404],
+    response: z.object({ content_type: z.string(), photo: z.string().openapi({ description: "Base64 image data." }) }),
+  },
+  async (c) => {
+    const user = await userByUsername(c);
+    if (!user) return noUser(c);
+    const photo = await getUserPhoto(c.env, user.id);
+    if (!photo) return notFound(c, `"${user.username}" has no photo.`);
+    return c.json({ content_type: photo.content_type, photo: photoToB64(photo.data) });
+  }
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/users/{username}/photo",
+    tag: "Users",
+    permission: "users:write",
+    summary: "Set the profile photo",
+    description: "Base64 PNG, JPEG, WebP or GIF, at most 1 MB decoded. Refused while `photo` is mastered by inbound provisioning.",
+    body: z.object({ photo: z.string() }),
+    errors: [404],
+  },
+  async (c) => {
+    const user = await userByUsername(c);
+    if (!user) return noUser(c);
+    if ((await getMasteredFields(c.env)).includes("photo")) throw new ServiceError(400, '"photo" is mastered by inbound provisioning - change it over SCIM instead.');
+    const body = await readJson<{ photo?: string }>(c);
+    let buf: Uint8Array;
+    try {
+      buf = Uint8Array.from(atob(String(body.photo ?? "")), (ch) => ch.charCodeAt(0));
+    } catch {
+      throw new ServiceError(400, "photo must be base64 image data.");
+    }
+    if (buf.byteLength === 0) throw new ServiceError(400, "photo must be base64 image data.");
+    if (buf.byteLength > MAX_PHOTO_BYTES) throw new ServiceError(400, "Photos are limited to 1 MB.");
+    const type = sniffImageType(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+    if (!type) throw new ServiceError(400, "That doesn't look like a PNG, JPG, WebP or GIF image.");
+    await setUserPhoto(c.env, user.id, buf, type);
+    await logAudit(c.env, auditActor(c.get("apiActor")), "user.photo_updated", user.upn, undefined, c.req.raw);
+    return c.json({ ok: true });
+  }
+);
+
+defineRoute(
+  {
+    method: "delete",
+    path: "/api/v1/users/{username}/photo",
+    tag: "Users",
+    permission: "users:write",
+    summary: "Remove the profile photo",
+    description: "Refused while `photo` is mastered by inbound provisioning.",
+    errors: [404],
+  },
+  async (c) => {
+    const user = await userByUsername(c);
+    if (!user) return noUser(c);
+    if ((await getMasteredFields(c.env)).includes("photo")) throw new ServiceError(400, '"photo" is mastered by inbound provisioning - change it over SCIM instead.');
+    await deleteUserPhoto(c.env, user.id);
+    await logAudit(c.env, auditActor(c.get("apiActor")), "user.photo_removed", user.upn, undefined, c.req.raw);
     return c.json({ ok: true });
   }
 );

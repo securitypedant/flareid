@@ -8,8 +8,12 @@ import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { spAttributeDefinitions } from "../lib/saml/service-providers.js";
 import { apiCtx } from "../services/context.js";
+import { applyCatalogEntry } from "../services/apps.js";
+import { catalogIconUrl, catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructions, type CatalogEntry } from "../lib/catalog.js";
+import { auditActor } from "../lib/api-auth.js";
+import { logAudit } from "../lib/audit.js";
 import { removeDomain, revokeKey, updateKey } from "../services/platform.js";
-import { badRequest, defineRoute, forbidden, notFound, param, readJson, type ApiContext } from "./openapi.js";
+import { AnyObject, badRequest, defineRoute, forbidden, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import { ClientSchema, IdParam, ServiceProviderSchema } from "./schemas.js";
 
 /**
@@ -378,5 +382,120 @@ defineRoute(
   async (c) => {
     const u = await getUpstreamIdp(c.env, Number(c.req.param("id")));
     return u ? c.json(idpJson(u)) : notFound(c, "No such upstream identity provider.");
+  }
+);
+
+// ---------------------------------------------------------------------------
+// App catalog
+// ---------------------------------------------------------------------------
+
+const CatalogEntrySummary = z.object({
+  slug: z.string(),
+  name: z.string(),
+  protocol: z.enum(["saml", "oidc"]),
+  website: z.string(),
+  logo_url: z.string().openapi({ description: "This deployment's URL for the entry's icon; applying the entry sets it as the created record's logo." }),
+  placeholders: z.array(z.string()).openapi({ description: "The {name} tokens the caller supplies at apply time." }),
+});
+
+const catalogSummary = (issuer: string, e: CatalogEntry) => ({
+  slug: e.slug,
+  name: e.name,
+  protocol: e.protocol,
+  website: e.website,
+  logo_url: catalogIconUrl(issuer, e),
+  placeholders: catalogValuePlaceholders(e),
+});
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/app-catalog",
+    tag: "App catalog",
+    permissionAnyOf: ["oidc:read", "saml:read"],
+    summary: "List the app catalog",
+    description: "Templates for well-known applications: the placeholders each entry needs, ready for POST .../apply.",
+    response: z.object({ entries: z.array(CatalogEntrySummary) }),
+  },
+  async (c) => c.json({ entries: listCatalog().map((e) => catalogSummary(c.env.ISSUER_URL, e)) })
+);
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/app-catalog/{slug}",
+    tag: "App catalog",
+    permissionAnyOf: ["oidc:read", "saml:read"],
+    summary: "Read a catalog entry",
+    description:
+      "The entry's setup instructions with the deployment's own values already substituted ({idp_*} tokens resolved); app-side placeholders stay wrapped in braces until apply supplies them. `saml`/`oidc` is the raw template the apply operation feeds.",
+    errors: [404],
+    response: CatalogEntrySummary.extend({
+      instructions: z.object({
+        app: z.array(z.string()).openapi({ description: "Steps to perform in the target application's admin console." }),
+        flareid: z.array(z.string()).openapi({ description: "Steps to perform in FlareID." }),
+      }),
+      saml: AnyObject.optional(),
+      oidc: AnyObject.optional(),
+    }),
+  },
+  async (c) => {
+    const e = getCatalogEntry(param(c, "slug"));
+    if (!e) return notFound(c, `No catalog entry "${param(c, "slug")}".`);
+    const instructions = renderInstructions(e, { issuer: c.env.ISSUER_URL });
+    return c.json({ ...catalogSummary(c.env.ISSUER_URL, e), instructions: { app: instructions.app, flareid: instructions.flareid }, ...(e.saml ? { saml: e.saml } : {}), ...(e.oidc ? { oidc: e.oidc } : {}) });
+  }
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/app-catalog/{slug}/apply",
+    tag: "App catalog",
+    permissionAnyOf: ["oidc:write", "saml:write"],
+    summary: "Create an app from a catalog entry",
+    description:
+      "Builds the SAML service provider or OIDC client the entry templates - saml:write for a SAML entry, oidc:write for OIDC. `values` must fill every placeholder the entry lists. A confidential OIDC client's `client_secret` is returned once, here only.",
+    body: z.object({ values: z.record(z.string(), z.string()).optional().openapi({ description: "{placeholder} names to values; every name the entry lists is required." }) }),
+    status: 201,
+    errors: [404, 409],
+    response: z.object({
+      ok: z.literal(true),
+      protocol: z.enum(["saml", "oidc"]),
+      id: z.number(),
+      client_id: z.string().optional(),
+      client_secret: z.string().optional().openapi({ description: "Only for a confidential OIDC client, and only in this response." }),
+    }),
+  },
+  async (c) => {
+    const entry = getCatalogEntry(param(c, "slug"));
+    if (!entry) return notFound(c, `No catalog entry "${param(c, "slug")}".`);
+    const need = entry.protocol === "saml" ? "saml:write" : "oidc:write";
+    if (!hasScope(c.get("apiActor").scopes, need)) return forbidden(c, `Applying a ${entry.protocol.toUpperCase()} entry needs "${need}".`);
+
+    const body = await readJson<{ values?: Record<string, string> }>(c);
+    const known = new Set(catalogValuePlaceholders(entry));
+    const values = Object.fromEntries(
+      Object.entries(body.values ?? {})
+        .map(([k, v]) => [k.trim(), String(v).trim()] as const)
+        .filter(([k, v]) => v !== "" && known.has(k))
+    );
+    const missing = catalogValuePlaceholders(entry).filter((n) => !values[n]);
+    if (missing.length) return c.json(badRequest(`Missing values for placeholders: ${missing.join(", ")}.`), 400);
+
+    // applyCatalogEntry (services/apps.ts) is the same path the console's
+    // apply wizard takes - one implementation for both.
+    let result: Awaited<ReturnType<typeof applyCatalogEntry>>;
+    try {
+      result = await applyCatalogEntry(c.env, entry, values, c.env.ISSUER_URL);
+    } catch (e) {
+      if (e instanceof Error && /unique/i.test(e.message)) return c.json({ error: "conflict", message: "A record with this identity already exists - check the placeholder values." }, 409);
+      throw e;
+    }
+    if (!result.ok) return c.json(badRequest(result.error), 400);
+
+    const action = result.protocol === "saml" ? "saml_sp.created" : "oidc_client.created";
+    await logAudit(c.env, auditActor(c.get("apiActor")), action, entry.name, { via: `catalog:${entry.slug}` }, c.req.raw);
+    return c.json({ ok: true, protocol: result.protocol, id: result.id, ...(result.protocol === "oidc" ? { client_id: result.clientId, ...(result.clientSecret ? { client_secret: result.clientSecret } : {}) } : {}) }, 201);
   }
 );

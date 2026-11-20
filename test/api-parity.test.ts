@@ -4,6 +4,7 @@
 // docs/openapi.json is the document the code generates.
 import { describe, expect, it } from "vitest";
 import { admin } from "../src/routes/admin.js";
+import { account } from "../src/routes/account.js";
 import { api } from "../src/routes/api.js";
 import { isApiScope } from "../src/lib/api-keys.js";
 import committed from "../docs/openapi.json";
@@ -68,6 +69,7 @@ const CONSOLE_TO_API: Record<string, string> = {
   // The API's register call is an upsert keyed on entity_id.
   "POST /admin/saml/:id": "POST /api/v1/saml/service-providers",
   "POST /admin/saml/:id/delete": "DELETE /api/v1/saml/service-providers/{id}",
+  "POST /admin/apps/catalog/:slug/apply": "POST /api/v1/app-catalog/{slug}/apply",
   "POST /admin/schemas": "POST /api/v1/schemas",
   "POST /admin/schemas/:id": "PATCH /api/v1/schemas/{id}",
   "POST /admin/schemas/:id/apply": "POST /api/v1/schemas/{id}/apply",
@@ -143,10 +145,45 @@ const CONSOLE_ONLY: Record<string, string> = {
   "POST /admin/reauth": "step-up re-authentication (password or code)",
   "POST /admin/reauth/passkey": "step-up re-authentication (passkey)",
   "POST /admin/reauth/email/send": "step-up re-authentication (emailed code)",
-  // The catalog apply is an interactive wizard: it collects the template's
-  // {placeholders}, then inserts through the same validation the client/SP
-  // create operations use. A create-from-template API could come later.
-  "POST /admin/apps/catalog/:slug/apply": "catalog apply wizard (template + create)",
+};
+
+/**
+ * The self-service console's mutating routes and their API operations. The
+ * operation acts on the named user: what "me" can do to their own account,
+ * a token can do to any account it has permission for.
+ */
+const ACCOUNT_TO_API: Record<string, string> = {
+  "POST /account/groups/:id/members": "POST /api/v1/groups/{id}/members",
+  "POST /account/groups/:id/members/:uid/remove": "DELETE /api/v1/groups/{id}/members/{username}",
+  "POST /account/groups/:id/requests/:rid": "POST /api/v1/access/requests/{id}",
+  "POST /account/profile": "PATCH /api/v1/users/{username}",
+  "POST /account/photo": "PUT /api/v1/users/{username}/photo",
+  "POST /account/photo/remove": "DELETE /api/v1/users/{username}/photo",
+  "POST /account/access/request": "POST /api/v1/access/requests",
+  "POST /account/access/requests/:id/cancel": "POST /api/v1/access/requests/{id}/cancel",
+  "POST /account/apps/:clientDbId/revoke": "DELETE /api/v1/users/{username}/apps/{client_id}",
+  "POST /account/passkeys/:id/remove": "DELETE /api/v1/users/{username}/passkeys/{credential_id}",
+  "POST /account/mfa/disable": "POST /api/v1/users/{username}/reset-mfa",
+};
+
+/** Self-service actions with no API meaning. */
+const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
+  // These name a secret the browser holds, which the API deliberately never
+  // exposes - or prove a person is at the keyboard, which a bearer token is
+  // not. Bulk equivalents exist (reset-mfa, sign-out-everywhere).
+  "POST /account/devices/:id/revoke": "a trusted-device id is the cookie's secret - the API never exposes it",
+  "POST /account/sessions/:id/revoke": "a session id is the cookie's secret - the API never exposes it",
+  "POST /account/sessions/revoke-others": '"others" is relative to the session cookie itself; a token has no current session',
+  "POST /account/password": "requires the current password as proof",
+  "POST /account/passkeys": "WebAuthn attestation ceremony",
+  "POST /account/mfa/passkey-enrolled": "WebAuthn enrolment ceremony",
+  "POST /account/mfa/setup": "TOTP enrolment ceremony (secret display + code proof)",
+  "POST /account/mfa/email/send": "emailed one-time code",
+  "POST /account/mfa/email/enable": "email-factor enrolment ceremony",
+  "POST /account/mfa/email/disable": "partial factor self-management; admin reset-mfa covers recovery",
+  "POST /account/mfa/questions": "security-question enrolment",
+  "POST /account/mfa/questions/remove": "partial factor self-management; admin reset-mfa covers recovery",
+  "POST /account/mfa/backup-codes/regenerate": "credential self-management; admin reset-mfa covers recovery",
 };
 
 /** Routes on the API app that are not operations in the document. */
@@ -185,6 +222,17 @@ describe("API parity with the admin console", () => {
     expect(Object.keys(CONSOLE_ONLY).filter((k) => !consoleRoutes.includes(k))).toEqual([]);
   });
 
+  it("maps every mutating self-service route to an operation in the spec", async () => {
+    const ops = specOps(await liveSpec());
+    const accountRoutes = [...new Set(account.routes.filter((r) => r.method === "POST" && r.path.startsWith("/account")).map((r) => `${r.method} ${r.path}`))];
+    const unmapped = accountRoutes.filter((r) => !(r in ACCOUNT_TO_API) && !(r in ACCOUNT_CONSOLE_ONLY));
+    expect(unmapped, "self-service actions with no API operation: add the operation, then map it here").toEqual([]);
+    const missing = accountRoutes.filter((r) => r in ACCOUNT_TO_API && !ops.has(ACCOUNT_TO_API[r]!)).map((r) => `${r} -> ${ACCOUNT_TO_API[r]}`);
+    expect(missing, "mapped to operations the spec does not have").toEqual([]);
+    expect(Object.keys(ACCOUNT_TO_API).filter((k) => !accountRoutes.includes(k))).toEqual([]);
+    expect(Object.keys(ACCOUNT_CONSOLE_ONLY).filter((k) => !accountRoutes.includes(k))).toEqual([]);
+  });
+
   it("documents every API route, and nothing that is not a route", async () => {
     const ops = specOps(await liveSpec());
     const routes = new Set(api.routes.filter((r) => r.method !== "ALL" && r.path.startsWith("/api/v1/")).map((r) => routeKey(r.method, r.path)));
@@ -199,7 +247,8 @@ describe("API parity with the admin console", () => {
         const where = `${method.toUpperCase()} ${path}`;
         expect(op.tags?.length, where).toBe(1);
         const perm = op["x-permission"];
-        expect(perm === "bootstrap-token" || (typeof perm === "string" && isApiScope(perm)), `${where}: ${perm}`).toBe(true);
+        // "a or b" marks a route either of two permissions satisfies (permissionAnyOf).
+        expect(perm === "bootstrap-token" || (typeof perm === "string" && perm.split(" or ").every((p) => isApiScope(p.trim()))), `${where}: ${perm}`).toBe(true);
         expect(Object.keys(op.responses).some((c) => c.startsWith("2")), where).toBe(true);
       }
     }

@@ -349,3 +349,42 @@ describe("certification campaigns", () => {
     expect(await memberOf(groupId, pat)).toBeNull();
   });
 });
+
+describe("access requests via API", () => {
+  it("files and withdraws a request on a user's behalf", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const uid = await seedUser(apiKey, "pat");
+    const groupId = await makeGroup(apiKey, "VPN users", { requestable: true });
+
+    const created = await apiCall("/api/v1/access/requests", { token: apiKey, body: { username: "pat", group_id: groupId, reason: "needs it" } });
+    expect(created.status).toBe(201);
+    expect(created.body.request.user_id).toBe(uid);
+    expect(created.body.request.status).toBe("pending");
+
+    // A second pending ask for the same group is refused like the console's.
+    const dup = await apiCall("/api/v1/access/requests", { token: apiKey, body: { username: "pat", group_id: groupId } });
+    expect(dup.status).toBe(409);
+
+    // A groups:write key cannot withdraw another user's request - only an
+    // admin key can (the console's requester-only rule, with the admin override).
+    const writeKey = await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "gw", scopes: ["groups:write"] } });
+    const denied = await apiCall(`/api/v1/access/requests/${created.body.request.id}/cancel`, { token: writeKey.body.token, method: "POST" });
+    expect(denied.status).toBe(404);
+
+    const cancelled = await apiCall(`/api/v1/access/requests/${created.body.request.id}/cancel`, { token: apiKey, method: "POST" });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.request.status).toBe("cancelled");
+
+    // And a decided/withdrawn one can't be withdrawn again.
+    expect((await apiCall(`/api/v1/access/requests/${created.body.request.id}/cancel`, { token: apiKey, method: "POST" })).status).toBe(409);
+  });
+
+  it("applies the requestable rules like the console does", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, "pat");
+    const closed = await makeGroup(apiKey, "Closed", { requestable: false });
+    const res = await apiCall("/api/v1/access/requests", { token: apiKey, body: { username: "pat", group_id: closed } });
+    expect(res.status).toBe(400);
+    expect((await apiCall("/api/v1/access/requests", { token: apiKey, body: { username: "ghost", group_id: closed } })).status).toBe(404);
+  });
+});

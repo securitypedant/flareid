@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi
 import type { Context, MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Env } from "../env.js";
-import { requireApiAuth, requireScope } from "../lib/api-auth.js";
+import { requireApiAuth, requireAnyScope, requireScope } from "../lib/api-auth.js";
 import { hasScope, type ApiScope } from "../lib/api-keys.js";
 import { ImportValidationError } from "../lib/directory-import.js";
 import { ServiceError } from "../services/context.js";
@@ -82,6 +82,7 @@ export const TAGS = [
   { name: "Schemas", description: "User and group attribute schemas." },
   { name: "OIDC clients", description: "OpenID Connect relying parties." },
   { name: "SAML", description: "SAML service providers." },
+  { name: "App catalog", description: "Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in." },
   { name: "SCIM", description: "Outbound SCIM provisioning (FlareID as a SCIM client)." },
   { name: "LDAP", description: "The read-only LDAP interface: app registrations and directory settings." },
   { name: "Federation", description: "Inbound federation: upstream identity providers people sign in through (FlareID as the relying party)." },
@@ -136,9 +137,16 @@ export interface RouteSpec {
   description?: string;
   /**
    * What the route requires, checked before anything else. null means the
-   * route authenticates for itself (the break-glass reset).
+   * route authenticates for itself (the break-glass reset); leave unset when
+   * `permissionAnyOf` gates instead.
    */
-  permission: ApiScope | null;
+  permission?: ApiScope | null;
+  /**
+   * Alternative gate to `permission`: any one of these scopes passes (a route
+   * either of two areas' readers may call, e.g. the app catalog). Rendered in
+   * x-permission joined with " or ".
+   */
+  permissionAnyOf?: ApiScope[];
   params?: z.ZodObject;
   query?: z.ZodObject;
   body?: z.ZodType;
@@ -180,7 +188,8 @@ export const registeredOperations = new Map<string, ApiScope | null>();
 export function defineRoute(spec: RouteSpec, handler: ApiHandler): void {
   const names = [...spec.path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]!);
   const params = spec.params ?? (names.length ? z.object(Object.fromEntries(names.map((n) => [n, z.string().openapi({ description: PARAM_DOCS[n] ?? n })]))) : undefined);
-  const errorCodes = [...new Set([400, ...(spec.permission === null ? [] : [401]), 403, ...(spec.errors ?? [])])].sort();
+  const perm = spec.permission ?? (spec.permissionAnyOf?.length ? (spec.permissionAnyOf.join(" or ") as ApiScope) : null);
+  const errorCodes = [...new Set([400, ...(perm === null ? [] : [401]), 403, ...(spec.errors ?? [])])].sort();
   const responses: RouteConfig["responses"] = {
     [spec.status ?? 200]: { description: "Success.", content: { "application/json": { schema: spec.response ?? OkSchema } } },
   };
@@ -188,6 +197,7 @@ export function defineRoute(spec: RouteSpec, handler: ApiHandler): void {
 
   const middleware: MiddlewareHandler<ApiEnv>[] = [];
   if (spec.permission) middleware.push(requireScope(spec.permission) as MiddlewareHandler<ApiEnv>);
+  if (spec.permissionAnyOf?.length) middleware.push(requireAnyScope(spec.permissionAnyOf) as MiddlewareHandler<ApiEnv>);
   if (spec.body) {
     middleware.push(assumeJson);
     // The declared schema is enforced, not only documented: readJson in the
@@ -227,7 +237,7 @@ export function defineRoute(spec: RouteSpec, handler: ApiHandler): void {
     summary: spec.summary,
     ...(spec.description ? { description: spec.description } : {}),
     security: [{ bearer: [] }],
-    "x-permission": spec.permission ?? "bootstrap-token",
+    "x-permission": perm ?? "bootstrap-token",
     middleware,
     request: {
       ...(params ? { params } : {}),
@@ -236,7 +246,7 @@ export function defineRoute(spec: RouteSpec, handler: ApiHandler): void {
     },
     responses,
   });
-  registeredOperations.set(`${spec.method.toUpperCase()} ${spec.path}`, spec.permission);
+  registeredOperations.set(`${spec.method.toUpperCase()} ${spec.path}`, perm);
   // The handlers are plain Hono handlers reading the raw body, so the typed
   // response machinery of openapi() is bypassed rather than satisfied.
   (api.openapi as unknown as (r: RouteConfig, h: ApiHandler) => void)(route, handler);

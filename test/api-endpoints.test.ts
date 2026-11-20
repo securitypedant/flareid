@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
+import { setMasteredFields } from "../src/lib/scim-mapping.js";
 
 beforeEach(resetDatabase);
 
@@ -85,6 +86,35 @@ describe("users", () => {
     expect(bad.status).toBe(400);
     expect(bad.body.error).toBe("invalid_request");
     expect(bad.body.message).toMatch(/username/);
+  });
+});
+
+describe("user photo", () => {
+  const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  it("sets, reads and removes a photo", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await call(apiKey, "POST", "/api/v1/users", { username: "jane", given_name: "Jane" });
+
+    expect((await call(apiKey, "GET", "/api/v1/users/jane/photo")).status).toBe(404);
+    expect((await call(apiKey, "PUT", "/api/v1/users/jane/photo", { photo: "not base64!!!" })).status).toBe(400);
+    expect((await call(apiKey, "PUT", "/api/v1/users/jane/photo", { photo: PNG_1PX })).status).toBe(200);
+
+    const got = await call(apiKey, "GET", "/api/v1/users/jane/photo");
+    expect(got.status).toBe(200);
+    expect(got.body.content_type).toBe("image/png");
+    expect(got.body.photo).toBe(PNG_1PX);
+
+    expect((await call(apiKey, "DELETE", "/api/v1/users/jane/photo")).status).toBe(200);
+    expect((await call(apiKey, "GET", "/api/v1/users/jane/photo")).status).toBe(404);
+  });
+
+  it("refuses while photo is mastered by inbound provisioning", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await call(apiKey, "POST", "/api/v1/users", { username: "jane", given_name: "Jane" });
+    await setMasteredFields(env, ["photo"]);
+    expect((await call(apiKey, "PUT", "/api/v1/users/jane/photo", { photo: PNG_1PX })).status).toBe(400);
+    expect((await call(apiKey, "DELETE", "/api/v1/users/jane/photo")).status).toBe(400);
   });
 });
 

@@ -152,6 +152,21 @@ export function requireScope(scope: ApiScope) {
   };
 }
 
+/**
+ * Any one of the listed scopes passes: for routes that serve either of two
+ * areas' readers (e.g. the app catalog, which both oidc:read and saml:read
+ * tokens may browse).
+ */
+export function requireAnyScope(scopes: ApiScope[]) {
+  return async (c: Context<{ Bindings: Env }>, next: Next) => {
+    const actor = c.get("apiActor");
+    if (!actor || !scopes.some((s) => hasScope(actor.scopes, s))) {
+      return c.json({ error: "forbidden", message: `This token needs one of ${scopes.map((s) => `"${s}"`).join(", ")}.` }, 403);
+    }
+    await next();
+  };
+}
+
 /** The shape logAudit() wants for a non-human actor. */
 export function auditActor(actor: ApiActor): { id: null; upn: string } {
   return { id: null, upn: actor.label };

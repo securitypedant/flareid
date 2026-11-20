@@ -155,10 +155,10 @@ export async function requestAccess(ctx: ServiceCtx, groupId: number, reason: st
   return (await ctx.env.DB.prepare("SELECT * FROM access_requests WHERE id = ?").bind(Number(meta.last_row_id)).first<AccessRequestRow>())!;
 }
 
-/** The requester withdraws their own pending request. */
+/** The requester withdraws their own pending request; a privileged actor (admin, groups:write key) may withdraw anyone's. */
 export async function cancelAccessRequest(ctx: ServiceCtx, requestId: number): Promise<void> {
   const req = await ctx.env.DB.prepare("SELECT * FROM access_requests WHERE id = ?").bind(requestId).first<AccessRequestRow>();
-  if (!req || req.user_id !== ctx.selfId) throw new ServiceError(404, "That request doesn't exist any more.");
+  if (!req || (req.user_id !== ctx.selfId && !ctx.privileged)) throw new ServiceError(404, "That request doesn't exist any more.");
   if (req.status !== "pending") throw new ServiceError(409, "Only a request still waiting can be withdrawn.");
   await ctx.env.DB.prepare("UPDATE access_requests SET status = 'cancelled', decided_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), requestId).run();
   const g = await ctx.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(req.group_id).first<{ name: string }>();
