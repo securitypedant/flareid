@@ -49,6 +49,8 @@ import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, upd
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
+import { CONTENT_ALGORITHMS, TRANSPORT_ALGORITHMS } from "../lib/saml/encrypt.js";
+import { spEncryptionPolicy } from "../lib/saml/service-providers.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -1028,6 +1030,7 @@ interface SpUpsertBody {
   slo_url?: string | null;
   encryption_cert?: string | null;
   encrypt_assertions?: boolean;
+  encryption_policy?: { content?: string; transport?: string; digest?: string; mgf?: string | null } | null;
 }
 
 /**
@@ -1054,6 +1057,12 @@ defineRoute({
     slo_url: z.string().nullable().optional(),
     encryption_cert: z.string().nullable().optional(),
     encrypt_assertions: z.boolean().optional(),
+    encryption_policy: z.object({
+      content: z.string().optional(),
+      transport: z.string().optional(),
+      digest: z.string().optional(),
+      mgf: z.string().nullable().optional(),
+    }).nullable().optional(),
     subject_id: z.enum(["", "subject-id", "pairwise-id"]).optional(),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string() }),
@@ -1098,6 +1107,31 @@ defineRoute({
   const encrypt = body.encrypt_assertions ?? existing?.encrypt_assertions === 1;
   if (encrypt && !encryptionCert) return c.json(badRequest("encrypt_assertions needs an encryption_cert."), 400);
 
+  // Token shorthand or full XML Encryption URIs; stored canonical as URIs.
+  const encToken = (kind: "content" | "transport", v: string): string | null => {
+    const table = kind === "content" ? CONTENT_ALGORITHMS : TRANSPORT_ALGORITHMS;
+    if (v in table) return v;
+    const match = Object.keys(table).find((uri) => uri.endsWith(`#${v}`) || uri.endsWith(`#${v.replace(/_/g, "-")}`));
+    return match ?? null;
+  };
+  let encryptionPolicy: string | null | undefined;
+  if (body.encryption_policy === null) encryptionPolicy = null;
+  else if (body.encryption_policy !== undefined) {
+    const ep = body.encryption_policy;
+    const prev = existing ? spEncryptionPolicy(existing) : {};
+    const content = ep.content !== undefined ? encToken("content", ep.content) : (prev.content ?? null);
+    const transport = ep.transport !== undefined ? encToken("transport", ep.transport) : (prev.transport ?? null);
+    if (ep.content !== undefined && !content) return c.json(badRequest(`Unsupported encryption content algorithm "${ep.content}".`), 400);
+    if (ep.transport !== undefined && !transport) return c.json(badRequest(`Unsupported key transport algorithm "${ep.transport}".`), 400);
+    const digest = ep.digest ?? prev.digest ?? "sha1";
+    const mgf = ep.mgf === undefined ? (prev.mgf ?? null) : ep.mgf;
+    if (!["sha1", "sha256", "sha384", "sha512"].includes(digest)) return c.json(badRequest(`Unsupported OAEP digest "${digest}".`), 400);
+    if (mgf !== null && !["sha1", "sha256", "sha384", "sha512"].includes(mgf)) return c.json(badRequest(`Unsupported MGF1 hash "${mgf}".`), 400);
+    // WebCrypto applies one hash to OAEP data and MGF1 mask; the pair cannot diverge.
+    if (mgf !== null && mgf !== digest) return c.json(badRequest("mgf must match digest or be omitted."), 400);
+    encryptionPolicy = JSON.stringify({ content: content ?? "http://www.w3.org/2009/xmlenc11#aes256-gcm", transport: transport ?? "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p", digest, mgf });
+  } else encryptionPolicy = undefined;
+
   const name = String(body.name ?? existing?.name ?? entityId).trim();
   const now = new Date().toISOString();
   const values = [
@@ -1118,9 +1152,9 @@ defineRoute({
 
   if (existing) {
     await c.env.DB.prepare(
-      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ? WHERE id = ?`
+      `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, encryption_policy = ?, updated_at = ? WHERE id = ?`
     )
-      .bind(...values, now, existing.id)
+      .bind(...values, encryptionPolicy === undefined ? (existing.encryption_policy ?? null) : encryptionPolicy, now, existing.id)
       .run();
     if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
@@ -1128,10 +1162,10 @@ defineRoute({
   }
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, encryption_policy, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(...values, now, now)
+    .bind(...values, encryptionPolicy ?? null, now, now)
     .run();
 
   if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();

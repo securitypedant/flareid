@@ -176,6 +176,7 @@ defineRoute(
       slo_url: sp.slo_url,
       encryption_cert: sp.encryption_cert,
       encrypt_assertions: sp.encrypt_assertions === 1,
+      encryption_policy: sp.encryption_policy ? (JSON.parse(sp.encryption_policy) as Record<string, unknown>) : null,
       subject_id: sp.subject_id ?? "",
       metadata_url: sp.metadata_url,
       created_at: sp.created_at,

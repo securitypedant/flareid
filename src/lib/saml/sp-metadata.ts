@@ -1,6 +1,7 @@
 import { DOMParser, type Element as XmlElement } from "@xmldom/xmldom";
 import { normalizeCertPem } from "./x509.js";
 import { logAudit } from "../audit.js";
+import { encryptionPolicyFromUris } from "./service-providers.js";
 
 const NS_MD = "urn:oasis:names:tc:SAML:2.0:metadata";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
@@ -19,6 +20,8 @@ export interface ParsedSpMetadata {
   sloUrl: string | null;
   nameIdFormat: "transient" | "persistent" | "emailAddress" | null;
   wantAuthnRequestsSigned: boolean;
+  /** Algorithm URIs from md:EncryptionMethod children of the SP's KeyDescriptors. */
+  encryptionMethods: string[];
   /** From the subject-id:req entity attribute: which subject identifier the SP wants. */
   subjectId: "subject-id" | "pairwise-id" | null;
   /** The metadata's own validUntil, if any (ISO). */
@@ -60,8 +63,19 @@ export function parseSpMetadata(xml: string): ParsedSpMetadata {
   // whatever the publisher advertised.
   const acsUrls = acs.map((e) => e.getAttribute("Location")?.trim() ?? "").filter((u) => /^https:\/\//.test(u));
   if (acsUrls.length === 0) throw new SpMetadataError("No https AssertionConsumerService with the HTTP-POST binding.");
-  const defaultAcsRaw = acs.find((e) => e.getAttribute("isDefault") === "true")?.getAttribute("Location")?.trim() ?? null;
-  const defaultAcs = defaultAcsRaw && acsUrls.includes(defaultAcsRaw) ? defaultAcsRaw : null;
+  // Default selection: an explicit isDefault="true" wins; without one, an
+  // endpoint that omits the flag is preferred over one marked isDefault="false" -
+  // a "false" is a statement, not merely the absence of one.
+  const byHttps = (e: XmlElement | undefined) => {
+    const u = e?.getAttribute("Location")?.trim() ?? null;
+    return u && acsUrls.includes(u) ? u : null;
+  };
+  const defaultAcs =
+    byHttps(acs.find((e) => e.getAttribute("isDefault") === "true")) ?? byHttps(acs.find((e) => e.getAttribute("isDefault") !== "false"));
+
+  const encryptionMethods = Array.from(sp.getElementsByTagNameNS(NS_MD, "EncryptionMethod"))
+    .map((e) => e.getAttribute("Algorithm")?.trim() ?? "")
+    .filter((u) => u !== "");
 
   const certs = (use: string) =>
     Array.from(sp.getElementsByTagNameNS(NS_MD, "KeyDescriptor"))
@@ -92,6 +106,7 @@ export function parseSpMetadata(xml: string): ParsedSpMetadata {
     })(),
     nameIdFormat,
     wantAuthnRequestsSigned: sp.getAttribute("AuthnRequestsSigned") === "true",
+    encryptionMethods,
     subjectId: subjectIdRequest(entity),
     validUntil: (() => {
       const v = entity.getAttribute("validUntil") ?? root?.getAttribute("validUntil");
@@ -171,6 +186,10 @@ export async function fetchSpMetadata(url: string): Promise<ParsedSpMetadata> {
 export async function upsertSpFromMetadata(env: import("../../env.js").Env, meta: ParsedSpMetadata, name?: string, metadataUrl?: string): Promise<number> {
   const now = new Date().toISOString();
   const existing = await env.DB.prepare("SELECT id FROM saml_service_providers WHERE entity_id = ?").bind(meta.entityId).first<{ id: number }>();
+  const encChoice = encryptionPolicyFromUris(meta.encryptionMethods);
+  const encryptionPolicy = encChoice
+    ? JSON.stringify({ ...encChoice, digest: "sha1", mgf: null, advertised: meta.encryptionMethods })
+    : null;
   const fields = [
     JSON.stringify(meta.acsUrls),
     meta.defaultAcsUrl,
@@ -183,18 +202,18 @@ export async function upsertSpFromMetadata(env: import("../../env.js").Env, meta
   ];
   if (existing) {
     await env.DB.prepare(
-      `UPDATE saml_service_providers SET acs_urls = ?, default_acs_url = ?, nameid_format = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, updated_at = ?${name ? ", name = ?" : ""} WHERE id = ?`
+      `UPDATE saml_service_providers SET acs_urls = ?, default_acs_url = ?, nameid_format = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, encryption_policy = ?, updated_at = ?${name ? ", name = ?" : ""} WHERE id = ?`
     )
-      .bind(...fields, now, ...(name ? [name] : []), existing.id)
+      .bind(...fields, encryptionPolicy, now, ...(name ? [name] : []), existing.id)
       .run();
     await afterUpsert(env, existing.id, meta, metadataUrl);
     return existing.id;
   }
   const row = await env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, attribute_map, sign_response, sign_assertion, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, 1, ?, ?) RETURNING id`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, attribute_map, sign_response, sign_assertion, encryption_policy, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, 1, ?, ?, ?) RETURNING id`
   )
-    .bind(meta.entityId, name || meta.entityId, ...fields, now, now)
+    .bind(meta.entityId, name || meta.entityId, ...fields, encryptionPolicy, now, now)
     .first<{ id: number }>();
   await afterUpsert(env, row!.id, meta, metadataUrl);
   return row!.id;

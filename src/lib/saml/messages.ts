@@ -1,4 +1,5 @@
 import { encryptAssertion } from "./encrypt.js";
+import { spEncryptionPolicy } from "./service-providers.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
 import { sha256Hex } from "../tokens.js";
@@ -35,8 +36,8 @@ export function nameIdFormatUri(format: string): string | null {
 export interface IssueParams {
   sp: SamlServiceProviderRow;
   user: UserRow;
-  /** The AuthnRequest's ID - echoed as InResponseTo. */
-  requestId: string;
+  /** The AuthnRequest's ID - echoed as InResponseTo. NULL for IdP-initiated (unsolicited) responses. */
+  requestId: string | null;
   /** The allowlisted AssertionConsumerService URL this response is for. */
   acsUrl: string;
   /** The FlareID session row id - never embedded raw (it is the session cookie). */
@@ -105,7 +106,7 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
           "saml:SubjectConfirmation",
           { Method: "urn:oasis:names:tc:SAML:2.0:cm:bearer" },
           el("saml:SubjectConfirmationData", {
-            InResponseTo: requestId,
+            InResponseTo: requestId ?? undefined,
             NotOnOrAfter: notOnOrAfter,
             Recipient: acsUrl,
           })
@@ -131,7 +132,7 @@ async function buildAssertion(env: Env, p: IssueParams): Promise<string> {
 
   const finished = sp.sign_assertion ? insertSignatureAfterIssuer(unsigned, await signSubtree(env, unsigned, assertionId)) : unsigned;
   // Sign, then encrypt: the SP decrypts and then verifies the assertion's own signature.
-  if (sp.encrypt_assertions && sp.encryption_cert) return encryptAssertion(finished, sp.encryption_cert);
+  if (sp.encrypt_assertions && sp.encryption_cert) return encryptAssertion(finished, sp.encryption_cert, spEncryptionPolicy(sp));
   return finished;
 }
 
@@ -165,7 +166,7 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
       "xmlns:samlp": NS_SAMLP,
       Destination: p.acsUrl,
       ID: responseId,
-      InResponseTo: p.requestId,
+      InResponseTo: p.requestId ?? undefined,
       IssueInstant: samlInstant(new Date()),
       Version: "2.0",
     },
@@ -184,7 +185,7 @@ export async function buildSignedResponse(env: Env, p: IssueParams): Promise<str
  * second-level RequestDenied, the profile-preferred pair for a refused
  * authentication. Always signed: an unsigned error invites downgrade.
  */
-export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestId: string; statusDetail?: string }): Promise<string> {
+export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestId: string | null; statusDetail?: string }): Promise<string> {
   const responseId = samlId();
   const detail = p.statusDetail ?? "RequestDenied";
   const inner =
@@ -205,7 +206,7 @@ export async function buildErrorResponse(env: Env, p: { acsUrl: string; requestI
       "xmlns:samlp": NS_SAMLP,
       Destination: p.acsUrl,
       ID: responseId,
-      InResponseTo: p.requestId,
+      InResponseTo: p.requestId ?? undefined,
       IssueInstant: samlInstant(new Date()),
       Version: "2.0",
     },

@@ -139,6 +139,8 @@ export interface SamlServiceProviderRow {
   slo_url: string | null;
   encrypt_assertions: number;
   encryption_cert: string | null;
+  /** JSON {content, transport, digest, mgf, advertised[]} - see spEncryptionPolicy. NULL = default. */
+  encryption_policy: string | null;
   metadata_url: string | null;
   metadata_last_refreshed_at: string | null;
   metadata_valid_until: string | null;

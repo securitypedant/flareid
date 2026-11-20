@@ -1,10 +1,47 @@
 import { b64encode, pemToBase64Der } from "./xml.js";
 
 const NS_XENC = "http://www.w3.org/2001/04/xmlenc#";
+const NS_XENC11 = "http://www.w3.org/2009/xmlenc11#";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
 const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
-const AES256_GCM = "http://www.w3.org/2009/xmlenc11#aes256-gcm";
-const RSA_OAEP = "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p";
+
+/** Assertion content-encryption algorithms FlareID can emit (all WebCrypto-reachable). */
+export const CONTENT_ALGORITHMS = {
+  [`${NS_XENC11}aes128-gcm`]: { token: "aes128-gcm", keyBytes: 16, mode: "gcm" },
+  [`${NS_XENC11}aes192-gcm`]: { token: "aes192-gcm", keyBytes: 24, mode: "gcm" },
+  [`${NS_XENC11}aes256-gcm`]: { token: "aes256-gcm", keyBytes: 32, mode: "gcm" },
+  [`${NS_XENC}aes128-cbc`]: { token: "aes128-cbc", keyBytes: 16, mode: "cbc" },
+  [`${NS_XENC}aes192-cbc`]: { token: "aes192-cbc", keyBytes: 24, mode: "cbc" },
+  [`${NS_XENC}aes256-cbc`]: { token: "aes256-cbc", keyBytes: 32, mode: "cbc" },
+} as const;
+
+/** Key-transport algorithms: the 2001 mgf1p URI and the XML Enc 1.1 parameterized OAEP. */
+export const TRANSPORT_ALGORITHMS = {
+  [`${NS_XENC}rsa-oaep-mgf1p`]: { token: "rsa-oaep-mgf1p", parameterized: false },
+  [`${NS_XENC11}rsa-oaep`]: { token: "rsa-oaep", parameterized: true },
+} as const;
+
+const DIGEST_URIS: Record<string, { uri: string; subtle: string; mgfUri: string }> = {
+  sha1: { uri: `${NS_DS}sha1`, subtle: "SHA-1", mgfUri: `${NS_XENC11}mgf1sha1` },
+  sha256: { uri: `${NS_DS}sha256`, subtle: "SHA-256", mgfUri: `${NS_XENC11}mgf1sha256` },
+  sha384: { uri: `${NS_DS}sha384`, subtle: "SHA-384", mgfUri: `${NS_XENC11}mgf1sha384` },
+  sha512: { uri: `${NS_DS}sha512`, subtle: "SHA-512", mgfUri: `${NS_XENC11}mgf1sha512` },
+};
+
+/** Resolved per-SP encryption choice. `mgf: null` omits the MGF element (spec default MGF1-SHA1). */
+export interface EncryptionPolicy {
+  content: keyof typeof CONTENT_ALGORITHMS;
+  transport: keyof typeof TRANSPORT_ALGORITHMS;
+  digest: keyof typeof DIGEST_URIS;
+  mgf: keyof typeof DIGEST_URIS | null;
+}
+
+export const DEFAULT_ENCRYPTION_POLICY: EncryptionPolicy = {
+  content: `${NS_XENC11}aes256-gcm`,
+  transport: `${NS_XENC}rsa-oaep-mgf1p`,
+  digest: "sha1",
+  mgf: null,
+};
 
 /** The SubjectPublicKeyInfo inside an X.509 certificate, found by walking its DER. */
 function spkiFromCert(der: Uint8Array): Uint8Array {
@@ -40,23 +77,60 @@ function spkiFromCert(der: Uint8Array): Uint8Array {
 
 /**
  * Encrypts an assertion for the SP (SAML Core 2.7.3 EncryptedAssertion,
- * XML Encryption 1.1): a fresh AES-256-GCM key encrypts the assertion, and is
- * itself encrypted with RSA-OAEP to the public key in the SP's encryption
+ * XML Encryption 1.1): a fresh content-encryption key seals the assertion and
+ * is itself wrapped with RSA-OAEP to the public key in the SP's encryption
  * certificate. The signature, when the assertion is signed, is inside -
  * sign-then-encrypt, as SAML expects.
+ *
+ * `policy` selects the emitted algorithms; WebCrypto applies one OAEP hash to
+ * both the data hash and the MGF1 mask, so the emitted MGF always matches the
+ * digest - an omitted MGF element is only emitted when it resolves to the
+ * spec default (SHA-1).
  */
-export async function encryptAssertion(assertionXml: string, certPem: string): Promise<string> {
+export async function encryptAssertion(assertionXml: string, certPem: string, policy?: Partial<EncryptionPolicy>): Promise<string> {
+  const p = { ...DEFAULT_ENCRYPTION_POLICY, ...(policy ?? {}) };
+  const content = CONTENT_ALGORITHMS[p.content];
+  const digest = DIGEST_URIS[p.digest];
+  if (!content || !digest || !(p.transport in TRANSPORT_ALGORITHMS)) throw new Error("Unsupported encryption policy");
+  // WebCrypto derives the MGF1 mask hash from the key's hash: the emitted MGF
+  // must equal the digest, so an explicit MGF different from the digest is
+  // rejected rather than emitted falsely. Omitting the element is only honest
+  // for the spec default (MGF1-SHA1); any other digest names its MGF.
+  const mgfHash = p.mgf ?? p.digest;
+  const mgf = DIGEST_URIS[mgfHash];
+  if (!mgf || mgf.subtle !== digest.subtle) throw new Error("OAEP MGF must use the same hash as the digest");
+
   const der = Uint8Array.from(atob(pemToBase64Der(certPem)), (c) => c.charCodeAt(0));
-  const publicKey = await crypto.subtle.importKey("spki", spkiFromCert(der) as BufferSource, { name: "RSA-OAEP", hash: "SHA-1" }, false, ["encrypt"]);
-  const contentKey = crypto.getRandomValues(new Uint8Array(32));
-  const aes = await crypto.subtle.importKey("raw", contentKey, { name: "AES-GCM" }, false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  // XML Encryption 1.1 GCM: CipherValue is IV || ciphertext || 128-bit tag.
-  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, tagLength: 128 }, aes, new TextEncoder().encode(assertionXml)));
+  const publicKey = await crypto.subtle.importKey("spki", spkiFromCert(der) as BufferSource, { name: "RSA-OAEP", hash: digest.subtle }, false, ["encrypt"]);
+  const contentKey = crypto.getRandomValues(new Uint8Array(content.keyBytes));
+  const input = new TextEncoder().encode(assertionXml);
+  let cipher: Uint8Array;
+  if (content.mode === "gcm") {
+    const aes = await crypto.subtle.importKey("raw", contentKey, { name: "AES-GCM" }, false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    // XML Encryption 1.1 GCM: CipherValue is IV || ciphertext || 128-bit tag.
+    const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, tagLength: 128 }, aes, input));
+    cipher = new Uint8Array(iv.length + sealed.length);
+    cipher.set(iv);
+    cipher.set(sealed, iv.length);
+  } else {
+    const aes = await crypto.subtle.importKey("raw", contentKey, { name: "AES-CBC" }, false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    // XML Encryption 1.0 CBC: CipherValue is IV || PKCS#7-padded ciphertext.
+    const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv }, aes, input));
+    cipher = new Uint8Array(iv.length + sealed.length);
+    cipher.set(iv);
+    cipher.set(sealed, iv.length);
+  }
   const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, contentKey));
-  const cipher = new Uint8Array(iv.length + sealed.length);
-  cipher.set(iv);
-  cipher.set(sealed, iv.length);
+
+  const transport = TRANSPORT_ALGORITHMS[p.transport];
+  // xmlns:ds is inherited from ds:KeyInfo and xmlns:xenc from xenc:EncryptedData;
+  // xenc11 is a new prefix, so exclusive C14N renders it on the MGF apex itself.
+  const mgfElement = p.mgf === null && mgfHash === "sha1" ? "" : `<xenc11:MGF xmlns:xenc11="${NS_XENC11}" Algorithm="${mgf.mgfUri}"></xenc11:MGF>`;
+  const transportMethod = transport.parameterized
+    ? `<xenc:EncryptionMethod Algorithm="${p.transport}"><xenc:OAEPParams><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod>${mgfElement}</xenc:OAEPParams></xenc:EncryptionMethod>`
+    : `<xenc:EncryptionMethod Algorithm="${p.transport}"><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod>${mgfElement}</xenc:EncryptionMethod>`;
 
   // Every element here is canonical-form emission (the whole subtree sits
   // inside the signed Response): xmlns on each usage apex, no self-closing
@@ -64,9 +138,9 @@ export async function encryptAssertion(assertionXml: string, certPem: string): P
   return (
     `<saml:EncryptedAssertion xmlns:saml="${NS_SAML}">` +
     `<xenc:EncryptedData xmlns:xenc="${NS_XENC}" Type="${NS_XENC}Element">` +
-    `<xenc:EncryptionMethod Algorithm="${AES256_GCM}"></xenc:EncryptionMethod>` +
+    `<xenc:EncryptionMethod Algorithm="${p.content}"></xenc:EncryptionMethod>` +
     `<ds:KeyInfo xmlns:ds="${NS_DS}">` +
-    `<xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="${RSA_OAEP}"><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></ds:DigestMethod></xenc:EncryptionMethod>` +
+    `<xenc:EncryptedKey>${transportMethod}` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(wrapped)}</xenc:CipherValue></xenc:CipherData></xenc:EncryptedKey>` +
     `</ds:KeyInfo>` +
     `<xenc:CipherData><xenc:CipherValue>${b64encode(cipher)}</xenc:CipherValue></xenc:CipherData>` +

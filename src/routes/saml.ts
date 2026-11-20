@@ -96,6 +96,51 @@ saml.get("/saml/cert.pem", (c) => {
   });
 });
 
+/**
+ * IdP-initiated (unsolicited) SSO: no AuthnRequest, so the response carries no
+ * InResponseTo. `?sp=<entity_id>` picks the application; `?RelayState=` passes
+ * through verbatim, as the bindings profile defines. The session gate is the
+ * same one an SP-initiated request faces - an unsolicited URL is a convenience
+ * link, not an authentication bypass.
+ */
+saml.get("/saml/idp-initiated", async (c) => {
+  if (!isSamlConfigured(c.env)) {
+    return renderAuthMessage(c, 503, appConfigError("SAML sign-in is not configured on this deployment."));
+  }
+  const entityId = (c.req.query("sp") ?? "").trim();
+  const sp = entityId ? await getSpByEntityId(c.env, entityId) : null;
+  if (!sp) return renderAuthMessage(c, 400, appConfigError("Unknown service provider."));
+  const acsUrl = resolveAcsUrl(sp, null);
+  if (!acsUrl) return renderAuthMessage(c, 400, appConfigError("This service provider has no ACS URL configured."));
+
+  const session = await getSession(c.req.raw, c.env);
+  const user = session ? await getUserById(c.env, session.userId) : null;
+  const self = new URL(c.req.url);
+  if (!session || !user || user.status !== "active" || !(await canSignIn(c.env, user.id))) {
+    return c.redirect(`/login?next=${encodeURIComponent(self.pathname + self.search)}`, 302);
+  }
+  const gate = await secondFactorGate(c.env, user, session.amr);
+  // A session missing its required factor cannot mint an assertion either way:
+  // 'login' re-authenticates, 'enrol' goes to factor setup and retries the link.
+  if (gate === "login") return c.redirect(`/login?next=${encodeURIComponent(self.pathname + self.search)}`, 302);
+  if (gate === "enrol") return c.redirect("/account/mfa/setup", 302);
+
+  let relayState: string | null = null;
+  if (c.req.query("RelayState") !== undefined) {
+    relayState = decodeURIComponent(c.req.query("RelayState") ?? "").slice(0, 4000);
+  }
+  const xml = await buildSignedResponse(c.env, {
+    sp,
+    user,
+    requestId: null,
+    acsUrl,
+    sessionId: session.id,
+    authnInstant: new Date(session.createdAt),
+  });
+  await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { sso: true, idp_initiated: true }, c.req.raw);
+  return c.html(samlPostForm(c.get("appName"), acsUrl, b64encode(xml), relayState));
+});
+
 saml.get("/saml/sso", async (c) => {
   if (!isSamlConfigured(c.env)) {
     return renderAuthMessage(c, 503, appConfigError("SAML sign-in is not configured on this deployment."));

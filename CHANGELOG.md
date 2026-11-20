@@ -6,6 +6,25 @@ may break things.
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-11-21
+
+- **Added**: per-SP XML Encryption policy (`encryption_policy`). The
+  content and key-transport algorithms an EncryptedAssertion carries are
+  now selectable per service provider - AES-128/192/256-GCM or -CBC for
+  content, `rsa-oaep-mgf1p` or the parameterized XML Encryption 1.1
+  `rsa-oaep` for transport, with SHA-1/256/384/512 OAEP digests and an
+  explicit or omitted MGF1 element (WebCrypto ties the MGF1 mask hash to
+  the OAEP digest, so divergent pairs are rejected rather than emitted
+  falsely). `md:EncryptionMethod` elements in imported SP metadata are
+  honoured automatically; the API accepts token shorthand or full URIs.
+- **Added**: IdP-initiated SSO at `GET /saml/idp-initiated?sp=<entity-id>`
+  (&RelayState=). Issues an unsolicited Response with no `InResponseTo` to
+  the SP's default ACS through the normal sign-in and second-factor gates.
+- **Fixed**: SP metadata import now prefers an AssertionConsumerService
+  that omits `isDefault` over one explicitly marked `isDefault="false"` -
+  a "false" is a statement, not merely the absence of one.
+
+
 ## [4.4.1] - 2026-11-20
 
 - **Fixed**: signed SAML responses carried an invalid Response-level

@@ -1,5 +1,6 @@
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow } from "../types.js";
+import { CONTENT_ALGORITHMS, DEFAULT_ENCRYPTION_POLICY, TRANSPORT_ALGORITHMS, type EncryptionPolicy } from "./encrypt.js";
 
 export function getSpByEntityId(env: Env, entityId: string): Promise<SamlServiceProviderRow | null> {
   return env.DB.prepare("SELECT * FROM saml_service_providers WHERE entity_id = ?")
@@ -38,6 +39,29 @@ export function spSigningCerts(sp: SamlServiceProviderRow): string[] {
 
 export function spAttributeMap(sp: SamlServiceProviderRow): Record<string, string> {
   return parseJson<Record<string, string>>(sp.attribute_map, {});
+}
+
+/** The md:EncryptionMethod URIs an SP advertised, mapped onto what this Worker can emit. */
+export function encryptionPolicyFromUris(uris: string[]): { content: EncryptionPolicy["content"]; transport: EncryptionPolicy["transport"] } | null {
+  const content = uris.find((u) => u in CONTENT_ALGORITHMS) as EncryptionPolicy["content"] | undefined;
+  const transport = uris.find((u) => u in TRANSPORT_ALGORITHMS) as EncryptionPolicy["transport"] | undefined;
+  return content || transport ? { content: content ?? DEFAULT_ENCRYPTION_POLICY.content, transport: transport ?? DEFAULT_ENCRYPTION_POLICY.transport } : null;
+}
+
+/**
+ * The SP's encryption choice for EncryptedAssertion emission: the stored
+ * policy merged over the defaults. Malformed fields fall back individually -
+ * a hand-edited row must not break SSO issuance.
+ */
+export function spEncryptionPolicy(sp: SamlServiceProviderRow): Partial<EncryptionPolicy> {
+  const raw = parseJson<Record<string, unknown>>(sp.encryption_policy, {});
+  const out: Partial<EncryptionPolicy> = {};
+  if (typeof raw.content === "string" && raw.content in CONTENT_ALGORITHMS) out.content = raw.content as EncryptionPolicy["content"];
+  if (typeof raw.transport === "string" && raw.transport in TRANSPORT_ALGORITHMS) out.transport = raw.transport as EncryptionPolicy["transport"];
+  if (raw.digest === "sha1" || raw.digest === "sha256" || raw.digest === "sha384" || raw.digest === "sha512") out.digest = raw.digest;
+  if (raw.mgf === "sha1" || raw.mgf === "sha256" || raw.mgf === "sha384" || raw.mgf === "sha512") out.mgf = raw.mgf;
+  if (raw.mgf === null) out.mgf = null;
+  return out;
 }
 
 /**

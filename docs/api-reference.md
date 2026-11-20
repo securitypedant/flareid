@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.1.3.
+API version 4.5.0.
 
 ## Contents
 
@@ -1590,6 +1590,7 @@ Request body:
 | `slo_url` | string \| null | no |  |
 | `encryption_cert` | string \| null | no |  |
 | `encrypt_assertions` | boolean | no |  |
+| `encryption_policy` | object \| null { content, transport, digest, mgf } | no |  |
 | `subject_id` | "" \| "subject-id" \| "pairwise-id" | no |  |
 
 Response `200`:
