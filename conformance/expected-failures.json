@@ -55,16 +55,16 @@
   },
   {
     "test-name": "oidcc-discovery-endpoint-verification",
-    "variant": "*",
+    "variant": { "client_registration": "dynamic_client" },
     "configuration-filename": "*suite-config.json",
     "current-block": "*",
     "condition": "OIDCCCheckDiscEndpointResponseTypesSupportedDynamic",
     "expected-result": "failure",
-    "comment": "The 'dynamic' certification profile requires implicit response_types in the discovery document; FlareID is a code-only OP and does not advertise them."
+    "comment": "The 'dynamic' certification profile requires implicit response_types in the discovery document; FlareID is a code-only OP and does not advertise them. Scoped to the dynamic_client variant: the same module under static_client (config plan) cannot hit this condition, and an unscoped declaration is flagged as 'expected failure did not happen'."
   },
   {
     "test-name": "oidcc-discovery-endpoint-verification",
-    "variant": "*",
+    "variant": { "client_registration": "dynamic_client" },
     "configuration-filename": "*suite-config.json",
     "current-block": "*",
     "condition": "OIDCCCheckDiscEndpointGrantTypesSupportedDynamic",
