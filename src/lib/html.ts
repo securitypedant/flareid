@@ -1313,7 +1313,7 @@ const THEME_TOGGLE_SCRIPT = `(function(){
     dark:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M13.7 9.6A6 6 0 116.4 2.3a.5.5 0 01.7.6 5 5 0 006 6 .5.5 0 01.6.7z"/></svg>',
     light:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3" fill="currentColor" stroke="none"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M13 3l-1.1 1.1M4.1 11.9L3 13"/></svg>'
   };
-  function label(){var k=cur();b.innerHTML=icons[k];b.setAttribute("aria-label","Theme: "+({system:"auto",dark:"dark",light:"light"})[k]);}
+  function label(){var k=cur();b.innerHTML='<span style="display:inline-flex;vertical-align:-2px;margin-right:8px;">'+icons[k]+'</span>Theme';b.setAttribute("aria-label","Theme: "+({system:"auto",dark:"dark",light:"light"})[k]);}
   b.addEventListener("click",function(){
     var next=order[(order.indexOf(cur())+1)%order.length];
     try{ if(next==="system") localStorage.removeItem("fi-theme"); else localStorage.setItem("fi-theme",next);}catch(e){}
@@ -1370,7 +1370,7 @@ export interface NotificationFeed {
 }
 
 /** The top bar's theme switch; THEME_TOGGLE_SCRIPT (added by page() whenever there is a top bar) wires it up. */
-export const THEME_TOGGLE_BUTTON = `<button class="theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>`;
+export const THEME_TOGGLE_BUTTON = `<button class="nav-item theme-toggle" type="button" data-theme-toggle title="Switch between light, dark and system theme" aria-label="Theme: auto"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75A6.25 6.25 0 018 14.25z" fill="currentColor"/></svg></button>`;
 
 /** The (?) beside a console page's title, opening its guide under /docs in a new tab. */
 export function helpLink(href: string, topic: string): string {
@@ -1402,7 +1402,6 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
       </a>
     </div>
     <nav>
-      ${THEME_TOGGLE_BUTTON}
       ${bell}
       <span class="nav-links">
         <a href="/account">Account</a>
@@ -1424,6 +1423,8 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
       <div class="nav-menu" data-nav-menu>
         <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
+          ${THEME_TOGGLE_BUTTON}
+          <hr class="nav-menu-divider" />
           <form method="POST" action="/logout" style="margin:0;"><button class="nav-item signout" type="submit">Sign out</button></form>
         </div>
       </div>

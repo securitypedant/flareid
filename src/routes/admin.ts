@@ -31,7 +31,8 @@ import {
 } from "../lib/settings.js";
 import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
-import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
+import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, listScimTargetsForApp, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
+import { getCatalogEntry, listCatalog, placeholdersIn, renderInstructions, templateToClientInput, templateToSpInput, type CatalogEntry } from "../lib/catalog.js";
 import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
@@ -386,6 +387,7 @@ admin.post("/admin/reauth/passkey", async (c) => {
 const CRUMB_SECTIONS: Record<string, string> = {
   Users: "users",
   Groups: "groups",
+  Applications: "applications",
   Integrations: "integrations",
   Domains: "domains",
   Branding: "branding",
@@ -425,6 +427,8 @@ function layout(
       ? ({ "Email templates": "email-templates", Brands: "brands" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section === "groups"
       ? (crumbs?.[2]?.label === "Access" ? "access" : "groups")
+      : section === "applications"
+      ? (crumbs?.[2]?.label === "App catalog" ? "catalog" : "all")
       : section !== "integrations"
       ? ""
       : crumbs?.length === 2
@@ -482,6 +486,9 @@ const INTEGRATION_PAGES = [
 type IntegrationPage = (typeof INTEGRATION_PAGES)[number]["key"];
 
 const INTEGRATIONS_CRUMB: Breadcrumb = { label: "Integrations", href: "/admin/integrations" };
+/** The Applications section's own crumb: the unified OIDC + SAML app list. */
+const APPS_CRUMB: Breadcrumb = { label: "Applications", href: "/admin/apps" };
+const APP_CATALOG_CRUMB: Breadcrumb = { label: "App catalog", href: "/admin/apps/catalog" };
 function integrationCrumb(key: IntegrationPage): Breadcrumb {
   const p = INTEGRATION_PAGES.find((x) => x.key === key)!;
   return { label: p.label, href: `/admin/integrations/${p.key}` };
@@ -499,6 +506,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
     ["overview", "/admin", "Overview"],
     ["users", "/admin/users", "Users"],
     ["groups", "/admin/groups", "Groups"],
+    ["applications", "/admin/apps", "Applications"],
     ["integrations", "/admin/integrations", "Integrations"],
     ["domains", "/admin/domains", "Domains"],
     ["branding", "/admin/branding", "Branding"],
@@ -514,6 +522,11 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
       if (key === "groups" && active === "groups") {
         return link + [["groups", "/admin/groups", "Groups"], ["access", "/admin/access", `Access${pendingBadge}`]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "groups") === k ? " active" : ""}">${l}</a>`)
+          .join("");
+      }
+      if (key === "applications" && active === "applications") {
+        return link + [["all", "/admin/apps", "All apps"], ["catalog", "/admin/apps/catalog", "App catalog"]]
+          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "all") === k ? " active" : ""}">${l}</a>`)
           .join("");
       }
       if (key === "overview" && active === "overview") {

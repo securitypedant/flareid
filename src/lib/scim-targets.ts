@@ -87,6 +87,13 @@ export interface ScimTarget {
   /** Users pushed per sync invocation (the sync is re-called until complete). */
   syncBatchSize: number;
   enabled: boolean;
+  /**
+   * The application this target provisions (migration 0052), or null for a
+   * standalone directory-wide target. appId is the oauth_clients.id or
+   * saml_service_providers.id, per appType.
+   */
+  appType: "oidc" | "saml" | null;
+  appId: number | null;
 }
 
 interface ScimTargetRow {
@@ -100,6 +107,8 @@ interface ScimTargetRow {
   members_per_request: number;
   sync_batch: number;
   enabled: number;
+  app_type: string | null;
+  app_id: number | null;
 }
 
 function toTarget(row: ScimTargetRow): ScimTarget {
@@ -120,11 +129,19 @@ function toTarget(row: ScimTargetRow): ScimTarget {
     membersPerRequest: row.members_per_request,
     syncBatchSize: row.sync_batch,
     enabled: !!row.enabled,
+    appType: row.app_type === "oidc" || row.app_type === "saml" ? row.app_type : null,
+    appId: row.app_id ?? null,
   };
 }
 
 export async function listScimTargets(env: Env): Promise<ScimTarget[]> {
   const { results } = await env.DB.prepare("SELECT * FROM scim_targets ORDER BY name").all<ScimTargetRow>();
+  return results.map(toTarget);
+}
+
+/** The targets linked to one application - listed on its console page as its provisioning setup. */
+export async function listScimTargetsForApp(env: Env, appType: "oidc" | "saml", appId: number): Promise<ScimTarget[]> {
+  const { results } = await env.DB.prepare("SELECT * FROM scim_targets WHERE app_type = ? AND app_id = ? ORDER BY name").bind(appType, appId).all<ScimTargetRow>();
   return results.map(toTarget);
 }
 
@@ -153,6 +170,9 @@ export interface ScimTargetInput {
   membersPerRequest: number;
   syncBatchSize: number;
   enabled: boolean;
+  /** Links the target to one application (the oauth_clients/saml_service_providers row); unset = standalone. */
+  appType?: "oidc" | "saml";
+  appId?: number;
 }
 
 /** Name, endpoint format and tuning ranges checked once for every writer. An empty endpoint is legal on update (it unparks the credential with it); create requires one. */
@@ -179,8 +199,8 @@ export async function createScimTarget(env: Env, raw: ScimTargetInput): Promise<
   const problem = validateScimTargetInput(input);
   if (problem) throw new Error(problem);
   const res = await env.DB.prepare(
-    `INSERT INTO scim_targets (name, endpoint, secret, scope_mode, scope_group_ids, pace_ms, members_per_request, sync_batch, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO scim_targets (name, endpoint, secret, scope_mode, scope_group_ids, pace_ms, members_per_request, sync_batch, enabled, app_type, app_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       input.name,
@@ -192,6 +212,8 @@ export async function createScimTarget(env: Env, raw: ScimTargetInput): Promise<
       input.membersPerRequest,
       input.syncBatchSize,
       input.enabled ? 1 : 0,
+      input.appType ?? null,
+      input.appId ?? null,
       new Date().toISOString(),
       new Date().toISOString()
     )

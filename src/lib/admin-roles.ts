@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { getCatalogEntry } from "./catalog.js";
 import { getUserGroupNames } from "./db.js";
 import { parseRule, userMatchesRule } from "./groups.js";
 import { expand, grants, type Area, type Permission } from "./permissions.js";
@@ -106,10 +107,23 @@ export function requiredPermission(method: string, path: string): Permission | n
   if (under(path, "/admin/domains") && path.endsWith("/apply-to-all")) return "super";
   // The user lookup feeds pickers in several areas; reading users is enough.
   if (path === "/admin/users/lookup") return "users:read";
-  // Open to every admin role: the console root, the integrations index and the
-  // step-up ceremony itself.
-  if (path === "/admin" || path === "/admin/integrations" || under(path, "/admin/reauth")) return null;
+  // Open to every admin role: the console root, the integrations index, the
+  // unified applications list (its rows are filtered per-area in the view) and
+  // the step-up ceremony itself.
+  if (path === "/admin" || path === "/admin/integrations" || path === "/admin/apps" || under(path, "/admin/reauth")) return null;
   const write = method !== "GET" && method !== "HEAD";
+  // Applying a catalog template writes into one protocol's area; the slug says
+  // which. An unknown slug fails closed like any unmapped path.
+  const catalogApply = /^\/admin\/apps\/catalog\/([^/]+)\/apply$/.exec(path);
+  if (catalogApply) {
+    const entry = getCatalogEntry(decodeURIComponent(catalogApply[1]!));
+    if (!entry) return "super";
+    return `${entry.protocol}:write` as Permission;
+  }
+  // Other writes under /admin/apps have no route - fail closed. The catalog's
+  // GETs are decided in canAccess: they ask for either protocol's read, which
+  // this single-permission return cannot express.
+  if (under(path, "/admin/apps")) return write ? "super" : null;
   // Registering or changing an upstream IdP hands its claims authority over
   // every account here (adoption by address match, JIT provisioning) - the
   // same blast radius as minting an admin key, so writes are Super-Admin-only.
@@ -140,6 +154,12 @@ export function requiredPermission(method: string, path: string): Permission | n
 export function canAccess(access: Access, method: string, path: string): boolean {
   if (!access.isAdmin) return false;
   if (access.isSuper) return true;
+  // Browsing the app catalog is open to an admin who can read either app
+  // protocol; apply POSTs fall through to requiredPermission, which maps them
+  // to the protocol's write.
+  if ((method === "GET" || method === "HEAD") && under(path, "/admin/apps/catalog")) {
+    return grants(access.perms, "oidc:read") || grants(access.perms, "saml:read");
+  }
   const need = requiredPermission(method, path);
   if (need === "super") return false;
   if (need === null) return method === "GET" || method === "HEAD" || path === "/admin/reauth" || path.startsWith("/admin/reauth/");
@@ -149,7 +169,7 @@ export function canAccess(access: Access, method: string, path: string): boolean
 /** Sidebar sections a person can open. */
 export function visibleSections(access: Access): Set<string> {
   const can = (a: Area) => grants(access.perms, `${a}:read`) || (a === "import" && grants(access.perms, "import:write"));
-  const s = new Set<string>(["overview"]);
+  const s = new Set<string>(["overview", "applications"]);
   if (can("users")) s.add("users");
   if (can("groups")) s.add("groups");
   if (can("domains")) s.add("domains");
