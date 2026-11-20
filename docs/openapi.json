@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.6.0",
+    "version": "4.7.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -63,6 +63,10 @@
     {
       "name": "LDAP",
       "description": "The read-only LDAP interface: app registrations and directory settings."
+    },
+    {
+      "name": "Mappings",
+      "description": "Attribute flows: inbound and outbound mapping rules evaluated by the expression engine, and the collision policy."
     },
     {
       "name": "Federation",
@@ -17459,6 +17463,378 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mappings": {
+      "get": {
+        "tags": [
+          "Mappings"
+        ],
+        "summary": "List a channel's attribute mappings",
+        "description": "The mapping rows for one flow: `channel` is scim-in, jit, scim-out, oidc; `owner` scopes it (an upstream IdP id for jit, a SCIM target id for scim-out, a client_id for oidc, empty for the channel's defaults and for scim-in). Each row's `expression` is evaluated over the source document - the SCIM body, the IdP's claims, or the FlareID user.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "schemas:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "channel",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "owner",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mappings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "string"
+                          },
+                          "expression": {
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "owner": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "target",
+                          "expression",
+                          "enabled",
+                          "owner"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "mappings"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Mappings"
+        ],
+        "summary": "Replace a channel's attribute mappings",
+        "description": "The whole set for (channel, owner) at once - the same surface as the console's Flows editor, which is Super-Admin-gated for the same reason: the rows rewrite what every sign-in and provisioning write carries. `/api/v1/scim/mappings` remains the delegable (scim:write) view of the scim-in channel.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "resource": {
+                    "type": "string"
+                  },
+                  "mappings": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "target": {
+                          "type": "string"
+                        },
+                        "expression": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "target",
+                        "expression"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "channel",
+                  "mappings"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mappings/collisions": {
+      "get": {
+        "tags": [
+          "Mappings"
+        ],
+        "summary": "Read the collision policy",
+        "description": "What inbound writes do when an identity collides: `username` is increment (append a counter), pattern (evaluate `username_pattern` over {local, n, domain, email} until free), or fail; `email` is skip (don't attach) or fail.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "schemas:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "username": {
+                      "type": "string"
+                    },
+                    "username_pattern": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "username",
+                    "username_pattern",
+                    "email"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Mappings"
+        ],
+        "summary": "Set the collision policy",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "username_pattern": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "username": {
+                      "type": "string"
+                    },
+                    "username_pattern": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "username",
+                    "username_pattern",
+                    "email"
+                  ]
                 }
               }
             }

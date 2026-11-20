@@ -9,7 +9,7 @@ import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "./admin-roles.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
-import { parseRule, userMatchesRule, type GroupRule } from "./groups.js";
+import { isExprCondition, parseRule, userMatchesRule, type GroupRule } from "./groups.js";
 import { WATCHLIST_GROUP_NAME } from "./cfone.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroupsAllTargets, scimDeprovisionStatementsForMany, drainScimDeprovisionQueue } from "./scim-client.js";
@@ -369,7 +369,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     // can edit an attribute grant themselves the console.
     if (name === SUPER_ADMINS_GROUP) result.errors.push({ group: name, message: `${SUPER_ADMINS_GROUP} cannot be a dynamic group - rule ignored.` });
     else if (!parseRule(group.rule)) result.errors.push({ group: name, message: "Rule is not valid rule JSON - rule ignored." });
-    else if ((parseRule(group.rule)?.all ?? []).some((cond) => editableAttrs.has(cond.field.replace(/^custom\./, ""))))
+    else if ((parseRule(group.rule)?.all ?? []).some((cond) => !isExprCondition(cond) && editableAttrs.has(cond.field.replace(/^custom\./, ""))))
       result.errors.push({ group: name, message: "Rule matches on a user-editable attribute, which would let users choose their own groups - rule ignored." });
     // Stored normalised - the parsed conditions only - so every later reader
     // (rule guards, evaluators) sees exactly what is evaluated.

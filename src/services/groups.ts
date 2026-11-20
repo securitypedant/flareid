@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import { MAX_RULE_BYTES, MAX_RULE_CONDITIONS, parseRule, userMatchesRule } from "../lib/groups.js";
+import { MAX_RULE_BYTES, MAX_RULE_CONDITIONS, isExprCondition, parseRule, userMatchesRule } from "../lib/groups.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { userEditableAttributeNames } from "../lib/schemas.js";
 import { drainScimDeprovisionQueue, pushUsersById, scimDeprovisionStatements } from "../lib/scim-client.js";
@@ -24,7 +24,7 @@ export async function assertRuleAllowed(env: Env, rule: string): Promise<void> {
   const parsed = parseRule(rule);
   if (!parsed) throw new ServiceError(400, `A rule needs between 1 and ${MAX_RULE_CONDITIONS} conditions, each a field, an op ("eq" or "ne") and a value, in at most ${MAX_RULE_BYTES} bytes.`);
   const editable = await userEditableAttributeNames(env);
-  const clash = parsed.all.map((cond) => cond.field.replace(/^custom\./, "")).find((f) => editable.has(f));
+  const clash = parsed.all.map((cond) => (isExprCondition(cond) ? null : cond.field.replace(/^custom\./, ""))).find((f) => f && editable.has(f));
   if (clash) throw new ServiceError(400, `"${clash}" is user-editable in a schema, so it cannot drive group membership. Turn off "User can edit" for it first.`);
 }
 

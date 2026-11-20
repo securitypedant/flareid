@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.6.0.
+API version 4.7.0.
 
 ## Contents
 
@@ -20,6 +20,7 @@ API version 4.6.0.
 - [App catalog](#app-catalog) - Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in.
 - [SCIM](#scim) - Outbound SCIM provisioning (FlareID as a SCIM client).
 - [LDAP](#ldap) - The read-only LDAP interface: app registrations and directory settings.
+- [Mappings](#mappings) - Attribute flows: inbound and outbound mapping rules evaluated by the expression engine, and the collision policy.
 - [Federation](#federation) - Inbound federation: upstream identity providers people sign in through (FlareID as the relying party).
 - [Cloudflare One](#cloudflare-one) - The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist.
 - [Signals](#signals) - Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters.
@@ -2431,6 +2432,107 @@ Response `200`:
 | `posix_home` | string | yes |  |
 | `idle_timeout_minutes` | number | yes |  |
 | `otp_rebind_seconds` | number | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+## Mappings
+
+Attribute flows: inbound and outbound mapping rules evaluated by the expression engine, and the collision policy.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/mappings` | `schemas:read` | List a channel's attribute mappings |
+| `PUT` | `/api/v1/mappings` | `admin` | Replace a channel's attribute mappings |
+| `GET` | `/api/v1/mappings/collisions` | `schemas:read` | Read the collision policy |
+| `PUT` | `/api/v1/mappings/collisions` | `admin` | Set the collision policy |
+
+### `GET /api/v1/mappings`
+
+List a channel's attribute mappings.
+
+The mapping rows for one flow: `channel` is scim-in, jit, scim-out, oidc; `owner` scopes it (an upstream IdP id for jit, a SCIM target id for scim-out, a client_id for oidc, empty for the channel's defaults and for scim-in). Each row's `expression` is evaluated over the source document - the SCIM body, the IdP's claims, or the FlareID user.
+
+Permission: `schemas:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `channel` | query | yes | string |
+| `owner` | query | no | string |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mappings` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/mappings`
+
+Replace a channel's attribute mappings.
+
+The whole set for (channel, owner) at once - the same surface as the console's Flows editor, which is Super-Admin-gated for the same reason: the rows rewrite what every sign-in and provisioning write carries. `/api/v1/scim/mappings` remains the delegable (scim:write) view of the scim-in channel.
+
+Permission: `admin`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `channel` | string | yes |  |
+| `owner` | string | no |  |
+| `resource` | string | no |  |
+| `mappings` | object[] | yes |  |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/mappings/collisions`
+
+Read the collision policy.
+
+What inbound writes do when an identity collides: `username` is increment (append a counter), pattern (evaluate `username_pattern` over {local, n, domain, email} until free), or fail; `email` is skip (don't attach) or fail.
+
+Permission: `schemas:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `username` | string | yes |  |
+| `username_pattern` | string | yes |  |
+| `email` | string | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/mappings/collisions`
+
+Set the collision policy.
+
+Permission: `admin`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `username` | string | no |  |
+| `username_pattern` | string | no |  |
+| `email` | string | no |  |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `username` | string | yes |  |
+| `username_pattern` | string | yes |  |
+| `email` | string | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

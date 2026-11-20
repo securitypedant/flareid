@@ -285,6 +285,8 @@ const STYLES = `
   .rule-row { display: grid; grid-template-columns: 1.1fr 1.5fr 70px 1.4fr 44px; gap: 8px; align-items: start; margin-bottom: 8px; }
   .rule-row > * { min-width: 0; }
   .rule-row input, .rule-row select { margin-bottom: 0; }
+  .rule-row.rule-expr { grid-template-columns: 70px 1fr 44px; }
+  .rule-row.rule-expr .rule-schema, .rule-row.rule-expr .rule-attr { display: none; }
   .attr-row { display: grid; grid-template-columns: 1.2fr 1.4fr 1fr 100px 130px 44px; gap: 8px; align-items: center; margin-bottom: 8px; }
   .attr-row input, .attr-row select { margin-bottom: 0; }
   .attr-row label { margin: 0; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap; }

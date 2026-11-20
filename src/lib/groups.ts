@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import type { GroupRow, UserRow } from "./types.js";
+import { evalExpression, parseExpression, truthy, type ScimExpr } from "./expr.js";
 
 /**
  * Dynamic groups.
@@ -31,8 +32,26 @@ export interface RuleCondition {
   value: string;
 }
 
+/**
+ * An expression condition: the shared expression language (src/lib/expr.ts)
+ * evaluated over the user document; truthy means the condition holds. This is
+ * the full predicate form - contains(), comparisons, coalesce chains - for
+ * the rules the field = value builder can't express.
+ */
+export interface RuleExprCondition {
+  expr: string;
+  /** Pre-parsed by parseRule so the per-user scan never re-parses. */
+  parsed?: ScimExpr;
+}
+
+export type RuleTerm = RuleCondition | RuleExprCondition;
+
 export interface GroupRule {
-  all: RuleCondition[];
+  all: RuleTerm[];
+}
+
+export function isExprCondition(t: RuleTerm): t is RuleExprCondition {
+  return "expr" in t;
 }
 
 /** Fields usable in rules: user columns, plus schema attributes by bare name or as `custom.<attribute>`. */
@@ -64,11 +83,22 @@ export const MAX_RULE_CONDITIONS = 20;
 export function parseRule(raw: string | null | undefined): GroupRule | null {
   if (!raw || raw.length > MAX_RULE_BYTES) return null;
   try {
-    const parsed = JSON.parse(raw) as GroupRule;
+    const parsed = JSON.parse(raw) as { all?: unknown };
     if (!parsed || !Array.isArray(parsed.all)) return null;
-    const all = parsed.all
-      .filter((c) => c && typeof c.field === "string" && c.field && typeof c.value === "string" && (c.op === "eq" || c.op === "ne"))
-      .map((c) => ({ ...(typeof c.schema === "string" && c.schema ? { schema: c.schema } : {}), field: c.field, op: c.op, value: c.value }));
+    const all: RuleTerm[] = [];
+    for (const c of parsed.all as Record<string, unknown>[]) {
+      if (c && typeof c.expr === "string" && c.expr) {
+        // A stored expression that won't parse is dropped here; saved rules
+        // are validated at write time, so this only protects hand-edited DBs.
+        try {
+          all.push({ expr: c.expr, parsed: parseExpression(c.expr) });
+        } catch { /* skip */ }
+        continue;
+      }
+      if (c && typeof c.field === "string" && c.field && typeof c.value === "string" && (c.op === "eq" || c.op === "ne")) {
+        all.push({ ...(typeof c.schema === "string" && c.schema ? { schema: c.schema } : {}), field: c.field, op: c.op, value: c.value });
+      }
+    }
     return all.length > 0 && all.length <= MAX_RULE_CONDITIONS ? { all } : null;
   } catch {
     return null;
@@ -82,11 +112,22 @@ export function parseRule(raw: string | null | undefined): GroupRule | null {
  * no value is an error rather than a silent match-the-empty-string.
  */
 export function ruleFromForm(schemas: string[], fields: string[], ops: string[], values: string[]): string {
-  const all: RuleCondition[] = [];
+  const all: RuleTerm[] = [];
   fields.forEach((field, i) => {
     const f = field.trim();
-    if (!f) return;
     const value = (values[i] ?? "").trim();
+    if (ops[i] === "expr") {
+      if (!value) return;
+      // Validate at save so a stored rule can never fail to parse later.
+      try {
+        parseExpression(value);
+      } catch (e) {
+        throw new Error(`The expression "${value}" is invalid: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      all.push({ expr: value });
+      return;
+    }
+    if (!f) return;
     if (!value) throw new Error(`The condition on "${f}" needs a value.`);
     const schema = (schemas[i] ?? "").trim();
     all.push({ ...(schema ? { schema } : {}), field: f, op: ops[i] === "ne" ? "ne" : "eq", value });
@@ -101,7 +142,7 @@ export function ruleFromForm(schemas: string[], fields: string[], ops: string[],
 
 /** Human-readable rule, e.g. "FlareID HR › department = Sales AND employment_type != contractor". */
 export function ruleDescription(rule: GroupRule): string {
-  return rule.all.map((c) => `${c.schema ? `${c.schema} › ` : ""}${c.field} ${c.op === "ne" ? "!=" : "="} ${c.value}`).join(" AND ");
+  return rule.all.map((c) => (isExprCondition(c) ? c.expr : `${c.schema ? `${c.schema} › ` : ""}${c.field} ${c.op === "ne" ? "!=" : "="} ${c.value}`)).join(" AND ");
 }
 
 function userCustomAttrs(user: UserRow): Record<string, string> {
@@ -113,8 +154,14 @@ function userCustomAttrs(user: UserRow): Record<string, string> {
 }
 
 export function userMatchesRule(user: UserRow, rule: GroupRule): boolean {
-  const fields = ruleFields(user, userCustomAttrs(user));
+  const custom = userCustomAttrs(user);
+  const fields = ruleFields(user, custom);
+  const doc = { ...fields, custom };
   return rule.all.every((c) => {
+    if (isExprCondition(c)) {
+      const parsed = c.parsed ?? parseExpression(c.expr);
+      return truthy(evalExpression(parsed, doc));
+    }
     const actual = fields[c.field] ?? "";
     return c.op === "eq" ? actual === c.value : actual !== c.value;
   });

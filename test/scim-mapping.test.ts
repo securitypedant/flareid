@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { createSession } from "../src/lib/sessions.js";
-import { evalExpression, parseExpression, ScimMappingError } from "../src/lib/scim-mapping.js";
+import { evalExpression, parseExpression, ExprError } from "../src/lib/expr.js";
 
 beforeEach(resetDatabase);
 
@@ -52,10 +52,10 @@ describe("mapping expressions", () => {
   });
 
   it("rejects bad syntax and unknown functions", () => {
-    expect(() => parseExpression("name.")).toThrow(ScimMappingError);
-    expect(() => parseExpression("(")).toThrow(ScimMappingError);
-    expect(() => parseExpression("emails[type zz")).toThrow(ScimMappingError);
-    expect(() => ev("bogus(1)")).toThrow(ScimMappingError);
+    expect(() => parseExpression("name.")).toThrow(ExprError);
+    expect(() => parseExpression("(")).toThrow(ExprError);
+    expect(() => parseExpression("emails[type zz")).toThrow(ExprError);
+    expect(() => ev("bogus(1)")).toThrow(ExprError);
   });
 });
 

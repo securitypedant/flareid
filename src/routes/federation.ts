@@ -11,7 +11,7 @@ import {
   oidcExchange,
   oidcMetadata,
   pkcePair,
-  profileFromClaims,
+  mappedProfileFromClaims,
   resolveFederatedUser,
   samlAcsUrl,
   samlRedirectUrl,
@@ -127,7 +127,7 @@ federation.get("/federation/oidc/callback", async (c) => {
     await logAudit(c.env, null, "federation.failed", idp.name, { error: e instanceof Error ? e.message : String(e) }, c.req.raw);
     return renderAuthMessage(c, 400, appConfigError(e instanceof FederationError ? e.message : "The provider's response could not be verified."), hint);
   }
-  const profile = profileFromClaims(claims, String(claims.sub ?? ""));
+  const profile = await mappedProfileFromClaims(c.env, claims, String(claims.sub ?? ""), undefined, idp.id);
   if (!profile.subject) return renderAuthMessage(c, 400, appConfigError("The provider's token carries no subject."), hint);
   return finishFederatedLogin(c, st.flowId, profile, idp.id);
 });
@@ -152,6 +152,6 @@ federation.post("/federation/saml/acs/:id", async (c) => {
     await logAudit(c.env, null, "federation.failed", idp.name, { error: e instanceof Error ? e.message : String(e) }, c.req.raw);
     return renderAuthMessage(c, 400, appConfigError(e instanceof FederationError ? e.message : "The SAML response could not be verified."), hint);
   }
-  const profile = profileFromClaims(identity.attributes, identity.subject, cfg.attr_map);
+  const profile = await mappedProfileFromClaims(c.env, identity.attributes, identity.subject, cfg.attr_map, idp.id);
   return finishFederatedLogin(c, st.flowId, profile, idp.id);
 });

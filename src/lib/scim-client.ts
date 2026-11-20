@@ -6,6 +6,8 @@ import { validateScimEndpoint } from "./settings.js";
 import { timed, recordEvent } from "./metrics.js";
 import { unsealMaybe } from "./sealed.js";
 import type { GroupRow, UserRow } from "./types.js";
+import { effectiveMappings, evalMappings, userExprDoc, type MappingRow } from "./mappings.js";
+import { scalar, strOf, truthy } from "./expr.js";
 
 const USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
 const GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group";
@@ -119,6 +121,16 @@ async function fanOut(env: Env, work: (target: ScimTarget) => Promise<ScimResult
   return errors.length ? { ok: false, error: errors.join("; ").slice(0, 500) } : { ok: true };
 }
 
+/** The manager's link record in this target, or nothing until they've been pushed there. */
+async function scimManagerRef(env: Env, target: ScimTarget, managerExternalId: string) {
+  const managerRow = await env.DB.prepare(
+    "SELECT l.scim_id, u.display_name FROM users u JOIN scim_user_links l ON l.user_id = u.id AND l.target_id = ? WHERE u.external_id = ?"
+  )
+    .bind(target.id, managerExternalId)
+    .first<{ scim_id: string | null; display_name: string }>();
+  return managerRow?.scim_id ? { value: managerRow.scim_id, displayName: managerRow.display_name } : undefined;
+}
+
 /**
  * Builds the SCIM User resource for a person, including their job title (core
  * User schema) and department/manager (Enterprise User extension - standard
@@ -127,16 +139,11 @@ async function fanOut(env: Env, work: (target: ScimTarget) => Promise<ScimResult
  * if pushed out of order.
  */
 async function userToScim(env: Env, target: ScimTarget, user: UserRow) {
-  let manager: { value: string; displayName?: string } | undefined;
-  if (user.manager_external_id) {
-    const managerRow = await env.DB.prepare(
-      "SELECT l.scim_id, u.display_name FROM users u JOIN scim_user_links l ON l.user_id = u.id AND l.target_id = ? WHERE u.external_id = ?"
-    )
-      .bind(target.id, user.manager_external_id)
-      .first<{ scim_id: string | null; display_name: string }>();
-    if (managerRow?.scim_id) manager = { value: managerRow.scim_id, displayName: managerRow.display_name };
-  }
-
+  // Per-target mappings replace the document wholesale when the target has
+  // any - see mappedUserToScim. No rows keeps this default shape.
+  const rows = await effectiveMappings(env, "scim-out", String(target.id));
+  if (rows.length) return mappedUserToScim(env, target, user, rows);
+  const manager = user.manager_external_id ? await scimManagerRef(env, target, user.manager_external_id) : undefined;
   const { results: emails } = await env.DB.prepare("SELECT email, type, is_primary FROM user_emails WHERE user_id = ? ORDER BY is_primary DESC, id").bind(user.id).all<{ email: string; type: string; is_primary: number }>();
   return {
     schemas: [USER_SCHEMA, ENTERPRISE_USER_SCHEMA],
@@ -155,6 +162,76 @@ async function userToScim(env: Env, target: ScimTarget, user: UserRow) {
       manager,
     },
   };
+}
+
+function coerceOutEmails(v: unknown): { value: string; type: string; primary?: boolean }[] {
+  const list = Array.isArray(v) ? v : v === null || v === undefined ? [] : [v];
+  const out: { value: string; type: string; primary?: boolean }[] = [];
+  for (const el of list) {
+    if (typeof el === "object" && el !== null) {
+      const o = el as { value?: unknown; type?: unknown; primary?: unknown };
+      const value = strOf(o.value).trim();
+      if (value) out.push({ value, type: strOf(o.type) || "work", ...(truthy(o.primary) ? { primary: true } : {}) });
+    } else {
+      const value = strOf(el).trim();
+      if (value) out.push({ value, type: "work", primary: out.length === 0 });
+    }
+  }
+  if (out.length && !out.some((e) => e.primary)) out[0]!.primary = true;
+  return out;
+}
+
+/**
+ * A target's mapping rows build the pushed resource attribute by attribute:
+ * each row names a SCIM attribute (`userName`, `name.givenName`, `emails`,
+ * `enterprise.<attr>` for the Enterprise extension, or a full extension URN
+ * ending in the attribute name) and an expression over the user document.
+ */
+export async function mappedUserToScim(env: Env, target: ScimTarget, user: UserRow, rows: MappingRow[]) {
+  const doc = await userExprDoc(env, user);
+  const out: Record<string, unknown> = { schemas: [USER_SCHEMA] };
+  const schemas = out.schemas as string[];
+  const enterprise = () => {
+    if (!schemas.includes(ENTERPRISE_USER_SCHEMA)) schemas.push(ENTERPRISE_USER_SCHEMA);
+    return (out[ENTERPRISE_USER_SCHEMA] ??= {} as Record<string, unknown>) as Record<string, unknown>;
+  };
+  for (const m of evalMappings(rows, doc, "skip")) {
+    const v = m.value;
+    if (v === null || v === undefined) continue;
+    const t = m.target;
+    if (t === "userName") out.userName = strOf(scalar(v));
+    else if (t === "displayName") out.displayName = strOf(scalar(v));
+    else if (t === "title") out.title = strOf(scalar(v)) || undefined;
+    else if (t === "externalId") out.externalId = strOf(scalar(v)) || undefined;
+    else if (t === "active") out.active = truthy(v);
+    else if (t === "emails") out.emails = coerceOutEmails(v);
+    else if (t.startsWith("name.")) ((out.name ??= {}) as Record<string, unknown>)[t.slice(5)] = strOf(scalar(v));
+    else if (t === "enterprise.manager") {
+      const ref = strOf(scalar(v)).trim();
+      if (ref) {
+        const holder =
+          (await env.DB.prepare("SELECT external_id FROM users WHERE external_id = ? OR upn = ? OR username = ?").bind(ref, ref, ref).first<{ external_id: string }>());
+        const mgr = holder ? await scimManagerRef(env, target, holder.external_id) : undefined;
+        if (mgr) enterprise().manager = mgr;
+      }
+    } else if (t.startsWith("enterprise.")) {
+      const val = strOf(scalar(v));
+      if (val) enterprise()[t.slice(11)] = val;
+    } else if (t.startsWith("urn:")) {
+      // Full extension attribute URN: everything before the last colon is the
+      // schema id, the last segment the attribute within it.
+      const i = t.lastIndexOf(":");
+      const schema = t.slice(0, i), attr = t.slice(i + 1);
+      if (!schemas.includes(schema)) schemas.push(schema);
+      const val = strOf(scalar(v));
+      if (val) ((out[schema] ??= {}) as Record<string, unknown>)[attr] = val;
+    } else {
+      // Anything else - phoneNumbers, addresses, nickName - lands as-is.
+      const val = scalar(v);
+      if (val !== null && strOf(val) !== "") out[t] = val;
+    }
+  }
+  return out;
 }
 
 /**

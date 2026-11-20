@@ -44,7 +44,8 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { syncAll, testScimConnection } from "../lib/scim-client.js";
 import { getAppName, getDisabledAlgorithms, isSetupCompleted, normalizeDisabledAlgorithms, setDisabledAlgorithms } from "../lib/settings.js";
-import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, replaceScimMappings, setCorrelationKeys, setMasteredFields } from "../lib/scim-mapping.js";
+import { getCollisionPolicy, listMappings, replaceMappings, setCollisionPolicy, validateJitTarget, validateOidcClaimTarget, validateScimOutTarget } from "../lib/mappings.js";
+import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, isValidMappingTarget, listScimMappings, MASTERING_FIELDS, replaceScimMappings, setCorrelationKeys, setMasteredFields } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, updateScimTarget } from "../lib/scim-targets.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
@@ -873,6 +874,83 @@ defineRoute({
   }
   await logAudit(c.env, auditActor(c.get("apiActor")), "settings.scim_mappings_changed", undefined, { count: (body.mappings ?? []).length }, c.req.raw);
   return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Unified attribute mappings: every channel's rules in one surface
+// ---------------------------------------------------------------------------
+
+const MappingRow = z.object({ target: z.string(), expression: z.string(), enabled: z.boolean() });
+const MAPPING_CHANNELS = ["scim-in", "jit", "scim-out", "oidc"] as const;
+
+function channelValidator(channel: string): (target: string) => string | null {
+  switch (channel) {
+    case "scim-in": return (t) => (isValidMappingTarget("user", t) ? null : `"${t}" is not a field a user mapping can feed.`);
+    case "jit": return validateJitTarget;
+    case "scim-out": return validateScimOutTarget;
+    case "oidc": return validateOidcClaimTarget;
+    default: return () => `Unknown channel "${channel}" - use ${MAPPING_CHANNELS.join(", ")}.`;
+  }
+}
+
+defineRoute({
+  method: "get", path: "/api/v1/mappings", tag: "Mappings", permission: "schemas:read", summary: "List a channel's attribute mappings",
+  description:
+    `The mapping rows for one flow: \`channel\` is ${MAPPING_CHANNELS.join(", ")}; \`owner\` scopes it (an upstream IdP id for jit, a SCIM target id for scim-out, a client_id for oidc, empty for the channel's defaults and for scim-in). Each row's \`expression\` is evaluated over the source document - the SCIM body, the IdP's claims, or the FlareID user.`,
+  query: z.object({ channel: z.string(), owner: z.string().optional() }),
+  errors: [400],
+  response: z.object({ mappings: z.array(MappingRow.extend({ owner: z.string(), enabled: z.boolean() })) }),
+}, async (c) => {
+  const channel = c.req.query("channel") ?? "";
+  const owner = c.req.query("owner") ?? "";
+  if (!MAPPING_CHANNELS.includes(channel as (typeof MAPPING_CHANNELS)[number]))
+    return c.json(badRequest(`Unknown channel "${channel}" - use ${MAPPING_CHANNELS.join(", ")}.`), 400);
+  const rows = await listMappings(c.env, { channel, owner });
+  return c.json({ mappings: rows.map((m) => ({ owner: m.owner, target: m.target, expression: m.expression, enabled: m.enabled })) });
+});
+
+defineRoute({
+  method: "put", path: "/api/v1/mappings", tag: "Mappings", permission: "admin", summary: "Replace a channel's attribute mappings",
+  description:
+    "The whole set for (channel, owner) at once - the same surface as the console's Flows editor, which is Super-Admin-gated for the same reason: the rows rewrite what every sign-in and provisioning write carries. `/api/v1/scim/mappings` remains the delegable (scim:write) view of the scim-in channel.",
+  body: z.object({ channel: z.string(), owner: z.string().optional(), resource: z.string().optional(), mappings: z.array(z.object({ target: z.string(), expression: z.string().min(1), enabled: z.boolean().optional() })) }),
+  errors: [400],
+}, async (c) => {
+  const body = await readJson<{ channel?: string; owner?: string; resource?: string; mappings?: { target: string; expression: string; enabled?: boolean }[] }>(c);
+  const channel = body.channel ?? "";
+  const validator = channelValidator(channel);
+  if (!MAPPING_CHANNELS.includes(channel as (typeof MAPPING_CHANNELS)[number]))
+    return c.json(badRequest(`Unknown channel "${channel}" - use ${MAPPING_CHANNELS.join(", ")}.`), 400);
+  try {
+    await replaceMappings(c.env, { channel, owner: body.owner ?? "", resource: body.resource ?? "user" }, body.mappings ?? [], validator);
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
+  await logAudit(c.env, auditActor(c.get("apiActor")), "settings.mappings_changed", `${channel}${body.owner ? ` (${body.owner})` : ""}`, { count: (body.mappings ?? []).length }, c.req.raw);
+  return c.json({ ok: true });
+});
+
+defineRoute({
+  method: "get", path: "/api/v1/mappings/collisions", tag: "Mappings", permission: "schemas:read", summary: "Read the collision policy",
+  description:
+    "What inbound writes do when an identity collides: `username` is increment (append a counter), pattern (evaluate `username_pattern` over {local, n, domain, email} until free), or fail; `email` is skip (don't attach) or fail.",
+  response: z.object({ username: z.string(), username_pattern: z.string(), email: z.string() }),
+}, async (c) => c.json(await getCollisionPolicy(c.env)));
+
+defineRoute({
+  method: "put", path: "/api/v1/mappings/collisions", tag: "Mappings", permission: "admin", summary: "Set the collision policy",
+  body: z.object({ username: z.string().optional(), username_pattern: z.string().optional(), email: z.string().optional() }),
+  errors: [400],
+  response: z.object({ username: z.string(), username_pattern: z.string(), email: z.string() }),
+}, async (c) => {
+  const body = await readJson<{ username?: string; username_pattern?: string; email?: string }>(c);
+  try {
+    const policy = await setCollisionPolicy(c.env, body);
+    await logAudit(c.env, auditActor(c.get("apiActor")), "settings.collision_policy_changed", undefined, { username: policy.username, email: policy.email }, c.req.raw);
+    return c.json(policy);
+  } catch (e) {
+    return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+  }
 });
 
 defineRoute({

@@ -85,6 +85,7 @@ export const TAGS = [
   { name: "App catalog", description: "Templates for well-known applications: browse, read the setup instructions, and create the client or service provider filled in." },
   { name: "SCIM", description: "Outbound SCIM provisioning (FlareID as a SCIM client)." },
   { name: "LDAP", description: "The read-only LDAP interface: app registrations and directory settings." },
+  { name: "Mappings", description: "Attribute flows: inbound and outbound mapping rules evaluated by the expression engine, and the collision policy." },
   { name: "Federation", description: "Inbound federation: upstream identity providers people sign in through (FlareID as the relying party)." },
   { name: "Cloudflare One", description: "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist." },
   { name: "Signals", description: "Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters." },

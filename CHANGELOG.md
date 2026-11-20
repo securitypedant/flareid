@@ -4,9 +4,49 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
-## [Unreleased]
+## [4.7.0] - 2026-11-24
+
+One attribute-mapping model everywhere: every inbound and outbound flow is
+driven by the same expression engine, administered from **Admin → Flows** and
+a new `/api/v1/mappings` surface.
+
+- **Unified mappings.** A channel- and owner-aware `mappings` table now backs
+  inbound SCIM (migrated from `scim_mappings`), JIT federation defaults and
+  per-IdP overrides, per-SCIM-target push documents, per-client OIDC extra
+  claims and SAML attribute values. Per-owner rows replace the seeded
+  defaults wholesale; flows with no rows keep today's behaviour.
+- **Richer expression language.** The SCIM expression engine moved to
+  `lib/expr.ts` and grew string (`lower upper title capitalize trim concat
+  join split substr left right replace replaceRe match ascii alnum initials
+  word localpart domainpart format`), list (`len at take sort uniq reverse
+  first`), logic (`eq ne gt lt ge le and or not in contains startsWith
+  endsWith if select`), numeric (`add sub mul div mod int round min max`) and
+  document (`coalesce attr now year`) functions - all pure and allocation-free
+  enough for per-request evaluation. `given_name + " " + family_name` style
+  compositions now work on every channel, not just inbound SCIM.
+- **JIT on expressions.** Federation sign-in profiles are computed from
+  mapping rows (global defaults seeded to the previous claim preference
+  lists, per-IdP overrides) - an expression can now write any profile column
+  or custom attribute, and the collision policy below applies.
+- **Outbound coverage.** SAML `field` entries evaluate as expressions over
+  the user document (plain field names still resolve); SCIM push honours
+  per-target `scim-out` rows; per-client `oidc` rows add/refine claims on the
+  id_token and userinfo (protocol claims refused).
+- **Collision policy.** A central setting decides what happens when an
+  inbound sign-in name or email address already belongs to another account:
+  suffix (`jdoe2`, `jdoe3`...), a custom pattern expression retried with
+  n = 2, 3, 4..., or refuse - for JIT and SCIM alike.
+- **Dynamic groups.** Rule conditions gained an `expr` operator, evaluating
+  the same language as a membership predicate (`contains(department, "eng")`).
+- **Admin → Flows.** A new section lists every channel, links into each
+  owner's page, edits rows per flow and owns the collision-policy card. The
+  SCIM page's mapping editor now writes the unified table.
+- **API.** `GET/PUT /api/v1/mappings` (channel + owner aware),
+  `GET/PUT /api/v1/mappings/collisions`. `/api/v1/scim/mappings` remains the
+  delegable view of the inbound SCIM channel.
 
 API completeness: the console's app-creation paths and the self-service gaps
+now all have API operations, on one shared implementation. the console's app-creation paths and the self-service gaps
 now all have API operations, on one shared implementation.
 
 - **App catalog API.** `GET /api/v1/app-catalog` lists the templates,

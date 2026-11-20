@@ -1,6 +1,6 @@
 import { RESERVED_CLAIM_NAMES } from "./jwt.js";
 import { RESERVED_LDAP_ATTRIBUTE_NAMES } from "../ldap/entries.js";
-import { parseRule } from "./groups.js";
+import { isExprCondition, parseRule } from "./groups.js";
 import { assertMayTouchUser, assertNoAdminRoleGrant } from "../services/guards.js";
 import type { ServiceCtx } from "../services/context.js";
 import type { Env } from "../env.js";
@@ -238,6 +238,7 @@ export async function ruleAttributeNames(env: Env): Promise<Set<string>> {
   // because ruleFields (groups.ts) answers to either spelling.
   for (const { rule } of results) {
     for (const cond of parseRule(rule)?.all ?? []) {
+      if (isExprCondition(cond)) continue; // expression terms name no single attribute
       names.add(cond.field);
       names.add(cond.field.replace(/^custom\./, ""));
     }

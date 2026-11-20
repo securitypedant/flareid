@@ -12,6 +12,8 @@ import { randomToken } from "./tokens.js";
 import { sealMaybe, unsealMaybe } from "./sealed.js";
 import { claimOnce } from "./one-shot.js";
 import type { UserRow } from "./types.js";
+import { effectiveMappings, getCollisionPolicy, JIT_COLUMN_TARGETS, resolveUsernameCollision } from "./mappings.js";
+import { evalExpression, parseExpression, scalar, strOf } from "./expr.js";
 
 /**
  * Inbound federation: sign in *through* an upstream identity provider.
@@ -478,6 +480,10 @@ export interface FederatedProfile {
   givenName: string;
   familyName: string;
   displayName: string;
+  /** Scalar user columns the IdP's JIT mappings produced (job_title, department...). */
+  cols?: Record<string, string>;
+  /** custom.* attributes the JIT mappings produced. */
+  custom?: Record<string, string>;
 }
 
 function first(claims: Record<string, unknown>, names: readonly string[]): string {
@@ -507,6 +513,48 @@ export function profileFromClaims(claims: Record<string, unknown>, subject: stri
     familyName: family,
     displayName: display || `${given} ${family}`.trim(),
   };
+}
+
+/**
+ * profileFromClaims with the IdP's JIT mappings applied: the `jit` mapping
+ * channel's rows (the IdP's own set, else the seeded global set) evaluate over
+ * the claims and override whichever profile fields they produce. Rows that
+ * yield nothing leave the built-in derivation in place, so the pure function
+ * stays the floor the way the hardcoded claim lists were before the channel
+ * existed.
+ */
+export async function mappedProfileFromClaims(
+  env: Env,
+  claims: Record<string, unknown>,
+  subject: string,
+  attrMap?: Record<string, string>,
+  idpId?: number
+): Promise<FederatedProfile> {
+  const mapped = { ...claims };
+  if (attrMap) for (const [k, t] of Object.entries(attrMap)) if (claims[k] !== undefined) mapped[t] = claims[k];
+  const rows = await effectiveMappings(env, "jit", idpId ? String(idpId) : "");
+  const base = profileFromClaims(mapped, subject);
+  if (!rows.length) return base;
+  const profile: FederatedProfile = { ...base, cols: {}, custom: {} };
+  for (const row of rows) {
+    if (!row.enabled) continue;
+    let value: unknown;
+    try {
+      value = evalExpression(parseExpression(row.expression), mapped);
+    } catch {
+      continue; // a bad stored expression must not take sign-in down
+    }
+    const s = strOf(scalar(value)).trim();
+    if (!s) continue;
+    if (row.target === "email") profile.email = s.toLowerCase();
+    else if (row.target === "username") profile.username = s.toLowerCase();
+    else if (row.target === "display_name") profile.displayName = s;
+    else if (row.target === "given_name") profile.givenName = s;
+    else if (row.target === "family_name") profile.familyName = s;
+    else if (row.target.startsWith("custom.")) profile.custom![row.target.slice(7)] = s;
+    else if (JIT_COLUMN_TARGETS.has(row.target)) profile.cols![row.target] = s;
+  }
+  return profile;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,12 +605,12 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   if (!domain) domain = (await env.DB.prepare("SELECT domain FROM domains ORDER BY is_default DESC, domain LIMIT 1").first<{ domain: string }>())?.domain ?? "";
   if (!domain || !(await domainExists(env, domain))) throw new FederationError("JIT provisioning has no managed domain to create the account under.");
 
-  // A taken username gets a suffix rather than colliding.
-  let candidate = local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "") || `u${randomToken(6)}`;
-  let n = 1;
-  while (await env.DB.prepare("SELECT 1 FROM users WHERE username = ?").bind(candidate).first()) {
-    candidate = `${local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "")}${++n}`;
-  }
+  // A taken sign-in name follows the collision policy: append a counter,
+  // evaluate a pattern expression, or refuse outright.
+  const policy = await getCollisionPolicy(env);
+  const baseLocal = local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "") || `u${randomToken(6)}`;
+  const candidate = await resolveUsernameCollision(env, baseLocal, { domain, email: profile.email }, policy);
+  if (!candidate) throw new FederationError("JIT provisioning can't create the account: its sign-in name collides with an existing user.");
   const upn = `${candidate}@${domain}`;
   // The sign-in name shares a namespace with contact addresses: spelled like
   // another account's user_emails alias or users.email, the same string
@@ -570,12 +618,30 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   // alias owner) - the check SCIM POST /Users applies.
   const upnClash = await env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ? UNION SELECT 1 FROM users WHERE email = ?").bind(upn, upn).first();
   if (upnClash) throw new FederationError(`JIT provisioning would create a sign-in name (${upn}) that collides with another account's email address.`);
+
+  // The claimed address is unverified and must never collide with another
+  // account's identifiers; a collision means adoption failed to match, not
+  // that this account should claim the spelling. The email collision policy
+  // decides: skip it (default) or refuse the sign-in.
+  const jitEmail = (profile.email ?? "").trim().toLowerCase();
+  let attachEmail = false;
+  if (jitEmail) {
+    const clash = await env.DB.prepare(
+      "SELECT 1 FROM users WHERE upn = ? OR username = ? OR email = ? UNION SELECT 1 FROM user_emails WHERE email = ?"
+    ).bind(jitEmail, jitEmail, jitEmail, jitEmail).first();
+    if (clash && policy.email === "fail") throw new FederationError(`The claimed email address ${jitEmail} already belongs to another account.`);
+    attachEmail = !clash;
+  }
+
   const t = now();
   const schemaId = await defaultSchemaId(env, "user");
+  const cols = profile.cols ?? {};
+  const customJson = JSON.stringify(profile.custom ?? {});
   // The same boundary every other user writer honours: the IdP chose the
   // claims, so they must not land the new account in a group that grants an
   // admin role - a dynamic rule on username or display_name turns a JIT
-  // account into an instant admin grant.
+  // account into an instant admin grant. Mapped columns and customs are part
+  // of the check because rules can match them.
   const granted = await grantsAdminRoleGroup(env, null, {
     upn,
     username: candidate,
@@ -583,39 +649,36 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
     given_name: profile.givenName,
     family_name: profile.familyName,
     external_id: "",
-    job_title: "",
-    department: "",
-    employee_number: "",
-    hire_date: "",
-    employment_status: "",
-    employment_type: "",
-    location: "",
+    job_title: cols.job_title ?? "",
+    department: cols.department ?? "",
+    employee_number: cols.employee_number ?? "",
+    hire_date: cols.hire_date ?? "",
+    employment_status: cols.employment_status ?? "",
+    employment_type: cols.employment_type ?? "",
+    location: cols.location ?? "",
     status: "active",
     manager_external_id: null,
-    source_id: null,
-    custom_attributes: "{}",
+    source_id: cols.source_id ?? null,
+    custom_attributes: customJson,
     email: profile.email || null,
   } as UserRow);
   if (granted) throw new FederationError(`Provisioning would place the account in ${granted}, a group that grants an admin role.`);
   const inserted = await env.DB.prepare(
-    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, employee_number, hire_date, employment_status, employment_type, location, password_hash, password_salt, password_iterations, is_admin, status, schema_id, custom_attributes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '!', '', 0, 0, 'active', ?, '{}', ?, ?) RETURNING id`
+    `INSERT INTO users (upn, username, display_name, given_name, family_name, external_id, job_title, department, employee_number, hire_date, employment_status, employment_type, location, source_id, password_hash, password_salt, password_iterations, is_admin, status, schema_id, custom_attributes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '!', '', 0, 0, 'active', ?, ?, ?, ?) RETURNING id`
   )
-    .bind(upn, candidate, profile.displayName || upn, profile.givenName, profile.familyName, `fed-${idp.id}-${randomToken(8)}`, schemaId, t, t)
+    .bind(
+      upn, candidate, profile.displayName || upn, profile.givenName, profile.familyName,
+      `fed-${idp.id}-${randomToken(8)}`,
+      cols.job_title ?? "", cols.department ?? "", cols.employee_number ?? "", cols.hire_date ?? "",
+      cols.employment_status ?? "", cols.employment_type ?? "", cols.location ?? "",
+      cols.source_id ?? null, schemaId, customJson, t, t
+    )
     .first<{ id: number }>();
   const userId = inserted!.id;
-  const jitEmail = (profile.email ?? "").trim().toLowerCase();
-  if (jitEmail) {
-    // The claimed address is unverified and must never collide with another
-    // account's identifiers; a collision means adoption failed to match, not
-    // that this account should claim the spelling.
-    const clash = await env.DB.prepare(
-      "SELECT 1 FROM users WHERE (upn = ? OR username = ? OR email = ?) AND id != ? UNION SELECT 1 FROM user_emails WHERE email = ? AND user_id != ?"
-    ).bind(jitEmail, jitEmail, jitEmail, userId, jitEmail, userId).first();
-    if (!clash) {
-      await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, ?, 'work', 1, ?)").bind(userId, jitEmail, t).run();
-      await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(jitEmail, userId).run();
-    }
+  if (attachEmail) {
+    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, ?, 'work', 1, ?)").bind(userId, jitEmail, t).run();
+    await env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(jitEmail, userId).run();
   }
   // jit_groups: the admin's explicit list, applied at creation only (later
   // changes to it don't touch already-provisioned accounts). Deliberately

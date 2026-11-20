@@ -26,6 +26,7 @@ export const ADMIN_HELP: Record<string, string> = {
   "integrations/signals": "/docs/shared-signals",
   domains: "/docs/domains",
   schemas: "/docs/schemas",
+  flows: "/docs/mappings",
   branding: "/docs/branding",
   "branding/brands": "/docs/branding#brands",
   "branding/email-templates": "/docs/email#templates",

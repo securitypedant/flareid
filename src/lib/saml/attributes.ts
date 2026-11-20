@@ -1,9 +1,10 @@
 import { randomToken, sha256Hex } from "../tokens.js";
 import type { Env } from "../../env.js";
 import type { SamlServiceProviderRow, UserRow } from "../types.js";
-import { getManagerEmail, getUserGroupNames } from "../db.js";
 import { spAttributeDefinitions, spAttributeMap, type SpAttributeDefinition } from "./service-providers.js";
 import { parseCustomAttributes } from "../schemas.js";
+import { evalExpression, parseExpression, strOf, type ScimExpr } from "../expr.js";
+import { userExprDoc } from "../mappings.js";
 
 /**
  * One attribute for the AttributeStatement: the SAML Name, its optional
@@ -67,34 +68,35 @@ export async function resolveAttributes(
   // attribute_definitions wins over the plain map when any are configured.
   const wanted: SpAttributeDefinition[] = definitions.length > 0 ? definitions : Object.entries(map).map(([name, field]) => ({ name, field }));
 
-  const groups = await getUserGroupNames(env, user.id);
-  const fields: Record<string, string | string[] | null> = {
-    email: user.upn,
-    upn: user.upn,
-    username: user.username,
-    name: user.display_name,
-    given_name: user.given_name,
-    family_name: user.family_name,
-    id: user.external_id,
-    groups,
-    job_title: user.job_title,
-    department: user.department,
-    manager: await getManagerEmail(env, user.manager_external_id),
-    employee_number: user.employee_number,
-    hire_date: user.hire_date,
-    employment_status: user.employment_status,
-    employment_type: user.employment_type,
-    location: user.location,
-  };
-
+  // Each definition's field is an expression evaluated over the user
+  // document (src/lib/mappings.ts): the fixed vocabulary names resolve as
+  // paths, custom attributes as custom.<key> or a bare name, and any
+  // composition - `given_name + " " + family_name` - the engine supports.
+  const doc = await userExprDoc(env, user);
   const custom = parseCustomAttributes(user.custom_attributes);
   const attributes: ResolvedAttribute[] = [];
   for (const def of wanted) {
-    // Fields outside the fixed vocabulary resolve against custom attributes -
-    // that is how schema-defined attributes reach an SP.
-    const value = def.field in fields ? fields[def.field] : custom[def.field];
+    let parsed: ScimExpr;
+    try {
+      parsed = parseExpression(def.field);
+    } catch {
+      // A legacy field that can't parse resolves literally - custom
+      // attributes with names outside the expression grammar stay reachable.
+      const value = doc[def.field] ?? custom[def.field];
+      if (value === undefined || value === null) continue;
+      const values = (Array.isArray(value) ? value : [value]).map(strOf).filter((v) => v !== "");
+      if (values.length === 0) continue;
+      attributes.push(def.nameFormat ? { name: def.name, nameFormat: def.nameFormat, values } : { name: def.name, values });
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = evalExpression(parsed, doc);
+    } catch {
+      continue; // a failing expression drops the attribute, never the sign-in
+    }
     if (value === undefined || value === null) continue;
-    const values = (Array.isArray(value) ? value : [value]).filter((v) => v !== "");
+    const values = (Array.isArray(value) ? value : [value]).map(strOf).filter((v) => v !== "");
     if (values.length === 0) continue;
     attributes.push(def.nameFormat ? { name: def.name, nameFormat: def.nameFormat, values } : { name: def.name, values });
   }

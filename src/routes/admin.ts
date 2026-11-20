@@ -72,7 +72,7 @@ import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 import { normalizeAttributeDefinitions, parseAssignedGroupIds, spAttributeDefinitions, type SpAttributeDefinition } from "../lib/saml/service-providers.js";
-import { resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleCondition } from "../lib/groups.js";
+import { resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleTerm } from "../lib/groups.js";
 import {
   listSchemas,
   getSchema,
@@ -147,6 +147,13 @@ import { emailLogoUrl, getAccent, getTemplate, renderEmail, TEMPLATE_INFO, type 
 import { APP_NAME_MAX, BRAND_NAME_MAX, CUSTOM_CSS_MAX_BYTES, LOGO_MAX_BYTES, SUBTITLE_MAX, defaultBrand, defaultCustomCss, getBrandRow, listBrandRows, mergeBrand, type BrandRow } from "../lib/brands.js";
 import { assignDomainBrand, createBrand, deleteBrand, removeLogo, saveDefaultCustomCss, updateBrand, uploadLogo, type BrandInput } from "../services/branding.js";
 import { getSetting } from "../lib/settings.js";
+import {
+  effectiveMappings, getCollisionPolicy, JIT_MAPPING_TARGETS, listMappings, mappingOwners,
+  MAPPING_CHANNELS, replaceMappings, SCIM_OUT_TARGETS, setCollisionPolicy,
+  validateJitTarget, validateOidcClaimTarget, validateScimOutTarget, type MappingChannel, type MappingRow,
+} from "../lib/mappings.js";
+import { isValidMappingTarget } from "../lib/scim-mapping.js";
+import { EXPRESSION_FUNCTIONS } from "../lib/expr.js";
 import { listSigningKeys, RETIRED_PUBLISH_HOURS, SIGNING_ALGS } from "../lib/signing-keys.js";
 import { DASHBOARD_DAYS, LOG_ACTORS, LOG_CATEGORIES, logFilters, overviewStats, PERF_RANGES, performanceReport, queryAuditLog } from "../services/monitoring.js";
 
@@ -516,6 +523,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
     ["branding", "/admin/branding", "Branding"],
     ["security", "/admin/security", "Security"],
     ["schemas", "/admin/schemas", "Schemas"],
+    ["flows", "/admin/flows", "Flows"],
     ["audit", "/admin/audit", "Log"],
   ];
   const activeLabel = items.find(([k]) => k === active)?.[2] ?? "Overview";
@@ -2043,18 +2051,20 @@ async function ruleBuilderData(env: Env): Promise<RuleBuilderData> {
   return { schemas, values, defaultSchema: richest?.name ?? "" };
 }
 
-function ruleRowHtml(data: RuleBuilderData, cond?: RuleCondition): string {
-  const schemaName = cond?.schema ?? data.schemas.find((s) => s.attributes.some((a) => a.name === cond?.field))?.name ?? data.defaultSchema;
+function ruleRowHtml(data: RuleBuilderData, cond?: RuleTerm): string {
+  const isExpr = cond !== undefined && "expr" in cond;
+  const schemaName = !isExpr ? cond?.schema ?? data.schemas.find((s) => s.attributes.some((a) => a.name === cond?.field))?.name ?? data.defaultSchema : data.defaultSchema;
   const attrs = data.schemas.find((s) => s.name === schemaName)?.attributes ?? [];
-  const field = cond?.field ?? "";
-  return `<div class="rule-row">
-    ${searchSelect("rule_schema", data.schemas.map((s) => ({ value: s.name, label: s.name })), schemaName, "Schema")}
+  const field = !isExpr ? cond?.field ?? "" : "";
+  return `<div class="rule-row${isExpr ? " rule-expr" : ""}">
+    <div class="rule-schema">${searchSelect("rule_schema", data.schemas.map((s) => ({ value: s.name, label: s.name })), schemaName, "Schema")}</div>
     <div class="rule-attr">${searchSelect("rule_field", attrs.map((a) => ({ value: a.name, label: `${a.label} (${a.name})` })), field, "Attribute")}</div>
     <select name="rule_op">
-      <option value="eq" ${cond?.op !== "ne" ? "selected" : ""}>=</option>
-      <option value="ne" ${cond?.op === "ne" ? "selected" : ""}>!=</option>
+      <option value="eq" ${!isExpr && cond?.op !== "ne" ? "selected" : ""}>=</option>
+      <option value="ne" ${!isExpr && cond?.op === "ne" ? "selected" : ""}>!=</option>
+      <option value="expr" ${isExpr ? "selected" : ""}>expr</option>
     </select>
-    <input type="text" name="rule_value" value="${escapeHtml(cond?.value ?? "")}" placeholder="Value" ${field ? `list="rv-${escapeHtml(field)}"` : ""} autocomplete="off" />
+    <input type="text" name="rule_value" class="rule-value" value="${escapeHtml(isExpr ? cond.expr : cond?.value ?? "")}" placeholder='Value, or expression: startsWith(department, "eng")' ${field ? `list="rv-${escapeHtml(field)}"` : ""} autocomplete="off" />
     <button type="button" class="secondary" data-remove-closest=".rule-row" aria-label="Remove condition">&times;</button>
   </div>`;
 }
@@ -2091,6 +2101,10 @@ const GROUP_FORM_SCRIPT = `
       valueInput.removeAttribute("list");
     }
     if (e.target.name === "rule_field") valueInput.setAttribute("list", "rv-" + e.target.value);
+    if (e.target.name === "rule_op") row.classList.toggle("rule-expr", e.target.value === "expr");
+  });
+  document.querySelectorAll(".rule-row select[name=rule_op]").forEach(function (sel) {
+    sel.closest(".rule-row").classList.toggle("rule-expr", sel.value === "expr");
   });
 })();
 `;
@@ -3795,7 +3809,7 @@ admin.get("/admin/integrations/scim", async (c) => {
       `)}
       ${cardSection(`
         <h2>Inbound attribute mapping</h2>
-        <p class="muted">FlareID is also a SCIM <em>server</em>: an upstream provisioner (an HR system or another IdP) writes users over <code>/scim/v2</code> with a <code>directory:write</code> API key. Each row rewrites one field with an expression evaluated over the incoming SCIM body &mdash; fields with no row keep the standard mapping. A row whose expression yields nothing leaves the field alone on PATCH but clears it on PUT. Expressions accept attribute paths (<code>name.givenName</code>, <code>emails[type eq "work"].value</code>, URN extension attributes), <code>+</code> concatenation, literals, and <code>lower upper trim concat join coalesce first split eq ne if</code>. Use <code>custom.&lt;key&gt;</code> for a custom attribute.</p>
+        <p class="muted">FlareID is also a SCIM <em>server</em>: an upstream provisioner (an HR system or another IdP) writes users over <code>/scim/v2</code> with a <code>directory:write</code> API key. Each row rewrites one field with an expression evaluated over the incoming SCIM body &mdash; fields with no row keep the standard mapping. A row whose expression yields nothing leaves the field alone on PATCH but clears it on PUT. These rows are the <code>scim-in</code> channel on <a href="/admin/flows">Flows</a>, where the same engine drives JIT, outbound SCIM, OIDC claims and dynamic-group rules &mdash; the full function list lives there. Use <code>custom.&lt;key&gt;</code> for a custom attribute.</p>
         <datalist id="scim-map-targets">${USER_MAPPING_TARGETS.map((t) => `<option value="${t}"></option>`).join("")}</datalist>
         <form method="POST" action="/admin/scim/mappings">
           <table>
@@ -3907,7 +3921,7 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <div class="row between" style="margin:0 0 14px 0; align-items:flex-start;">
-          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.${app ? ` Linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""}</p>
+          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.${app ? ` Linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""} Pushed attributes follow <a href="/admin/flows/edit?channel=scim-out&owner=${target.id}">this target's mappings</a>.</p>
           <span class="badge ${target.enabled ? "badge-active" : "badge-disabled"}">${target.enabled ? "Enabled" : "Disabled"}</span>
         </div>
         <form method="POST" action="/admin/scim/targets/${target.id}">
@@ -4161,6 +4175,9 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
 /** The v3 client settings, shared by the new and edit forms. */
 function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[]): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
+  const extraClaimsHint = client
+    ? `<p class="muted" style="margin-top:4px;">Computed or renamed claims for this app are on <a href="/admin/flows/edit?channel=oidc&owner=${encodeURIComponent(client.client_id)}">Flows &rarr; OIDC claims</a>.</p>`
+    : "";
   const logoutUris: string[] = client ? JSON.parse(client.post_logout_redirect_uris || "[]") : [];
   const redirectUris: string[] = client ? JSON.parse(client.redirect_uris || "[]") : [];
   const trusted = client ? client.trusted === 1 : true;
@@ -4203,7 +4220,8 @@ function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<G
     ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), assigned, "Search groups...")}
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
-    ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}`;
+    ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}
+    ${extraClaimsHint}`;
 }
 
 admin.get("/admin/clients/new", async (c) => {
@@ -4415,7 +4433,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
       </div>
       <label for="attribute_map">Attribute map (JSON - leave empty for the default email/name/groups map)</label>
       <textarea id="attribute_map" name="attribute_map" rows="4" placeholder='{"email": "email", "department": "department"}'>${escapeHtml(Object.keys(v.attributeMap ?? {}).length ? JSON.stringify(v.attributeMap, null, 2) : "")}</textarea>
-      <p class="muted" style="margin:-8px 0 14px;">Field names: <code>${USER_ATTRIBUTE_FIELDS.join("</code>, <code>")}</code></p>
+      <p class="muted" style="margin:-8px 0 14px;">Fields: <code>${USER_ATTRIBUTE_FIELDS.join("</code>, <code>")}</code>, <code>custom.&lt;key&gt;</code>, or any expression &mdash; e.g. <code>given_name + " " + family_name</code>. See <a href="/admin/flows">Flows</a> for the language.</p>
       <label for="attribute_definitions">Attribute definitions (JSON - optional; when set it replaces the map above)</label>
       <textarea id="attribute_definitions" name="attribute_definitions" rows="4" placeholder='[{"name": "http://schemas.example/claims/dept", "field": "department", "name_format": "urn:oasis:names:tc:SAML:2.0:attrname-format:uri"}]'>${escapeHtml(defsJson.length ? JSON.stringify(defsJson, null, 2) : "")}</textarea>
       <p class="muted" style="margin:-8px 0 14px;">One object per released attribute: an arbitrary <code>name</code>, the user <code>field</code> feeding it and an optional <code>name_format</code> (the default is <code>urn:oasis:names:tc:SAML:2.0:attrname-format:uri</code>).</p>
@@ -6558,6 +6576,7 @@ function upstreamFormFields(
       <label style="font-weight:400;"><input type="checkbox" name="jit" value="1" ${idp?.jit ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Just-in-time provisioning &mdash; create an account for an upstream identity nobody here has</label>
       <label for="jit_domain">JIT domain <span class="muted">(optional - else the claim's email domain when managed, or the default)</span></label>
       <input type="text" id="jit_domain" name="jit_domain" value="${escapeHtml(idp?.jit_domain ?? "")}" placeholder="example.com" />
+      ${idp ? `<p class="muted" style="margin:0 0 8px 0;">Claim-to-field rules for this provider's sign-ins are on <a href="/admin/flows/edit?channel=jit&owner=${idp.id}">Flows &rarr; Federation sign-in</a>.</p>` : ""}
       <label>Groups JIT accounts join <span class="muted">(optional - applied when the account is created)</span></label>
       ${multiSelect(
         "jit_groups",
@@ -7228,4 +7247,240 @@ admin.post("/admin/ldap/:slug/revoke", async (c) => {
   await revokeLdapApp(c.env, app);
   await logAudit(c.env, c.get("user"), "ldap.app.revoked", app.slug, {}, c.req.raw);
   return c.redirect(`/admin/ldap/${app.slug}`, 302);
+});
+
+// ---------------------------------------------------------------------------
+// Flows: the central area where attribute mappings are defined
+// ---------------------------------------------------------------------------
+
+interface FlowChannelMeta {
+  direction: "in" | "out";
+  label: string;
+  /** The document expressions evaluate over, for the editor's intro line. */
+  doc: string;
+  targets: string[];
+  validate: (target: string) => string | null;
+}
+
+const FLOW_CHANNELS: Record<MappingChannel, FlowChannelMeta> = {
+  "scim-in": {
+    direction: "in", label: "SCIM provisioning", doc: "the incoming SCIM user body",
+    targets: [...USER_MAPPING_TARGETS],
+    validate: (t) => (isValidMappingTarget("user", t) ? null : `"${t}" is not a field a user mapping can feed.`),
+  },
+  jit: {
+    direction: "in", label: "Federation sign-in", doc: "the upstream IdP's claims",
+    targets: [...JIT_MAPPING_TARGETS],
+    validate: validateJitTarget,
+  },
+  "scim-out": {
+    direction: "out", label: "SCIM push", doc: "the FlareID user",
+    targets: [...SCIM_OUT_TARGETS],
+    validate: validateScimOutTarget,
+  },
+  oidc: {
+    direction: "out", label: "OIDC claims", doc: "the FlareID user",
+    targets: [],
+    validate: validateOidcClaimTarget,
+  },
+};
+
+/** Display name for a mapping set's owner - the record the rows belong to. */
+async function flowOwnerLabel(env: Env, channel: MappingChannel, owner: string): Promise<string> {
+  if (!owner) return "Defaults (all flows)";
+  if (channel === "jit") {
+    const row = await env.DB.prepare("SELECT name FROM upstream_idps WHERE id = ?").bind(owner).first<{ name: string }>();
+    return row?.name ?? `IdP ${owner}`;
+  }
+  if (channel === "scim-out") {
+    const row = await env.DB.prepare("SELECT name FROM scim_targets WHERE id = ?").bind(owner).first<{ name: string }>();
+    return row?.name ?? `Target ${owner}`;
+  }
+  if (channel === "oidc") {
+    const row = await env.DB.prepare("SELECT name FROM oauth_clients WHERE client_id = ?").bind(owner).first<{ name: string }>();
+    return row?.name ?? owner;
+  }
+  return owner;
+}
+
+function flowEditHref(channel: string, owner: string, seed = false): string {
+  return `/admin/flows/edit?channel=${encodeURIComponent(channel)}&owner=${encodeURIComponent(owner)}${seed ? "&seed=1" : ""}`;
+}
+
+function flowRowHtml(m?: { target: string; expression: string; enabled: boolean }): string {
+  return `<tr class="mapping-row">
+    <td><input type="text" name="map_target" value="${escapeHtml(m?.target ?? "")}" placeholder="field" list="flow-map-targets" required style="margin:0;" /></td>
+    <td><input type="text" name="map_expr" value="${escapeHtml(m?.expression ?? "")}" placeholder='given_name + " " + family_name' required style="margin:0; font-family:monospace;" /></td>
+    <td style="text-align:center;"><input type="hidden" name="map_enabled" value="${m && !m.enabled ? 0 : 1}" /><input type="checkbox" ${m && !m.enabled ? "" : "checked"} data-mirror-prev style="width:auto; margin:0;" /></td>
+    <td><button type="button" class="secondary" data-remove-closest=".mapping-row" aria-label="Remove mapping">&times;</button></td>
+  </tr>`;
+}
+
+admin.get("/admin/flows", async (c) => {
+  const { results: counts } = await c.env.DB.prepare("SELECT channel, owner, COUNT(*) AS n, SUM(enabled) AS on_n FROM mappings GROUP BY channel, owner")
+    .all<{ channel: string; owner: string; n: number; on_n: number }>();
+  const countFor = (channel: string, owner: string) => counts.find((r) => r.channel === channel && r.owner === owner);
+  const [idps, targets, clients, sps, policy] = await Promise.all([
+    listUpstreamIdps(c.env),
+    listScimTargets(c.env),
+    c.env.DB.prepare("SELECT id, client_id, name FROM oauth_clients ORDER BY name").all<{ id: number; client_id: string; name: string }>().then((r) => r.results),
+    c.env.DB.prepare("SELECT id, name FROM saml_service_providers ORDER BY name").all<{ id: number; name: string }>().then((r) => r.results),
+    getCollisionPolicy(c.env),
+  ]);
+
+  const flowRow = (label: string, detail: string, channel: MappingChannel, owner: string, fallback: string, ownerHref?: string) => {
+    const n = countFor(channel, owner);
+    return `<tr>
+      <td>${escapeHtml(label)}${ownerHref ? ` <span class="muted">&middot; <a href="${ownerHref}">${escapeHtml(detail)}</a></span>` : ` <span class="muted">${escapeHtml(detail)}</span>`}</td>
+      <td class="muted">${n ? `${n.n} row${n.n === 1 ? "" : "s"}${n.on_n < n.n ? ` (${n.n - n.on_n} off)` : ""}` : `<em>${escapeHtml(fallback)}</em>`}</td>
+      <td style="text-align:right;">${rowMenu(`<a href="${flowEditHref(channel, owner)}">Edit mappings</a>`)}</td>
+    </tr>`;
+  };
+
+  const inboundRows = [
+    flowRow("SCIM provisioning", "all inbound writes", "scim-in", "", "standard attribute mapping"),
+    flowRow("Federation sign-in", "JIT defaults for every IdP", "jit", "", "built-in claim names"),
+    ...idps.map((idp) => flowRow("Federation sign-in", idp.name, "jit", String(idp.id), "inherits the defaults", `/admin/integrations/federation/${idp.id}`)),
+  ];
+  const outboundRows = [
+    ...targets.map((t) => flowRow("SCIM push", t.name, "scim-out", String(t.id), "default document", `/admin/integrations/scim/${t.id}`)),
+    ...clients.map((cl) => flowRow("OIDC claims", cl.name, "oidc", cl.client_id, "standard claims only", `/admin/clients/${cl.id}`)),
+    ...sps.map(
+      (sp) => `<tr>
+        <td>SAML attributes <span class="muted">&middot; <a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></span></td>
+        <td class="muted"><em>attribute map on the app</em></td>
+        <td style="text-align:right;">${rowMenu(`<a href="/admin/saml/${sp.id}">Edit on the app</a>`)}</td>
+      </tr>`
+    ),
+  ];
+
+  return c.html(
+    layout(
+      c,
+      "Flows",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      <p class="muted" style="margin-top:0;">Every attribute flow in one place: what inbound writes set on users, and what sign-ins and provisioning send out. Each flow's rules are expressions evaluated by the shared engine &mdash; a row's <em>target</em> is the field it writes (inbound) or the attribute name it emits (outbound); its <em>expression</em> computes the value. A flow with no rows of its own falls back to the channel's defaults.</p>
+      ${cardSection(`
+        <h2>Inbound</h2>
+        <p class="muted">An upstream provisioner or identity provider's data lands on user fields. Schemas on the <a href="/admin/schemas">Schemas</a> page define the vocabulary targets refer to (<code>custom.&lt;key&gt;</code> for custom attributes).</p>
+        <table><tbody>${inboundRows.join("")}</tbody></table>
+      `)}
+      ${cardSection(`
+        <h2>Outbound</h2>
+        <p class="muted">What applications and provisioning targets receive. SAML attribute maps stay on each app's settings (they're part of its contract); the field side of every entry is the same expression language.</p>
+        ${outboundRows.length ? `<table><tbody>${outboundRows.join("")}</tbody></table>` : '<p class="muted">No SCIM targets, OIDC clients or SAML apps yet.</p>'}
+      `)}
+      ${cardSection(`
+        <h2>Collision policy</h2>
+        <p class="muted">What happens when an inbound write (JIT provisioning, SCIM) would create a sign-in name or attach an email address that already belongs to someone else.</p>
+        <form method="POST" action="/admin/flows/collision">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+            <div>
+              <label for="collision_username">Sign-in name is taken</label>
+              <select id="collision_username" name="collision_username">
+                <option value="increment" ${policy.username === "increment" ? "selected" : ""}>Append a counter (jdoe, jdoe2, jdoe3&hellip;)</option>
+                <option value="pattern" ${policy.username === "pattern" ? "selected" : ""}>Evaluate a pattern expression</option>
+                <option value="fail" ${policy.username === "fail" ? "selected" : ""}>Refuse the sign-in / write</option>
+              </select>
+            </div>
+            <div>
+              <label for="collision_email">Email address is taken</label>
+              <select id="collision_email" name="collision_email">
+                <option value="skip" ${policy.email === "skip" ? "selected" : ""}>Don't attach it to the new account</option>
+                <option value="fail" ${policy.email === "fail" ? "selected" : ""}>Refuse the sign-in / write</option>
+              </select>
+            </div>
+          </div>
+          <label for="collision_pattern">Username pattern <span class="muted">(expression over <code>local</code>, <code>n</code>, <code>domain</code>, <code>email</code> &mdash; retried with n = 2, 3, 4&hellip; until free)</span></label>
+          <input type="text" id="collision_pattern" name="collision_pattern" value="${escapeHtml(policy.username_pattern)}" placeholder='local + n' style="font-family:monospace;" />
+          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
+        <h2>Expression reference</h2>
+        <p class="muted" style="margin-bottom:8px;">Paths walk the source document (<code>name.givenName</code>, <code>emails[type eq "work"].value</code>); <code>+</code> concatenates; <code>attr("name")</code> reaches names the grammar can't carry. Inbound expressions see the SCIM body or the IdP's claims; outbound ones see the user (<code>upn</code>, <code>username</code>, <code>display_name</code>, <code>given_name</code>, <code>family_name</code>, <code>email</code>, <code>name</code>, <code>id</code>, <code>job_title</code>, <code>department</code>, <code>manager</code>, <code>employee_number</code>, <code>hire_date</code>, <code>employment_status</code>, <code>employment_type</code>, <code>location</code>, <code>status</code>, <code>groups</code>, <code>emails</code>, <code>custom.*</code> and bare custom names). Dynamic-group rules use the same engine for their <code>expr</code> conditions.</p>
+        <p class="muted" style="font-family:monospace; font-size:12px; line-height:1.9; margin:0;">${EXPRESSION_FUNCTIONS.join(" &middot; ")}</p>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Flows" }],
+      "flows"
+    )
+  );
+});
+
+admin.get("/admin/flows/edit", async (c) => {
+  const channel = c.req.query("channel") ?? "";
+  const meta = FLOW_CHANNELS[channel as MappingChannel];
+  if (!meta) return c.redirect("/admin/flows?error=" + encodeURIComponent("Unknown flow."), 302);
+  const owner = c.req.query("owner") ?? "";
+  const ownerLabel = await flowOwnerLabel(c.env, channel as MappingChannel, owner);
+  const globals = owner ? await listMappings(c.env, { channel, owner: "" }) : [];
+  const own = await listMappings(c.env, { channel, owner });
+  const rows = own.length || !c.req.query("seed") ? own : globals.map((g) => ({ ...g, id: 0 }));
+  return c.html(
+    layout(
+      c,
+      `${meta.label} · ${ownerLabel}`,
+      `
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <p class="muted" style="margin-top:0;">${meta.direction === "in" ? "Each row rewrites one user field from an expression over" : "Each row emits one attribute whose value is an expression over"} ${escapeHtml(meta.doc)}.${owner ? ` This set replaces the global defaults for ${escapeHtml(ownerLabel)} only.` : " These are the channel's defaults &mdash; owners without their own rows use them."}${owner && !own.length ? ' This flow currently <strong>inherits the defaults</strong> &mdash; <a href="' + flowEditHref(channel, owner, true) + '">copy them here to customise</a>.' : ""}</p>
+        <datalist id="flow-map-targets">${meta.targets.map((t) => `<option value="${t}"></option>`).join("")}</datalist>
+        <form method="POST" action="/admin/flows/mappings">
+          <input type="hidden" name="channel" value="${escapeHtml(channel)}" />
+          <input type="hidden" name="owner" value="${escapeHtml(owner)}" />
+          <table>
+            <thead><tr><th style="width:220px;">${meta.direction === "in" ? "Field" : "Attribute / claim"}</th><th>Expression</th><th style="width:60px;">On</th><th style="width:40px;"></th></tr></thead>
+            <tbody id="mapping-rows">
+              ${rows.map(flowRowHtml).join("")}
+            </tbody>
+          </table>
+          <template id="mapping-row-template">${flowRowHtml()}</template>
+          <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+            <button type="button" class="secondary" data-append-template="mapping-row-template" data-append-to="mapping-rows">+ Add mapping</button>
+            <button class="primary" type="submit">Save mappings</button>
+            <a href="/admin/flows">Cancel</a>
+          </div>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Flows", href: "/admin/flows" }, { label: `${meta.label} · ${ownerLabel}` }],
+      "flows"
+    )
+  );
+});
+
+admin.post("/admin/flows/mappings", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+  const channel = String(body.channel ?? "");
+  const owner = String(body.owner ?? "");
+  const meta = FLOW_CHANNELS[channel as MappingChannel];
+  if (!meta) return c.redirect("/admin/flows?error=" + encodeURIComponent("Unknown flow."), 302);
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+  const targets = list(body.map_target), exprs = list(body.map_expr), enabled = list(body.map_enabled);
+  const back = `${flowEditHref(channel, owner)}&error=`;
+  try {
+    await replaceMappings(c.env, { channel, owner, resource: "user" }, targets.map((target, i) => ({ target, expression: exprs[i] ?? "", enabled: enabled[i] === "1" })), meta.validate);
+  } catch (e) {
+    return c.redirect(back + encodeURIComponent(e instanceof Error ? e.message : String(e)), 302);
+  }
+  await logAudit(c.env, c.get("user"), "settings.mappings_changed", `${channel}${owner ? ` (${owner})` : ""}`, { count: targets.length }, c.req.raw);
+  return c.redirect("/admin/flows?saved=1", 302);
+});
+
+admin.post("/admin/flows/collision", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await setCollisionPolicy(c.env, {
+      username: String(body.collision_username ?? ""),
+      username_pattern: String(body.collision_pattern ?? ""),
+      email: String(body.collision_email ?? ""),
+    });
+  } catch (e) {
+    return c.redirect(`/admin/flows?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, c.get("user"), "settings.collision_policy_changed", undefined, {}, c.req.raw);
+  return c.redirect("/admin/flows?saved=1", 302);
 });

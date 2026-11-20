@@ -1,4 +1,5 @@
 import { canSignIn } from "../lib/admin-roles.js";
+import { clientMappedClaims } from "../lib/mappings.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
 import { getManagerEmail, getUserById, getUserGroupNames } from "../lib/db.js";
@@ -73,6 +74,21 @@ userinfo.on(["GET", "POST"], "/userinfo", async (c) => {
       managerEmail,
       customAttributes: parseCustomAttributes(user.custom_attributes),
     }, release),
+    ...(await clientMappedClaims(c.env, row.client_id, {
+      sub,
+      id: user.external_id,
+      email: user.upn,
+      name: user.display_name,
+      givenName: user.given_name,
+      familyName: user.family_name,
+      username: user.username,
+      groups,
+      amr,
+      jobTitle: user.job_title,
+      department: user.department,
+      managerEmail,
+      customAttributes: parseCustomAttributes(user.custom_attributes),
+    })),
   };
 
   // userinfo_signed_response_alg (OIDC Registration 2): when the client

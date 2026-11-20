@@ -2,6 +2,7 @@ import { SignJWT, importJWK, jwtVerify, decodeProtectedHeader, type JWTPayload }
 import { timed } from "./metrics.js";
 import { activeSigningKey, publishedKeys, type SigningAlg } from "./signing-keys.js";
 import type { Env } from "../env.js";
+import { clientMappedClaims } from "./mappings.js";
 import type { ClaimGroup } from "./oidc.js";
 
 // Keys live in D1 (signing-keys.ts): one active RS256 and one active ES256.
@@ -111,8 +112,10 @@ export interface IdTokenProtocol {
 
 export async function signIdToken(env: Env, clientId: string, claims: IdTokenClaims, release: Set<ClaimGroup>, protocol: IdTokenProtocol, alg: SigningAlg = "RS256"): Promise<string> {
   const { kid, key } = await activeSigningKey(env, alg);
+  const mapped = await clientMappedClaims(env, clientId, claims);
   const jwt = new SignJWT({
     ...buildClaims(claims, release),
+    ...mapped,
     auth_time: protocol.authTime,
     acr: protocol.acr,
     azp: clientId,

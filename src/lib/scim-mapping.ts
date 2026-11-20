@@ -5,6 +5,8 @@ import { getSetting, setSetting } from "./settings.js";
 import type { SchemaAttributeRow } from "./schemas.js";
 import type { UserRow } from "./types.js";
 import { getUserByAnyEmail, type UserEmailInput } from "./user-emails.js";
+import { ExprError, evalExpression, isObj, parseExpression, scalar, strOf, truthy, type ScimExpr } from "./expr.js";
+import { listMappings } from "./mappings.js";
 
 /**
  * Inbound attribute mapping. When an upstream provisioner (an HR system, or
@@ -23,7 +25,11 @@ import { getUserByAnyEmail, type UserEmailInput } from "./user-emails.js";
  *   "literal", 42, true, false, null
  */
 
-export class ScimMappingError extends Error {}
+// ---------------------------------------------------------------------------
+// Expression language (moved to src/lib/expr.ts; re-exported for callers)
+// ---------------------------------------------------------------------------
+
+export class ScimMappingError extends ExprError {}
 
 export interface ScimMapping {
   id: number;
@@ -33,272 +39,8 @@ export interface ScimMapping {
   position: number;
   enabled: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Expression language
-// ---------------------------------------------------------------------------
-
-type FilterOp = "eq" | "ne" | "co" | "sw" | "ew" | "pr";
-
-interface PathSeg {
-  attr: string;
-  filter?: { attr: string; op: FilterOp; value?: unknown };
-}
-
-export type ScimExpr =
-  | { kind: "lit"; value: string | number | boolean | null }
-  | { kind: "path"; segs: PathSeg[] }
-  | { kind: "call"; name: string; args: ScimExpr[] }
-  | { kind: "cat"; parts: ScimExpr[] };
-
-type Token = { t: "str" | "num" | "id"; v: string } | { t: "(" | ")" | "[" | "]" | "," | "+" | "." };
-
-const IDENT_START = /[A-Za-z_$]/;
-const IDENT_CHAR = /[A-Za-z0-9_:\-$]/;
-const PUNCT = new Set(["(", ")", "[", "]", ",", "+", "."]);
-
-function tokenize(src: string): Token[] {
-  const out: Token[] = [];
-  let i = 0;
-  while (i < src.length) {
-    const ch = src[i]!;
-    if (/\s/.test(ch)) { i++; continue; }
-    if (ch === '"' || ch === "'") {
-      let v = "";
-      i++;
-      while (i < src.length && src[i] !== ch) {
-        if (src[i] === "\\" && i + 1 < src.length) { v += src[i + 1]; i += 2; continue; }
-        v += src[i++];
-      }
-      if (i >= src.length) throw new ScimMappingError("Unterminated string literal.");
-      i++;
-      out.push({ t: "str", v });
-      continue;
-    }
-    if (/[0-9]/.test(ch) || (ch === "-" && i + 1 < src.length && /[0-9]/.test(src[i + 1]!))) {
-      const m = /^-?\d+(\.\d+)?/.exec(src.slice(i))!;
-      out.push({ t: "num", v: m[0] });
-      i += m[0].length;
-      continue;
-    }
-    if (IDENT_START.test(ch)) {
-      let v = "";
-      while (i < src.length && IDENT_CHAR.test(src[i]!)) v += src[i++];
-      // A urn: attribute's version fragment (enterprise:2.0:User) keeps
-      // reading past dots followed by digits; a dot before a letter stays a
-      // path separator (manager.value).
-      while (v.startsWith("urn:") && src[i] === "." && i + 1 < src.length && /[0-9]/.test(src[i + 1]!)) {
-        v += src[i++];
-        while (i < src.length && IDENT_CHAR.test(src[i]!)) v += src[i++];
-      }
-      out.push({ t: "id", v });
-      continue;
-    }
-    if (PUNCT.has(ch)) { out.push({ t: ch } as Token); i++; continue; }
-    throw new ScimMappingError(`Unexpected character "${ch}" in expression.`);
-  }
-  return out;
-}
-
-/** Parse an expression; throws ScimMappingError on malformed input. */
-export function parseExpression(src: string): ScimExpr {
-  const toks = tokenize(src);
-  let pos = 0;
-  const peek = () => toks[pos];
-  const take = () => toks[pos++];
-  const expect = (t: string) => {
-    if (peek()?.t !== t) throw new ScimMappingError(`Expected "${t}" but found ${peek() ? JSON.stringify(peek()!.t === "id" || peek()!.t === "str" || peek()!.t === "num" ? (peek() as { v: string }).v : peek()!.t) : "end of expression"}.`);
-    return take();
-  };
-
-  function parseExpr(): ScimExpr {
-    const parts = [parseTerm()];
-    while (peek()?.t === "+") { take(); parts.push(parseTerm()); }
-    return parts.length === 1 ? parts[0]! : { kind: "cat", parts };
-  }
-
-  function parseTerm(): ScimExpr {
-    const tok = peek();
-    if (!tok) throw new ScimMappingError("Unexpected end of expression.");
-    if (tok.t === "str") { take(); return { kind: "lit", value: tok.v! }; }
-    if (tok.t === "num") { take(); return { kind: "lit", value: Number(tok.v) }; }
-    if (tok.t === "(") { take(); const e = parseExpr(); expect(")"); return e; }
-    if (tok.t === "id") {
-      if (tok.v === "true") { take(); return { kind: "lit", value: true }; }
-      if (tok.v === "false") { take(); return { kind: "lit", value: false }; }
-      if (tok.v === "null") { take(); return { kind: "lit", value: null }; }
-      const next = toks[pos + 1];
-      if (next?.t === "(") {
-        take(); take();
-        const args: ScimExpr[] = [];
-        if (peek()?.t !== ")") {
-          args.push(parseExpr());
-          while (peek()?.t === ",") { take(); args.push(parseExpr()); }
-        }
-        expect(")");
-        return { kind: "call", name: tok.v!, args };
-      }
-      return parsePath();
-    }
-    throw new ScimMappingError(`Unexpected token "${"v" in tok ? tok.v : tok.t}".`);
-  }
-
-  function parsePath(): ScimExpr {
-    const segs: PathSeg[] = [];
-    for (;;) {
-      const tok = take();
-      if (tok?.t !== "id") throw new ScimMappingError("Expected an attribute name in path.");
-      const seg: PathSeg = { attr: tok.v! };
-      if (peek()?.t === "[") {
-        take();
-        const a = take();
-        if (a?.t !== "id") throw new ScimMappingError("Expected an attribute name in filter.");
-        const opTok = take();
-        if (opTok?.t !== "id" || !["eq", "ne", "co", "sw", "ew", "pr"].includes(opTok.v!))
-          throw new ScimMappingError("Expected a filter operator (eq, ne, co, sw, ew, pr).");
-        const filter: PathSeg["filter"] = { attr: a.v!, op: opTok.v! as FilterOp };
-        if (filter.op !== "pr") {
-          const v = take();
-          if (!v || (v.t !== "str" && v.t !== "num" && v.t !== "id")) throw new ScimMappingError("Expected a value in filter.");
-          filter.value = v.t === "num" ? Number(v.v) : v.t === "str" ? v.v : v.v === "true" ? true : v.v === "false" ? false : v.v;
-        }
-        seg.filter = filter;
-        expect("]");
-      }
-      segs.push(seg);
-      if (peek()?.t === ".") { take(); continue; }
-      break;
-    }
-    return { kind: "path", segs };
-  }
-
-  const expr = parseExpr();
-  if (pos < toks.length) throw new ScimMappingError(`Unexpected trailing input in expression.`);
-  return expr;
-}
-
-// ---------------------------------------------------------------------------
-// Evaluation
-// ---------------------------------------------------------------------------
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-/** Read `attr` off `obj`; URN-style attrs fall back to a schema-prefixed lookup. */
-function getAttr(obj: unknown, attr: string): unknown {
-  if (!isObj(obj)) return undefined;
-  if (attr in obj) return obj[attr];
-  // "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department" is
-  // the object key "urn:...:User" holding {"department": ...}. Try the longest
-  // schema prefix first.
-  for (let i = attr.lastIndexOf(":"); i > 0; i = attr.lastIndexOf(":", i - 1)) {
-    const prefix = attr.slice(0, i);
-    if (prefix in obj) {
-      const rest = attr.slice(i + 1);
-      return rest === "" ? obj[prefix] : getAttr(obj[prefix], rest);
-    }
-  }
-  return undefined;
-}
-
-function strOf(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (Array.isArray(v)) return v.map(strOf).join("");
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-function scalar(v: unknown): unknown {
-  return Array.isArray(v) ? (v[0] ?? null) : v;
-}
-
-export function truthy(v: unknown): boolean {
-  const s = scalar(v);
-  if (typeof s === "boolean") return s;
-  if (typeof s === "number") return s !== 0;
-  if (s === null || s === undefined) return false;
-  return !/^\s*(|false|0|no|disabled)\s*$/i.test(String(s));
-}
-
-function cmpScalar(v: unknown, w: unknown): boolean {
-  if (typeof v === "string" || typeof w === "string") return String(v ?? "").toLowerCase() === String(w ?? "").toLowerCase();
-  return v === w;
-}
-
-function testFilter(el: unknown, f: NonNullable<PathSeg["filter"]>): boolean {
-  const v = getAttr(el, f.attr);
-  switch (f.op) {
-    case "pr": return v !== undefined && v !== null;
-    case "eq": return cmpScalar(scalar(v), f.value);
-    case "ne": return !cmpScalar(scalar(v), f.value);
-    case "co": return strOf(scalar(v)).toLowerCase().includes(strOf(f.value).toLowerCase());
-    case "sw": return strOf(scalar(v)).toLowerCase().startsWith(strOf(f.value).toLowerCase());
-    case "ew": return strOf(scalar(v)).toLowerCase().endsWith(strOf(f.value).toLowerCase());
-  }
-}
-
-function resolvePath(doc: unknown, segs: PathSeg[]): unknown {
-  let cur: unknown = doc;
-  for (const seg of segs) {
-    let v: unknown;
-    if (Array.isArray(cur)) {
-      const vals = cur.map((el) => getAttr(el, seg.attr)).filter((x) => x !== undefined);
-      v = vals.every((x) => !Array.isArray(x)) ? vals : vals.flat();
-    } else {
-      v = getAttr(cur, seg.attr);
-    }
-    if (seg.filter) {
-      const f = seg.filter;
-      const arr = Array.isArray(v) ? v : v === undefined || v === null ? [] : [v];
-      v = arr.filter((el) => testFilter(el, f));
-    }
-    cur = v;
-  }
-  return cur === undefined ? null : cur;
-}
-
-const FUNCTIONS: Record<string, (args: unknown[]) => unknown> = {
-  lower: ([a]) => strOf(scalar(a)).toLowerCase(),
-  upper: ([a]) => strOf(scalar(a)).toUpperCase(),
-  trim: ([a]) => strOf(scalar(a)).trim(),
-  concat: (args) => args.map(strOf).join(""),
-  join: ([sep, ...rest]) => {
-    const parts: string[] = [];
-    for (const a of rest) for (const el of Array.isArray(a) ? a : [a]) {
-      const s = strOf(el);
-      if (s !== "") parts.push(s);
-    }
-    return parts.join(strOf(sep));
-  },
-  coalesce: (args) => {
-    for (const a of args) {
-      if (a !== null && a !== undefined && strOf(scalar(a)) !== "") return a;
-    }
-    return null;
-  },
-  first: ([a]) => scalar(a),
-  split: ([a, sep]) => {
-    const s = strOf(scalar(a));
-    return s === "" ? [] : s.split(strOf(scalar(sep)));
-  },
-  eq: ([a, b]) => cmpScalar(scalar(a), scalar(b)),
-  ne: ([a, b]) => !cmpScalar(scalar(a), scalar(b)),
-  if: ([cond, a, b]) => (truthy(cond) ? a : b),
-};
-
-export function evalExpression(expr: ScimExpr, doc: unknown): unknown {
-  switch (expr.kind) {
-    case "lit": return expr.value;
-    case "path": return resolvePath(doc, expr.segs);
-    case "cat": return expr.parts.map((p) => strOf(evalExpression(p, doc))).join("");
-    case "call": {
-      const fn = FUNCTIONS[expr.name.toLowerCase()];
-      if (!fn) throw new ScimMappingError(`Unknown function "${expr.name}".`);
-      return fn(expr.args.map((a) => evalExpression(a, doc)));
-    }
-  }
-}
+export { parseExpression, evalExpression, strOf, scalar, truthy, ExprError };
+export type { ScimExpr };
 
 // ---------------------------------------------------------------------------
 // Mappings
@@ -321,10 +63,8 @@ export function isValidMappingTarget(resource: string, target: string): boolean 
 export const USER_MAPPING_TARGETS = ["upn", "display_name", "given_name", "family_name", "job_title", "department", "employee_number", "hire_date", "employment_status", "employment_type", "location", "source_id", "active", "manager", "emails"];
 
 export async function listScimMappings(env: Env, resource = "user", enabledOnly = false): Promise<ScimMapping[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT id, resource, target, expression, position, enabled FROM scim_mappings WHERE resource = ?${enabledOnly ? " AND enabled = 1" : ""} ORDER BY position, id`
-  ).bind(resource).all<Omit<ScimMapping, "enabled"> & { enabled: number }>();
-  return results.map((r) => ({ ...r, enabled: r.enabled === 1 }));
+  const rows = await listMappings(env, { channel: "scim-in", owner: "", resource, enabledOnly });
+  return rows.map((r) => ({ id: r.id, resource: r.resource, target: r.target, expression: r.expression, position: r.position, enabled: r.enabled }));
 }
 
 export interface ScimMappingInput {
@@ -335,6 +75,7 @@ export interface ScimMappingInput {
 
 /** Validates every row, then replaces the resource's whole set. */
 export async function replaceScimMappings(env: Env, resource: string, rows: ScimMappingInput[]): Promise<void> {
+  const now = new Date().toISOString();
   const seen = new Set<string>();
   const clean: { target: string; expression: string; enabled: number }[] = [];
   for (const row of rows) {
@@ -347,11 +88,10 @@ export async function replaceScimMappings(env: Env, resource: string, rows: Scim
     parseExpression(expression);
     clean.push({ target, expression, enabled: row.enabled === false ? 0 : 1 });
   }
-  const now = new Date().toISOString();
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM scim_mappings WHERE resource = ?").bind(resource),
+    env.DB.prepare("DELETE FROM mappings WHERE channel = 'scim-in' AND owner = '' AND resource = ?").bind(resource),
     ...clean.map((r, i) =>
-      env.DB.prepare("INSERT INTO scim_mappings (resource, target, expression, position, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      env.DB.prepare("INSERT INTO mappings (direction, channel, owner, resource, target, expression, position, enabled, created_at, updated_at) VALUES ('in', 'scim-in', '', ?, ?, ?, ?, ?, ?, ?)")
         .bind(resource, r.target, r.expression, i, r.enabled, now, now)
     ),
   ]);

@@ -63,6 +63,10 @@ export const DOCS_NAV: DocSection[] = [
       {
         "slug": "schemas",
         "title": "Schemas"
+      },
+      {
+        "slug": "mappings",
+        "title": "Attribute flows and mappings"
       }
     ]
   },
@@ -421,6 +425,41 @@ export const DOCS_PAGES: Record<string, DocPage> = {
       "create-a-schema",
       "apply-to-everyone",
       "where-attributes-are-used"
+    ]
+  },
+  "mappings": {
+    "slug": "mappings",
+    "title": "Attribute flows and mappings",
+    "description": "Admin → Flows is where every attribute rule lives: what inbound writes (SCIM provisioning, federation sign-in) set on users, and what sign-ins and provisioning send back out. Each rule is a row — a target (the field it writes inbound, or the attribute/claim name it emits outbound) and an expression that computes the value.",
+    "headings": [
+      {
+        "id": "channels",
+        "text": "Channels"
+      },
+      {
+        "id": "expressions",
+        "text": "Expressions"
+      },
+      {
+        "id": "dynamic-groups",
+        "text": "Dynamic groups"
+      },
+      {
+        "id": "collision-policy",
+        "text": "Collision policy"
+      },
+      {
+        "id": "api",
+        "text": "API"
+      }
+    ],
+    "html": "<p><strong>Admin → Flows</strong> is where every attribute rule lives: what inbound writes (SCIM provisioning, federation sign-in) set on users, and what sign-ins and provisioning send back out. Each rule is a row — a <strong>target</strong> (the field it writes inbound, or the attribute/claim name it emits outbound) and an <strong>expression</strong> that computes the value.</p>\n<h2 id=\"channels\"><a class=\"docs-anchor\" href=\"#channels\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Channels</h2>\n<table>\n<thead>\n<tr>\n<th>Flow</th>\n<th>Direction</th>\n<th>Owner</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>SCIM provisioning (<code>scim-in</code>)</td>\n<td>In</td>\n<td>Global — all inbound SCIM writes</td>\n</tr>\n<tr>\n<td>Federation sign-in (<code>jit</code>)</td>\n<td>In</td>\n<td>Global defaults, or per upstream IdP</td>\n</tr>\n<tr>\n<td>SCIM push (<code>scim-out</code>)</td>\n<td>Out</td>\n<td>Per SCIM target</td>\n</tr>\n<tr>\n<td>OIDC claims (<code>oidc</code>)</td>\n<td>Out</td>\n<td>Per client (adds/refines claims)</td>\n</tr>\n<tr>\n<td>SAML attributes</td>\n<td>Out</td>\n<td>On each app&#39;s settings (attribute map / definitions)</td>\n</tr>\n</tbody></table>\n<p>A flow with no rows of its own uses the channel&#39;s defaults: the seeded JIT claim lists, the standard SCIM attribute mapping, the default pushed SCIM document, and the standard OIDC claim set. Per-owner rows <strong>replace</strong> the defaults wholesale — they are never merged.</p>\n<h2 id=\"expressions\"><a class=\"docs-anchor\" href=\"#expressions\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Expressions</h2>\n<p>Expressions evaluate over the source document: the incoming SCIM body or the IdP&#39;s claims inbound; the user document outbound (<code>upn</code>, <code>username</code>, <code>display_name</code>, <code>given_name</code>, <code>family_name</code>, <code>email</code>, <code>name</code>, <code>id</code>, <code>job_title</code>, <code>department</code>, <code>manager</code>, <code>employee_number</code>, <code>hire_date</code>, <code>employment_status</code>, <code>employment_type</code>, <code>location</code>, <code>status</code>, <code>groups</code>, <code>emails</code>, <code>custom.&lt;key&gt;</code> and bare custom attribute names).</p>\n<pre><code>name.givenName                              paths (filters: emails[type eq &quot;work&quot;].value)\ngiven_name + &quot; &quot; + family_name              concatenation\nformat(&quot;{0}.{1}@corp.com&quot;, lower(given_name), lower(family_name))\ncoalesce(preferred_username, email)         first non-empty\nattr(&quot;http://schemas.../claims/upn&quot;)        attribute names outside the path grammar\nlower(ascii(given_name + &quot;.&quot; + family_name)) sign-in-name material\ncustom.cost_center                          schema attributes\n</code></pre>\n<p>The full function list is on the Flows page: string (<code>lower upper title capitalize trim concat join split substr left right replace replaceRe match ascii alnum initials word localpart domainpart format</code>), list (<code>len at take sort uniq reverse first</code>), logic (<code>eq ne gt lt ge le and or not in contains startsWith endsWith if select</code>), numbers (<code>add sub mul div mod int round min max</code>), plus <code>coalesce</code>, <code>attr</code>, <code>now</code>, <code>year</code>.</p>\n<h2 id=\"dynamic-groups\"><a class=\"docs-anchor\" href=\"#dynamic-groups\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Dynamic groups</h2>\n<p>Group rules accept an <code>expr</code> condition type that uses the same language as a predicate: pick <strong>expr</strong> as the operator in the rule builder and write e.g. <code>contains(department, &quot;eng&quot;)</code> or <code>ge(hire_date, &quot;2024-01-01&quot;)</code>. All conditions AND together as usual.</p>\n<h2 id=\"collision-policy\"><a class=\"docs-anchor\" href=\"#collision-policy\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Collision policy</h2>\n<p>When an inbound write would create a sign-in name or attach an email address that already belongs to another account:</p>\n<ul>\n<li><strong>Sign-in name</strong> — append a counter (<code>jdoe2</code>, <code>jdoe3</code>…), evaluate a <strong>pattern expression</strong> over <code>{local, n, domain, email}</code> retried with n = 2, 3, 4…, or refuse.</li>\n<li><strong>Email address</strong> — don&#39;t attach it (default), or refuse the write.</li>\n</ul>\n<p>The policy applies to JIT provisioning and inbound SCIM alike.</p>\n<h2 id=\"api\"><a class=\"docs-anchor\" href=\"#api\" aria-hidden=\"true\" tabindex=\"-1\">#</a>API</h2>\n<p><code>GET/PUT /api/v1/mappings</code> manages rows per channel and owner (Super-Admin scope for writes; <code>schemas:read</code> for reads); <code>GET/PUT /api/v1/mappings/collisions</code> manages the collision policy. <code>/api/v1/scim/mappings</code> remains the delegable (<code>scim:write</code>) view of the inbound SCIM channel. See the <a href=\"/docs/api\">API reference</a>.</p>",
+    "ids": [
+      "channels",
+      "expressions",
+      "dynamic-groups",
+      "collision-policy",
+      "api"
     ]
   },
   "applications": {

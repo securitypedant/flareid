@@ -11,6 +11,7 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
+import { parseExpression } from "../lib/expr.js";
 import { normalizeAttributeDefinitions, type SpAttributeDefinition } from "../lib/saml/service-providers.js";
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { catalogIconUrl, templateToClientInput, templateToSpInput, type CatalogEntry } from "../lib/catalog.js";
@@ -179,8 +180,10 @@ export function parseSpForm(body: Record<string, unknown>): SpFormValues | strin
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
       attributeMap = parsed as Record<string, string>;
       for (const [k, v] of Object.entries(attributeMap)) {
-        if (!USER_ATTRIBUTE_FIELDS.includes(v as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
-          return `"${v}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
+        try {
+          parseExpression(v);
+        } catch {
+          return `"${v}" is not a valid expression - use a field name (${USER_ATTRIBUTE_FIELDS.join(", ")}, custom.<key>) or an expression.`;
         }
       }
     } catch (e) {
@@ -201,8 +204,10 @@ export function parseSpForm(body: Record<string, unknown>): SpFormValues | strin
     const norm = normalizeAttributeDefinitions(parsed);
     if ("error" in norm) return norm.error;
     for (const def of norm.defs) {
-      if (!USER_ATTRIBUTE_FIELDS.includes(def.field as (typeof USER_ATTRIBUTE_FIELDS)[number])) {
-        return `"${def.field}" is not a user attribute field. Valid fields: ${USER_ATTRIBUTE_FIELDS.join(", ")}.`;
+      try {
+        parseExpression(def.field);
+      } catch {
+        return `"${def.field}" is not a valid expression - use a field name (${USER_ATTRIBUTE_FIELDS.join(", ")}, custom.<key>) or an expression.`;
       }
     }
     attributeDefinitions = norm.defs;

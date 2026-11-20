@@ -142,6 +142,11 @@ export function requiredPermission(method: string, path: string): Permission | n
   // the CF One page; the /admin/users mount point must not weaken it to
   // users:write.
   if (/^\/admin\/users\/[^/]+\/(?:un)?watch$/.test(path)) return write ? "cfone:write" : "cfone:read";
+  // The unified flows editor rewrites every channel's attribute rules at once
+  // - federation claims, provisioning fields, app claims - the same blast
+  // radius as registering an IdP or a SCIM target, so writes are
+  // Super-Admin-only. Reads follow the schemas area.
+  if (under(path, "/admin/flows")) return write ? "super" : "schemas:read";
   const hit = PATH_AREAS.find(([prefix]) => under(path, prefix));
   // Anything unmapped fails closed to Super Admin - a new console page is
   // denied until it deliberately joins PATH_AREAS, never accidentally open.
@@ -173,7 +178,7 @@ export function visibleSections(access: Access): Set<string> {
   if (can("users")) s.add("users");
   if (can("groups")) s.add("groups");
   if (can("domains")) s.add("domains");
-  if (can("schemas")) s.add("schemas");
+  if (can("schemas")) { s.add("schemas"); s.add("flows"); }
   if (can("oidc") || can("saml") || can("scim") || can("ldap") || can("email") || can("cfone") || can("signals") || can("api_keys")) s.add("integrations");
   if (can("branding")) s.add("branding");
   if (can("security") || can("roles") || can("signing_keys")) s.add("security");
