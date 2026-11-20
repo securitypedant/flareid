@@ -29,7 +29,9 @@ docs.get("/docs/api/reference/:tag", (c) => {
 });
 docs.get("/docs/:slug", (c) => {
   const slug = c.req.param("slug");
-  return slug !== "index" && DOCS_PAGES[slug] ? guide(c, slug) : c.notFound();
+  // Own-property test: DOCS_PAGES['constructor'] & co. read through
+  // Object.prototype, which is not a page.
+  return slug !== "index" && Object.hasOwn(DOCS_PAGES, slug) ? guide(c, slug) : c.notFound();
 });
 
 // ---------------------------------------------------------------------------

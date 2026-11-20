@@ -165,8 +165,10 @@ login.get("/login/language", async (c) => {
 
 login.post("/logout", async (c) => {
   const session = await getSession(c.req.raw, c.env);
-  const targets = session ? await frontchannelTargets(c.env, session.id) : [];
+  // Back-channel first: notifySessionRevoked reads session_clients, which
+  // frontchannelTargets then consumes (and deletes) for the iframe page.
   if (session) await revokeSession(c.env, session.id);
+  const targets = session ? await frontchannelTargets(c.env, session.id) : [];
   for (const sc of clearSessionCookies()) c.header("Set-Cookie", sc, { append: true });
   if (targets.length) {
     const { html, frameSrc } = frontchannelLogoutPage(c.get("appName"), targets, "/login", await requestLocale(c));

@@ -55,6 +55,28 @@ describe("admin roles", () => {
     expect(canAccess({ ...r(["signin", "account:read"]), isAdmin: false }, "GET", "/admin")).toBe(false);
     expect(canAccess(r(["*"]), "POST", "/admin/setup")).toBe(true);
     expect(canAccess(dir, "POST", "/admin/setup")).toBe(false);
+    // The user-page watch buttons write the risk watchlist (and emit a RISC
+    // signal): cfone:write, like the API routes and the CF One page - the
+    // /admin/users mount must not weaken them to users:write.
+    expect(canAccess(dir, "POST", "/admin/users/5/watch")).toBe(false);
+    expect(canAccess(dir, "POST", "/admin/users/5/unwatch")).toBe(false);
+    expect(canAccess(r(["cfone:write"]), "POST", "/admin/users/5/watch")).toBe(true);
+    expect(canAccess(dir, "POST", `/admin/users/0x${(5).toString(16)}/watch`)).toBe(false);
+    // Trusting a SET transmitter hands its claims authority over every
+    // account - Super Admin only, like registering an upstream IdP.
+    expect(canAccess(r(["signals:write"]), "POST", "/admin/integrations/signals/transmitters")).toBe(false);
+    expect(canAccess(r(["signals:write"]), "POST", "/admin/integrations/signals/transmitters/3/delete")).toBe(false);
+    expect(canAccess(r(["signals:read"]), "GET", "/admin/integrations/signals/transmitters")).toBe(true);
+    // Streams stay delegated: only the trust anchor moved.
+    expect(canAccess(r(["signals:write"]), "POST", "/admin/integrations/signals/streams")).toBe(true);
+    // Pointing a SCIM target exports the whole directory - Super Admin, while
+    // the inbound-server settings stay with scim:write.
+    expect(canAccess(r(["scim:write"]), "POST", "/admin/scim/targets")).toBe(false);
+    expect(canAccess(r(["scim:write"]), "POST", "/admin/scim/targets/1")).toBe(false);
+    expect(canAccess(r(["scim:write"]), "POST", "/admin/scim/targets/1/scope")).toBe(false);
+    expect(canAccess(r(["scim:write"]), "POST", "/admin/scim/sync")).toBe(false);
+    expect(canAccess(r(["scim:read"]), "GET", "/admin/scim/targets/1")).toBe(true);
+    expect(canAccess(r(["scim:write"]), "POST", "/admin/scim/mappings")).toBe(true);
     // LDAP console pages have their own area: a scoped admin without the
     // grant cannot read them, one with it can, and writes need ldap:write.
     expect(canAccess(aud, "GET", "/admin/ldap")).toBe(false);
@@ -125,6 +147,21 @@ describe("admin roles", () => {
     // apply-to-all is Super Admin authority: a domains:write role cannot use it.
     const domain = await idOf("domains", "domain", "horizon.test");
     expect((await post(`/admin/domains/${domain}/apply-to-all`, dora)).status).toBe(403);
+  });
+
+  it("keeps the user-page watch buttons behind cfone:write, like the API and the CF One page", async () => {
+    const { dora, idOf } = await setup();
+    const patId = await idOf("users", "username", "pat");
+    // A Directory Admin (users:write, no cfone) cannot flag or unflag.
+    expect((await post(`/admin/users/${patId}/watch`, dora, { reason: "Flagged" })).status).toBe(403);
+    expect((await post(`/admin/users/${patId}/unwatch`, dora)).status).toBe(403);
+    expect(await env.DB.prepare("SELECT 1 FROM user_watch WHERE user_id = ?").bind(patId).first()).toBeNull();
+
+    // The Super Admin's own button still works.
+    const adminId = await idOf("users", "username", "admin");
+    const superCookie = (await createSession(env, adminId, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    expect((await post(`/admin/users/${patId}/watch`, superCookie, { reason: "Flagged" })).status).toBe(302);
+    expect(await env.DB.prepare("SELECT 1 FROM user_watch WHERE user_id = ?").bind(patId).first()).not.toBeNull();
   });
 });
 

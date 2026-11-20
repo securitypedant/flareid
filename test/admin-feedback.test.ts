@@ -237,6 +237,15 @@ describe("admin console navigation and pages", () => {
 
     const future = await get("from=2999-01-01");
     expect(future).toContain("0 entries match");
+
+    // Inherited Object.prototype keys are not filter values: they must be
+    // dropped like any other unknown value, not pushed into the WHERE clause.
+    for (const query of ["actor=constructor", "category=toString", "actor=hasOwnProperty&category=__proto__"]) {
+      const res = await SELF.fetch(`${BASE}/admin/audit?${query}`, { headers: { Cookie: cookie } });
+      expect(res.status, query).toBe(200);
+      const api = await apiCall(`/api/v1/audit?${query}`, { token: apiKey });
+      expect(api.status, query).toBe(200);
+    }
   });
 });
 

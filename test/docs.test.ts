@@ -43,6 +43,10 @@ describe("documentation site", () => {
     expect((await get("/docs/no-such-page", { Accept: "text/html" })).status).toBe(404);
     expect((await get("/docs/index")).status).toBe(404);
     expect((await get("/docs/api/reference/no-such-tag")).status).toBe(404);
+    // Object.prototype keys are not pages either - a truthy lookup would 500.
+    for (const slug of ["constructor", "hasOwnProperty", "toString", "__proto__"]) {
+      expect((await get(`/docs/${slug}`)).status, slug).toBe(404);
+    }
     const slash = await get("/docs/");
     expect(slash.status).toBe(301);
     expect(slash.headers.get("Location")).toBe("/docs");

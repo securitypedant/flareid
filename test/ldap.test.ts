@@ -1,8 +1,9 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiCall, bootstrapInstance, resetDatabase } from "./helpers.js";
 import { totp } from "./helpers-totp.js";
 import { handleLdapConnection, resetSnapshotCache } from "../src/ldap/connection.js";
+import * as passwordLib from "../src/lib/password.js";
 import { enableLdap, disableLdap } from "../src/ldap/settings.js";
 import { writeLdapApp } from "../src/ldap/apps.js";
 import { BerReader, appC, booleanValue, concat, enumValue, integer, octetString, seq, tlv } from "../src/ldap/ber.js";
@@ -263,6 +264,45 @@ describe("ldap binds", { timeout: 60000 }, () => {
     await c.send(bindReq(3, ALICE_DN, `correct-horse-9,${await totp(secret)}`));
     expect((await c.recv()).code).toBe(0);
     await c.close();
+  });
+
+  it("pads MFA-gated failures to the same verify count as a wrong password", async () => {
+    // LDAP.md section 14 req 3: a correct password that then fails OTP must
+    // cost the same hash verifications as a wrong password, or wall time
+    // confirms the password to anyone who can issue binds.
+    const secret = "JBSWY3DPEHPK3PXP";
+    await setupLdap({ mfaMode: "otp_required" });
+    await env.DB.prepare("UPDATE users SET mfa_enabled = 1, totp_secret = ? WHERE username = 'alice'").bind(secret).run();
+    resetSnapshotCache();
+    const spy = vi.spyOn(passwordLib, "verifyPassword");
+    try {
+      const c = client();
+      await c.send(bindReq(1, SERVICE_DN, appSecret));
+      await c.recv();
+      spy.mockClear();
+      // Correct password, no OTP suffix: one real verify + one pad.
+      await c.send(bindReq(2, ALICE_DN, "correct-horse-9"));
+      expect((await c.recv()).code).toBe(49);
+      expect(spy.mock.calls.length).toBe(2);
+      spy.mockClear();
+      // Correct password, wrong OTP: same.
+      await c.send(bindReq(3, ALICE_DN, "correct-horse-9,000000"));
+      expect((await c.recv()).code).toBe(49);
+      expect(spy.mock.calls.length).toBe(2);
+      spy.mockClear();
+      // Wrong password: same two verifications, no more.
+      await c.send(bindReq(4, ALICE_DN, "wrong-password"));
+      expect((await c.recv()).code).toBe(49);
+      expect(spy.mock.calls.length).toBe(2);
+      spy.mockClear();
+      // A valid password,OTP pair pays only the real verify.
+      await c.send(bindReq(5, ALICE_DN, `correct-horse-9,${await totp(secret)}`));
+      expect((await c.recv()).code).toBe(0);
+      expect(spy.mock.calls.length).toBe(1);
+      await c.close();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -576,6 +616,21 @@ describe("ldap session revalidation", { timeout: 60000 }, () => {
     const res = await c.recv();
     expect(res.tag).toBe(0x78); // noticeOfDisconnection
     expect(res.code).toBe(53);
+    await c.close();
+  });
+
+  it("refuses user binds on a bound connection once the sticky app is revoked", async () => {
+    await setupLdap();
+    const c = client();
+    await c.send(bindReq(1, SERVICE_DN, appSecret));
+    expect((await c.recv()).code).toBe(0);
+    await env.DB.prepare("UPDATE ldap_apps SET revoked_at = ? WHERE slug = ?").bind(new Date().toISOString(), SLUG).run();
+    resetSnapshotCache();
+    // A UPN bind is attributed through the sticky ctx.app row, which bind ops
+    // never refreshed - it must be re-read so the revocation applies now,
+    // not at the next non-bind op.
+    await c.send(bindReq(2, "alice@example.com", "correct-horse-9"));
+    expect((await c.recv()).code).toBe(49);
     await c.close();
   });
 

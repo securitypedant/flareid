@@ -179,6 +179,18 @@ describe("resolveFederatedUser", () => {
     await expect(resolveFederatedUser(env, idp, { subject: "sub-x", email: "new@else.test", username: "nobody", givenName: "RootOfTrust", familyName: "", displayName: "RootOfTrust" })).rejects.toBeInstanceOf(FederationError);
     expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = 'nobody'").first()).toBeNull();
   });
+
+  it("refuses a JIT account whose sign-in name collides with another account's alias", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    await apiCall("/api/v1/users", { token: apiKey, body: { username: "ada", given_name: "Ada", password: "user-password-123", status: "active" } });
+    const adaId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ada'").first<{ id: number }>())!.id;
+    // ada's alias is exactly the upn JIT would compose for the new account.
+    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, 'new.person@horizon.test', 'work', 0, ?)").bind(adaId, new Date().toISOString()).run();
+
+    const idp = await createUpstreamIdp(env, { name: "U", protocol: "oidc", config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test" });
+    await expect(resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" })).rejects.toBeInstanceOf(FederationError);
+    expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = 'new.person'").first()).toBeNull();
+  });
 });
 
 describe("federation API", () => {

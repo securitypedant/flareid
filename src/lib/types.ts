@@ -104,9 +104,9 @@ export interface OAuthClientRow {
   jwks: string | null;
   /** RFC 7591 jwks_uri: a remote JWKS document for private_key_jwt. */
   jwks_uri: string | null;
-  /** RFC 7591 grant_types the client registered; NULL = every supported grant (admin-created rows). */
+  /** RFC 7591 grant_types the client registered; NULL = every supported grant on admin-created rows, the RFC 7591 default on dynamically registered ones. */
   grant_types: string | null;
-  /** RFC 7591 `scope` metadata - bounds a client_credentials request's scope when set. */
+  /** RFC 7591 `scope` metadata - bounds a client_credentials request's scope when set (unset bounds a dynamically registered client to none). */
   registered_scope: string | null;
   /** RFC 7591 display metadata: rendered on the sign-in page so people can see which app they are authenticating to. */
   logo_uri: string | null;

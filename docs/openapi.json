@@ -6690,7 +6690,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "scim:write",
+        "x-permission": "admin",
         "requestBody": {
           "required": true,
           "content": {
@@ -6941,7 +6941,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "scim:write",
+        "x-permission": "admin",
         "requestBody": {
           "required": true,
           "content": {
@@ -7225,7 +7225,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "scim:write",
+        "x-permission": "admin",
         "parameters": [
           {
             "schema": {
@@ -14180,7 +14180,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "signals:write",
+        "x-permission": "admin",
         "requestBody": {
           "required": true,
           "content": {
@@ -14262,7 +14262,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "signals:write",
+        "x-permission": "admin",
         "parameters": [
           {
             "schema": {
@@ -16274,7 +16274,7 @@
             "bearer": []
           }
         ],
-        "x-permission": "scim:write",
+        "x-permission": "admin",
         "requestBody": {
           "required": true,
           "content": {

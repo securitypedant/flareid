@@ -10,6 +10,7 @@ import { isEmailAddress } from "../lib/email.js";
 import { listUserEmails, setUserEmails, getUserByAnyEmail, assertEmailsUsable, UserEmailError, type UserEmailInput } from "../lib/user-emails.js";
 import { applyInboundPhoto, deleteUserPhoto } from "../lib/photos.js";
 import { parseRule, resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, userMatchesRule } from "../lib/groups.js";
+import { WATCHLIST_GROUP_NAME } from "../lib/cfone.js";
 import { defaultSchemaId } from "../lib/schemas.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "../lib/sessions.js";
 import { SUPER_ADMINS_GROUP } from "../lib/middleware.js";
@@ -648,6 +649,7 @@ async function guardNewName(c: Context<{ Bindings: Env }>, name: string | undefi
   if (name === undefined) return;
   const trimmed = name.trim();
   if ((await adminRoleGroupNames(c.env)).includes(trimmed)) requireAdminFor(c, `Naming a group ${trimmed}`);
+  if (trimmed === WATCHLIST_GROUP_NAME) throw new ScimError(400, `"${trimmed}" is reserved for the system watchlist.`, "invalidValue");
 }
 
 /** Whether any explicit member of the group holds an admin role - statically, or by matching a role-linked group's rule. */
@@ -697,6 +699,9 @@ scimServer.post("/scim/v2/Groups", requireScope("directory:write"), async (c) =>
   const name = String(body.displayName ?? "").trim();
   if (!name) throw new ScimError(400, "displayName is required.", "invalidSyntax");
   if ((await adminRoleGroupNames(c.env)).includes(name)) requireAdminFor(c, `Creating an admin role group`);
+  // Reserved for the lazily-created system watchlist: a group created under
+  // the name would break ensureWatchlistGroup and borrow its meaning downstream.
+  if (name === WATCHLIST_GROUP_NAME) throw new ScimError(400, `"${name}" is reserved for the system watchlist.`, "invalidValue");
   if (await c.env.DB.prepare("SELECT 1 FROM groups WHERE name = ?").bind(name).first()) throw new ScimError(409, "A group with that displayName already exists.", "uniqueness");
   const row = await c.env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, NULL, '') RETURNING *").bind(name).first<GroupRow>();
   await setMembers(c.env, row!, await memberIds(c, body.members ?? []), []);

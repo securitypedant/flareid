@@ -1,6 +1,8 @@
 import { RESERVED_CLAIM_NAMES } from "./jwt.js";
 import { RESERVED_LDAP_ATTRIBUTE_NAMES } from "../ldap/entries.js";
 import { parseRule } from "./groups.js";
+import { assertMayTouchUser, assertNoAdminRoleGrant } from "../services/guards.js";
+import type { ServiceCtx } from "../services/context.js";
 import type { Env } from "../env.js";
 import type { GroupRow, UserRow } from "./types.js";
 
@@ -253,8 +255,16 @@ export async function userEditableAttributeNames(env: Env): Promise<Set<string>>
  * Conforms every object of the schema's type to it - same-named attributes
  * carry over, the rest are cleared. With `fromSchemaId`, only objects
  * currently on that schema move (used when a schema is deleted).
+ *
+ * Conforming a user is an attribute write, so a mass conform is a mass
+ * attribute write: below "*" (Super Admin, an admin-scoped key) it obeys the
+ * same per-user rules as a single write - accounts holding an admin role are
+ * untouchable (clearing a rule's field would also strip a dynamic grant), and
+ * no conformed row may newly satisfy a role group's rule (a "ne" rule turns a
+ * cleared field into a fabricated grant). Every check runs before any write.
  */
-export async function applySchemaToAll(env: Env, schema: SchemaRow, fromSchemaId?: number): Promise<number> {
+export async function applySchemaToAll(ctx: ServiceCtx, schema: SchemaRow, fromSchemaId?: number): Promise<number> {
+  const env = ctx.env;
   const attrs = await getSchemaAttributes(env, schema.id);
   const now = new Date().toISOString();
   const scope = fromSchemaId === undefined ? "" : " WHERE schema_id = ?";
@@ -275,10 +285,18 @@ export async function applySchemaToAll(env: Env, schema: SchemaRow, fromSchemaId
 
   const { results: users } = await env.DB.prepare(`SELECT * FROM users${scope}`).bind(...scopeArgs).all<UserRow>();
   if (users.length === 0) return 0;
-  await env.DB.batch(
-    users.map((u) => {
-      const { columns, custom } = conformUserAttributes(attrs, currentUserAttributeValues(u, attrs));
-      return env.DB.prepare(
+  const updates = [];
+  for (const u of users) {
+    // An account holding an admin role may not be rewritten at all below "*":
+    // clearing the field its role group's rule matches on is a de-grant.
+    await assertMayTouchUser(ctx, u.id);
+    const { columns, custom } = conformUserAttributes(attrs, currentUserAttributeValues(u, attrs));
+    const after: UserRow = { ...u, custom_attributes: JSON.stringify(custom) };
+    for (const [column, value] of Object.entries(columns)) (after as unknown as Record<string, string | null>)[column] = value;
+    // The mirror image: a cleared field can newly satisfy a role group's rule.
+    await assertNoAdminRoleGrant(ctx, u, after);
+    updates.push(
+      env.DB.prepare(
         `UPDATE users SET schema_id = ?, job_title = ?, department = ?, employee_number = ?, hire_date = ?, employment_status = ?,
            employment_type = ?, location = ?, manager_external_id = ?, custom_attributes = ?, updated_at = ? WHERE id = ?`
       ).bind(
@@ -294,9 +312,10 @@ export async function applySchemaToAll(env: Env, schema: SchemaRow, fromSchemaId
         JSON.stringify(custom),
         now,
         u.id
-      );
-    })
-  );
+      )
+    );
+  }
+  await env.DB.batch(updates);
   return users.length;
 }
 

@@ -72,21 +72,48 @@ describe("storing the SCIM endpoint", () => {
 
   it("the API validates the endpoint and keeps the secret on a blank field", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    const scim = (await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "scim-mgr", scopes: ["scim:write"] } })).body.token as string;
 
-    const bad = await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "http://attacker.example.com", secret: "leak" } });
+    const bad = await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "http://attacker.example.com", secret: "leak" } });
     expect(bad.status).toBe(400);
     expect(bad.body.message).toMatch(/https/);
 
-    const good = await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "tok-1" } });
+    const good = await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.example.com/v2", secret: "tok-1" } });
     expect(good.status).toBe(200);
     expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret)).toBe("tok-1");
 
     // A blank secret keeps the stored one; clearing the endpoint removes it.
-    await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "" } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "https://scim.example.com/v2", secret: "" } });
     expect(await unsealMaybe(env, (await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret)).toBe("tok-1");
-    await apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "" } });
+    await apiCall("/api/v1/scim/config", { token: apiKey, body: { endpoint: "" } });
     expect((await env.DB.prepare("SELECT secret FROM scim_targets").first<{ secret: string }>())!.secret).toBe("");
+  });
+
+  it("choosing where the directory is exported is admin authority, not scim:write", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const scim = (await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "scim-mgr", scopes: ["scim:write"] } })).body.token as string;
+
+    // A delegable scim:write credential reads no part of the directory, so it
+    // must not pick the endpoint the whole directory is pushed to either.
+    const target = { name: "x", endpoint: "https://scim.example.com/v2", secret: "tok-1" };
+    for (const call of [
+      () => apiCall("/api/v1/scim/targets", { token: scim, body: target }),
+      () => apiCall("/api/v1/scim/config", { token: scim, body: { endpoint: "https://scim.example.com/v2", secret: "tok-1" } }),
+      () => apiCall("/api/v1/scim/sync", { token: scim, body: {} }),
+    ]) {
+      expect((await call()).status).toBe(403);
+    }
+    expect(await env.DB.prepare("SELECT 1 FROM scim_targets").first()).toBeNull();
+
+    // Reads and the non-export writes stay with the delegated permission.
+    expect((await apiCall("/api/v1/scim/targets", { token: scim })).status).toBe(200);
+    expect((await apiCall("/api/v1/scim/mappings", { token: scim, method: "PUT", body: { mappings: [] } })).status).toBe(200);
+
+    // The admin key registers the target; a delegated key can neither change
+    // nor sync it.
+    const made = await apiCall("/api/v1/scim/targets", { token: apiKey, body: target });
+    expect(made.status).toBe(200);
+    const id = (await env.DB.prepare("SELECT id FROM scim_targets").first<{ id: number }>())!.id;
+    expect((await apiCall(`/api/v1/scim/targets/${id}`, { token: scim, method: "PATCH", body: { endpoint: "https://evil.example.com" } })).status).toBe(403);
   });
 
   it("the console refuses an invalid endpoint with an inline error", async () => {

@@ -40,9 +40,12 @@
     // Conformance-suite affordance (signing-keys.ts): a JWKS fetch within 30s
     // of the previous one rotates the RS256 key, letting the OIDF suite's
     // rotate-keys module observe a rotation without a manual window. Old keys
-    // stay published 24h. Fine for this conformance-target deployment; set ""
-    // (or remove) on deployments where surprise key churn is unwelcome.
-    "JWKS_ROTATION_PROBE": "true"
+    // stay published 24h. Off here on purpose: /jwks.json is anonymous, so an
+    // enabled probe lets unauthenticated traffic churn signing keys and bloat
+    // the JWKS document. Set "true" only on a dedicated conformance
+    // environment - e.g. `wrangler deploy --var JWKS_ROTATION_PROBE:true` -
+    // never in the committed vars.
+    "JWKS_ROTATION_PROBE": "false"
     // Signing keys are generated and kept in D1, encrypted with the
     // KEY_ENCRYPTION_KEY secret (src/lib/signing-keys.ts) - nothing here. To
     // import an existing RS256 key instead, set SIGNING_KEY_PKCS8 (secret) and

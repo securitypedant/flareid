@@ -115,6 +115,19 @@ export function requiredPermission(method: string, path: string): Permission | n
   // same blast radius as minting an admin key, so writes are Super-Admin-only.
   // Reads stay delegated (federation:read via /admin/integrations/federation).
   if (under(path, "/admin/federation")) return write ? "super" : "federation:read";
+  // Trusting a SET transmitter hands its verified claims authority over every
+  // account (session revocation, risk flags) - the same trust-anchor decision
+  // as an upstream IdP, so transmitter writes are Super-Admin-only too.
+  if (under(path, "/admin/integrations/signals/transmitters")) return write ? "super" : "signals:read";
+  // Choosing where the whole directory is provisioned - and pushing it there -
+  // exports every account's attributes, the outbound mirror of the federation
+  // rule: SCIM target and full-sync writes are Super-Admin-only. Reads stay
+  // delegated; so do the inbound-server settings (mappings, correlation).
+  if (under(path, "/admin/scim/targets") || path === "/admin/scim/sync" || path === "/admin/scim/test") return write ? "super" : "scim:read";
+  // Flagging a user onto the risk watchlist is cfone:write on the API and on
+  // the CF One page; the /admin/users mount point must not weaken it to
+  // users:write.
+  if (/^\/admin\/users\/[^/]+\/(?:un)?watch$/.test(path)) return write ? "cfone:write" : "cfone:read";
   const hit = PATH_AREAS.find(([prefix]) => under(path, prefix));
   // Anything unmapped fails closed to Super Admin - a new console page is
   // denied until it deliberately joins PATH_AREAS, never accidentally open.

@@ -293,12 +293,18 @@ export async function watchlistGroup(env: Env): Promise<GroupRow | null> {
 export async function ensureWatchlistGroup(env: Env): Promise<GroupRow> {
   const existing = await watchlistGroup(env);
   if (existing) return existing;
-  await env.DB.prepare("INSERT INTO groups (name, description, system) VALUES (?, ?, ?)").bind(
+  // The name is reserved at the group writers, but a squat from before the
+  // reservation (or a direct DB write) must not surface as a bare UNIQUE
+  // crash: skip the insert on conflict and then verify the row that wears
+  // the name actually is the system group.
+  await env.DB.prepare("INSERT INTO groups (name, description, system) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING").bind(
     WATCHLIST_GROUP_NAME,
     "People flagged as risky - failed sign-in bursts or a manual flag. Sync it downstream to tighten their inspection.",
     WATCHLIST_SYSTEM
   ).run();
-  return (await watchlistGroup(env))!;
+  const group = await watchlistGroup(env);
+  if (!group) throw new Error(`The name "${WATCHLIST_GROUP_NAME}" is held by a group that is not the system watchlist - rename or delete it first.`);
+  return group;
 }
 
 export async function watchlistUserIds(env: Env): Promise<number[]> {

@@ -88,4 +88,29 @@ describe("stored credentials are write-only in the console", () => {
     await post("/admin/security/default-password", admin, { default_password: "" });
     expect((await env.DB.prepare("SELECT value FROM idp_settings WHERE key = 'default_password'").first<{ value: string }>())!.value).toBe(PASSWORD);
   });
+
+  it("seals default_password and turnstile_secret at rest like the other stored credentials", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const PASSWORD = "shared-default-password-77";
+    const SECRET = "0x4AAAAAA-turnstile-secret";
+
+    await apiCall("/api/v1/security/new-user-password", { token: apiKey, method: "PUT", body: { mode: "default", default_password: PASSWORD } });
+    await apiCall("/api/v1/security/turnstile", { token: apiKey, method: "PUT", body: { mode: "on", site_key: "0x4AAAAAA-site", secret: SECRET } });
+
+    const stored = await env.DB.prepare("SELECT key, value FROM idp_settings WHERE key IN ('default_password', 'turnstile_secret')").all<{ key: string; value: string }>();
+    const byKey = Object.fromEntries(stored.results.map((r) => [r.key, r.value]));
+    for (const key of ["default_password", "turnstile_secret"]) {
+      // What a backup exports is ciphertext, not the credential.
+      expect(byKey[key], key).toMatch(/^v1\./);
+      expect(byKey[key], key).not.toContain(PASSWORD);
+      expect(byKey[key], key).not.toContain(SECRET);
+    }
+    // And both unseal back to what was saved - the read paths see plaintext.
+    expect(await unsealMaybe(env, byKey["default_password"]!)).toBe(PASSWORD);
+    expect(await unsealMaybe(env, byKey["turnstile_secret"]!)).toBe(SECRET);
+
+    // The legacy single-target SCIM bearer is gone from idp_settings entirely
+    // (migration 0047): it lived there plaintext and unread since 0034.
+    expect(await env.DB.prepare("SELECT 1 FROM idp_settings WHERE key = 'scim_secret'").first()).toBeNull();
+  });
 });

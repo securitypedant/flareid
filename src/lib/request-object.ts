@@ -38,10 +38,14 @@ function fail(error: string, description: string): RequestError {
 }
 
 // createRemoteJWKSet caches keys inside the set it returns, so keep one set per
-// jwks_uri and reuse it for the life of the isolate.
-const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+// jwks_uri and reuse it for the life of the isolate. Exported so a test can
+// verify the bound.
+export const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-function clientKeyResolver(client: Pick<OAuthClientRow, "jwks" | "jwks_uri">): JWTVerifyGetKey | null {
+/** Bound on the remoteJwks cache - the same as the token path's (oauth-client-auth.ts). */
+export const MAX_REMOTE_JWKS = 500;
+
+export function clientKeyResolver(client: Pick<OAuthClientRow, "jwks" | "jwks_uri">): JWTVerifyGetKey | null {
   if (client.jwks) {
     try {
       return createLocalJWKSet(JSON.parse(client.jwks) as JSONWebKeySet);
@@ -50,9 +54,14 @@ function clientKeyResolver(client: Pick<OAuthClientRow, "jwks" | "jwks_uri">): J
     }
   }
   if (client.jwks_uri) {
+    // Bound the getter cache like the token path does: each entry is a
+    // distinct caller-registered https endpoint this isolate will fetch, so
+    // the map's size bounds the SSRF reach an anonymous request can give the
+    // worker.
+    if (remoteJwks.size >= MAX_REMOTE_JWKS) remoteJwks.clear();
     let set = remoteJwks.get(client.jwks_uri);
     if (!set) {
-      set = createRemoteJWKSet(new URL(client.jwks_uri));
+      set = createRemoteJWKSet(new URL(client.jwks_uri), { timeoutDuration: 10_000 });
       remoteJwks.set(client.jwks_uri, set);
     }
     return set;

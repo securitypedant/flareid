@@ -223,6 +223,32 @@ const OK_POST_DIGESTS = new Set([
 ]);
 
 /**
+ * xml-crypto resolves SignatureMethod, DigestMethod, Transform and friends
+ * by local-name under ANY namespace, first in document order - the ds-only
+ * getElementsByTagNameNS allowlist reads in verifyPostSignature would never
+ * see a decoy like <x:SignatureMethod Algorithm="...rsa-sha1"> that the
+ * verifier would honour. So any element inside the Signature subtree named
+ * like a security-relevant dsig node but living outside the xmldsig
+ * namespace is a decoy, never data: reject it.
+ */
+const DS_SENSITIVE_LOCALNAMES = new Set([
+  "Signature",
+  "SignedInfo",
+  "CanonicalizationMethod",
+  "SignatureMethod",
+  "SignatureValue",
+  "KeyInfo",
+  "Object",
+  "Manifest",
+  "SignatureProperties",
+  "Reference",
+  "Transforms",
+  "Transform",
+  "DigestMethod",
+  "DigestValue",
+]);
+
+/**
  * xml-crypto ships no ECDSA signature algorithm, so the ecdsa-sha* entries in
  * OK_POST_SIGALGS are verified through this implementation registered on each
  * SignedXml instance. XML-DSig carries the raw r||s signature value - exactly
@@ -287,7 +313,9 @@ const ecdsaAlg = (alg: string, namedCurve: string, hash: string) =>
  * This is the only place FlareID verifies a signature over foreign XML - the
  * XSW hardening from SAML-implementation.md section 4, applied in order:
  *
- * - exactly one <ds:Signature>, a direct child of the signed document element
+ * - exactly one <ds:Signature>, a direct child of the signed document element,
+ *   containing no dsig-named element in any other namespace (xml-crypto
+ *   resolves those by local-name, so one would shadow the checked ds: node)
  * - one <ds:Reference>, an ID-only URI resolving to the document element's ID
  * - no second element anywhere carrying the referenced ID value
  * - no element carrying security meaning outside the signed subtree (with the
@@ -305,6 +333,10 @@ export async function verifyPostSignature(sp: SamlServiceProviderRow, xml: strin
 
   if (sigEls.length !== 1 || sigEls[0]!.parentNode !== root) return "bad";
   const sigEl = sigEls[0]!;
+
+  for (const el of Array.from(sigEl.getElementsByTagName("*"))) {
+    if (el.namespaceURI !== NS_DS && DS_SENSITIVE_LOCALNAMES.has(el.localName ?? "")) return "bad";
+  }
 
   const sigAlg = sigEl.getElementsByTagNameNS(NS_DS, "SignatureMethod")[0]?.getAttribute("Algorithm") ?? "";
   if (!OK_POST_SIGALGS.has(sigAlg)) return "unsupported-alg";

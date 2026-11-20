@@ -31,6 +31,8 @@ export interface SessionRow {
   ip: string | null;
   user_agent: string | null;
   revoked_at: string | null;
+  /** The derived OIDC sid (oidcSid(id)) - lets /check_session verify the marker cookie names a live session. */
+  oidc_sid: string | null;
 }
 
 /** Whether the request carries a FlareID session cookie at all (valid or not) - i.e. whether it could act as someone. */
@@ -72,11 +74,12 @@ export async function createSession(
 ): Promise<{ sessionId: string; setCookie: string; setCookies: string[] }> {
   const sessionId = randomToken(32);
   const now = new Date().toISOString();
+  const sid = await oidcSid(sessionId);
 
   const [policy] = await Promise.all([
     getSessionPolicy(env),
-    env.DB.prepare("INSERT INTO sessions (id, user_id, amr, created_at, last_seen_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind(sessionId, userId, JSON.stringify(amr), now, now, getClientIp(request), request.headers.get("User-Agent"))
+    env.DB.prepare("INSERT INTO sessions (id, user_id, amr, created_at, last_seen_at, ip, user_agent, oidc_sid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(sessionId, userId, JSON.stringify(amr), now, now, getClientIp(request), request.headers.get("User-Agent"), sid)
       .run(),
   ]);
 
@@ -86,7 +89,7 @@ export async function createSession(
   const maxAge = policy.maxHours * 3600;
   const setCookies = [
     `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
-    `${SESSION_CHECK_COOKIE}=${await oidcSid(sessionId)}; HttpOnly; Secure; Path=/; SameSite=None; Max-Age=${maxAge}`,
+    `${SESSION_CHECK_COOKIE}=${sid}; HttpOnly; Secure; Path=/; SameSite=None; Max-Age=${maxAge}`,
   ];
   // setCookie stays as the primary session cookie alone for the many callers
   // that only want its value (tests, header inspection); setCookies is what a
@@ -125,6 +128,32 @@ export async function getSession(request: Request, env: Env): Promise<SessionInf
   await env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();
 
   return { id: row.id, userId: row.user_id, amr: JSON.parse(row.amr || '["pwd"]'), createdAt: row.created_at };
+}
+
+/**
+ * Whether a session carrying this derived OIDC sid is still live. The
+ * check_session iframe only ever sees the sid (the marker cookie), so this is
+ * how it tells a revoked or expired session apart from a live one. Applies the
+ * same limits getSession enforces, without the last-seen bump - an RP polling
+ * the iframe must not keep a session alive. Rows minted before the oidc_sid
+ * column (NULL) never match: the safe answer for an unverifiable marker is
+ * "changed".
+ */
+export async function sessionLiveByOidcSid(env: Env, sid: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT s.created_at, s.last_seen_at,
+            (SELECT value FROM idp_settings WHERE key = 'session_max_hours') AS policy_max_hours,
+            (SELECT value FROM idp_settings WHERE key = 'session_idle_minutes') AS policy_idle_minutes
+       FROM sessions s WHERE s.oidc_sid = ? AND s.revoked_at IS NULL`
+  )
+    .bind(sid)
+    .first<{ created_at: string; last_seen_at: string; policy_max_hours: string | null; policy_idle_minutes: string | null }>();
+  if (!row) return false;
+  const policy = normalizeSessionPolicy(row.policy_max_hours, row.policy_idle_minutes);
+  const now = Date.now();
+  if (now - new Date(row.created_at).getTime() > policy.maxHours * 3600 * 1000) return false;
+  if (policy.idleMinutes > 0 && now - new Date(row.last_seen_at).getTime() > policy.idleMinutes * 60 * 1000) return false;
+  return true;
 }
 
 export async function getSessionUserId(request: Request, env: Env): Promise<number | null> {

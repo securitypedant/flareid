@@ -55,6 +55,9 @@ export async function purgeExpiredState(env: Env, now = Date.now()): Promise<Cle
       iso(now - REVOKED_SESSION_GRACE_SECONDS * 1000)
     ),
     env.DB.prepare("DELETE FROM trusted_devices WHERE expires_at < ?").bind(iso(now)),
+    // Deletes a whole prefix of the hash chain, never a middle span, so the
+    // surviving log still verifies: verifyAuditChain treats its oldest
+    // visible row as the trusted anchor (audit.ts).
     env.DB.prepare("DELETE FROM audit_log WHERE at < ?").bind(iso(now - retentionDays * day)),
     // window_start is epoch milliseconds, not an ISO string: compared with
     // text, SQLite sorts every integer lower, which deleted every counter.

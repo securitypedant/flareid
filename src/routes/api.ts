@@ -282,6 +282,10 @@ defineRoute({
   body: BundleSchema, response: ImportResultSchema,
 }, async (c) => {
   const bundle = await readJson<DirectoryBundle>(c);
+  // The bundle's domain is ensured into the domains table, whose consumers
+  // assume DNS names - the same gate as POST /api/v1/domains.
+  const domain = String(bundle.domain ?? "").trim().toLowerCase();
+  if (domain && !isValidDomain(domain)) return c.json(badRequest(`"${domain}" is not a valid DNS domain name.`), 400);
   // super_admin grants, "Super Admins" membership and overwriting an existing
   // admin are admin authority, not directory authority.
   const result = await importDirectory(c.env, bundle, { allowPrivileged: hasScope(c.get("apiActor").scopes, "admin") });
@@ -474,7 +478,7 @@ defineRoute({
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return c.json({ error: "not_found" }, 404);
-  const count = await applySchemaToAll(c.env, schema);
+  const count = await applySchemaToAll(apiCtx(c), schema);
   await logAudit(c.env, auditActor(c.get("apiActor")), "schema.applied", `${schema.object_type}:${schema.name}`, { count }, c.req.raw);
   return c.json({ applied: count });
 });
@@ -491,7 +495,7 @@ defineRoute({
 
   // Objects on it move to the default schema, conforming as they go.
   const fallback = await getSchema(c.env, Number(await defaultSchemaId(c.env, schema.object_type)));
-  if (fallback) await applySchemaToAll(c.env, fallback, id);
+  if (fallback) await applySchemaToAll(apiCtx(c), fallback, id);
   await c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
   return c.json({ ok: true });
@@ -665,7 +669,7 @@ defineRoute({
 // ---------------------------------------------------------------------------
 
 defineRoute({
-  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "scim:write", summary: "Set the first SCIM target's endpoint, secret, scope and tuning",
+  method: "post", path: "/api/v1/scim/config", tag: "SCIM", permission: "admin", summary: "Set the first SCIM target's endpoint, secret, scope and tuning",
   description:
     "The legacy single-target view: updates the first target (creating one named Default when none exists). `POST /api/v1/scim/targets` and `/api/v1/scim/targets/{id}` manage them all. A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.",
   body: z.object({
@@ -738,7 +742,9 @@ const ScimTargetBody = z.object({
 });
 
 defineRoute({
-  method: "post", path: "/api/v1/scim/targets", tag: "SCIM", permission: "scim:write", summary: "Add an outbound SCIM target",
+  method: "post", path: "/api/v1/scim/targets", tag: "SCIM", permission: "admin", summary: "Add an outbound SCIM target",
+  // Choosing where the directory is pushed exports every account's data - the
+  // outbound mirror of trusting an IdP, so this is admin scope.
   description: "One target per downstream SCIM server. `name` is unique; `secret` is write-only.",
   body: ScimTargetBody, errors: [400, 409],
 }, async (c) => {
@@ -762,7 +768,7 @@ defineRoute({
 });
 
 defineRoute({
-  method: "patch", path: "/api/v1/scim/targets/{id}", tag: "SCIM", permission: "scim:write", summary: "Change a SCIM target",
+  method: "patch", path: "/api/v1/scim/targets/{id}", tag: "SCIM", permission: "admin", summary: "Change a SCIM target",
   description: "Fields not supplied keep their values; a blank secret keeps the stored credential. A changed scope re-evaluates everything already pushed, after the response.",
   body: ScimTargetBody.partial(), errors: [400, 404],
 }, async (c) => {
@@ -818,7 +824,7 @@ defineRoute({
 });
 
 defineRoute({
-  method: "post", path: "/api/v1/scim/sync", tag: "SCIM", permission: "scim:write", summary: "Push the next batch of users, then the groups",
+  method: "post", path: "/api/v1/scim/sync", tag: "SCIM", permission: "admin", summary: "Push the next batch of users, then the groups",
   description: "Call again until `complete` is true. `target_id` picks the target; without it the first enabled one.",
   body: z.object({ target_id: z.number().int().optional() }).optional(),
   response: z.object({ ok: z.boolean(), complete: z.boolean() }).passthrough(),

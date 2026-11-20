@@ -1383,6 +1383,10 @@ admin.post("/admin/users/import", async (c) => {
   }
   // The console is Super Admin authority already; replace mode is not offered here.
   bundle.mode = "merge";
+  // The bundle's domain is ensured into the domains table, whose consumers
+  // assume DNS names - the same gate as POST /admin/domains.
+  const domain = String(bundle.domain ?? "").trim().toLowerCase();
+  if (domain && !isValidDomain(domain)) return c.json({ error: "invalid_request", message: `"${domain}" is not a valid DNS domain name.` }, 400);
   try {
     // Same rule as the Active switch: an import cannot deactivate your own account.
     const me = c.get("user").username;
@@ -1932,6 +1936,8 @@ admin.post("/admin/users/:id/watch", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  // The same guard the CF One page's watch form runs (the API twin too).
+  await assertMayTouchUser(consoleCtx(c), id);
   const reason = String((await c.req.parseBody()).reason ?? "").trim().slice(0, 300) || "Flagged manually";
   await flagUser(c.env, id, reason, "manual");
   await audit(consoleCtx(c), "cfone.user_flagged", user.upn, { reason });
@@ -1942,6 +1948,7 @@ admin.post("/admin/users/:id/unwatch", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(id).first<{ upn: string }>();
   if (!user) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  await assertMayTouchUser(consoleCtx(c), id);
   await unflagUser(c.env, id);
   await audit(consoleCtx(c), "cfone.user_unflagged", user.upn);
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
@@ -4734,7 +4741,7 @@ admin.post("/admin/schemas/:id/apply", async (c) => {
   const id = Number(c.req.param("id"));
   const schema = await getSchema(c.env, id);
   if (!schema) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
-  const count = await applySchemaToAll(c.env, schema);
+  const count = await applySchemaToAll(consoleCtx(c), schema);
   await logAudit(c.env, c.get("user"), "schema.applied", `${schema.object_type}:${schema.name}`, { count }, c.req.raw);
   return c.redirect(`/admin/schemas/${id}?saved=1`, 302);
 });
@@ -4746,7 +4753,7 @@ admin.post("/admin/schemas/:id/delete", async (c) => {
   if (schema.builtin) return consoleError(c, "Provided schemas cannot be deleted - remove their attributes instead.", 400);
 
   const fallback = await getSchema(c.env, Number(await defaultSchemaId(c.env, schema.object_type)));
-  if (fallback) await applySchemaToAll(c.env, fallback, id);
+  if (fallback) await applySchemaToAll(consoleCtx(c), fallback, id);
   await c.env.DB.prepare("DELETE FROM schemas WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "schema.deleted", `${schema.object_type}:${schema.name}`, undefined, c.req.raw);
   return c.redirect("/admin/schemas?saved=1", 302);

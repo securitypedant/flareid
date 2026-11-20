@@ -113,7 +113,12 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   // sticky service context, else the configured unscoped-bind app.
   let app: LdapAppRow | null = ctx.app;
   if (resolved.appSlug) app = await getLdapAppBySlug(env, resolved.appSlug);
-  else if (!app && settings.unscopedBindApp) app = await getLdapAppBySlug(env, settings.unscopedBindApp);
+  else if (app) {
+    // The sticky row is an in-memory snapshot last refreshed on a non-bind
+    // op - re-read it so a revocation or policy edit since then applies to
+    // this bind too ("binds fail immediately", api/ldap.ts).
+    app = (await env.DB.prepare("SELECT * FROM ldap_apps WHERE id = ?").bind(app.id).first<LdapAppRow>()) ?? null;
+  } else if (settings.unscopedBindApp) app = await getLdapAppBySlug(env, settings.unscopedBindApp);
   if (!app) return { ok: false, reason: resolved.appSlug ? "unknown_app" : "unattributed" };
   if (app.revoked_at) return { ok: false, reason: "app_revoked" };
   if (!(await isSetupCompleted(env))) return { ok: false, reason: "setup_incomplete" };
@@ -160,16 +165,26 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   const needOtp = enrolled ? app.mfa_mode !== "password" : app.mfa_mode === "otp_required" || (app.mfa_mode === "otp_if_enrolled" && globalMfa);
 
   if (needOtp) {
-    if (!enrolled) return { ok: false, reason: "mfa_enrollment_required" };
+    // Every failure past this point has already paid for one real verify; it
+    // must pay the same padding the bad-password path above runs, or wall
+    // time confirms "password correct, OTP missing/wrong" (LDAP.md section
+    // 14 req 3).
+    const mfaFail = async (reason: string): Promise<BindOutcome> => {
+      const format = storedHashFormat(stored);
+      if (format !== "scrypt") await verifyPassword(pw, await dummyHash(env, "scrypt"));
+      if (format !== "pbkdf2") await verifyPassword(pw, await dummyHash(env, "pbkdf2"));
+      return { ok: false, reason };
+    };
+    if (!enrolled) return mfaFail("mfa_enrollment_required");
     if (otp === null) {
       // An OTP is required and the field has no ,NNNNNN shape: never fall
       // back to treating the whole field as the password.
-      return { ok: false, reason: "otp_missing" };
+      return mfaFail("otp_missing");
     }
     if (!(await rebindOk(ctx, app, user, passwordStr))) {
-      if (await recordMfaAttempt(env, user.id, ip)) return { ok: false, reason: "otp_rate_limited" };
+      if (await recordMfaAttempt(env, user.id, ip)) return mfaFail("otp_rate_limited");
       const counter = await matchTotpCounter((await unsealMaybe(env, user.totp_secret)) ?? "", otp);
-      if (counter === null || !(await claimTotpCounter(env, user.id, counter))) return { ok: false, reason: "otp_invalid" };
+      if (counter === null || !(await claimTotpCounter(env, user.id, counter))) return mfaFail("otp_invalid");
       await clearMfaAttempts(env, user.id, ip);
       await rememberRebind(ctx, app, user, passwordStr);
     }

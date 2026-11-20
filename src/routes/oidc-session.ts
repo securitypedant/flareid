@@ -6,7 +6,7 @@ import { authPage, loginAppearance, msg, renderAuthMessage, requestLocale, type 
 import { t, type MessageKey } from "../lib/i18n.js";
 import { escapeHtml, scriptTag } from "../lib/html.js";
 import { getClientByClientId } from "../lib/db.js";
-import { clearSessionCookies, getSession, getSessionCheckSid, oidcSid, revokeSession } from "../lib/sessions.js";
+import { clearSessionCookies, getSession, getSessionCheckSid, oidcSid, revokeSession, sessionLiveByOidcSid } from "../lib/sessions.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, recordConsent } from "../lib/oidc.js";
 import { verifyOwnIdToken } from "../lib/jwt.js";
 import { logAudit } from "../lib/audit.js";
@@ -158,6 +158,11 @@ oidcSession.get("/check_session", async (c) => {
   const marked = getSessionCheckSid(c.req.raw);
   const session = marked ? null : await getSession(c.req.raw, c.env);
   const sid = marked ?? (session ? await oidcSid(session.id) : "");
+  // The marker proves only that a cookie exists, not that the session lives:
+  // a server-side revocation (admin sign-out, password change, SSF) cannot
+  // clear it, so confirm a live session backs it - otherwise the iframe would
+  // keep answering "unchanged" for a dead session until the cookie ages out.
+  const live = session !== null || (sid !== "" && (await sessionLiveByOidcSid(c.env, sid)));
   const script = `var OP_SID=document.body.getAttribute("data-sid")||"";
 ${CHECK_SESSION_SHA256_JS}
 window.addEventListener("message",function(e){
@@ -168,7 +173,7 @@ window.addEventListener("message",function(e){
  reply(sha256(cid+" "+e.origin+" "+OP_SID+" "+salt)===st[0]?"unchanged":"changed");
 });`;
   c.header("X-FlareID-Frame-Ancestors", "*");
-  return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body data-sid="${escapeHtml(sid)}">${scriptTag(script)}</body></html>`);
+  return c.html(`<!doctype html><html><head><meta charset="utf-8"><title>check_session</title></head><body data-sid="${escapeHtml(live ? sid : "")}">${scriptTag(script)}</body></html>`);
 });
 
 // ---------- RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0) ----------

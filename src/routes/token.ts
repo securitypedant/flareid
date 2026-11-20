@@ -40,8 +40,16 @@ token.post("/token", async (c) => {
   if (!client) return c.json({ error: "invalid_client" }, 401);
 
   // RFC 7591 grant_types: a client that declared its grants at registration
-  // stays inside them. NULL (admin-created rows) allows every supported grant.
-  if (client.grant_types && !(JSON.parse(client.grant_types) as string[]).includes(grantType)) {
+  // stays inside them. Undeclared is the RFC 7591 default for a dynamically
+  // registered client; NULL allows every supported grant only on
+  // admin-created rows - a self-registered client must not widen itself to
+  // "every grant" by omitting the field.
+  const declaredGrants = client.grant_types
+    ? (JSON.parse(client.grant_types) as string[])
+    : client.registration_token_hash
+      ? ["authorization_code"]
+      : null;
+  if (declaredGrants && !declaredGrants.includes(grantType)) {
     return c.json({ error: "unauthorized_client", error_description: "This client is not registered for that grant type." }, 400);
   }
 
@@ -171,9 +179,12 @@ token.post("/token", async (c) => {
     const scope = String(body.scope ?? "").slice(0, 512);
     // A client that declared its scopes at registration stays inside them -
     // the service JWT's scope claim is the only thing downstream services
-    // see, so it must not be self-assigned past the registered set.
-    if (client.registered_scope) {
-      const allowed = new Set(client.registered_scope.split(/\s+/).filter(Boolean));
+    // see, so it must not be self-assigned past the registered set. For a
+    // dynamically registered client an unset registered_scope is an empty
+    // set, never an unbounded default; only admin-created rows keep
+    // NULL = unbounded.
+    if (client.registered_scope !== null || client.registration_token_hash) {
+      const allowed = new Set((client.registered_scope ?? "").split(/\s+/).filter(Boolean));
       if (!scope.split(/\s+/).filter(Boolean).every((s) => allowed.has(s))) {
         return c.json({ error: "invalid_scope", error_description: "scope exceeds what this client registered for." }, 400);
       }

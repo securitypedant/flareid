@@ -49,6 +49,20 @@ export async function addDomain(env: Env, domain: string): Promise<void> {
     .run();
 }
 
+/**
+ * The idempotent twin of addDomain, for writers that "name" a domain rather
+ * than administer it (the directory import): the same isValidDomain gate -
+ * every consumer assumes stored rows are DNS names - but a no-op when the row
+ * already exists.
+ */
+export async function ensureDomain(env: Env, domain: string): Promise<void> {
+  const d = domain.trim().toLowerCase();
+  if (!isValidDomain(d)) throw new Error(`"${d}" is not a valid DNS domain name.`);
+  await env.DB.prepare("INSERT INTO domains (domain, is_default, created_at) VALUES (?, 0, ?) ON CONFLICT(domain) DO NOTHING")
+    .bind(d, new Date().toISOString())
+    .run();
+}
+
 export async function deleteDomain(env: Env, id: number): Promise<{ error?: string }> {
   const domain = await env.DB.prepare("SELECT * FROM domains WHERE id = ?").bind(id).first<DomainRow>();
   if (!domain) return { error: "Unknown domain" };

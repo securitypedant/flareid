@@ -6,6 +6,85 @@ may break things.
 
 ## [Unreleased]
 
+## [4.5.4] - 2026-11-22
+
+Security hardening from a fourth whole-codebase audit (deep profile; 57
+coverage units, every finding independently verified). No migrations beyond
+`0047`/`0048` — the `scim_secret` setting was dead since `scim_targets` took
+over in `0034`, and `sessions.oidc_sid` is additive.
+
+- **Delegated-credential boundary fixes.**
+  - Directory import's second pass now re-runs `grantsAdminRoleGroup` with the
+    written `manager_external_id` in the image — `import:write` can no longer
+    grant admin roles through manager-ruled role groups. The pass also skips
+    rows it never wrote. (high)
+  - `applySchemaToAll` takes the acting principal and refuses non-privileged
+    callers when the apply would de-grant or fabricate admin-role memberships
+    (`ne` rules match cleared values); covers the schema-delete fallbacks too.
+  - `ensureDomain` on the import path applies `isValidDomain` (shared helper
+    moved to `domains.ts`), closing the `import:write` → invalid `domains`
+    rows bypass around `domains:write`.
+  - Import/JIT `upn` writes now apply the `user_emails`/`users.email`
+    alias-namespace collision check SCIM already enforced — one identifier can
+    no longer resolve to different accounts for SSF vs login.
+  - Group member writes (`createGroup`/`addGroupMembers`/`removeGroupMember`/
+    `updateGroup` memberIds) check the target's admin status the way SCIM
+    member ops do — `groups:write`, managers, approvers and cert reviewers can
+    no longer add/remove administrators.
+  - Import group upserts refuse `system` groups (rule/description/membership),
+    and the `Risk watchlist` name is reserved on every create/rename path;
+    `ensureWatchlistGroup` verifies the row is the system group instead of
+    trusting the name.
+  - SSF transmitter registration/deletion is elevated from `signals:write` to
+    admin (console: super), matching the federation trust-anchor change.
+  - SCIM target registration, config and outbound sync are elevated from
+    `scim:write` to admin (console: super) — a delegated `scim:write` key can
+    no longer export the whole directory to an arbitrary public endpoint.
+    Test/mappings/correlation/mastering stay `scim:write`.
+  - `/admin/users/:id/watch|unwatch` is now `cfone:write` (was `users:write`)
+    and checks `assertMayTouchUser`, matching the CF One console page and API.
+- **OIDC/session fixes.**
+  - `/logout` revokes the session before clearing `session_clients` so
+    back-channel logout tokens are actually fanned out (the earlier fix only
+    reordered `/oidc/logout`).
+  - Dynamically registered clients no longer widen to every grant by omitting
+    `grant_types` (RFC 7591 default `authorization_code` applies) and
+    `client_credentials` scope is bound to `registered_scope` — NULL means
+    none, not all, for DCR clients.
+  - `/check_session` verifies the marker cookie's derived sid against a live
+    session row (`sessions.oidc_sid`, new migration) — a revoked session no
+    longer answers "unchanged". Pre-migration rows fail safe to "changed".
+  - The JAR `request`/`request_uri` remote-JWKS map is capped and timed out,
+    matching the `private_key_jwt` path.
+- **SAML/LDAP fixes.**
+  - POST-binding signature checks reject any Signature descendant using a
+    signature-meaning local name under a foreign namespace — an
+    `x:SignatureMethod`/`x:DigestMethod` decoy can no longer make xml-crypto
+    verify against an algorithm the allowlist rejected (e.g. SHA-1).
+  - SP metadata refresh keeps admin-registered ACS endpoints (union, not
+    intersection) and audits `acs_removed` drift instead of silently
+    re-pointing `default_acs_url`.
+  - LDAP binds re-read a sticky `ctx.app` row by id before evaluating
+    `revoked_at`/groups/`mfa_mode` — a revoked app can no longer keep
+    authenticating on connections bound before the revocation.
+  - LDAP MFA failure exits run the same verify padding as bad passwords, so
+    wall time no longer reveals a correct password on OTP-gated accounts.
+- **Infra/edge fixes.**
+  - `JWKS_ROTATION_PROBE` is off in committed vars — anonymous `/jwks.json`
+    can no longer force RS256 rotations. Enable per-deploy for conformance
+    probes: `wrangler deploy --var JWKS_ROTATION_PROBE:true`.
+  - `default_password`, `turnstile_secret` and the legacy `scim_secret` go
+    through `sealMaybe` like other `idp_settings` secrets; `scim_secret` is
+    dropped by migration `0048` (dead since `0034`).
+  - `verifyAuditChain` treats the oldest row in the verify window as the
+    trusted anchor, so hourly retention purges (which delete a chain *prefix*)
+    no longer make untampered logs report `broken`. Mid-chain deletions among
+    retained rows still report broken.
+  - `.dockerignore` excludes `conformance/`, `scim-verify-out/` and `*.log`
+    wholesale, so dev-built e2e images can't bake suite secrets.
+  - `/docs/:slug` and the audit-log filter lookups use own-property checks —
+    `constructor`/`toString` keys no longer 500.
+
 ## [4.5.3] - 2026-11-20
 
 - **Fixed**: `rsa-oaep-mgf1p` with a non-SHA-1 `digest` emitted wraps that no

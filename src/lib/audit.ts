@@ -78,6 +78,15 @@ export interface AuditVerifyResult {
  * sharing a parent hash is a "fork" - suspicious but can occur naturally
  * under concurrent writes; a row whose contents or stored hash don't match
  * is "broken" - someone tampered.
+ *
+ * The oldest row the window can see is the anchor: trusted, not re-verified
+ * (its parent is out of sight or deleted). That is what the hourly retention
+ * purge in cleanup.ts leaves behind - it removes a whole *prefix* of the
+ * chain, so a surviving boundary row whose stored hash covers a deleted
+ * parent is the routine case, not tampering. Deleting a row among the
+ * retained ones still reports "broken": the next row's expected parent is
+ * gone. The trade-off, already true of any log longer than the window, is
+ * that prefix deletion itself is out of scope for this check.
  */
 export async function verifyAuditChain(env: Env, limit = 10_000): Promise<AuditVerifyResult> {
   // limit+1 newest rows: when the log is longer than the window, the extra
@@ -90,12 +99,14 @@ export async function verifyAuditChain(env: Env, limit = 10_000): Promise<AuditV
   if (!rows.results?.length) {
     return { checked: 0, unchained, status: (total?.c ?? 0) > 0 ? "ok" : "empty", message: "No chained rows to verify." };
   }
-  // We fetched newest-first; verify oldest-first.
+  // We fetched newest-first; verify oldest-first. The extra row a full window
+  // carries, and - after a retention purge - the boundary row, are the same
+  // thing: the anchor the first verified row chains from.
   const ordered = [...rows.results] as unknown as Array<Record<string, unknown>>;
   ordered.reverse();
-  const seed = ordered.length > limit ? ordered.shift()! : null;
-  const seenHashes: string[] = [""];
-  let prevHash = seed ? String(seed.chain_hash) : "";
+  const anchor = ordered.shift()!;
+  const seenHashes: string[] = ["", String(anchor.chain_hash)];
+  let prevHash = String(anchor.chain_hash);
   for (const r of ordered) {
     const digest = await auditDigest(
       String(r.at),

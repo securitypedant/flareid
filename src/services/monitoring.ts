@@ -54,8 +54,10 @@ export function logFilters(raw: { search?: string; actor?: string; category?: st
   const isDate = (v: string | undefined) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "");
   return {
     search: raw.search ?? "",
-    actor: LOG_ACTORS[raw.actor ?? ""] ? raw.actor! : "",
-    category: LOG_CATEGORIES[raw.category ?? ""] ? raw.category! : "",
+    // Own-property tests: an inherited key ('constructor', 'toString', ...)
+    // would otherwise pass the truthy check and push undefined into the WHERE.
+    actor: Object.hasOwn(LOG_ACTORS, raw.actor ?? "") ? raw.actor! : "",
+    category: Object.hasOwn(LOG_CATEGORIES, raw.category ?? "") ? raw.category! : "",
     from: isDate(raw.from),
     to: isDate(raw.to),
   };

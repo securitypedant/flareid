@@ -273,19 +273,20 @@ export async function refreshSpMetadata(env: import("../../env.js").Env): Promis
       const storedCerts = JSON.parse(sp.signing_certs) as string[];
       const httpsOnly = (u: string | null) => (u && u.startsWith("https://") ? u : null);
       const merged = {
-        acsUrls: storedAcs.filter((u) => meta.acsUrls.includes(u)), // an endpoint the publisher withdrew stops being offered; it is never re-pointed
+        // Registered endpoints are the administrator's trust decision: the
+        // unsigned remote document can never remove or re-point one. A
+        // withdrawal is drift - audit-logged below, not applied.
+        acsUrls: storedAcs,
         certs: [...new Set([...storedCerts, ...meta.signingCerts])].slice(-MAX_SIGNING_CERTS),
         wantSigned: sp.want_authn_requests_signed === 1 || (meta.wantAuthnRequestsSigned && meta.signingCerts.length > 0),
         sloUrl: httpsOnly(sp.slo_url) ?? httpsOnly(meta.sloUrl),
         encryptionCert: sp.encryption_cert ?? meta.encryptionCert,
       };
-      // A withdrawn ACS that was the only one registered is kept rather than
-      // leaving the SP with no legal assertion target.
-      if (merged.acsUrls.length === 0) merged.acsUrls = storedAcs;
 
       const now = new Date().toISOString();
       const drifts: string[] = [];
       if (meta.acsUrls.some((u) => !storedAcs.includes(u))) drifts.push("acs_added");
+      if (storedAcs.some((u) => !meta.acsUrls.includes(u))) drifts.push("acs_removed");
       if (!sp.want_authn_requests_signed && meta.wantAuthnRequestsSigned && meta.signingCerts.length === 0) drifts.push("signing_downgrade");
       if (sp.encryption_cert && !meta.encryptionCert) drifts.push("encryption_dropped");
       await env.DB.prepare(

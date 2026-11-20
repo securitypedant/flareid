@@ -229,7 +229,10 @@ defineRoute(
     method: "post",
     path: "/api/v1/ssf/transmitters",
     tag: "Signals",
-    permission: "signals:write",
+    // Trusting an issuer hands its signed SETs authority over every account
+    // (session revocation, risk flags) - the same bar as registering an
+    // upstream IdP, so this is admin scope, not the delegable signals:write.
+    permission: "admin",
     summary: "Trust an inbound transmitter",
     description:
       "An issuer whose SETs we accept at POST /ssf/receive, verified against `jwks_url`. A `session-revoked` event for a user's email kills their sessions; a credential/risk event flags them on the risk watchlist for 24h.",
@@ -266,7 +269,8 @@ defineRoute(
     method: "delete",
     path: "/api/v1/ssf/transmitters/{id}",
     tag: "Signals",
-    permission: "signals:write",
+    // Same trust-anchor change as registering one: admin scope.
+    permission: "admin",
     summary: "Stop trusting a transmitter",
   },
   async (c) => {

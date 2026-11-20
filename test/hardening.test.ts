@@ -59,6 +59,27 @@ describe("audit tamper-evidence", () => {
     expect(deleted.status).toBe("broken");
   });
 
+  it("stays 'ok' after a retention-style prefix deletion, and still flags a gap among the survivors", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, "ada");
+    await seedUser(apiKey, "bob");
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE chain_hash IS NOT NULL").first<{ n: number }>())!.n).toBeGreaterThan(2);
+
+    // What purgeExpiredState does to rows past their retention: removes a
+    // whole prefix of the chain. The oldest surviving row is the trusted
+    // anchor, so an untampered log still verifies.
+    const boundary = await env.DB.prepare("SELECT id FROM audit_log WHERE chain_hash IS NOT NULL ORDER BY id LIMIT 1 OFFSET 1").first<{ id: number }>();
+    await env.DB.prepare("DELETE FROM audit_log WHERE id <= ?").bind(boundary!.id).run();
+    const after = await verifyAuditChain(env);
+    expect(after.status).toBe("ok");
+    expect(after.checked).toBeGreaterThan(0);
+
+    // But a deletion among the retained rows is still a break.
+    const mid = await env.DB.prepare("SELECT id FROM audit_log WHERE chain_hash IS NOT NULL ORDER BY id LIMIT 1 OFFSET 1").first<{ id: number }>();
+    await env.DB.prepare("DELETE FROM audit_log WHERE id = ?").bind(mid!.id).run();
+    expect((await verifyAuditChain(env)).status).toBe("broken");
+  });
+
   it("exports NDJSON with chain_hash for offline re-verification", async () => {
     const { apiKey } = await bootstrapInstance();
     await seedUser(apiKey, "ada");
@@ -116,6 +137,26 @@ describe("shared signals", () => {
     expect(html).toContain("Outbound streams");
     expect(html).toContain("Inbound transmitters");
     expect(html).toContain("/ssf/receive");
+  });
+
+  it("lets only an admin-scoped key trust a transmitter; signals:write still manages streams", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const sig = (await apiCall("/api/v1/api-keys", { token: apiKey, body: { name: "signals", scopes: ["signals:write"] } })).body.token as string;
+
+    // A registered transmitter's verified SETs act on every account (session
+    // revocation, risk flags) - a trust-anchor decision, like an upstream IdP.
+    const tx = { name: "CF", issuer: "https://tx.example.com", jwks_url: "https://tx.example.com/jwks.json" };
+    expect((await apiCall("/api/v1/ssf/transmitters", { token: sig, body: tx })).status).toBe(403);
+    expect((await apiCall("/api/v1/ssf/transmitters/1", { token: sig, method: "DELETE" })).status).toBe(403);
+    expect(await env.DB.prepare("SELECT 1 FROM ssf_transmitters").first()).toBeNull();
+
+    // Reads stay delegated, and outbound streams keep the signals:write gate.
+    expect((await apiCall("/api/v1/ssf/transmitters", { token: sig })).status).toBe(200);
+    expect((await apiCall("/api/v1/ssf/streams", { token: sig, body: { name: "Okta", endpoint_url: "https://rx.example.com/events" } })).status).toBe(201);
+
+    // The admin key registers and removes the transmitter.
+    expect((await apiCall("/api/v1/ssf/transmitters", { token: apiKey, body: tx })).status).toBe(201);
+    expect((await apiCall("/api/v1/ssf/transmitters/1", { token: apiKey, method: "DELETE" })).status).toBe(200);
   });
 
   it("queues and delivers SETs to a registered stream", async () => {

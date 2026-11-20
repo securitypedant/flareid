@@ -77,6 +77,31 @@ describe("saml2int", () => {
     expect(JSON.parse((await spRow("https://sp.test"))!.acs_urls)).toEqual(["https://sp.test/acs-1"]);
   });
 
+  it("keeps registered ACS endpoints (and the stored default) when the publisher withdraws them, logging the withdrawal as drift", async () => {
+    await bootstrapInstance({ domain: "horizon.test" });
+    const twoAcs = (a: string, b: string | null) =>
+      `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.test">` +
+      `<md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` +
+      `<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${a}" index="0"/>` +
+      (b ? `<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${b}" index="1"/>` : "") +
+      `</md:SPSSODescriptor></md:EntityDescriptor>`;
+    let served = twoAcs("https://sp.test/acs-1", "https://sp.test/acs-2");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(served));
+    await upsertSpFromMetadata(env, parseSpMetadata(served), undefined, "https://sp.test/metadata");
+    await env.DB.prepare("UPDATE saml_service_providers SET default_acs_url = 'https://sp.test/acs-2'").run();
+
+    // The unsigned document drops acs-2: the stored allowlist and default
+    // must survive, and the withdrawal is reported as drift.
+    served = twoAcs("https://sp.test/acs-1", null);
+    await env.DB.prepare("UPDATE saml_service_providers SET metadata_last_refreshed_at = '2000-01-01T00:00:00Z'").run();
+    expect(await refreshSpMetadata(env)).toEqual({ refreshed: 1, failed: 0 });
+    const row = (await spRow("https://sp.test"))!;
+    expect(JSON.parse(row.acs_urls)).toEqual(["https://sp.test/acs-1", "https://sp.test/acs-2"]);
+    expect(row.default_acs_url).toBe("https://sp.test/acs-2");
+    const held = await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'saml.metadata_refresh_held'").first<{ details: string }>();
+    expect(held!.details).toContain("acs_removed");
+  });
+
   it("a refresh cannot strip signing or encryption requirements, and non-security fields still track the document", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
     const certBody = TEST_SAML_SP_CERT_PEM.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");

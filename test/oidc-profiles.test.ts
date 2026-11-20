@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
-import { createSession } from "../src/lib/sessions.js";
+import { createSession, revokeSession } from "../src/lib/sessions.js";
 import { CHECK_SESSION_SHA256_JS } from "../src/routes/oidc-session.js";
 import { sha256Hex } from "../src/lib/tokens.js";
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
@@ -172,6 +172,29 @@ describe("session management", () => {
     expect(hex).toBe(hash);
   });
 
+  it("answers changed once the session behind the marker is gone server-side", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const { sessionId, setCookies } = await createSession(env, userId, ["pwd"], new Request(BASE));
+    const marker = setCookies[1].split(";")[0]!;
+
+    // A live session still answers through the marker.
+    const live = await SELF.fetch(`${BASE}/check_session`, { headers: { Cookie: marker } });
+    expect((await live.text()).match(/data-sid="([^"]*)"/)?.[1]).toBeTruthy();
+
+    // Revocation the browser cannot observe (admin sign-out, password change,
+    // SSF) leaves the cookie in place - the iframe must answer "changed"
+    // anyway, which an empty data-sid produces.
+    await revokeSession(env, sessionId);
+    const dead = await SELF.fetch(`${BASE}/check_session`, { headers: { Cookie: marker } });
+    expect((await dead.text()).match(/data-sid="([^"]*)"/)?.[1]).toBe("");
+
+    // A row minted before the oidc_sid column (NULL) cannot be verified either.
+    await env.DB.prepare("UPDATE sessions SET oidc_sid = NULL, revoked_at = NULL WHERE id = ?").bind(sessionId).run();
+    const legacy = await SELF.fetch(`${BASE}/check_session`, { headers: { Cookie: marker } });
+    expect((await legacy.text()).match(/data-sid="([^"]*)"/)?.[1]).toBe("");
+  });
+
   it("ships a self-contained sha256 in the check_session page", async () => {
     // The iframe JS can't rely on WebCrypto - conformance clients run in
     // headless browsers whose crypto.subtle rejects digest calls - so the
@@ -238,6 +261,32 @@ describe("back-channel logout", () => {
     expect(payload.events["http://schemas.openid.net/event/backchannel-logout"]).toBeDefined();
     expect(payload.sid).toBeTruthy();
     expect(payload.nonce).toBeUndefined();
+  });
+
+  it("delivers the back-channel POST on the console sign-out path too (POST /logout)", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const userId = await seedUser(apiKey);
+    const client = await seedClient(apiKey, { frontchannel_logout_uri: "https://rp.example/fcl" });
+    await env.DB.prepare("UPDATE oauth_clients SET backchannel_logout_uri = ? WHERE client_id = ?").bind("https://rp.example/bcl", client.client_id).run();
+
+    const { sessionId, setCookie } = await createSession(env, userId, ["pwd"], new Request(BASE));
+    await env.DB.prepare("INSERT INTO session_clients (session_id, client_id, created_at) VALUES (?, ?, ?)").bind(sessionId, client.client_id, new Date().toISOString()).run();
+
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return new Response(null, { status: 200 });
+    });
+    try {
+      const out = await SELF.fetch(`${BASE}/logout`, { method: "POST", headers: { ...FORM, Cookie: setCookie.split(";")[0]! } });
+      expect(out.status).toBe(200); // the front-channel iframe page
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Ordering regression: frontchannelTargets used to run first and delete
+    // the session_clients rows, so revokeSession's fan-out found nothing.
+    expect(posts).toEqual(["https://rp.example/bcl"]);
   });
 });
 
@@ -756,6 +805,18 @@ describe("JAR request objects (RFC 9101)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("bounds the remote JWKS cache like the token path does", async () => {
+    const { clientKeyResolver, remoteJwks, MAX_REMOTE_JWKS } = await import("../src/lib/request-object.js");
+    remoteJwks.clear();
+    for (let i = 0; i < MAX_REMOTE_JWKS + 1; i++) {
+      expect(clientKeyResolver({ jwks: null, jwks_uri: `https://keys-${i}.example/jwks` })).toBeTruthy();
+    }
+    // Each entry is an endpoint this isolate will fetch on an anonymous
+    // request; the cache must stay capped, not grow per registered URI.
+    expect(remoteJwks.size).toBeLessThanOrEqual(MAX_REMOTE_JWKS);
+    remoteJwks.clear();
   });
 });
 

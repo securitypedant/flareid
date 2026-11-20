@@ -522,6 +522,12 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
     candidate = `${local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "")}${++n}`;
   }
   const upn = `${candidate}@${domain}`;
+  // The sign-in name shares a namespace with contact addresses: spelled like
+  // another account's user_emails alias or users.email, the same string
+  // resolves to two accounts (SSF prefers the upn holder, email lookups the
+  // alias owner) - the check SCIM POST /Users applies.
+  const upnClash = await env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ? UNION SELECT 1 FROM users WHERE email = ?").bind(upn, upn).first();
+  if (upnClash) throw new FederationError(`JIT provisioning would create a sign-in name (${upn}) that collides with another account's email address.`);
   const t = now();
   const schemaId = await defaultSchemaId(env, "user");
   // The same boundary every other user writer honours: the IdP chose the

@@ -11,7 +11,11 @@ dist
 .env*
 !.env.example
 openid.net.env
-conformance/suite-config.json
+# Suite tooling and its generated configs (suite-config.json, the fc/bc
+# variants) carry live client secrets - none of it is needed in the image.
+conformance/
 conformance-results/
+scim-verify-out/
+*.log
 e2e/state/
 test-data/

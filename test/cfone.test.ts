@@ -146,6 +146,32 @@ describe("risk watchlist", () => {
     await unflagUser(env, uid);
     expect(await memberOf(group!.id, uid)).toBeNull();
   });
+
+  it("reserves the watchlist name and fails clearly when it is squatted", async () => {
+    const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
+    const uid = await seedUser(apiKey, "ada");
+
+    // No writer may take the name - even an admin-scoped key would break
+    // lazy creation of the system group the same way.
+    const res = await apiCall("/api/v1/groups", { token: apiKey, body: { name: "Risk watchlist" } });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/reserved/);
+    expect(await env.DB.prepare("SELECT 1 FROM groups WHERE name = 'Risk watchlist'").first()).toBeNull();
+
+    // A squat that predates the reservation (a direct row here): flagging
+    // fails with a diagnosis, not a bare UNIQUE crash, and the flag is still recorded.
+    await env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES ('Risk watchlist', 'squat', '')").run();
+    await expect(flagUser(env, uid, "test", "manual")).rejects.toThrow(/not the system watchlist/);
+    expect(await watchedUser(env, uid)).toBeTruthy();
+
+    // Renaming the squatter's group frees the name; the next flag creates
+    // the real system group.
+    await env.DB.prepare("UPDATE groups SET name = 'Not the watchlist' WHERE name = 'Risk watchlist'").run();
+    await flagUser(env, uid, "test", "manual");
+    const group = await watchlistGroup(env);
+    expect(group).toBeTruthy();
+    expect(await memberOf(group!.id, uid)).toBeTruthy();
+  });
 });
 
 const memberOf = (groupId: number, userId: number) => env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first();

@@ -1642,14 +1642,14 @@ Outbound SCIM provisioning (FlareID as a SCIM client).
 | Method | Path | Permission | Summary |
 |---|---|---|---|
 | `GET` | `/api/v1/scim/config` | `scim:read` | Read the first SCIM target's configuration |
-| `POST` | `/api/v1/scim/config` | `scim:write` | Set the first SCIM target's endpoint, secret, scope and tuning |
+| `POST` | `/api/v1/scim/config` | `admin` | Set the first SCIM target's endpoint, secret, scope and tuning |
 | `GET` | `/api/v1/scim/targets` | `scim:read` | List outbound SCIM targets |
-| `POST` | `/api/v1/scim/targets` | `scim:write` | Add an outbound SCIM target |
+| `POST` | `/api/v1/scim/targets` | `admin` | Add an outbound SCIM target |
 | `GET` | `/api/v1/scim/targets/{id}` | `scim:read` | Read one SCIM target |
-| `PATCH` | `/api/v1/scim/targets/{id}` | `scim:write` | Change a SCIM target |
+| `PATCH` | `/api/v1/scim/targets/{id}` | `admin` | Change a SCIM target |
 | `DELETE` | `/api/v1/scim/targets/{id}` | `scim:write` | Remove a SCIM target |
 | `POST` | `/api/v1/scim/test` | `scim:write` | Test a SCIM connection |
-| `POST` | `/api/v1/scim/sync` | `scim:write` | Push the next batch of users, then the groups |
+| `POST` | `/api/v1/scim/sync` | `admin` | Push the next batch of users, then the groups |
 | `GET` | `/api/v1/scim/mappings` | `scim:read` | List inbound attribute mappings |
 | `PUT` | `/api/v1/scim/mappings` | `scim:write` | Replace the inbound attribute mappings |
 | `GET` | `/api/v1/scim/correlation` | `scim:read` | List the inbound correlation keys |
@@ -1681,7 +1681,7 @@ Set the first SCIM target's endpoint, secret, scope and tuning.
 
 The legacy single-target view: updates the first target (creating one named Default when none exists). `POST /api/v1/scim/targets` and `/api/v1/scim/targets/{id}` manage them all. A changed scope re-evaluates everything already pushed, after the response. `tuning` controls how hard the client pushes: pace_ms between requests, members_per_request per group PATCH, and sync_batch users per sync call.
 
-Permission: `scim:write`
+Permission: `admin`
 
 Request body:
 
@@ -1724,7 +1724,7 @@ Add an outbound SCIM target.
 
 One target per downstream SCIM server. `name` is unique; `secret` is write-only.
 
-Permission: `scim:write`
+Permission: `admin`
 
 Request body:
 
@@ -1777,7 +1777,7 @@ Change a SCIM target.
 
 Fields not supplied keep their values; a blank secret keeps the stored credential. A changed scope re-evaluates everything already pushed, after the response.
 
-Permission: `scim:write`
+Permission: `admin`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
@@ -1856,7 +1856,7 @@ Push the next batch of users, then the groups.
 
 Call again until `complete` is true. `target_id` picks the target; without it the first enabled one.
 
-Permission: `scim:write`
+Permission: `admin`
 
 Request body:
 
@@ -2465,8 +2465,8 @@ Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmi
 | `DELETE` | `/api/v1/ssf/streams/{id}` | `signals:write` | Delete an outbound stream |
 | `POST` | `/api/v1/ssf/outbox/drain` | `signals:write` | Retry undelivered events now |
 | `GET` | `/api/v1/ssf/transmitters` | `signals:read` | List trusted inbound transmitters |
-| `POST` | `/api/v1/ssf/transmitters` | `signals:write` | Trust an inbound transmitter |
-| `DELETE` | `/api/v1/ssf/transmitters/{id}` | `signals:write` | Stop trusting a transmitter |
+| `POST` | `/api/v1/ssf/transmitters` | `admin` | Trust an inbound transmitter |
+| `DELETE` | `/api/v1/ssf/transmitters/{id}` | `admin` | Stop trusting a transmitter |
 
 ### `GET /api/v1/ssf/streams`
 
@@ -2617,7 +2617,7 @@ Trust an inbound transmitter.
 
 An issuer whose SETs we accept at POST /ssf/receive, verified against `jwks_url`. A `session-revoked` event for a user's email kills their sessions; a credential/risk event flags them on the risk watchlist for 24h.
 
-Permission: `signals:write`
+Permission: `admin`
 
 Request body:
 
@@ -2645,7 +2645,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Stop trusting a transmitter.
 
-Permission: `signals:write`
+Permission: `admin`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|

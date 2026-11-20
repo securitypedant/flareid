@@ -5,7 +5,8 @@ import { userEditableAttributeNames } from "../lib/schemas.js";
 import { drainScimDeprovisionQueue, pushUsersById, scimDeprovisionStatements } from "../lib/scim-client.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
-import { assertMayNameGroup, assertMayTouchGroup } from "./guards.js";
+import { assertMayNameGroup, assertMayTouchGroup, assertMayTouchUser } from "./guards.js";
+import { WATCHLIST_GROUP_NAME } from "../lib/cfone.js";
 import { adminRoleGroupIds } from "../lib/admin-roles.js";
 import { scimConfigured, syncGroupBestEffort } from "./scim-sync.js";
 
@@ -47,6 +48,13 @@ function checkName(input: GroupInput, existingName: string | null): void {
   if ((existingName === SUPER_ADMINS_GROUP || input.name === SUPER_ADMINS_GROUP) && input.rule) {
     throw new ServiceError(400, `The ${SUPER_ADMINS_GROUP} group cannot be dynamic.`);
   }
+  // The watchlist system group is created lazily under this exact name; an
+  // ordinary group holding it first would break that creation and borrow its
+  // meaning downstream. Reserved unconditionally - an admin-scoped writer
+  // squatting it breaks flag operations all the same.
+  if (input.name === WATCHLIST_GROUP_NAME && existingName !== WATCHLIST_GROUP_NAME) {
+    throw new ServiceError(400, `"${input.name}" is reserved for the system's risk watchlist.`);
+  }
 }
 
 export async function createGroup(ctx: ServiceCtx, input: GroupInput, memberIds: number[]): Promise<number> {
@@ -57,6 +65,8 @@ export async function createGroup(ctx: ServiceCtx, input: GroupInput, memberIds:
   if (await ctx.env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(input.name).first()) {
     throw new ServiceError(409, `A group named "${input.name}" already exists.`);
   }
+  // Founding members face the same check as every other membership write.
+  for (const uid of memberIds) await assertMayTouchUser(ctx, uid);
   const result = await ctx.env.DB.prepare("INSERT INTO groups (name, description, rule, schema_id, custom_attributes, requestable, cf_list_sync) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(input.name, input.description || null, input.rule, input.schemaId, JSON.stringify(input.custom), input.requestable && !input.rule ? 1 : 0, input.cfListSync ? 1 : 0)
     .run();
@@ -95,6 +105,15 @@ export async function updateGroup(ctx: ServiceCtx, id: number, input: GroupInput
   }
   const { results: before } = await ctx.env.DB.prepare("SELECT user_id FROM group_members WHERE group_id = ?").bind(id).all<{ user_id: number }>();
   const members = input.rule ? [] : (memberIds ?? before.map((b) => b.user_id));
+  if (memberIds !== undefined) {
+    // A replace touches whoever is added or removed - and membership writes
+    // act on the member's account, so an administrator's memberships need
+    // admin authority (the check SCIM's member operations make).
+    const beforeIds = new Set(before.map((b) => b.user_id));
+    const nextIds = new Set(members);
+    const touched = [...members.filter((uid) => !beforeIds.has(uid)), ...before.map((b) => b.user_id).filter((uid) => !nextIds.has(uid))];
+    for (const uid of touched) await assertMayTouchUser(ctx, uid);
+  }
 
   await ctx.env.DB.batch([
     ctx.env.DB.prepare("UPDATE groups SET name = ?, description = ?, rule = ?, schema_id = ?, custom_attributes = ?, requestable = ?, cf_list_sync = ? WHERE id = ?").bind(
@@ -175,6 +194,9 @@ export async function addGroupMembers(ctx: ServiceCtx, id: number, userIds: numb
   if (group.system) throw new ServiceError(400, `Membership of "${group.name}" is maintained automatically; it cannot be edited.`);
   await assertMayTouchGroup(ctx, id);
   if (userIds.length === 0) return 0;
+  // Adding someone changes their account's memberships: an administrator's
+  // need admin authority - the check SCIM's member operations make.
+  for (const uid of userIds) await assertMayTouchUser(ctx, uid);
   const results = await ctx.env.DB.batch(userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
   const added = results.reduce((n, r) => n + Number(r.meta.changes ?? 0), 0);
   await audit(ctx, "group.members_added", group.name, { count: added });
@@ -191,6 +213,7 @@ export async function removeGroupMember(ctx: ServiceCtx, id: number, uid: number
   if (group.system) throw new ServiceError(400, `Membership of "${group.name}" is maintained automatically; it cannot be edited.`);
   if (group.name === SUPER_ADMINS_GROUP && uid === ctx.selfId) throw new ServiceError(400, "You cannot remove yourself from Super Admins.");
   await assertMayTouchGroup(ctx, id);
+  await assertMayTouchUser(ctx, uid);
   const user = await ctx.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(uid).first<{ upn: string }>();
   await ctx.env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(id, uid).run();
   await audit(ctx, "group.member_removed", group.name, { user: user?.upn });

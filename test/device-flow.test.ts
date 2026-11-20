@@ -183,6 +183,42 @@ describe("client_credentials grant", () => {
     expect(((await foreign.json()) as { active: boolean }).active).toBe(false);
   });
 
+  it("does not let a dynamically registered client widen itself to the grant or arbitrary scope", async () => {
+    await setup();
+    const register = async (body: Record<string, unknown>) => {
+      const res = await SELF.fetch(`${BASE}/connect/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(201);
+      return (await res.json()) as { client_id: string; client_secret: string };
+    };
+    const mint = (dyn: { client_id: string; client_secret: string }, extra: Record<string, string> = {}) =>
+      SELF.fetch(`${BASE}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "client_credentials", client_id: dyn.client_id, client_secret: dyn.client_secret, ...extra }).toString(),
+      });
+
+    // Undeclared grant_types are the RFC 7591 default (authorization_code) -
+    // NULL must not silently admit every grant on a self-registered row.
+    const dyn = await register({ client_name: "dyn", redirect_uris: ["https://dyn.test/cb"] });
+    expect(((await (await mint(dyn)).json()) as { error: string }).error).toBe("unauthorized_client");
+
+    // Declared the grant but no scope: the registered_scope bound is empty,
+    // not unbounded.
+    const unscoped = await register({ redirect_uris: ["https://dyn.test/cb"], grant_types: ["client_credentials"] });
+    expect(((await (await mint(unscoped, { scope: "admin", audience: "https://api.internal" })).json()) as { error: string }).error).toBe("invalid_scope");
+
+    // Declared both: the token stays inside the registered scope set.
+    const scoped = await register({ redirect_uris: ["https://dyn.test/cb"], grant_types: ["client_credentials"], scope: "api:read" });
+    const within = await mint(scoped, { scope: "api:read" });
+    expect(within.status).toBe(200);
+    expect(((await within.json()) as { scope?: string }).scope).toBe("api:read");
+    expect(((await (await mint(scoped, { scope: "api:read admin" })).json()) as { error: string }).error).toBe("invalid_scope");
+  });
+
   it("refuses public clients and bad secrets", async () => {
     const { apiKey, clientId, clientSecret } = await setup();
     const pub = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "CLI", client_type: "public", redirect_uris: ["https://app.test/cb"] } });

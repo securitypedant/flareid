@@ -3,6 +3,7 @@ import type { Brand } from "./brands.js";
 import { generateTempPassword, hashPassword } from "./password.js";
 import { DEFAULT_LOCALE, formatList, isSupportedLocale, SUPPORTED_LOCALES, t, type Locale, type MessageKey } from "./i18n.js";
 import { createScimTarget, listScimTargets, updateScimTarget, validateScimEndpoint, type ScimScope } from "./scim-targets.js";
+import { sealMaybe, unsealMaybe } from "./sealed.js";
 
 export { validateScimEndpoint };
 export type { ScimScope };
@@ -186,11 +187,13 @@ export async function markSetupCompleted(env: Env): Promise<void> {
  * than a string baked in here.
  */
 export async function getDefaultPassword(env: Env): Promise<string> {
-  return (await getSetting(env, "default_password")) ?? "";
+  // Sealed at rest like the other recoverable credentials (sealed.ts);
+  // unsealMaybe reads a plaintext value written before sealing reached it.
+  return (await unsealMaybe(env, await getSetting(env, "default_password"))) ?? "";
 }
 
 export async function setDefaultPassword(env: Env, password: string): Promise<void> {
-  await setSetting(env, "default_password", password);
+  await setSetting(env, "default_password", await sealMaybe(env, password));
 }
 
 /**
@@ -276,7 +279,9 @@ export async function getTurnstileConfig(env: Env): Promise<TurnstileConfig> {
   const { results } = await env.DB.prepare("SELECT key, value FROM idp_settings WHERE key IN ('turnstile_mode', 'turnstile_site_key', 'turnstile_secret')").all<{ key: string; value: string }>();
   const get = (k: string) => results.find((r) => r.key === k)?.value ?? "";
   const fromEnv = (env.TURNSTILE_SECRET_KEY ?? "").trim();
-  return { mode: get("turnstile_mode") === "on" ? "on" : "off", siteKey: get("turnstile_site_key"), secret: fromEnv || get("turnstile_secret"), secretFromEnv: Boolean(fromEnv) };
+  // Sealed at rest; a pre-sealing plaintext row still reads back (lazy migration).
+  const storedSecret = (await unsealMaybe(env, get("turnstile_secret"))) ?? "";
+  return { mode: get("turnstile_mode") === "on" ? "on" : "off", siteKey: get("turnstile_site_key"), secret: fromEnv || storedSecret, secretFromEnv: Boolean(fromEnv) };
 }
 
 /** Fields not given keep their value; an empty secret keeps the saved one. */
@@ -284,7 +289,7 @@ export async function setTurnstileConfig(env: Env, input: { mode?: TurnstileMode
   const writes: Promise<void>[] = [];
   if (input.mode !== undefined) writes.push(setSetting(env, "turnstile_mode", input.mode));
   if (input.siteKey !== undefined) writes.push(setSetting(env, "turnstile_site_key", input.siteKey.trim()));
-  if (input.secret) writes.push(setSetting(env, "turnstile_secret", input.secret.trim()));
+  if (input.secret) writes.push(setSetting(env, "turnstile_secret", await sealMaybe(env, input.secret.trim())));
   await Promise.all(writes);
 }
 

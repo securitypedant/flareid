@@ -4,12 +4,13 @@ import { breachCount, breachMessage } from "./breached-passwords.js";
 import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
 import { hashPassword, type PasswordHash } from "./password.js";
-import { getDefaultDomain } from "./domains.js";
+import { ensureDomain, getDefaultDomain, isValidDomain } from "./domains.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "./admin-roles.js";
 import { findSchema, getSchemaAttributes, splitUserAttributes, parseCustomAttributes, defaultSchemaId, userEditableAttributeNames } from "./schemas.js";
 import { parseRule, userMatchesRule, type GroupRule } from "./groups.js";
+import { WATCHLIST_GROUP_NAME } from "./cfone.js";
 import { deleteUserStatements, revokeAllSessionsForUser, revokeTokensForUser } from "./sessions.js";
 import { deleteGroupScim, deleteUserScim, isScimConfigured, pushUser, syncGroupsAllTargets, scimDeprovisionStatementsForMany, drainScimDeprovisionQueue } from "./scim-client.js";
 import { setUserEmails, UserEmailError } from "./user-emails.js";
@@ -195,13 +196,6 @@ export function validateBundle(bundle: DirectoryBundle): { users: DirectoryUser[
   return { users, groups };
 }
 
-/** Ensures the domain exists as a row, so users created under it show up correctly in /admin/domains. */
-async function ensureDomain(env: Env, domain: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO domains (domain, is_default, created_at) VALUES (?, 0, ?) ON CONFLICT(domain) DO NOTHING")
-    .bind(domain, new Date().toISOString())
-    .run();
-}
-
 /**
  * Wipes everything a previous import created, keeping the built-in groups and
  * anyone who administers the directory.
@@ -343,6 +337,9 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
 
   const mode = bundle.mode ?? "merge";
   const domain = (cleanString(bundle.domain) || (await getDefaultDomain(env))).toLowerCase();
+  if (cleanString(bundle.domain) && !isValidDomain(domain)) {
+    throw new ImportValidationError(`"${domain}" is not a valid DNS domain name.`);
+  }
 
   const result: ImportResult = {
     domain,
@@ -387,14 +384,23 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   if (users.some((u) => u.super_admin)) described.set(SUPER_ADMINS_GROUP, described.get(SUPER_ADMINS_GROUP) ?? null);
 
   const groupIdByName = new Map<string, number>();
+  const systemGroupIds = new Set<number>();
   const roleGroupIds = opts.allowPrivileged ? new Set<number>() : await adminRoleGroupIds(env);
   const roleGroupNameSet = opts.allowPrivileged ? new Set<string>() : new Set(await adminRoleGroupNames(env));
   for (const [name, description] of described) {
     try {
-      const existing = await env.DB.prepare("SELECT id FROM groups WHERE name = ?").bind(name).first<{ id: number }>();
+      const existing = await env.DB.prepare("SELECT id, system FROM groups WHERE name = ?").bind(name).first<{ id: number; system: string }>();
       if (existing) {
         const rule = ruleByName.get(name);
-        if (roleGroupIds.has(existing.id)) {
+        if (existing.system) {
+          // A system group's definition (and membership) is maintained by
+          // code - the watchlist mirrors user_watch rows - so a bundle may
+          // not rewrite it, whoever the caller is.
+          systemGroupIds.add(existing.id);
+          if (description !== null || rule !== undefined) {
+            result.errors.push({ group: name, message: `"${name}" is a system group - its definition cannot be imported.` });
+          }
+        } else if (roleGroupIds.has(existing.id)) {
           // A rule or description write on a role-linked group redefines who
           // holds the role - that is an admin grant, not a group update.
           if (description !== null || rule !== undefined) {
@@ -410,6 +416,13 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       } else {
         if (roleGroupNameSet.has(name)) {
           result.errors.push({ group: name, message: `"${name}" is an admin role group name; creating it requires an admin-scoped token.` });
+          continue;
+        }
+        // A name a lazily-created system group will claim: squatting it would
+        // break that creation and borrow its meaning downstream, so it is
+        // reserved on ordinary rows too.
+        if (name === WATCHLIST_GROUP_NAME) {
+          result.errors.push({ group: name, message: `"${name}" is reserved for the system watchlist.` });
           continue;
         }
         const inserted = await env.DB.prepare("INSERT INTO groups (name, description, rule) VALUES (?, ?, ?) RETURNING id")
@@ -467,6 +480,21 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       const existing = await env.DB.prepare("SELECT id, external_id, status, upn FROM users WHERE username = ?")
         .bind(username)
         .first<{ id: number; external_id: string; status: string; upn: string }>();
+
+      // The UPN shares a namespace with contact addresses: spelled like
+      // another account's user_emails alias or users.email, the same string
+      // resolves to two accounts (SSF prefers the upn holder, email lookups
+      // the alias owner). SCIM POST /Users applies the same check.
+      const nsClash = await env.DB.prepare(
+        "SELECT 1 FROM user_emails WHERE email = ? AND user_id != ? UNION SELECT 1 FROM users WHERE email = ? AND id != ?"
+      )
+        .bind(upn, existing?.id ?? -1, upn, existing?.id ?? -1)
+        .first();
+      if (nsClash) {
+        result.errors.push({ username, message: `The sign-in name ${upn} collides with another account's email address.` });
+        result.users.skipped++;
+        continue;
+      }
 
       const givenName = cleanString(user.given_name);
       const familyName = cleanString(user.family_name);
@@ -662,6 +690,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
             result.errors.push({ username, group: clean, message: `"${clean}" is a dynamic group - membership follows its rule, so this listing was skipped.` });
             continue;
           }
+          if (systemGroupIds.has(gid)) {
+            result.errors.push({ username, group: clean, message: `"${clean}" is a system group - its membership is maintained automatically, so this listing was skipped.` });
+            continue;
+          }
           wanted.add(gid);
         }
         if (user.super_admin) {
@@ -692,6 +724,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     const manager = cleanString(user.manager);
     if (!manager) continue;
     const username = cleanString(user.username).toLowerCase();
+    // Only rows this import actually wrote: the write keys on username, so
+    // without this a row the grant check skipped would get its manager set
+    // anyway.
+    if (!externalIdByUsername.has(username)) continue;
 
     try {
       let managerExternalId = externalIdByUsername.get(manager.toLowerCase());
@@ -704,6 +740,18 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       if (!managerExternalId) {
         result.errors.push({ username, message: `Unknown manager "${manager}" - left unset.` });
         continue;
+      }
+      if (!opts.allowPrivileged) {
+        // `manager` is a live group-rule field, so this write is exactly the
+        // attribute change the per-user grant check exists to refuse - and it
+        // runs after that check. Re-check the post-write image before the
+        // UPDATE, like the first pass does for every other column.
+        const row = await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
+        const granted = row ? await grantsAdminRoleGroup(env, row, { ...row, manager_external_id: managerExternalId }) : null;
+        if (granted) {
+          result.errors.push({ username, message: `Giving "${username}" that manager puts them in ${granted}, an admin role group, which requires an admin-scoped token.` });
+          continue;
+        }
       }
       await env.DB.prepare("UPDATE users SET manager_external_id = ? WHERE username = ?")
         .bind(managerExternalId, username)

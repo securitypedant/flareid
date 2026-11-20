@@ -1,2 +1,2 @@
 /** The deployed release, shown in the top bar. Kept equal to package.json "version" (test/ui-feedback.test.ts). */
-export const VERSION = "4.5.3";
+export const VERSION = "4.5.4";
