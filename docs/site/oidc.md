@@ -1,10 +1,10 @@
 # OIDC clients
 
-An OIDC client is an application that signs people in with FlareID over OpenID Connect, such as Cloudflare Access, a web app or a mobile app. Manage them under **Integrations → OIDC clients**.
+An OIDC client is an application that signs people in with FlareID over OpenID Connect, such as Cloudflare Access, a web app or a mobile app. Manage them under **Applications** (see [the applications page](applications.md)).
 
 ## Register a client
 
-1. Go to **Integrations → OIDC clients → + New client**.
+1. Go to **Applications → New OIDC client**.
 2. Enter a name, and choose the client type:
    - **Confidential**: a server that can keep a secret, such as Cloudflare Access or a web backend.
    - **Public**: a single-page or native app. It has no secret and must use PKCE.

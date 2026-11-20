@@ -186,8 +186,17 @@ const STYLES = `
   .topbar nav .nav-burger { display: none; }
   .topbar nav .nav-burger .nav-menu-list { min-width: 200px; }
   @media (max-width: 760px) {
-    .topbar nav .nav-links { display: none; }
+    /* One menu on mobile: nav links + Admin + Theme + Sign out all live in
+       the burger; the avatar dropdown and inline links hide, as do the
+       tagline and the GitHub link. */
+    .topbar nav .nav-links, .topbar nav .nav-user, .topbar a.github-link { display: none; }
     .topbar nav .nav-burger { display: inline-block; }
+    .topbar .brand-tagline { display: none; }
+  }
+  @media (max-width: 640px) {
+    .stat-grid { flex-wrap: wrap; }
+    .stat-grid .stat-card { flex: 1 1 40%; }
+    .card table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   }
 
   /* top-bar dropdown menus: the account menu and the notifications bell */
@@ -422,7 +431,8 @@ const STYLES = `
   .help-link:hover { border-color: var(--fi-accent); color: var(--fi-accent); background: var(--fi-accent-soft); text-decoration: none; }
   @media (max-width: 900px) {
     .admin-shell { grid-template-columns: 1fr; }
-    .admin-side { position: static; flex-direction: row; flex-wrap: wrap; margin-bottom: 18px; margin-left: 0; }
+    .admin-side { position: static; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 18px; margin-left: 0; gap: 2px; }
+    .admin-side a { white-space: nowrap; flex-shrink: 0; }
     .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
     .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
     .admin-side a.sub { padding: 8px 12px; }
@@ -1305,7 +1315,7 @@ const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem("fi-theme"
 
 /** The top-bar toggle cycles system -> dark -> light -> system. */
 const THEME_TOGGLE_SCRIPT = `(function(){
-  var b=document.querySelector("[data-theme-toggle]"); if(!b) return;
+  var bs=document.querySelectorAll("[data-theme-toggle]"); if(!bs.length) return;
   var order=["system","dark","light"];
   function cur(){try{return localStorage.getItem("fi-theme")||"system";}catch(e){return "system";}}
   var icons={
@@ -1313,13 +1323,13 @@ const THEME_TOGGLE_SCRIPT = `(function(){
     dark:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M13.7 9.6A6 6 0 116.4 2.3a.5.5 0 01.7.6 5 5 0 006 6 .5.5 0 01.6.7z"/></svg>',
     light:'<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3" fill="currentColor" stroke="none"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M13 3l-1.1 1.1M4.1 11.9L3 13"/></svg>'
   };
-  function label(){var k=cur();b.innerHTML='<span style="display:inline-flex;vertical-align:-2px;margin-right:8px;">'+icons[k]+'</span>Theme';b.setAttribute("aria-label","Theme: "+({system:"auto",dark:"dark",light:"light"})[k]);}
-  b.addEventListener("click",function(){
+  function label(){var k=cur();var a={system:"auto",dark:"dark",light:"light"}[k];bs.forEach(function(b){b.innerHTML='<span style="display:inline-flex;vertical-align:-2px;margin-right:8px;">'+icons[k]+'</span>Theme';b.setAttribute("aria-label","Theme: "+a);});}
+  bs.forEach(function(b){b.addEventListener("click",function(){
     var next=order[(order.indexOf(cur())+1)%order.length];
     try{ if(next==="system") localStorage.removeItem("fi-theme"); else localStorage.setItem("fi-theme",next);}catch(e){}
     if(next==="system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme",next);
     label();
-  });
+  });});
   label();
 })();`;
 
@@ -1418,9 +1428,12 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
           <a href="/account/groups">Groups</a>
           <a href="/account/security">Security</a>
           ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
+          <hr class="nav-menu-divider" />
+          ${THEME_TOGGLE_BUTTON}
+          <form method="POST" action="/logout" style="margin:0;"><button class="nav-item signout" type="submit">Sign out</button></form>
         </div>
       </div>
-      <div class="nav-menu" data-nav-menu>
+      <div class="nav-menu nav-user" data-nav-menu>
         <button class="nav-menu-btn" type="button" aria-haspopup="true">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}" alt="" class="avatar avatar-xs" data-hide-on-error />` : avatarInitials(userName)}<span class="nav-menu-name">${escapeHtml(userName || "Account")}</span> ${CARET}</button>
         <div class="nav-menu-list">
           ${THEME_TOGGLE_BUTTON}

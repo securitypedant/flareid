@@ -812,7 +812,7 @@ admin.get("/admin", async (c) => {
             <div class="stat-grid">
         <a class="stat-card" href="/admin/users"><div class="card"><h2>${users}</h2><p>Users</p></div></a>
         <a class="stat-card" href="/admin/groups"><div class="card"><h2>${groups}</h2><p>Groups</p></div></a>
-        <a class="stat-card" href="/admin/clients"><div class="card"><h2>${oidcClients}</h2><p>OIDC Clients</p></div></a>
+        <a class="stat-card" href="/admin/apps"><div class="card"><h2>${oidcClients}</h2><p>OIDC Clients</p></div></a>
         ${monitor ? `<a class="stat-card" href="/admin/log"><div class="card"><h2>${successTotal}</h2><p>Sign-ins (30d)</p></div></a>` : `<a class="stat-card" href="/admin/integrations/saml"><div class="card"><h2>${samlApps}</h2><p>SAML apps</p></div></a>`}
       </div>
       <div class="stat-grid">
@@ -2910,6 +2910,214 @@ document.addEventListener("click", async function (e) {
 });
 `;
 
+// ---------- Applications: one list for OIDC clients and SAML apps ----------
+//
+// An application is anything people sign in to through this directory,
+// whichever protocol it speaks. The unified list at /admin/apps shows OIDC
+// clients and SAML service providers together, each row gated by its own
+// area's read; the catalog alongside offers guided templates. The older
+// per-protocol list pages under Integrations still work.
+
+admin.get("/admin/apps", async (c) => {
+  const access = c.get("access")!;
+  const canOidc = access.isSuper || grants(access.perms, "oidc:read");
+  const canSaml = access.isSuper || grants(access.perms, "saml:read");
+  const [clients, sps] = await Promise.all([
+    canOidc
+      ? c.env.DB.prepare("SELECT id, name, assigned_groups, created_at FROM oauth_clients").all<Pick<OAuthClientRow, "id" | "name" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      : Promise.resolve([]),
+    canSaml
+      ? c.env.DB.prepare("SELECT id, name, assigned_groups, created_at FROM saml_service_providers").all<Pick<SamlServiceProviderRow, "id" | "name" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      : Promise.resolve([]),
+  ]);
+  const rows = [
+    ...clients.map((cl) => ({ name: cl.name, protocol: "OIDC", assignedGroups: cl.assigned_groups, createdAt: cl.created_at, href: `/admin/clients/${cl.id}` })),
+    ...sps.map((sp) => ({ name: sp.name, protocol: "SAML", assignedGroups: sp.assigned_groups, createdAt: sp.created_at, href: `/admin/saml/${sp.id}` })),
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  const restriction = (assignedGroups: string | null) => {
+    const n = parseAssignedGroupIds(assignedGroups).length;
+    return n === 0 ? "Everyone" : `${n} group${n === 1 ? "" : "s"}`;
+  };
+  const headerActions = [
+    canOidc || canSaml ? `<a href="/admin/apps/catalog"><button class="primary" type="button">Add from catalog</button></a>` : "",
+    grants(access.perms, "oidc:write") ? `<a href="/admin/clients/new"><button class="secondary" type="button">New OIDC client</button></a>` : "",
+    grants(access.perms, "saml:write") ? `<a href="/admin/saml/new"><button class="secondary" type="button">New SAML app</button></a>` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return c.html(
+    layout(
+      c,
+      "Applications",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${cardSection(`
+        <p class="muted" style="margin:0 0 14px 0; max-width:720px;">Every application people sign in to through this directory - OIDC clients and SAML service providers in one list. Restrict an app to groups and only those members see it on their launchpad and may sign in.</p>
+        ${
+          rows.length === 0
+            ? `<p class="muted">${canOidc || canSaml ? "No applications yet - add one from the catalog, or create a blank one." : "Your roles do not cover any applications."}</p>`
+            : `<table>
+                <thead><tr><th>Name</th><th>Protocol</th><th>Who can use it</th><th>Created</th></tr></thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (r) =>
+                        `<tr><td><a href="${r.href}">${escapeHtml(r.name)}</a></td><td><span class="badge">${r.protocol}</span></td><td>${restriction(r.assignedGroups)}</td><td class="muted">${ts(r.createdAt, { dateOnly: true })}</td></tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, { label: "Applications" }],
+      undefined,
+      headerActions
+    )
+  );
+});
+
+/** App-side {placeholders} an administrator fills in before a catalog entry applies - {idp_*} resolve from the issuer, and {client_id}/{client_secret} only exist after the record is created. */
+function catalogValuePlaceholders(entry: CatalogEntry): string[] {
+  const texts = [...entry.instructions.app, ...entry.instructions.flareid];
+  if (entry.saml) texts.push(entry.saml.entity_id, ...entry.saml.acs_urls, entry.saml.default_acs_url ?? "", entry.saml.slo_url ?? "");
+  if (entry.oidc) texts.push(...entry.oidc.redirect_uris, ...(entry.oidc.post_logout_redirect_uris ?? []));
+  const names = new Set(texts.flatMap(placeholdersIn));
+  for (const n of [...names]) if (n.startsWith("idp_") || n === "client_id" || n === "client_secret") names.delete(n);
+  return [...names].sort();
+}
+
+admin.get("/admin/apps/catalog", async (c) => {
+  const entries = listCatalog();
+  return c.html(
+    layout(
+      c,
+      "App catalog",
+      `
+      <p class="muted" style="margin:-6px 0 16px; max-width:720px;">Guided setup for well-known applications: the steps for both sides of the integration, and a template that creates the FlareID record prefilled.</p>
+      <div class="two-col">
+        ${entries
+          .map(
+            (e) =>
+              cardSection(`
+                <div class="row between" style="margin:0 0 10px 0;">
+                  <h2 style="margin:0;"><a href="/admin/apps/catalog/${escapeHtml(e.slug)}">${escapeHtml(e.name)}</a></h2>
+                  <span class="badge">${e.protocol.toUpperCase()}</span>
+                </div>
+                <div style="margin-top:12px;"><a href="/admin/apps/catalog/${escapeHtml(e.slug)}">Set up ${escapeHtml(e.name)} &rarr;</a></div>
+              `)
+          )
+          .join("")}
+      </div>
+      `,
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "App catalog" }]
+    )
+  );
+});
+
+admin.get("/admin/apps/catalog/:slug", async (c) => {
+  const entry = getCatalogEntry(c.req.param("slug"));
+  if (!entry) return consoleError(c, "That catalog entry does not exist.", 404);
+  const rendered = renderInstructions(entry, { issuer: c.env.ISSUER_URL });
+  const fields = catalogValuePlaceholders(entry);
+  const steps = (list: string[]) => `<ol>${list.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>`;
+  return c.html(
+    layout(
+      c,
+      `${entry.name}`,
+      `
+      <p class="muted" style="margin:-6px 0 16px;"><a href="${escapeHtml(entry.website)}" target="_blank" rel="noopener">${escapeHtml(entry.website.replace(/^https?:\/\//, ""))}</a> &middot; <span class="badge">${entry.protocol.toUpperCase()}</span></p>
+      <div class="two-col">
+        ${cardSection(`<h2>In the app</h2>${steps(rendered.app)}`)}
+        ${cardSection(`<h2>In FlareID</h2>${steps(rendered.flareid)}`)}
+      </div>
+      ${cardSection(`
+        <h2>Apply this template</h2>
+        <p class="muted">Creates the ${entry.protocol === "saml" ? "SAML service provider" : "OIDC client"} with ${escapeHtml(entry.name)}'s settings filled in. ${
+          fields.length ? "Fill in the values the steps mark in braces first - they land in the record and in the instructions." : "No app-side values are needed."
+        } The generated <code>{client_id}</code> and <code>{client_secret}</code> appear on the record once it is created.</p>
+        <form method="POST" action="/admin/apps/catalog/${escapeHtml(entry.slug)}/apply">
+          ${fields
+            .map(
+              (f) =>
+                `<label for="ph_${escapeHtml(f)}"><code>{${escapeHtml(f)}}</code></label><input type="text" id="ph_${escapeHtml(f)}" name="ph_${escapeHtml(f)}" required placeholder="e.g. ${f === "host" ? "app.example.com" : escapeHtml(f)}" />`
+            )
+            .join("")}
+          <div class="form-actions end"><button class="primary" type="submit">Create ${escapeHtml(entry.name)} application</button></div>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, APP_CATALOG_CRUMB, { label: entry.name }]
+    )
+  );
+});
+
+admin.post("/admin/apps/catalog/:slug/apply", async (c) => {
+  const entry = getCatalogEntry(c.req.param("slug"));
+  if (!entry) return consoleError(c, "That catalog entry does not exist.", 404);
+  const body = await c.req.parseBody({ all: true });
+  const values: Record<string, string> = {};
+  for (const name of catalogValuePlaceholders(entry)) {
+    const v = String(body[`ph_${name}`] ?? "").trim();
+    if (v) values[name] = v;
+  }
+
+  if (entry.protocol === "saml") {
+    const tpl = templateToSpInput(entry, values);
+    if (!tpl) return consoleError(c, "That catalog entry has no SAML template.", 400);
+    // parseSpForm is the same validation the create form posts through.
+    const v = parseSpForm({ ...tpl, signing_certs: "", encryption_cert: "", assigned_group_ids: [] });
+    if (typeof v === "string") return consoleError(c, v, 400);
+    const id = await insertServiceProvider(c.env, v);
+    await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId, via: `catalog:${entry.slug}` }, c.req.raw);
+    return c.redirect(`/admin/saml/${id}?saved=1`, 302);
+  }
+
+  const tpl = templateToClientInput(entry, values);
+  if (!tpl) return consoleError(c, "That catalog entry has no OIDC template.", 400);
+  const settings: ReturnType<typeof readClientSettings> = {
+    assignedGroups: "[]",
+    trusted: tpl.trusted ? 1 : 0,
+    allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => tpl.allowed_claims.includes(g))),
+    postLogoutRedirectUris: JSON.stringify(
+      tpl.post_logout_redirect_uris
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((u) => u && isValidPostLogoutUri(u))
+    ),
+    frontchannelLogoutUri: "",
+    idTokenAlg: "RS256",
+  };
+  const created = await insertClient(c.env, {
+    name: tpl.name,
+    clientType: tpl.client_type,
+    redirectUris: tpl.redirect_uris
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    settings,
+    grantTypes: tpl.grant_types.filter((g) => (CLIENT_GRANT_TYPES as readonly string[]).includes(g)),
+  });
+  await logAudit(c.env, c.get("user"), "oidc_client.created", tpl.name, { via: `catalog:${entry.slug}` }, c.req.raw);
+  // A confidential client's secret exists only in this response, so it gets
+  // the same once-only page the create form ends on; a public client has no
+  // secret and goes straight to the new record.
+  if (tpl.client_type === "public") return c.redirect(`/admin/clients/${created.id}?saved=1`, 302);
+  return c.html(
+    layout(
+      c,
+      "Client created",
+      cardSection(`
+        <p class="success">Created "${escapeHtml(tpl.name)}" from the catalog.</p>
+        ${secretBlock("Client secret", created.clientSecret)}
+        ${oidcEndpointsBlock(c.env, created.clientId)}
+        <a href="/admin/clients/${created.id}"><button class="primary" type="button">Continue</button></a>
+      `),
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, APP_CATALOG_CRUMB, { label: entry.name, href: `/admin/apps/catalog/${entry.slug}` }, { label: "Client created" }]
+    )
+  );
+});
+
 // ---------- Integrations: OIDC clients, SAML apps, API keys, SCIM ----------
 //
 // One section, because they are all how other systems connect to this
@@ -2930,7 +3138,7 @@ function integrationIntro(description: string, action?: { href: string; label: s
 }
 
 /** One overview card: a heading with a count, up to five rows, and a link to the full page. */
-function summaryCard(opts: { title: string; count: string; rows: string[]; empty: string; manage: IntegrationPage; extra?: string }): string {
+function summaryCard(opts: { title: string; count: string; rows: string[]; empty: string; manage: IntegrationPage; extra?: string; href?: string }): string {
   const page = INTEGRATION_PAGES.find((p) => p.key === opts.manage)!;
   const shown = opts.rows.slice(0, 5);
   return cardSection(`
@@ -2944,7 +3152,7 @@ function summaryCard(opts: { title: string; count: string; rows: string[]; empty
         ? `<p class="muted">${opts.empty}</p>`
         : `<table><tbody>${shown.join("")}</tbody></table>${opts.rows.length > shown.length ? `<p class="muted" style="margin:8px 0 0;">and ${opts.rows.length - shown.length} more</p>` : ""}`
     }
-    <div style="margin-top:12px;"><a href="/admin/integrations/${page.key}">Manage ${escapeHtml(page.label)} &rarr;</a></div>
+    <div style="margin-top:12px;"><a href="${opts.href ?? `/admin/integrations/${page.key}`}">Manage ${escapeHtml(page.label)} &rarr;</a></div>
   `);
 }
 
@@ -2974,6 +3182,7 @@ admin.get("/admin/integrations", async (c) => {
           rows: clients.map((cl) => `<tr><td><a href="/admin/clients/${cl.id}">${escapeHtml(cl.name)}</a></td><td><code>${escapeHtml(cl.client_id)}</code></td></tr>`),
           empty: "No clients registered yet.",
           manage: "oidc",
+          href: "/admin/apps",
         })}
         ${summaryCard({
           title: "SAML apps",
@@ -2981,6 +3190,7 @@ admin.get("/admin/integrations", async (c) => {
           rows: sps.map((sp) => `<tr><td><a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></td><td><code>${escapeHtml(sp.entity_id)}</code></td></tr>`),
           empty: "No service providers registered yet.",
           manage: "saml",
+          href: "/admin/apps",
         })}
       </div>
       <div class="two-col">
@@ -3455,7 +3665,7 @@ admin.get("/admin/integrations/oidc", async (c) => {
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        ${integrationIntro("The relying parties allowed to sign users in with this directory over OpenID Connect &mdash; Cloudflare Access, for example.", { href: "/admin/clients/new", label: "+ New client" })}
+        ${integrationIntro("The relying parties allowed to sign users in with this directory over OpenID Connect &mdash; Cloudflare Access, for example. OIDC and SAML apps together are under <a href=\"/admin/apps\">Applications</a>.", { href: "/admin/clients/new", label: "+ New client" })}
         ${
           clients.length === 0
             ? '<p class="muted">No clients registered yet.</p>'
@@ -3488,7 +3698,7 @@ admin.get("/admin/integrations/saml", async (c) => {
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        ${integrationIntro("Service providers allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>.", { href: "/admin/saml/new", label: "+ New service provider" })}
+        ${integrationIntro("Service providers allowed to sign users in over SAML 2.0 (SP-initiated, redirect binding). The IdP metadata they need is at <code>/saml/metadata</code>. OIDC and SAML apps together are under <a href=\"/admin/apps\">Applications</a>.", { href: "/admin/saml/new", label: "+ New service provider" })}
         ${
           sps.length === 0
             ? '<p class="muted">No service providers registered yet.</p>'
@@ -3710,6 +3920,9 @@ admin.get("/admin/integrations/scim", async (c) => {
 
 admin.get("/admin/integrations/scim/new", async (c) => {
   const { results: scopeGroups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  // Reached from an app's "Set up provisioning" link: the target is stored
+  // linked to that app and shows in its Provisioning card.
+  const app = await linkedApp(c.env, c.req.query("app_type"), c.req.query("app_id"));
   return c.html(
     layout(
       c,
@@ -3717,8 +3930,9 @@ admin.get("/admin/integrations/scim/new", async (c) => {
       `
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        <p class="sub">Each target is one downstream SCIM server with its own credential, scope and push tuning.</p>
+        <p class="sub">Each target is one downstream SCIM server with its own credential, scope and push tuning.${app ? ` This one will be linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""}</p>
         <form method="POST" action="/admin/scim/targets">
+          ${app ? `<input type="hidden" name="app_type" value="${app.type}" /><input type="hidden" name="app_id" value="${app.id}" />` : ""}
           <label for="name">Name</label>
           <input type="text" id="name" name="name" required placeholder="e.g. Cloudflare Access, Google Workspace" />
           <div class="field-row">
@@ -3741,12 +3955,14 @@ admin.get("/admin/integrations/scim/new", async (c) => {
           </div>
           <div class="form-actions" style="margin-top:16px;">
             <button class="primary" type="submit">Create target</button>
-            ${cancelLink("/admin/integrations/scim", "Cancel")}
+            ${cancelLink(app ? appEditUrl(app.type, app.id) : "/admin/integrations/scim", "Cancel")}
           </div>
         </form>
       `)}
       `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("scim"), { label: "New target" }]
+      app
+        ? [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: app.name, href: appEditUrl(app.type, app.id) }, { label: "New SCIM target" }]
+        : [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("scim"), { label: "New target" }]
     )
   );
 });
@@ -3755,6 +3971,7 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
   const target = await getScimTarget(c.env, Number(c.req.param("id")));
   if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const { results: scopeGroups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  const app = target.appType && target.appId ? await linkedApp(c.env, target.appType, target.appId) : null;
   const [{ n: pushedUsers }, { n: pushedGroups }, { n: queued }] = await Promise.all([
     c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_user_links WHERE target_id = ?").bind(target.id).first<{ n: number }>().then((r) => r ?? { n: 0 }),
     c.env.DB.prepare("SELECT COUNT(*) AS n FROM scim_group_links WHERE target_id = ?").bind(target.id).first<{ n: number }>().then((r) => r ?? { n: 0 }),
@@ -3769,7 +3986,7 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <div class="row between" style="margin:0 0 14px 0; align-items:flex-start;">
-          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.</p>
+          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.${app ? ` Linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""}</p>
           <span class="badge ${target.enabled ? "badge-active" : "badge-disabled"}">${target.enabled ? "Enabled" : "Disabled"}</span>
         </div>
         <form method="POST" action="/admin/scim/targets/${target.id}">
@@ -4084,6 +4301,59 @@ function readClientSettings(body: Record<string, string | File | (string | File)
 
 // validFrontchannelUri lives in services/clients.ts (re-exported above).
 
+/** The grants a client may declare (RFC 7591 grant_types); the /token endpoint's list, kept for catalog templates that ship one. */
+const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code"] as const;
+
+/**
+ * The client INSERT shared by the create form and catalog apply. Returns the
+ * row id, the client_id and (for a confidential client) the plaintext secret,
+ * which exists only in this response.
+ *
+ * Seeded credentials, for provisioning that has to know them in advance.
+ *
+ * A lab provisions Cloudflare Access with Terraform, which needs this client's
+ * id and secret to create the Access identity provider - but Terraform cannot
+ * read a value out of an app it has not deployed yet. So it generates the
+ * credential, passes it in here, and the identity provider is correct on the
+ * first apply with nothing having to flow back.
+ *
+ * No new privilege: this route is already admin-only and an admin can read a
+ * generated secret anyway, so choosing one instead grants nothing. Both fields
+ * must be present together and the secret has a floor, so a partial or
+ * trivially short value falls back to a generated one rather than quietly
+ * creating a weak client.
+ */
+async function insertClient(
+  env: Env,
+  input: {
+    name: string;
+    clientType: "confidential" | "public";
+    redirectUris: string[];
+    settings: ReturnType<typeof readClientSettings>;
+    seededId?: string;
+    seededSecret?: string;
+    /** RFC 7591 grant_types to store; empty/undefined keeps NULL (every grant, the admin-created default). */
+    grantTypes?: string[];
+  }
+): Promise<{ id: number; clientId: string; clientSecret: string }> {
+  const isPublic = input.clientType === "public";
+  const seeded = (input.seededId ?? "") !== "" && (input.seededSecret ?? "").length >= 24;
+  const clientId = seeded ? input.seededId! : `flareid_${randomToken(8)}`;
+  // A public client has no secret at all - an empty hash never matches.
+  const clientSecret = isPublic ? "" : seeded ? input.seededSecret! : randomToken(24);
+  const clientSecretHash = isPublic ? "" : await sha256Hex(clientSecret);
+
+  const result = await env.DB.prepare(
+    `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(clientId, clientSecretHash, input.name, JSON.stringify(input.redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", input.settings.trusted, input.settings.allowedClaims, input.settings.postLogoutRedirectUris)
+    .run();
+  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, assigned_groups = ? WHERE client_id = ?").bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.assignedGroups, clientId).run();
+  if (input.grantTypes?.length) await env.DB.prepare("UPDATE oauth_clients SET grant_types = ? WHERE client_id = ?").bind(JSON.stringify(input.grantTypes), clientId).run();
+  return { id: Number(result.meta.last_row_id), clientId, clientSecret };
+}
+
 admin.get("/admin/clients/new", async (c) => {
   const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
   return c.html(
@@ -4098,10 +4368,10 @@ admin.get("/admin/clients/new", async (c) => {
           <label style="font-weight:400;"><input type="radio" name="client_type" value="confidential" checked style="width:auto; display:inline; margin-right:6px;" /> Confidential &mdash; a server that can keep a secret (Cloudflare Access, a web backend)</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="public" style="width:auto; display:inline; margin-right:6px;" /> Public &mdash; a single-page or native app: no secret, PKCE required, loopback redirects on any port</label>
           ${clientSettingsFields(undefined, groups)}
-          <div class="form-actions end">${cancelLink("/admin/integrations/oidc")}<button class="primary" type="submit">Create client</button></div>
+          <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">Create client</button></div>
         </form>
       `),
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: "New client" }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "New client" }]
     )
   );
 });
@@ -4117,35 +4387,14 @@ admin.post("/admin/clients", async (c) => {
     .filter(Boolean);
   if (!name) return consoleError(c, "Enter a name.", 400);
 
-  // Seeded credentials, for provisioning that has to know them in advance.
-  //
-  // A lab provisions Cloudflare Access with Terraform, which needs this client's
-  // id and secret to create the Access identity provider - but Terraform cannot
-  // read a value out of an app it has not deployed yet. So it generates the
-  // credential, passes it in here, and the identity provider is correct on the
-  // first apply with nothing having to flow back.
-  //
-  // No new privilege: this route is already admin-only and an admin can read a
-  // generated secret anyway, so choosing one instead grants nothing. Both fields
-  // must be present together and the secret has a floor, so a partial or
-  // trivially short value falls back to a generated one rather than quietly
-  // creating a weak client.
-  const seededId = String(body.client_id ?? "").trim();
-  const seededSecret = String(body.client_secret ?? "").trim();
-  const seeded = seededId !== "" && seededSecret.length >= 24;
-
-  const clientId = seeded ? seededId : `flareid_${randomToken(8)}`;
-  // A public client has no secret at all - an empty hash never matches.
-  const clientSecret = isPublic ? "" : seeded ? seededSecret : randomToken(24);
-  const clientSecretHash = isPublic ? "" : await sha256Hex(clientSecret);
-
-  const result = await c.env.DB.prepare(
-    `INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_at, client_type, trusted, allowed_claims, post_logout_redirect_uris)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(clientId, clientSecretHash, name, JSON.stringify(redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", settings.trusted, settings.allowedClaims, settings.postLogoutRedirectUris)
-    .run();
-  await c.env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, assigned_groups = ? WHERE client_id = ?").bind(settings.frontchannelLogoutUri, settings.idTokenAlg, settings.assignedGroups, clientId).run();
+  const { id, clientId, clientSecret } = await insertClient(c.env, {
+    name,
+    clientType: isPublic ? "public" : "confidential",
+    redirectUris,
+    settings,
+    seededId: String(body.client_id ?? "").trim(),
+    seededSecret: String(body.client_secret ?? "").trim(),
+  });
 
   await logAudit(c.env, c.get("user"), "oidc_client.created", name, undefined, c.req.raw);
 
@@ -4157,9 +4406,9 @@ admin.post("/admin/clients", async (c) => {
         <p class="success">Created "${escapeHtml(name)}"${isPublic ? " as a public client: it has no secret, and must use PKCE (S256)" : ""}.</p>
         ${isPublic ? "" : secretBlock("Client secret", clientSecret)}
         ${oidcEndpointsBlock(c.env, clientId)}
-        <a href="/admin/clients/${result.meta.last_row_id}"><button class="primary" type="button">Continue</button></a>
+        <a href="/admin/clients/${id}"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: "Client created" }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "Client created" }]
     )
   );
 });
@@ -4198,8 +4447,9 @@ admin.get("/admin/clients/:id", async (c) => {
           </form>
         </div>
       `)}
+      ${await appProvisioningCard(c.env, "oidc", id)}
       `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: client.name }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: client.name }]
     )
   );
 });
@@ -4231,7 +4481,7 @@ admin.post("/admin/clients/:id/rotate-secret", async (c) => {
         ${oidcEndpointsBlock(c.env, client.client_id)}
         <a href="/admin/clients/${id}"><button class="primary" type="button">Continue</button></a>
       `),
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("oidc"), { label: client.name, href: `/admin/clients/${id}` }, { label: "Secret rotated" }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: client.name, href: `/admin/clients/${id}` }, { label: "Secret rotated" }]
     )
   );
 });
@@ -4240,7 +4490,7 @@ admin.post("/admin/clients/:id/delete", async (c) => {
   const client = await getClientById(c.env, Number(c.req.param("id")));
   if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   await deleteClient(consoleCtx(c), client);
-  return c.redirect("/admin/integrations/oidc?saved=1", 302);
+  return c.redirect("/admin/apps?saved=1", 302);
 });
 
 // ---------- SAML service providers ----------
@@ -4456,7 +4706,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
       <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
       <p class="muted" style="margin-top:-6px;">Only members of the selected groups see this app on their launchpad and may sign in to it.</p>
       ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), new Set(v.assignedGroups ?? []), "Search groups...")}
-      <div class="form-actions end">${cancelLink("/admin/integrations/saml")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+      <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
 
@@ -4482,7 +4732,7 @@ admin.get("/admin/saml/new", async (c) => {
         </form>
       `)}
       ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider", groups)}`)}`,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: "New service provider" }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "New service provider" }]
     )
   );
 });
@@ -4501,21 +4751,27 @@ admin.post("/admin/saml/import-metadata", async (c) => {
   }
 });
 
-admin.post("/admin/saml", async (c) => {
-  const v = parseSpForm(await c.req.parseBody({ all: true }));
-  if (typeof v === "string") return consoleError(c, v, 400);
-
+/** The SP INSERT shared by the create form and catalog apply. Returns the new row id. */
+async function insertServiceProvider(env: Env, v: SpFormValues): Promise<number> {
   const now = new Date().toISOString();
-  const result = await c.env.DB.prepare(
+  const result = await env.DB.prepare(
     `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, assigned_groups, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, JSON.stringify(v.assignedGroups), now, now)
     .run();
 
-  await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
+  await env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
+  return Number(result.meta.last_row_id);
+}
+
+admin.post("/admin/saml", async (c) => {
+  const v = parseSpForm(await c.req.parseBody({ all: true }));
+  if (typeof v === "string") return consoleError(c, v, 400);
+
+  const id = await insertServiceProvider(c.env, v);
   await logAudit(c.env, c.get("user"), "saml_sp.created", v.name, { entity_id: v.entityId }, c.req.raw);
-  return c.redirect(`/admin/saml/${result.meta.last_row_id}`, 302);
+  return c.redirect(`/admin/saml/${id}`, 302);
 });
 
 admin.get("/admin/saml/:id", async (c) => {
@@ -4561,8 +4817,9 @@ admin.get("/admin/saml/:id", async (c) => {
           </form>
         </div>
       `)}
+      ${await appProvisioningCard(c.env, "saml", id)}
       `,
-      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("saml"), { label: sp.name }]
+      [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: sp.name }]
     )
   );
 });
@@ -4593,7 +4850,7 @@ admin.post("/admin/saml/:id/delete", async (c) => {
 
   await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
   await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
-  return c.redirect("/admin/integrations/saml?saved=1", 302);
+  return c.redirect("/admin/apps?saved=1", 302);
 });
 
 // ---------- Schemas ----------
@@ -6342,8 +6599,49 @@ function scimScopeFrom(body: Record<string, unknown>): { mode: "all" | "selected
 
 const scimTargetUrl = (id: number, extra = "") => `/admin/integrations/scim/${id}${extra}`;
 
+/** The console edit page of the app a SCIM target is linked to. */
+const appEditUrl = (appType: "oidc" | "saml", appId: number) => (appType === "oidc" ? `/admin/clients/${appId}` : `/admin/saml/${appId}`);
+
+/** The app an app_type/app_id pair names, or null (standalone target / invalid linkage). */
+async function linkedApp(env: Env, appType: unknown, appId: unknown): Promise<{ type: "oidc" | "saml"; id: number; name: string } | null> {
+  const type = appType === "oidc" || appType === "saml" ? appType : null;
+  const id = Number(appId);
+  if (!type || !Number.isInteger(id) || id <= 0) return null;
+  const table = type === "oidc" ? "oauth_clients" : "saml_service_providers";
+  const app = await env.DB.prepare(`SELECT id, name FROM ${table} WHERE id = ?`).bind(id).first<{ id: number; name: string }>();
+  return app ? { type, id: app.id, name: app.name } : null;
+}
+
+/** The Provisioning card on an app's edit page: the SCIM targets linked to it, and the link to add one. */
+async function appProvisioningCard(env: Env, appType: "oidc" | "saml", appId: number): Promise<string> {
+  const targets = await listScimTargetsForApp(env, appType, appId);
+  return cardSection(`
+    <h2>Provisioning</h2>
+    <p class="muted">SCIM targets that push users and groups to this app's own provisioning endpoint. Standalone targets are managed under Integrations &rarr; SCIM provisioning.</p>
+    ${
+      targets.length === 0
+        ? '<p class="muted">No provisioning is linked to this app yet.</p>'
+        : `<table>
+            <thead><tr><th>Name</th><th>Endpoint</th><th>Status</th></tr></thead>
+            <tbody>
+              ${targets
+                .map(
+                  (t) =>
+                    `<tr><td><a href="/admin/integrations/scim/${t.id}">${escapeHtml(t.name)}</a></td><td><code>${escapeHtml(scimHost(t.endpoint) || "—")}</code></td><td><span class="badge ${t.enabled ? "badge-active" : "badge-disabled"}">${t.enabled ? "Enabled" : "Disabled"}</span></td></tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>`
+    }
+    <div style="margin-top:12px;"><a href="/admin/integrations/scim/new?${new URLSearchParams({ app_type: appType, app_id: String(appId) }).toString()}"><button class="secondary" type="button">Set up provisioning</button></a></div>
+  `);
+}
+
 admin.post("/admin/scim/targets", async (c) => {
   const body = await c.req.parseBody({ all: true });
+  const app = await linkedApp(c.env, body.app_type, body.app_id);
+  const linkage = body.app_type || body.app_id ? `&app_type=${encodeURIComponent(String(body.app_type ?? ""))}&app_id=${encodeURIComponent(String(body.app_id ?? ""))}` : "";
+  if ((body.app_type || body.app_id) && !app) return c.redirect(`/admin/integrations/scim/new?error=${encodeURIComponent("The app this target would be linked to does not exist.")}`, 302);
   try {
     const t = await createScimTarget(c.env, {
       name: String(body.name ?? ""),
@@ -6354,11 +6652,12 @@ admin.post("/admin/scim/targets", async (c) => {
       membersPerRequest: 50,
       syncBatchSize: 50,
       enabled: body.enabled === "1",
+      ...(app ? { appType: app.type, appId: app.id } : {}),
     });
-    await logAudit(c.env, c.get("user"), "settings.scim_target_created", t.name, undefined, c.req.raw);
+    await logAudit(c.env, c.get("user"), "settings.scim_target_created", t.name, app ? { app: `${app.type}:${app.id}` } : undefined, c.req.raw);
     return c.redirect(scimTargetUrl(t.id, "?saved=1"), 302);
   } catch (e) {
-    return c.redirect(`/admin/integrations/scim/new?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+    return c.redirect(`/admin/integrations/scim/new?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}${linkage}`, 302);
   }
 });
 

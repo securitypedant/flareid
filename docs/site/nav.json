@@ -20,6 +20,7 @@
   {
     "section": "Applications",
     "pages": [
+      "applications",
       "oidc",
       "saml",
       "cloudflare-access",

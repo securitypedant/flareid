@@ -1,6 +1,6 @@
 # SAML apps
 
-SAML apps (service providers) are applications that sign people in with FlareID over SAML 2.0, such as SaaS apps or Cloudflare Access. Manage them under **Integrations → SAML apps**.
+SAML apps (service providers) are applications that sign people in with FlareID over SAML 2.0, such as SaaS apps or Cloudflare Access. Manage them under **Applications** (see [the applications page](applications.md)).
 
 ## Before you start
 
@@ -10,7 +10,7 @@ SAML needs a signing certificate. Run `npm run saml:keygen` and set the two secr
 
 The quickest way is from the app's metadata:
 
-1. Go to **Integrations → SAML apps → + New service provider**.
+1. Go to **Applications → New SAML app**.
 2. Under **Import from SP metadata**, enter the app's **Metadata URL**, or paste its metadata XML.
 3. Select **Import metadata**. The entity ID, ACS URLs, certificates, logout URL and NameID format are filled in. A metadata URL is re-read daily, so certificate changes are picked up.
 
@@ -66,7 +66,7 @@ When definitions are present they replace the map entirely; the field values use
 
 ## Instance settings
 
-On **Applications → SAML → Settings**, **Disabled algorithms** lists signature/encryption algorithms this instance refuses — by URI, fragment or short name (`sha1`, `rsa-1_5`). Choosing a denied algorithm anywhere is rejected, and an SP whose policy resolves to one fails closed rather than emitting it.
+On **Integrations → SAML apps**, the **Disabled algorithms** card lists signature/encryption algorithms this instance refuses — by URI, fragment or short name (`sha1`, `rsa-1_5`). Choosing a denied algorithm anywhere is rejected, and an SP whose policy resolves to one fails closed rather than emitting it.
 
 ## Good to know
 

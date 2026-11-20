@@ -13,6 +13,8 @@ export const ADMIN_HELP: Record<string, string> = {
   users: "/docs/users",
   groups: "/docs/groups",
   "groups/access": "/docs/groups#access-requests-and-reviews",
+  applications: "/docs/applications",
+  "applications/catalog": "/docs/applications#app-catalog",
   integrations: "/docs",
   "integrations/oidc": "/docs/oidc",
   "integrations/saml": "/docs/saml",
