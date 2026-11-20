@@ -108,7 +108,9 @@ describe("per-SP encryption policy", () => {
     });
     const { xml } = await ssoResponse(upn);
     expect(xml).toContain(`Algorithm="${XENC}rsa-oaep-mgf1p"`);
-    expect(xml).toContain(`<ds:DigestMethod Algorithm="${DS}sha256">`);
+    // RFC 4051 URI (xmlenc#sha256), not xmldsig#sha256 - only the former is
+    // registered so peers can map it to a JCE digest.
+    expect(xml).toContain(`<ds:DigestMethod Algorithm="${XENC}sha256">`);
     // The 1.0 URI's MGF is fixed to MGF1 keyed by the digest's hash - no
     // xenc11:MGF child is emitted under rsa-oaep-mgf1p.
     expect(xml).not.toContain("xenc11:MGF");

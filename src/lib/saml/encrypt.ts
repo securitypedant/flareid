@@ -3,6 +3,7 @@ import { b64encode, pemToBase64Der } from "./xml.js";
 const NS_XENC = "http://www.w3.org/2001/04/xmlenc#";
 const NS_XENC11 = "http://www.w3.org/2009/xmlenc11#";
 const NS_DS = "http://www.w3.org/2000/09/xmldsig#";
+const NS_DS_MORE = "http://www.w3.org/2001/04/xmldsig-more#";
 const NS_SAML = "urn:oasis:names:tc:SAML:2.0:assertion";
 
 /** Assertion content-encryption algorithms FlareID can emit (all WebCrypto-reachable). */
@@ -21,11 +22,14 @@ export const TRANSPORT_ALGORITHMS = {
   [`${NS_XENC11}rsa-oaep`]: { token: "rsa-oaep", parameterized: true },
 } as const;
 
+// RFC 4051 digest identifiers: only SHA-1 lives under xmldsig# - 256/512 are
+// xmlenc#, 384 is xmldsig-more#. Emitting xmldsig#sha256 is unregistered and
+// peers (e.g. Apache Santuario) cannot map it to a JCE digest.
 const DIGEST_URIS: Record<string, { uri: string; subtle: string; mgfUri: string }> = {
   sha1: { uri: `${NS_DS}sha1`, subtle: "SHA-1", mgfUri: `${NS_XENC11}mgf1sha1` },
-  sha256: { uri: `${NS_DS}sha256`, subtle: "SHA-256", mgfUri: `${NS_XENC11}mgf1sha256` },
-  sha384: { uri: `${NS_DS}sha384`, subtle: "SHA-384", mgfUri: `${NS_XENC11}mgf1sha384` },
-  sha512: { uri: `${NS_DS}sha512`, subtle: "SHA-512", mgfUri: `${NS_XENC11}mgf1sha512` },
+  sha256: { uri: `${NS_XENC}sha256`, subtle: "SHA-256", mgfUri: `${NS_XENC11}mgf1sha256` },
+  sha384: { uri: `${NS_DS_MORE}sha384`, subtle: "SHA-384", mgfUri: `${NS_XENC11}mgf1sha384` },
+  sha512: { uri: `${NS_XENC}sha512`, subtle: "SHA-512", mgfUri: `${NS_XENC11}mgf1sha512` },
 };
 
 /** Resolved per-SP encryption choice. `mgf: null` omits the MGF element (spec default MGF1-SHA1). */

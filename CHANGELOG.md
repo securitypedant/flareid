@@ -6,6 +6,14 @@ may break things.
 
 ## [Unreleased]
 
+## [4.5.2] - 2026-11-21
+
+- **Fixed**: assertion encryption declared non-standard digest URIs
+  (`xmldsig#sha256/384/512`, which no peer can map to a JCE digest -
+  Apache Santuario decrypts such responses with "digest algorithm is
+  null"). Per RFC 4051 the emitted `ds:DigestMethod` URIs are now
+  `xmlenc#sha256` / `xmldsig-more#sha384` / `xmlenc#sha512`.
+
 ## [4.5.1] - 2026-11-21
 
 - **Fixed**: the XML Encryption 1.1 `rsa-oaep` EncryptionMethod emitted its
