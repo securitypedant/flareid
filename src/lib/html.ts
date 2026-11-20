@@ -435,14 +435,22 @@ const STYLES = `
     font-size: 0.75rem; font-weight: 700; line-height: 1; text-decoration: none;
   }
   .help-link:hover { border-color: var(--fi-accent); color: var(--fi-accent); background: var(--fi-accent-soft); text-decoration: none; }
+  /* On mobile the sidebar collapses into a disclosure: a tappable section
+     name that opens the same links vertically. The inline sidebar is
+     desktop-only. */
+  .admin-nav-mobile { display: none; }
   @media (max-width: 900px) {
     .admin-shell { grid-template-columns: 1fr; }
-    .admin-side { position: static; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 18px; margin-left: 0; gap: 2px; }
-    .admin-side a { white-space: nowrap; flex-shrink: 0; }
-    .admin-side a { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
-    .admin-side a.active { border-bottom-color: var(--fi-accent); background: transparent; }
-    .admin-side a.sub { padding: 8px 12px; }
-    .admin-side a.nav-docs { margin-top: 0; padding-top: 8px; border-top: none; }
+    .admin-side-desktop { display: none; }
+    .admin-nav-mobile { display: block; margin-bottom: 18px; border: 1px solid var(--fi-line); border-radius: var(--fi-radius); background: var(--fi-surface); }
+    .admin-nav-mobile summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 14px; font-weight: 600; font-size: 0.9rem; color: var(--fi-ink); cursor: pointer; list-style: none; }
+    .admin-nav-mobile summary::-webkit-details-marker { display: none; }
+    .admin-nav-mobile summary svg { color: var(--fi-muted); transition: transform 0.15s; flex-shrink: 0; }
+    .admin-nav-mobile[open] summary svg { transform: rotate(180deg); }
+    .admin-nav-mobile .admin-side { position: static; margin-left: 0; padding: 4px 8px 10px; border-top: 1px solid var(--fi-line); }
+    .admin-nav-mobile .admin-side a { display: block; padding: 8px 12px; }
+    .admin-nav-mobile .admin-side a.sub { padding: 6px 12px 6px 28px; }
+    .admin-nav-mobile .admin-side a.nav-docs { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--fi-line); border-radius: 0; }
   }
 
   /* Row overflow menu (users/groups lists) */
