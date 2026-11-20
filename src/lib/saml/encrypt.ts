@@ -125,12 +125,18 @@ export async function encryptAssertion(assertionXml: string, certPem: string, po
   const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, contentKey));
 
   const transport = TRANSPORT_ALGORITHMS[p.transport];
+  // XML Encryption 1.1 §5.4.2: under the parameterized xmlenc11 rsa-oaep,
+  // ds:DigestMethod and xenc11:MGF are direct children of EncryptionMethod -
+  // xenc:OAEPParams instead carries an explicit base64 parameter seed, which we
+  // never use, so it is omitted. Under the 2001 rsa-oaep-mgf1p the mask is
+  // fixed to MGF1 keyed by the digest's hash, so only DigestMethod is emitted:
+  // an xenc11:MGF child there would declare a second, contradictory MGF.
   // xmlns:ds is inherited from ds:KeyInfo and xmlns:xenc from xenc:EncryptedData;
   // xenc11 is a new prefix, so exclusive C14N renders it on the MGF apex itself.
-  const mgfElement = p.mgf === null && mgfHash === "sha1" ? "" : `<xenc11:MGF xmlns:xenc11="${NS_XENC11}" Algorithm="${mgf.mgfUri}"></xenc11:MGF>`;
+  const mgfElement = p.mgf === null ? "" : `<xenc11:MGF xmlns:xenc11="${NS_XENC11}" Algorithm="${mgf.mgfUri}"></xenc11:MGF>`;
   const transportMethod = transport.parameterized
-    ? `<xenc:EncryptionMethod Algorithm="${p.transport}"><xenc:OAEPParams><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod>${mgfElement}</xenc:OAEPParams></xenc:EncryptionMethod>`
-    : `<xenc:EncryptionMethod Algorithm="${p.transport}"><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod>${mgfElement}</xenc:EncryptionMethod>`;
+    ? `<xenc:EncryptionMethod Algorithm="${p.transport}"><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod>${mgfElement}</xenc:EncryptionMethod>`
+    : `<xenc:EncryptionMethod Algorithm="${p.transport}"><ds:DigestMethod Algorithm="${digest.uri}"></ds:DigestMethod></xenc:EncryptionMethod>`;
 
   // Every element here is canonical-form emission (the whole subtree sits
   // inside the signed Response): xmlns on each usage apex, no self-closing

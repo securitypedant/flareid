@@ -85,7 +85,7 @@ describe("per-SP encryption policy", () => {
     expect(plain).toMatch(/^<saml:Assertion /);
   });
 
-  it("emits the parameterized xmlenc11 rsa-oaep with an OAEPParams block", async () => {
+  it("emits the parameterized xmlenc11 rsa-oaep with direct parameter children", async () => {
     const { upn } = await seed({
       encrypt_assertions: true,
       encryption_cert: TEST_SAML_SP_CERT_PEM,
@@ -93,7 +93,7 @@ describe("per-SP encryption policy", () => {
     });
     const { xml } = await ssoResponse(upn);
     expect(xml).toContain(`Algorithm="${XENC11}rsa-oaep"`);
-    expect(xml).toContain("<xenc:OAEPParams>");
+    expect(xml).not.toContain("<xenc:OAEPParams>"); // explicit-seed slot; unused
     expect(xml).toContain(`<ds:DigestMethod Algorithm="${DS}sha1">`);
     expect(xml).not.toContain("xenc11:MGF"); // omitted MGF = spec default MGF1-SHA1
     const { plain } = await decrypt(xml, "SHA-1");
@@ -109,7 +109,9 @@ describe("per-SP encryption policy", () => {
     const { xml } = await ssoResponse(upn);
     expect(xml).toContain(`Algorithm="${XENC}rsa-oaep-mgf1p"`);
     expect(xml).toContain(`<ds:DigestMethod Algorithm="${DS}sha256">`);
-    expect(xml).toContain(`<xenc11:MGF xmlns:xenc11="${XENC11}" Algorithm="${XENC11}mgf1sha256">`);
+    // The 1.0 URI's MGF is fixed to MGF1 keyed by the digest's hash - no
+    // xenc11:MGF child is emitted under rsa-oaep-mgf1p.
+    expect(xml).not.toContain("xenc11:MGF");
     const { plain } = await decrypt(xml, "SHA-256");
     expect(plain).toMatch(/^<saml:Assertion /);
   });

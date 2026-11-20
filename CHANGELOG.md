@@ -6,6 +6,16 @@ may break things.
 
 ## [Unreleased]
 
+## [4.5.1] - 2026-11-21
+
+- **Fixed**: the XML Encryption 1.1 `rsa-oaep` EncryptionMethod emitted its
+  `ds:DigestMethod` and `xenc11:MGF` inside `<xenc:OAEPParams>` (which is for
+  an explicit base64 parameter seed, not algorithm parameters). They are now
+  direct children of EncryptionMethod, and `rsa-oaep-mgf1p` no longer emits a
+  redundant `xenc11:MGF` - its mask is fixed to MGF1 keyed by the digest hash.
+  Conforming SPs could not unwrap keys whose OAEP digest was not SHA-1.
+
+
 ## [4.5.0] - 2026-11-21
 
 - **Added**: per-SP XML Encryption policy (`encryption_policy`). The
