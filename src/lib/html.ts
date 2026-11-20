@@ -190,10 +190,13 @@ const STYLES = `
   .nav-menu-list a.nav-admin:hover { background: var(--fi-accent-dark); color: #ffffff; }
   @media (max-width: 760px) {
     /* One menu on mobile: nav links + Admin + Theme + Sign out all live in
-       the burger; the avatar dropdown and inline links hide, as do the
-       tagline and the GitHub link. */
+       the burger; the avatar dropdown, inline links and GitHub link hide. */
     .topbar nav .nav-links, .topbar nav .nav-user, .topbar a.github-link { display: none; }
     .topbar nav .nav-burger { display: inline-block; }
+  }
+  /* Tablet widths: the top bar is crowded even before the burger takes over,
+     so the tagline (version chip) hides first. */
+  @media (max-width: 980px) {
     .topbar .brand-tagline { display: none; }
   }
   @media (max-width: 640px) {
