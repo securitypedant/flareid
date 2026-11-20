@@ -2942,9 +2942,10 @@ admin.get("/admin/apps", async (c) => {
     canOidc || canSaml ? `<a href="/admin/apps/catalog"><button class="primary" type="button">Add from catalog</button></a>` : "",
     grants(access.perms, "oidc:write") ? `<a href="/admin/clients/new"><button class="secondary" type="button">New OIDC client</button></a>` : "",
     grants(access.perms, "saml:write") ? `<a href="/admin/saml/new"><button class="secondary" type="button">New SAML app</button></a>` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  ].filter(Boolean);
+  const headerActionsHtml = headerActions.length
+    ? `<div style="display:flex; gap:8px; flex-wrap:wrap;">${headerActions.join("")}</div>`
+    : "";
   return c.html(
     layout(
       c,
@@ -2972,7 +2973,7 @@ admin.get("/admin/apps", async (c) => {
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Applications" }],
       undefined,
-      headerActions
+      headerActionsHtml
     )
   );
 });
