@@ -273,13 +273,13 @@ account.get("/account/applications", async (c) => {
 
   const card = (a: (typeof launchpad)[number]) => {
     const inner = `
-      <div style="width:40px; height:40px; border-radius:10px; background:var(--fi-bg, #f4f5f7); border:1px solid var(--fi-line); display:flex; align-items:center; justify-content:center; margin-bottom:10px;">
-        ${a.logo ? `<img src="${escapeHtml(a.logo)}" alt="" style="width:26px; height:26px; object-fit:contain;" data-hide-on-error />` : `<span style="font-weight:650; font-size:1rem; color:var(--fi-muted, #64748b);">${escapeHtml(a.name.trim().charAt(0).toUpperCase() || "?")}</span>`}
+      <div style="width:40px; height:40px; border-radius:10px; background:var(--fi-surface); border:1px solid var(--fi-line); display:flex; align-items:center; justify-content:center; margin-bottom:10px; flex-shrink:0;">
+        ${a.logo ? `<img src="${escapeHtml(a.logo)}" alt="" style="width:26px; height:26px; object-fit:contain;" data-hide-on-error />` : `<span style="font-weight:650; font-size:1rem; color:var(--fi-accent);">${escapeHtml(a.name.trim().charAt(0).toUpperCase() || "?")}</span>`}
       </div>
-      <div style="font-weight:600; font-size:0.9rem; color:var(--fi-body); line-height:1.25;">${escapeHtml(a.name)}</div>
-      <div class="muted" style="font-size:0.72rem; margin-top:3px; letter-spacing:0.03em; text-transform:uppercase;">${a.kind}</div>`;
+      <div style="font-weight:600; font-size:0.9rem; color:var(--fi-ink); line-height:1.25; overflow-wrap:anywhere; word-break:break-word; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;">${escapeHtml(a.name)}</div>
+      <div class="muted" style="font-size:0.72rem; margin-top:5px; letter-spacing:0.03em; text-transform:uppercase;">${a.kind}</div>`;
     const style =
-      'style="display:block; width:150px; border:1px solid var(--fi-line); border-radius:10px; padding:14px; background:var(--fi-card-bg, #fff); color:var(--fi-body); text-decoration:none; transition:border-color .12s ease;"';
+      'style="display:block; width:150px; min-height:112px; border:1px solid var(--fi-line); border-radius:var(--fi-radius); padding:14px; background:var(--fi-surface-2); color:var(--fi-body); text-decoration:none; overflow:hidden;"';
     return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" ${style}>${inner}</a>` : `<div ${style}>${inner}</div>`}</li>`;
   };
 
