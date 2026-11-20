@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { DOMParser } from "@xmldom/xmldom";
 import { SignedXml } from "xml-crypto";
 import type { SamlServiceProviderRow } from "../types.js";
@@ -220,6 +221,65 @@ const OK_POST_DIGESTS = new Set([
 ]);
 
 /**
+ * xml-crypto ships no ECDSA signature algorithm, so the ecdsa-sha* entries in
+ * OK_POST_SIGALGS are verified through this implementation registered on each
+ * SignedXml instance. XML-DSig carries the raw r||s signature value - exactly
+ * the IEEE-P1363 format crypto.subtle.verify expects - and the pinned
+ * certificate supplies the key: KeyInfo in the message is never consulted.
+ * Verification only; POST-bound requests are received, never generated.
+ */
+class EcdsaVerifier {
+  constructor(
+    private readonly alg: string,
+    private readonly namedCurve: string,
+    private readonly hash: string,
+  ) {}
+  getAlgorithmName() {
+    return this.alg;
+  }
+  getSignature(): string {
+    throw new Error("ECDSA signing is not supported");
+  }
+  verifySignature(): boolean {
+    throw new Error("ECDSA verification is asynchronous");
+  }
+  async verifySignatureAsync(material: string, key: unknown, signatureValue: string): Promise<boolean> {
+    try {
+      const spki = new X509Certificate(String(key)).publicKey.export({ format: "der", type: "spki" });
+      const pub = await crypto.subtle.importKey(
+        "spki",
+        new Uint8Array(spki),
+        { name: "ECDSA", namedCurve: this.namedCurve },
+        false,
+        ["verify"],
+      );
+      const sig = Uint8Array.from(atob(signatureValue.replace(/\s+/g, "")), (c) => c.charCodeAt(0));
+      return await crypto.subtle.verify(
+        { name: "ECDSA", hash: this.hash },
+        pub,
+        sig,
+        new TextEncoder().encode(material),
+      );
+    } catch {
+      return false;
+    }
+  }
+}
+
+const ECDSA_SIGALGS: Record<string, { namedCurve: string; hash: string }> = {
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256": { namedCurve: "P-256", hash: "SHA-256" },
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384": { namedCurve: "P-384", hash: "SHA-384" },
+  "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512": { namedCurve: "P-521", hash: "SHA-512" },
+};
+
+const ecdsaAlg = (alg: string, namedCurve: string, hash: string) =>
+  class extends EcdsaVerifier {
+    constructor() {
+      super(alg, namedCurve, hash);
+    }
+  };
+
+/**
  * Verifies the embedded XML-DSig of a POST-binding AuthnRequest.
  *
  * This is the only place FlareID verifies a signature over foreign XML - the
@@ -269,9 +329,12 @@ export async function verifyPostSignature(sp: SamlServiceProviderRow, xml: strin
   if (certs.length === 0) return "no-key";
   for (const pem of certs) {
     const sig = new SignedXml({ publicCert: pem, getCertFromKeyInfo: () => null });
+    for (const [alg, params] of Object.entries(ECDSA_SIGALGS)) {
+      sig.SignatureAlgorithms[alg] = ecdsaAlg(alg, params.namedCurve, params.hash);
+    }
     try {
       sig.loadSignature(sigEl.toString());
-      if (sig.checkSignature(xml)) return "ok";
+      if (await sig.checkSignatureAsync(xml)) return "ok";
     } catch {
       // A cert that cannot even load this signature moves to the next candidate.
     }

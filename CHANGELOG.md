@@ -6,6 +6,19 @@ may break things.
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-11-20
+
+- **Fix**: `ecdsa-sha*` AuthnRequest signatures on the POST binding now
+  verify. xml-crypto ships only RSA/HMAC signature algorithms, so the
+  ecdsa-sha256/384/512 entries in the POST algorithm allowlist always
+  rejected; verification is now supplied by a custom xml-crypto signature
+  algorithm over `crypto.subtle` (IEEE-P1363, pinned to the SP's registered
+  certificate - still never the message's KeyInfo). Found by the SAMLscope
+  IIP-ALG03 campaign: a valid EC-signed request was answered
+  `Responder`/`RequestDenied`. Regression tests replay the suite's captured
+  valid and corrupted EC fixtures.
+
+
 ## [4.3.0] - 2026-11-19
 
 - **SAML HTTP-POST request binding**: `POST /saml/sso` now accepts

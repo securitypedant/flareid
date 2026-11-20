@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?><samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" AssertionConsumerServiceURL="https://relatives-expressions-bbs-engage.trycloudflare.com/p/plan_60TE3CPPH0T57BE1GY3AMM7XW0/sp/acs/0?mdv=ecdsa-sha256-invalid-signature&amp;run=run_GRB2114AYHAKDQ4WPAZC5MMZYY" Destination="https://idp.tmesandbox.com/saml/sso" ID="_metadata_SHXR4D4Z2WHSWP2R0HVWVPAJKB" IssueInstant="2026-11-20T01:22:18.997636378Z" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Version="2.0"><saml:Issuer>https://relatives-expressions-bbs-engage.trycloudflare.com/p/plan_60TE3CPPH0T57BE1GY3AMM7XW0</saml:Issuer><ds:Signature>
+<ds:SignedInfo>
+<ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256"/>
+<ds:Reference URI="#_metadata_SHXR4D4Z2WHSWP2R0HVWVPAJKB">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+<ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>S0jG61zTTtcr+95gUmatI8OpPqt7K7/tjkzfp1apwZE=</ds:DigestValue>
+</ds:Reference>
+</ds:SignedInfo>
+<ds:SignatureValue>A9to5PHh+uVmiQ8rvu1u25TToCXMp32YRd5OKZdNYVy/ADyj7ugOGuv1lXzHJAaetbTAuWmAB8I/&#13;
+MliceT0+4w==</ds:SignatureValue>
+<ds:KeyInfo>
+<ds:X509Data>
+<ds:X509Certificate>
+MIICMTCCAdegAwIBAgIVAJR/0TstCxoSJsuCEgR0/HH4yVsxMAoGCCqGSM49BAMCMIGGMUYwRAYD&#13;
+VQQDDD1zYW1sc2NvcGUgZWMtZjBlY2I5ZTJmYTUyYTc1YmNiNmMyYzNjIHRlc3Qga2V5IChETyBO&#13;
+T1QgVFJVU1QpMSgwJgYDVQQLDB9wbGFuXzYwVEUzQ1BQSDBUNTdCRTFHWTNBTU03WFcwMRIwEAYD&#13;
+VQQKDAlzYW1sc2NvcGUwHhcNMjYxMTE5MDEyMjEzWhcNMjcxMTIwMDEyMjEzWjCBhjFGMEQGA1UE&#13;
+Aww9c2FtbHNjb3BlIGVjLWYwZWNiOWUyZmE1MmE3NWJjYjZjMmMzYyB0ZXN0IGtleSAoRE8gTk9U&#13;
+IFRSVVNUKTEoMCYGA1UECwwfcGxhbl82MFRFM0NQUEgwVDU3QkUxR1kzQU1NN1hXMDESMBAGA1UE&#13;
+CgwJc2FtbHNjb3BlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnsG8MywKA4Q0h7bgpRQhqJEY&#13;
+FoGEUziEjj+bGx2HQfp+rNUZU7TlXekKGMt40yL3nKaQ0A1MlukvLHrk9cbFw6MgMB4wDAYDVR0T&#13;
+AQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwCgYIKoZIzj0EAwIDSAAwRQIgAZy6zYOkk0Hs3jq9Wqy5&#13;
+A15M/7dqY3LNp3xo1RxazSsCIQDvtgZNj7SVTRDhsxmLdZ6h54GiWYxoh/YqtShOdyVBaQ==
+</ds:X509Certificate>
+</ds:X509Data>
+</ds:KeyInfo>
+</ds:Signature><samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:2.0:nameid-format:transient"/></samlp:AuthnRequest>
