@@ -2576,6 +2576,16 @@
             "description": "Rows to skip.",
             "name": "offset",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by name, UPN, username or email (substring, case-insensitive)."
+            },
+            "required": false,
+            "description": "Filter by name, UPN, username or email (substring, case-insensitive).",
+            "name": "q",
+            "in": "query"
           }
         ],
         "responses": {
@@ -3728,6 +3738,218 @@
         }
       }
     },
+    "/api/v1/users/{username}/devices": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "List remembered (trusted) devices",
+        "description": "`id` is the hash of the device cookie - enough to revoke one, useless for signing in.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "user_agent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ip": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "last_used_at": {
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "user_agent",
+                          "ip",
+                          "created_at",
+                          "last_used_at",
+                          "expires_at"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "devices"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/devices/{id}": {
+      "delete": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Forget a remembered device",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The username (the UPN's local part, unique across every domain)."
+            },
+            "required": true,
+            "description": "The username (the UPN's local part, unique across every domain).",
+            "name": "username",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/{username}/photo": {
       "get": {
         "tags": [
@@ -4141,6 +4363,18 @@
           }
         ],
         "x-permission": "groups:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by name or description (substring, case-insensitive)."
+            },
+            "required": false,
+            "description": "Filter by name or description (substring, case-insensitive).",
+            "name": "q",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -11559,6 +11793,83 @@
       }
     },
     "/api/v1/security/policies/{id}": {
+      "get": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Read an authentication policy",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id.",
+              "example": "12"
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "tags": [
           "Security"
@@ -13637,6 +13948,161 @@
         }
       }
     },
+    "/api/v1/ldap/apps/{slug}": {
+      "get": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Read an LDAP app",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "ldap:read",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LdapApp"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "LDAP"
+        ],
+        "summary": "Revoke an LDAP app",
+        "description": "Sets revoked_at; binds and searches fail immediately. Idempotent.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "ldap:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "slug"
+            },
+            "required": true,
+            "description": "slug",
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ldap/apps/{slug}/rotate": {
       "post": {
         "tags": [
@@ -13805,85 +14271,6 @@
           },
           "409": {
             "description": "Conflicts with existing state.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/ldap/apps/{slug}": {
-      "delete": {
-        "tags": [
-          "LDAP"
-        ],
-        "summary": "Revoke an LDAP app",
-        "description": "Sets revoked_at; binds and searches fail immediately. Idempotent.",
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "x-permission": "ldap:write",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "slug"
-            },
-            "required": true,
-            "description": "slug",
-            "name": "slug",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Ok"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request (`invalid_request`).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, unknown, revoked or expired token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No such object.",
             "content": {
               "application/json": {
                 "schema": {

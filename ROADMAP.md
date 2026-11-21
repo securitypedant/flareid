@@ -182,6 +182,16 @@ Item 22 (large-directory performance) shipped in v3.4.0. P1 is complete.
     "Sync member emails" switch plus four built-in syncs on the Cloudflare
     One page, pushed by the scheduled job with full-replace PUTs and a
     self-heal for deleted lists; the watchlist flag has a 24h auto-expiry)
+~~41. **Unified attribute flows** (v4.7.0): one expression engine and one
+    mappings store for every direction - inbound SCIM and JIT federation
+    resolve profiles from mapping rows (per-IdP overrides over seeded
+    defaults), outbound SCIM targets, per-client OIDC claim additions and
+    SAML attribute values all evaluate the same language over the user
+    document, and dynamic-group rules gained an `expr` condition. A central
+    collision policy governs sign-in-name and email clashes (suffix, pattern
+    or refuse).~~ (done - `lib/expr.ts`, the channel/owner-aware `mappings`
+    table + `lib/mappings.ts`, Admin → Flows, `GET/PUT /api/v1/mappings`
+    and `/mappings/collisions`)
 
 ## Parked
 

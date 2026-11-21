@@ -8,7 +8,7 @@ import { account } from "../src/routes/account.js";
 import { api } from "../src/routes/api.js";
 import { isApiScope } from "../src/lib/api-keys.js";
 import committed from "../docs/openapi.json";
-import { apiCall } from "./helpers.js";
+import { apiCall, bootstrapInstance } from "./helpers.js";
 
 /**
  * Each mutating console route and the API operation that does the same thing.
@@ -166,6 +166,7 @@ const ACCOUNT_TO_API: Record<string, string> = {
   "POST /account/apps/:clientDbId/revoke": "DELETE /api/v1/users/{username}/apps/{client_id}",
   "POST /account/passkeys/:id/remove": "DELETE /api/v1/users/{username}/passkeys/{credential_id}",
   "POST /account/mfa/disable": "POST /api/v1/users/{username}/reset-mfa",
+  "POST /account/devices/:id/revoke": "DELETE /api/v1/users/{username}/devices/{id}",
 };
 
 /** Self-service actions with no API meaning. */
@@ -173,7 +174,6 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   // These name a secret the browser holds, which the API deliberately never
   // exposes - or prove a person is at the keyboard, which a bearer token is
   // not. Bulk equivalents exist (reset-mfa, sign-out-everywhere).
-  "POST /account/devices/:id/revoke": "a trusted-device id is the cookie's secret - the API never exposes it",
   "POST /account/sessions/:id/revoke": "a session id is the cookie's secret - the API never exposes it",
   "POST /account/sessions/revoke-others": '"others" is relative to the session cookie itself; a token has no current session',
   "POST /account/password": "requires the current password as proof",
@@ -186,6 +186,105 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   "POST /account/mfa/questions": "security-question enrolment",
   "POST /account/mfa/questions/remove": "partial factor self-management; admin reset-mfa covers recovery",
   "POST /account/mfa/backup-codes/regenerate": "credential self-management; admin reset-mfa covers recovery",
+};
+
+/**
+ * Console pages and the API reads that carry their data. A page may draw on
+ * several operations; every one listed must exist in the spec. Rendered
+ * forms, wizards, redirects and browser ceremonies are CONSOLE_GET_ONLY.
+ */
+const CONSOLE_GET_TO_API: Record<string, string[]> = {
+  "GET /admin": ["GET /api/v1/stats"],
+  "GET /admin/access": ["GET /api/v1/access/requests"],
+  "GET /admin/access/reviews/:id": ["GET /api/v1/access/campaigns/{id}"],
+  "GET /admin/api-keys/:id/edit": ["GET /api/v1/api-keys"],
+  "GET /admin/apps": ["GET /api/v1/clients", "GET /api/v1/saml/service-providers"],
+  "GET /admin/apps/catalog": ["GET /api/v1/app-catalog"],
+  "GET /admin/apps/catalog/:slug": ["GET /api/v1/app-catalog/{slug}"],
+  "GET /admin/audit": ["GET /api/v1/audit"],
+  "GET /admin/audit/export": ["GET /api/v1/audit/export"],
+  "GET /admin/branding": ["GET /api/v1/branding"],
+  "GET /admin/branding/brands": ["GET /api/v1/branding/brands"],
+  "GET /admin/branding/brands/:id": ["GET /api/v1/branding/brands/{id}"],
+  "GET /admin/branding/email-templates": ["GET /api/v1/branding/email-templates"],
+  "GET /admin/clients/:id": ["GET /api/v1/clients/{client_id}"],
+  "GET /admin/domains": ["GET /api/v1/domains"],
+  "GET /admin/flows": ["GET /api/v1/mappings", "GET /api/v1/mappings/collisions"],
+  "GET /admin/flows/edit": ["GET /api/v1/mappings"],
+  "GET /admin/groups": ["GET /api/v1/groups"],
+  "GET /admin/groups/:id": ["GET /api/v1/groups/{id}"],
+  "GET /admin/groups/lookup": ["GET /api/v1/groups"],
+  "GET /admin/integrations": ["GET /api/v1/status"],
+  "GET /admin/integrations/api-keys": ["GET /api/v1/api-keys"],
+  "GET /admin/integrations/cf-one": ["GET /api/v1/integrations/cloudflare-one"],
+  "GET /admin/integrations/signals": ["GET /api/v1/ssf/streams", "GET /api/v1/ssf/transmitters"],
+  "GET /admin/integrations/email": ["GET /api/v1/email"],
+  "GET /admin/integrations/federation": ["GET /api/v1/federation/idps"],
+  "GET /admin/integrations/federation/:id": ["GET /api/v1/federation/idps/{id}"],
+  "GET /admin/integrations/ldap": ["GET /api/v1/ldap/settings", "GET /api/v1/ldap/apps"],
+  "GET /admin/integrations/saml": ["GET /api/v1/saml/settings"],
+  "GET /admin/integrations/scim": ["GET /api/v1/scim/config", "GET /api/v1/scim/targets"],
+  "GET /admin/integrations/scim/:id": ["GET /api/v1/scim/targets/{id}"],
+  "GET /admin/ldap/:slug": ["GET /api/v1/ldap/apps/{slug}"],
+  "GET /admin/performance": ["GET /api/v1/performance"],
+  "GET /admin/performance/live": ["GET /api/v1/performance"],
+  "GET /admin/saml/:id": ["GET /api/v1/saml/service-providers/{id}"],
+  "GET /admin/schemas": ["GET /api/v1/schemas"],
+  "GET /admin/schemas/:id": ["GET /api/v1/schemas"],
+  "GET /admin/security": ["GET /api/v1/security"],
+  "GET /admin/security/factors": ["GET /api/v1/security/factors"],
+  "GET /admin/security/factors/security-questions": ["GET /api/v1/security/security-questions"],
+  "GET /admin/security/policies": ["GET /api/v1/security/policies"],
+  "GET /admin/security/policies/:id": ["GET /api/v1/security/policies/{id}"],
+  "GET /admin/security/roles": ["GET /api/v1/security/roles"],
+  "GET /admin/security/roles/:id": ["GET /api/v1/security/roles"],
+  "GET /admin/security/signing-keys": ["GET /api/v1/security/signing-keys"],
+  "GET /admin/users": ["GET /api/v1/users"],
+  "GET /admin/users/:id": ["GET /api/v1/users/{username}"],
+  "GET /admin/users/lookup": ["GET /api/v1/users"],
+};
+
+/** Pages a token has no use for: rendered forms, wizards, redirects and step-up ceremonies. */
+const CONSOLE_GET_ONLY: Record<string, string> = {
+  "GET /admin/access/reviews/new": "rendered form",
+  "GET /admin/api-keys/new": "rendered form",
+  "GET /admin/branding/email-templates/preview": "UI render preview",
+  "GET /admin/clients": "redirect to /admin/apps",
+  "GET /admin/clients/new": "rendered form",
+  "GET /admin/groups/import": "rendered form",
+  "GET /admin/groups/new": "rendered form",
+  "GET /admin/integrations/federation/new": "rendered form",
+  "GET /admin/integrations/oidc": "redirect to /admin/apps",
+  "GET /admin/integrations/scim/new": "rendered form",
+  "GET /admin/ldap/new": "rendered form",
+  "GET /admin/log": "redirect to /admin/audit",
+  "GET /admin/reauth": "step-up re-authentication",
+  "GET /admin/reauth/passkey/options": "step-up re-authentication ceremony",
+  "GET /admin/reauth/resume": "step-up re-authentication",
+  "GET /admin/saml/new": "rendered form",
+  "GET /admin/security/roles/new": "rendered form",
+  "GET /admin/scim": "redirect to /admin/integrations/scim",
+  "GET /admin/setup": "first-run setup form",
+  "GET /admin/users/import": "rendered form",
+  "GET /admin/users/new": "rendered form",
+};
+
+/** Self-service pages and the API reads carrying their data. */
+const ACCOUNT_GET_TO_API: Record<string, string[]> = {
+  "GET /account": ["GET /api/v1/users/{username}", "GET /api/v1/users/{username}/apps"],
+  "GET /account/access/groups": ["GET /api/v1/access/requests", "GET /api/v1/groups"],
+  "GET /account/applications": ["GET /api/v1/users/{username}/apps"],
+  "GET /account/groups": ["GET /api/v1/groups"],
+  "GET /account/groups/:id": ["GET /api/v1/groups/{id}"],
+  "GET /account/groups/:id/people": ["GET /api/v1/groups/{id}"],
+  "GET /account/photo/:uid": ["GET /api/v1/users/{username}/photo"],
+  "GET /account/security": ["GET /api/v1/users/{username}/sessions", "GET /api/v1/users/{username}/passkeys", "GET /api/v1/users/{username}/devices"],
+};
+
+const ACCOUNT_GET_ONLY: Record<string, string> = {
+  "GET /account/mfa/setup": "TOTP enrolment ceremony",
+  "GET /account/passkeys/:id/remove": "rendered confirmation",
+  "GET /account/passkeys/options": "WebAuthn ceremony",
 };
 
 /** Routes on the API app that are not operations in the document. */
@@ -235,6 +334,28 @@ describe("API parity with the admin console", () => {
     expect(Object.keys(ACCOUNT_CONSOLE_ONLY).filter((k) => !accountRoutes.includes(k))).toEqual([]);
   });
 
+  it("maps every console GET to a readable operation or marks it console-only", async () => {
+    const ops = specOps(await liveSpec());
+    const consoleGets = [...new Set(admin.routes.filter((r) => r.method === "GET" && r.path.startsWith("/admin")).map((r) => `${r.method} ${r.path}`))];
+    const unmapped = consoleGets.filter((r) => !(r in CONSOLE_GET_TO_API) && !(r in CONSOLE_GET_ONLY));
+    expect(unmapped, "console pages whose data no API operation returns: add the read, map it here, or mark it console-only").toEqual([]);
+    const missing = consoleGets.flatMap((r) => (CONSOLE_GET_TO_API[r] ?? []).filter((o) => !ops.has(o)).map((o) => `${r} -> ${o}`));
+    expect(missing, "mapped to operations the spec does not have").toEqual([]);
+    expect(Object.keys(CONSOLE_GET_TO_API).filter((k) => !consoleGets.includes(k))).toEqual([]);
+    expect(Object.keys(CONSOLE_GET_ONLY).filter((k) => !consoleGets.includes(k))).toEqual([]);
+  });
+
+  it("maps every self-service GET to a readable operation or marks it console-only", async () => {
+    const ops = specOps(await liveSpec());
+    const accountGets = [...new Set(account.routes.filter((r) => r.method === "GET" && r.path.startsWith("/account")).map((r) => `${r.method} ${r.path}`))];
+    const unmapped = accountGets.filter((r) => !(r in ACCOUNT_GET_TO_API) && !(r in ACCOUNT_GET_ONLY));
+    expect(unmapped, "self-service pages whose data no API operation returns: add the read, map it here, or mark it console-only").toEqual([]);
+    const missing = accountGets.flatMap((r) => (ACCOUNT_GET_TO_API[r] ?? []).filter((o) => !ops.has(o)).map((o) => `${r} -> ${o}`));
+    expect(missing, "mapped to operations the spec does not have").toEqual([]);
+    expect(Object.keys(ACCOUNT_GET_TO_API).filter((k) => !accountGets.includes(k))).toEqual([]);
+    expect(Object.keys(ACCOUNT_GET_ONLY).filter((k) => !accountGets.includes(k))).toEqual([]);
+  });
+
   it("documents every API route, and nothing that is not a route", async () => {
     const ops = specOps(await liveSpec());
     const routes = new Set(api.routes.filter((r) => r.method !== "ALL" && r.path.startsWith("/api/v1/")).map((r) => routeKey(r.method, r.path)));
@@ -260,5 +381,45 @@ describe("API parity with the admin console", () => {
 
   it("matches the committed docs/openapi.json (run npm run docs:api)", async () => {
     expect(await liveSpec()).toEqual(committed);
+  });
+
+  // Beyond "the operation exists": every GET responds (no 5xx), and every
+  // write at least reaches its validation (no 5xx on an empty body). A new
+  // operation fails this test until its handler actually works.
+  it("exercises every operation: GETs respond, writes reach validation", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const spec = await liveSpec();
+    const PARAMS: Record<string, string> = { username: "admin", id: "1", item_id: "1", slug: "x", client_id: "x", domain: "example.com", alg: "RS256", key: "x", credential_id: "x" };
+    const fill = (p: string) => p.replace(/\{([^}]+)\}/g, (_, n: string) => PARAMS[n] ?? "1");
+    // An empty body would act, not just validate: these stay covered by
+    // api-endpoints.test.ts instead of being poked here.
+    const SKIP_WRITE = new Set([
+      "POST /api/v1/directory/reset",
+      "POST /api/v1/backup/restore",
+      "POST /api/v1/scim/sync",
+      "POST /api/v1/scim/test",
+      "POST /api/v1/email/test",
+      "POST /api/v1/integrations/cloudflare-one/sync",
+      "POST /api/v1/ssf/outbox/drain",
+      "POST /api/v1/security/signing-keys/{alg}/rotate",
+      "POST /api/v1/security/new-user-password/apply-to-all",
+      "POST /api/v1/domains/{domain}/apply-to-all",
+      "POST /api/v1/recovery/admin-reset",
+      "POST /api/v1/setup",
+    ]);
+    const failures: string[] = [];
+    for (const [path, item] of Object.entries(spec.paths)) {
+      for (const method of Object.keys(item)) {
+        const op = `${method.toUpperCase()} ${path}`;
+        if (method === "get") {
+          const res = await apiCall(fill(path), { token: apiKey });
+          if (res.status >= 500) failures.push(`${op}: ${res.status}`);
+        } else if (!SKIP_WRITE.has(op)) {
+          const res = await apiCall(fill(path), { token: apiKey, method: method.toUpperCase(), body: {} });
+          if (res.status >= 500) failures.push(`${op}: ${res.status}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });

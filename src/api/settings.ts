@@ -691,6 +691,23 @@ defineRoute(
 
 defineRoute(
   {
+    method: "get",
+    path: "/api/v1/security/policies/{id}",
+    tag: "Security",
+    permission: "security:read",
+    summary: "Read an authentication policy",
+    params: IdParam,
+    errors: [404],
+    response: PolicySchema,
+  },
+  async (c) => {
+    const policy = (await policiesJson(c.env)).find((p) => p.id === Number(param(c, "id")));
+    return policy ? c.json(policy) : notFound(c, `No policy with id ${param(c, "id")}.`);
+  }
+);
+
+defineRoute(
+  {
     method: "patch",
     path: "/api/v1/security/policies/{id}",
     tag: "Security",

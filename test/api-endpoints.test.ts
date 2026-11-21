@@ -58,6 +58,15 @@ describe("users", () => {
     expect((await call(apiKey, "GET", "/api/v1/users/jane/passkeys")).body).toEqual({ passkeys: [] });
     expect((await call(apiKey, "GET", "/api/v1/users/jane/apps")).body).toEqual({ apps: [] });
 
+    // Passkey removal - the row normally comes from a WebAuthn ceremony.
+    await env.DB.prepare("INSERT INTO webauthn_credentials (id, user_id, public_key, name, created_at) VALUES ('cred-1', ?, 'cose', 'Laptop', ?)")
+      .bind(id, new Date().toISOString()).run();
+    const keys = await call(apiKey, "GET", "/api/v1/users/jane/passkeys");
+    expect(keys.body.passkeys).toHaveLength(1);
+    expect((await call(apiKey, "DELETE", "/api/v1/users/jane/passkeys/cred-1")).status).toBe(200);
+    expect((await call(apiKey, "DELETE", "/api/v1/users/jane/passkeys/cred-1")).status).toBe(404);
+    expect((await call(apiKey, "GET", "/api/v1/users/jane/passkeys")).body).toEqual({ passkeys: [] });
+
     expect((await call(apiKey, "DELETE", "/api/v1/users/jane")).status).toBe(200);
     expect((await call(apiKey, "GET", "/api/v1/users/jane")).status).toBe(404);
   });
@@ -86,6 +95,31 @@ describe("users", () => {
     expect(bad.status).toBe(400);
     expect(bad.body.error).toBe("invalid_request");
     expect(bad.body.message).toMatch(/username/);
+  });
+
+  it("filters the list with q and manages remembered devices", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await call(apiKey, "POST", "/api/v1/users", { username: "ada", given_name: "Ada", family_name: "Lovelace", email: "ada@example.com" });
+    await call(apiKey, "POST", "/api/v1/users", { username: "grace", given_name: "Grace", family_name: "Hopper", email: "grace@example.com" });
+
+    const all = await call(apiKey, "GET", "/api/v1/users?limit=50");
+    const hits = await call(apiKey, "GET", "/api/v1/users?q=lovelace");
+    expect(hits.status).toBe(200);
+    expect(hits.body.total).toBe(1);
+    expect(hits.body.users.map((u: { username: string }) => u.username)).toEqual(["ada"]);
+    expect((await call(apiKey, "GET", "/api/v1/users?q=grace@")).body.total).toBe(1);
+    expect((await call(apiKey, "GET", "/api/v1/users?q=zzzz")).body.total).toBe(0);
+    expect(all.body.total).toBeGreaterThan(2);
+
+    // Remembered devices: the row id is the cookie's hash, safe to return and revoke by.
+    const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ada'").first<{ id: number }>())!.id;
+    await env.DB.prepare("INSERT INTO trusted_devices (id, user_id, user_agent, ip, created_at, last_used_at, expires_at) VALUES ('hash-1', ?, 'ua', '1.2.3.4', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2099-01-01T00:00:00Z')").bind(uid).run();
+    const devices = await call(apiKey, "GET", "/api/v1/users/ada/devices");
+    expect(devices.status).toBe(200);
+    expect(devices.body.devices).toEqual([{ id: "hash-1", user_agent: "ua", ip: "1.2.3.4", created_at: "2026-01-01T00:00:00Z", last_used_at: "2026-01-02T00:00:00Z", expires_at: "2099-01-01T00:00:00Z" }]);
+    expect((await call(apiKey, "DELETE", "/api/v1/users/ada/devices/hash-1")).status).toBe(200);
+    expect((await call(apiKey, "GET", "/api/v1/users/ada/devices")).body.devices).toEqual([]);
+    expect((await call(await keyWith(apiKey, "users:read"), "DELETE", "/api/v1/users/ada/devices/x")).status).toBe(403);
   });
 });
 
@@ -151,6 +185,16 @@ describe("groups", () => {
 
     expect((await call(apiKey, "DELETE", `/api/v1/groups/${id}`)).status).toBe(200);
     expect((await call(apiKey, "GET", `/api/v1/groups/${id}`)).status).toBe(404);
+  });
+
+  it("filters the group list with q", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await call(apiKey, "POST", "/api/v1/groups", { name: "Field staff", description: "Depot" });
+    await call(apiKey, "POST", "/api/v1/groups", { name: "Office staff" });
+    const hits = await call(apiKey, "GET", "/api/v1/groups?q=field");
+    expect(hits.body.groups.map((g: { name: string }) => g.name)).toEqual(["Field staff"]);
+    expect((await call(apiKey, "GET", "/api/v1/groups?q=depot")).body.groups.map((g: { name: string }) => g.name)).toEqual(["Field staff"]);
+    expect((await call(apiKey, "GET", "/api/v1/groups")).body.groups.length).toBeGreaterThan(2);
   });
 
   it("keeps admin role groups and Super Admins for admin keys", async () => {
@@ -287,6 +331,8 @@ describe("security", () => {
     expect(made.body).toMatchObject({ name: "Strict", requirement: "mfa", priority: 5, groups: ["Contractors"], is_default: false });
     expect((await call(apiKey, "POST", "/api/v1/security/policies", { name: "Strict" })).status).toBe(400);
     expect((await call(apiKey, "PATCH", `/api/v1/security/policies/${made.body.id}`, { priority: 2 })).body).toMatchObject({ priority: 2, groups: ["Contractors"] });
+    expect((await call(apiKey, "GET", `/api/v1/security/policies/${made.body.id}`)).body).toMatchObject({ name: "Strict", priority: 2 });
+    expect((await call(apiKey, "GET", "/api/v1/security/policies/9999")).status).toBe(404);
 
     const factors = await call(apiKey, "GET", "/api/v1/security/factors");
     expect(factors.body.factors.filter((f: { available: boolean }) => f.available).map((f: { key: string; enabled: boolean }) => [f.key, f.enabled])).toEqual([["totp", true], ["passkey", true], ["email_otp", false], ["security_questions", false]]);
@@ -335,6 +381,66 @@ describe("security", () => {
     expect(after.find((k) => k.kid === es.kid)?.status).toBe("retired");
     expect((await call(apiKey, "POST", "/api/v1/security/signing-keys/HS256/rotate")).status).toBe(400);
     expect((await call(await keyWith(apiKey, "signing_keys:read"), "POST", "/api/v1/security/signing-keys/ES256/rotate")).status).toBe(403);
+  });
+});
+
+describe("ldap apps", () => {
+  it("reads one app by slug", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const made = await call(apiKey, "POST", "/api/v1/ldap/apps", { slug: "meraki", name: "Meraki" });
+    expect(made.status).toBe(201);
+    const got = await call(apiKey, "GET", "/api/v1/ldap/apps/meraki");
+    expect(got.status).toBe(200);
+    expect(got.body).toMatchObject({ slug: "meraki", name: "Meraki" });
+    expect(got.body.secret).toBeUndefined();
+    expect((await call(apiKey, "GET", "/api/v1/ldap/apps/nope")).status).toBe(404);
+  });
+
+  it("rotates, reveals and revokes an app's bind secret", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const made = await call(apiKey, "POST", "/api/v1/ldap/apps", { slug: "meraki", name: "Meraki" });
+    expect(made.status).toBe(201);
+    const first = made.body.secret as string;
+
+    const revealed = await call(apiKey, "POST", "/api/v1/ldap/apps/meraki/reveal");
+    expect(revealed.status).toBe(200);
+    expect(revealed.body).toEqual({ slug: "meraki", secret: first });
+
+    const rotated = await call(apiKey, "POST", "/api/v1/ldap/apps/meraki/rotate");
+    expect(rotated.status).toBe(200);
+    expect(rotated.body.slug).toBe("meraki");
+    expect(rotated.body.secret).not.toBe(first);
+    expect((await call(apiKey, "POST", "/api/v1/ldap/apps/meraki/reveal")).body.secret).toBe(rotated.body.secret);
+
+    // Revoke sets revoked_at; the row stays for audit and the op is idempotent.
+    expect((await call(apiKey, "DELETE", "/api/v1/ldap/apps/meraki")).status).toBe(200);
+    expect((await call(apiKey, "DELETE", "/api/v1/ldap/apps/meraki")).status).toBe(200);
+    expect((await call(apiKey, "GET", "/api/v1/ldap/apps/meraki")).body.revoked_at).not.toBeNull();
+
+    const reader = await keyWith(apiKey, "ldap:read");
+    expect((await call(reader, "POST", "/api/v1/ldap/apps/meraki/rotate")).status).toBe(403);
+  });
+});
+
+describe("signals", () => {
+  it("updates and deletes an outbound stream", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const made = await call(apiKey, "POST", "/api/v1/ssf/streams", { name: "Okta", endpoint_url: "https://rx.example.com/events" });
+    expect(made.status).toBe(201);
+    const id = made.body.id as number;
+
+    const patched = await call(apiKey, "PATCH", `/api/v1/ssf/streams/${id}`, { disabled: true, name: "Okta (paused)" });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({ id, name: "Okta (paused)", disabled: true });
+
+    expect((await call(apiKey, "PATCH", `/api/v1/ssf/streams/${id}`, { endpoint_url: "not a url" })).status).toBe(400);
+    expect((await call(apiKey, "PATCH", "/api/v1/ssf/streams/9999", { disabled: true })).status).toBe(404);
+
+    expect((await call(apiKey, "DELETE", `/api/v1/ssf/streams/${id}`)).body).toEqual({ ok: true });
+    expect((await call(apiKey, "DELETE", `/api/v1/ssf/streams/${id}`)).status).toBe(404);
+
+    const reader = await keyWith(apiKey, "signals:read");
+    expect((await call(reader, "DELETE", "/api/v1/ssf/streams/1")).status).toBe(403);
   });
 });
 

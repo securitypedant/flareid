@@ -4,7 +4,7 @@ import { SignedXml } from "xml-crypto";
 import { ExclusiveCanonicalization } from "xml-crypto/lib/exclusive-canonicalization.js";
 import { verifyPostSignature } from "../src/lib/saml/authn-request.js";
 import { TEST_SAML_SP_CERT_PEM, TEST_SAML_SP_KEY_PKCS8 } from "./fixtures/saml-keys.js";
-import type { SamlServiceProviderRow } from "../src/types.js";
+import type { SamlServiceProviderRow } from "../src/lib/types.js";
 
 // Live fixtures captured from the SAMLscope metadata campaign (IIP-ALG03).
 // REQ carries a valid ecdsa-sha256 signature; BAD is the suite's corrupted
@@ -73,7 +73,7 @@ describe("post-binding namespace decoys", () => {
 
     const doc = new DOMParser().parseFromString(signed, "text/xml");
     const signedInfo = doc.getElementsByTagNameNS(NS_DS, "SignedInfo")[0]!;
-    const canon = new ExclusiveCanonicalization().process(signedInfo).toString();
+    const canon = new ExclusiveCanonicalization().process(signedInfo, {}).toString();
     const pkcs8 = Uint8Array.from(atob(TEST_SAML_SP_KEY_PKCS8.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "")), (c) => c.charCodeAt(0));
     const key = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" }, false, ["sign"]);
     const sha1Sig = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(canon)))));

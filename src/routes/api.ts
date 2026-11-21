@@ -345,15 +345,18 @@ defineRoute({
 
 defineRoute({
   method: "get", path: "/api/v1/users", tag: "Users", permission: "users:read", summary: "List users",
-  query: z.object(Paging),
+  query: z.object({ ...Paging, q: z.string().optional().openapi({ description: "Filter by name, UPN, username or email (substring, case-insensitive)." }) }),
   response: z.object({ total: z.number(), limit: z.number(), offset: z.number(), users: z.array(UserSchema) }),
 }, async (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 100) || 100, 500);
   const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100) || undefined;
 
   // Explicit column list and dynamic groups resolved: see selectUsers.
-  const users = await selectUsers(c.env, { limit, offset });
-  const total = await c.env.DB.prepare("SELECT COUNT(*) as n FROM users").first<{ n: number }>();
+  const users = await selectUsers(c.env, { q, limit, offset });
+  const conds = q ? "WHERE (lower(display_name) LIKE ? ESCAPE '\\' OR lower(upn) LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR lower(email) LIKE ? ESCAPE '\\')" : "";
+  const like = `%${(q ?? "").replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+  const total = await c.env.DB.prepare(`SELECT COUNT(*) as n FROM users ${conds}`).bind(...(q ? [like, like, like, like] : [])).first<{ n: number }>();
 
   return c.json({
     total: total?.n ?? 0,
@@ -365,13 +368,16 @@ defineRoute({
 
 defineRoute({
   method: "get", path: "/api/v1/groups", tag: "Groups", permission: "groups:read", summary: "List groups",
+  query: z.object({ q: z.string().optional().openapi({ description: "Filter by name or description (substring, case-insensitive)." }) }),
   response: z.object({ groups: z.array(GroupSchema) }),
 }, async (c) => {
+  const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+  const like = `%${q.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
   const { results } = await c.env.DB.prepare(
     `SELECT g.*, (SELECT name FROM schemas s WHERE s.id = g.schema_id) AS schema_name,
             (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS explicit_member_count
-       FROM groups g ORDER BY g.name`
-  ).all<GroupRow & { member_count: number; explicit_member_count: number; schema_name: string | null }>();
+       FROM groups g ${q ? "WHERE (lower(g.name) LIKE ? ESCAPE '\\' OR lower(g.description) LIKE ? ESCAPE '\\')" : ""} ORDER BY g.name`
+  ).bind(...(q ? [like, like] : [])).all<GroupRow & { member_count: number; explicit_member_count: number; schema_name: string | null }>();
 
   // Every group's members in one pass: one read of the directory for all the
   // dynamic groups, not one per group.

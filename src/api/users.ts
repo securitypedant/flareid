@@ -7,6 +7,7 @@ import { listPasskeys } from "../lib/passkeys.js";
 import { defaultSchemaId, findSchema, getSchemaAttributes, parseCustomAttributes, userAttributeValue } from "../lib/schemas.js";
 import { getMasteredFields, masteredFieldsInBody } from "../lib/scim-mapping.js";
 import { listActiveSessionsForUser } from "../lib/sessions.js";
+import { listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 import { deleteUserPhoto, getUserPhoto, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { auditActor } from "../lib/api-auth.js";
 import { logAudit } from "../lib/audit.js";
@@ -39,9 +40,16 @@ import { StringMap, UserSchema } from "./schemas.js";
  * password_salt and totp_secret live in this table and must never leave it),
  * their groups - dynamic ones resolved against the same page - and attributes.
  */
-export async function selectUsers(env: Env, opts: { username?: string; limit: number; offset: number }) {
-  const where = opts.username !== undefined ? "WHERE u.username = ?" : "";
-  const binds = opts.username !== undefined ? [opts.username] : [];
+export async function selectUsers(env: Env, opts: { username?: string; q?: string; limit: number; offset: number }) {
+  const conds: string[] = [];
+  const binds: string[] = [];
+  if (opts.username !== undefined) { conds.push("u.username = ?"); binds.push(opts.username); }
+  if (opts.q) {
+    conds.push("(lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(u.upn) LIKE ? ESCAPE '\\' OR u.username LIKE ? ESCAPE '\\' OR lower(u.email) LIKE ? ESCAPE '\\')");
+    const like = `%${opts.q.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+    binds.push(like, like, like, like);
+  }
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.upn, u.username, u.email, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
             u.mfa_enabled, u.email_otp_enabled, u.security_questions_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
@@ -373,6 +381,35 @@ const photoToB64 = (buf: Uint8Array) => {
   for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
   return btoa(s);
 };
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/users/{username}/devices",
+    tag: "Users",
+    permission: "users:read",
+    summary: "List remembered (trusted) devices",
+    description: "`id` is the hash of the device cookie - enough to revoke one, useless for signing in.",
+    errors: [404],
+    response: z.object({ devices: z.array(z.object({ id: z.string(), user_agent: z.string().nullable(), ip: z.string().nullable(), created_at: z.string(), last_used_at: z.string(), expires_at: z.string() })) }),
+  },
+  async (c) => {
+    const user = await userByUsername(c);
+    if (!user) return noUser(c);
+    const devices = (await listTrustedDevices(c.env, user.id)).map((d) => ({ id: d.id, user_agent: d.user_agent, ip: d.ip, created_at: d.created_at, last_used_at: d.last_used_at, expires_at: d.expires_at }));
+    return c.json({ devices });
+  }
+);
+
+defineRoute(
+  { method: "delete", path: "/api/v1/users/{username}/devices/{id}", tag: "Users", permission: "users:write", summary: "Forget a remembered device", errors: [404] },
+  async (c) => {
+    const user = await userByUsername(c);
+    if (!user) return noUser(c);
+    await revokeTrustedDevice(c.env, user.id, param(c, "id"));
+    return c.json({ ok: true });
+  }
+);
 
 defineRoute(
   {

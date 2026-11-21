@@ -150,8 +150,8 @@ describe("session management", () => {
     const { apiKey } = await bootstrapInstance();
     const userId = await seedUser(apiKey);
     const { setCookies } = await createSession(env, userId, ["pwd", "mfa"], new Request(BASE));
-    const sessionCookie = setCookies[0].split(";")[0]!;
-    const marker = setCookies[1].split(";")[0]!;
+    const sessionCookie = setCookies[0]!.split(";")[0]!;
+    const marker = setCookies[1]!.split(";")[0]!;
     expect(setCookies[0]).toContain("SameSite=Lax");
     expect(setCookies[1]).toContain("SameSite=None");
 
@@ -176,7 +176,7 @@ describe("session management", () => {
     const { apiKey } = await bootstrapInstance();
     const userId = await seedUser(apiKey);
     const { sessionId, setCookies } = await createSession(env, userId, ["pwd"], new Request(BASE));
-    const marker = setCookies[1].split(";")[0]!;
+    const marker = setCookies[1]!.split(";")[0]!;
 
     // A live session still answers through the marker.
     const live = await SELF.fetch(`${BASE}/check_session`, { headers: { Cookie: marker } });
@@ -823,7 +823,7 @@ describe("JAR request objects (RFC 9101)", () => {
 describe("JWKS rotation probe", () => {
   it("adds a new RS256 kid while keeping the old key published", async () => {
     await bootstrapInstance();
-    (env as Record<string, unknown>).JWKS_ROTATION_PROBE = "true";
+    (env as unknown as Record<string, unknown>).JWKS_ROTATION_PROBE = "true";
     try {
       const before = (await (await SELF.fetch(`${BASE}/jwks.json`)).json()) as { keys: { kid: string }[] };
       const after = (await (await SELF.fetch(`${BASE}/jwks.json`)).json()) as { keys: { kid: string }[] };
@@ -832,7 +832,7 @@ describe("JWKS rotation probe", () => {
       expect(afterKids.some((kid) => !beforeKids.has(kid))).toBe(true);
       for (const kid of beforeKids) expect(afterKids).toContain(kid);
     } finally {
-      (env as Record<string, unknown>).JWKS_ROTATION_PROBE = "";
+      (env as unknown as Record<string, unknown>).JWKS_ROTATION_PROBE = "";
     }
   });
 });

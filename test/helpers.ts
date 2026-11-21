@@ -45,7 +45,9 @@ export async function apiCall(
     ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
   });
 
-  const text = await response.text();
+  // arrayBuffer() + decode: .text() warns on content types workerd does not
+  // recognise as text (PEM, ndjson, JWT) even though they are.
+  const text = new TextDecoder().decode(await response.arrayBuffer());
   let body: unknown;
   try {
     body = JSON.parse(text);

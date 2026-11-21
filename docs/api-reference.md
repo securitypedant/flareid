@@ -120,6 +120,8 @@ People in the directory.
 | `DELETE` | `/api/v1/users/{username}/passkeys/{credential_id}` | `users:write` | Remove a passkey |
 | `GET` | `/api/v1/users/{username}/apps` | `users:read` | List the OIDC apps holding tokens for a user |
 | `DELETE` | `/api/v1/users/{username}/apps/{client_id}` | `users:write` | Revoke an app's access |
+| `GET` | `/api/v1/users/{username}/devices` | `users:read` | List remembered (trusted) devices |
+| `DELETE` | `/api/v1/users/{username}/devices/{id}` | `users:write` | Forget a remembered device |
 | `GET` | `/api/v1/users/{username}/photo` | `users:read` | Get the profile photo |
 | `PUT` | `/api/v1/users/{username}/photo` | `users:write` | Set the profile photo |
 | `DELETE` | `/api/v1/users/{username}/photo` | `users:write` | Remove the profile photo |
@@ -171,6 +173,7 @@ Permission: `users:read`
 |---|---|---|---|
 | `limit` | query | no | Page size (default 100, at most 500). |
 | `offset` | query | no | Rows to skip. |
+| `q` | query | no | Filter by name, UPN, username or email (substring, case-insensitive). |
 
 Response `200`:
 
@@ -483,6 +486,47 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
+### `GET /api/v1/users/{username}/devices`
+
+List remembered (trusted) devices.
+
+`id` is the hash of the device cookie - enough to revoke one, useless for signing in.
+
+Permission: `users:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `devices` | object[] | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/users/{username}/devices/{id}`
+
+Forget a remembered device.
+
+Permission: `users:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `username` | path | yes | The username (the UPN's local part, unique across every domain). |
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
 ### `GET /api/v1/users/{username}/photo`
 
 Get the profile photo.
@@ -631,6 +675,10 @@ Errors: `400`, `401`, `403`, `409` (`{ "error", "message" }`).
 List groups.
 
 Permission: `groups:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `q` | query | no | Filter by name or description (substring, case-insensitive). |
 
 Response `200`:
 
@@ -2254,9 +2302,10 @@ The read-only LDAP interface: app registrations and directory settings.
 |---|---|---|---|
 | `GET` | `/api/v1/ldap/apps` | `ldap:read` | List LDAP apps |
 | `POST` | `/api/v1/ldap/apps` | `ldap:write` | Create or update an LDAP app (upsert by slug) |
+| `GET` | `/api/v1/ldap/apps/{slug}` | `ldap:read` | Read an LDAP app |
+| `DELETE` | `/api/v1/ldap/apps/{slug}` | `ldap:write` | Revoke an LDAP app |
 | `POST` | `/api/v1/ldap/apps/{slug}/rotate` | `ldap:write` | Rotate an app's bind secret |
 | `POST` | `/api/v1/ldap/apps/{slug}/reveal` | `ldap:write` | Reveal an app's current bind secret |
-| `DELETE` | `/api/v1/ldap/apps/{slug}` | `ldap:write` | Revoke an LDAP app |
 | `GET` | `/api/v1/ldap/settings` | `ldap:read` | Read the LDAP settings |
 | `POST` | `/api/v1/ldap/settings` | `ldap:write` | Update the LDAP settings |
 
@@ -2299,6 +2348,57 @@ Response `200`:
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
+### `GET /api/v1/ldap/apps/{slug}`
+
+Read an LDAP app.
+
+Permission: `ldap:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+`LdapApp`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `slug` | string | yes |  |
+| `name` | string | yes |  |
+| `secret_prefix` | string | yes |  |
+| `user_groups` | array \| null | yes |  |
+| `exposed_groups` | array \| null | yes |  |
+| `mfa_mode` | "password" \| "otp_if_enrolled" \| "otp_required" | yes |  |
+| `include_disabled` | boolean | yes |  |
+| `revoked` | boolean | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `DELETE /api/v1/ldap/apps/{slug}`
+
+Revoke an LDAP app.
+
+Sets revoked_at; binds and searches fail immediately. Idempotent.
+
+Permission: `ldap:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `slug` | path | yes | slug |
+
+Response `200`:
+
+`Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
 ### `POST /api/v1/ldap/apps/{slug}/rotate`
 
 Rotate an app's bind secret.
@@ -2339,28 +2439,6 @@ Response `200`:
 | `ok` | true | yes |  |
 
 Errors: `400`, `401`, `403`, `404`, `409` (`{ "error", "message" }`).
-
-### `DELETE /api/v1/ldap/apps/{slug}`
-
-Revoke an LDAP app.
-
-Sets revoked_at; binds and searches fail immediately. Idempotent.
-
-Permission: `ldap:write`
-
-| Parameter | In | Required | Description |
-|---|---|---|---|
-| `slug` | path | yes | slug |
-
-Response `200`:
-
-`Ok`:
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `ok` | true | yes |  |
-
-Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ### `GET /api/v1/ldap/settings`
 
@@ -3698,6 +3776,7 @@ Password, session, rate-limit and audit settings; authentication policies and fa
 | `PUT` | `/api/v1/security/require-mfa` | `security:write` | Require a second factor for everyone (legacy switch) |
 | `GET` | `/api/v1/security/policies` | `security:read` | List authentication policies |
 | `POST` | `/api/v1/security/policies` | `security:write` | Create an authentication policy |
+| `GET` | `/api/v1/security/policies/{id}` | `security:read` | Read an authentication policy |
 | `PATCH` | `/api/v1/security/policies/{id}` | `security:write` | Update an authentication policy |
 | `DELETE` | `/api/v1/security/policies/{id}` | `security:write` | Delete an authentication policy |
 | `GET` | `/api/v1/security/factors` | `security:read` | List second factors |
@@ -4060,6 +4139,34 @@ Response `201`:
 | `max_risk` | string | yes |  |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `GET /api/v1/security/policies/{id}`
+
+Read an authentication policy.
+
+Permission: `security:read`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Response `200`:
+
+`AuthPolicy`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `name` | string | yes |  |
+| `description` | string | yes |  |
+| `requirement` | "password" \| "mfa" | yes |  |
+| `priority` | number | yes |  |
+| `is_default` | boolean | yes |  |
+| `groups` | string[] | yes |  |
+| `device_cert` | boolean | yes |  |
+| `max_risk` | string | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 ### `PATCH /api/v1/security/policies/{id}`
 

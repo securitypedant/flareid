@@ -116,6 +116,22 @@ defineRoute(
 
 defineRoute(
   {
+    method: "get",
+    path: "/api/v1/ldap/apps/{slug}",
+    tag: "LDAP",
+    permission: "ldap:read",
+    summary: "Read an LDAP app",
+    errors: [404],
+    response: AppSchema,
+  },
+  async (c) => {
+    const app = await getLdapAppBySlug(c.env, param(c, "slug").toLowerCase());
+    return app ? c.json(await appJson(c.env, app)) : notFound(c, `No LDAP app "${param(c, "slug")}".`);
+  }
+);
+
+defineRoute(
+  {
     method: "post",
     path: "/api/v1/ldap/apps",
     tag: "LDAP",
