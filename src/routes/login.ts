@@ -43,7 +43,7 @@ import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { isSuperAdmin } from "../lib/middleware.js";
 import { logAudit } from "../lib/audit.js";
 import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt, recordRateAttempt } from "../lib/rate-limit.js";
-import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
+import { hasUnusedBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { isDeviceTrusted, trustDevice } from "../lib/trusted-devices.js";
 
 export const login = new Hono<{ Bindings: Env }>();
@@ -80,9 +80,10 @@ function dummyPasswordHash(env: Env, hasher?: "scrypt" | "pbkdf2"): Promise<Stor
 
 /** The second-step methods this user can use now: enrolled, and switched on by the administrator. */
 async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
-  const [totpOn, passkeyOn, emailOtp, securityQuestions, admin] = await Promise.all([
+  const [totpOn, passkeyOn, backupOn, emailOtp, securityQuestions, admin] = await Promise.all([
     isFactorEnabled(env, "totp"),
     isFactorEnabled(env, "passkey"),
+    isFactorEnabled(env, "backup_codes"),
     userHasEmailOtp(env, user),
     userHasSecurityQuestions(env, user),
     isAdministrator(env, user.id),
@@ -90,6 +91,7 @@ async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
   return {
     totp: Boolean(user.mfa_enabled) && totpOn,
     passkey: passkeyOn && (await userHasPasskey(env, user.id)),
+    backupCodes: backupOn && (await hasUnusedBackupCodes(env, user.id)),
     emailOtp,
     // Never offered to an administrator: too weak to be their second factor.
     securityQuestions: securityQuestions && !admin,
@@ -346,8 +348,8 @@ login.post("/login", async (c) => {
   // remembered); otherwise email codes or security questions when enrolled;
   // otherwise a passkey when the user's policy needs a second factor.
   const factors = await secondStepFactors(c.env, user);
-  const { totp, passkey, emailOtp, securityQuestions } = factors;
-  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : emailOtp || securityQuestions || (passkey && (await mfaRequiredFor(c.env, user.id)));
+  const { totp, passkey, backupCodes, emailOtp, securityQuestions } = factors;
+  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : backupCodes || emailOtp || securityQuestions || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId, appearance.locale);
     // Identified now: the second step wears the person's brand (in the same language).
@@ -494,7 +496,8 @@ login.post("/login/mfa", async (c) => {
   // as a failure - the claim only lands while the stored counter is lower.
   const counter = await matchTotpCounter((await unsealMaybe(c.env, user.totp_secret)) ?? "", code);
   if (counter === null || !(await claimTotpCounter(c.env, user.id, counter))) {
-    const validBackupCode = await verifyAndConsumeBackupCode(c.env, user.id, code);
+    // The authenticator field takes a backup code too - while that factor is on.
+    const validBackupCode = factors.backupCodes && (await verifyAndConsumeBackupCode(c.env, user.id, code));
     if (!validBackupCode) {
       await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
       return c.html(mfaForm(mfaId, appearance, fieldMsg("mfa.error.incorrectCode"), { ...(await secondStepFactors(c.env, user)), totp: true }));
@@ -519,6 +522,59 @@ login.post("/login/mfa", async (c) => {
     c.header("Set-Cookie", deviceCookie, { append: true });
     await logAudit(c.env, user, "user.device_trusted", user.upn, undefined, c.req.raw);
   }
+
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") {
+    return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  }
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
+});
+
+// The second step for someone whose second factor is a backup-code set. The
+// authenticator field accepts codes too; this route is what a person without
+// an authenticator (or with that factor off) submits to.
+login.post("/login/mfa/backup-code", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const code = String(body.code ?? "");
+  const ip = getClientIp(c.req.raw);
+
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const factors = await secondStepFactors(c.env, user);
+  if (!factors.backupCodes) {
+    return renderAuthMessage(c, 400, { title: msg("mfa.notSetUp.title"), message: msg("mfa.notSetUp.message") }, { locale: pending.locale });
+  }
+  const appearance = await loginAppearance(c, { userId: pending.userId, locale: pending.locale });
+
+  if (await recordMfaAttempt(c.env, user.id, ip)) {
+    await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip }, c.req.raw);
+    return c.html(mfaForm(mfaId, appearance, msg("common.tooManyAttempts"), factors));
+  }
+
+  if (!(await verifyAndConsumeBackupCode(c.env, user.id, code))) {
+    await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip }, c.req.raw);
+    return c.html(mfaForm(mfaId, appearance, fieldMsg("mfa.error.incorrectCode"), factors));
+  }
+
+  await clearMfaAttempts(c.env, user.id, ip);
+  await logAudit(c.env, user, "login.mfa_backup_code_used", user.upn, undefined, c.req.raw);
+
+  const flow = await getLoginFlow(c.env, pending.flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+
+  await deletePendingMfa(c.env, mfaId);
+  await deleteLoginFlow(c.env, pending.flowId);
+
+  const amr = ["pwd", "mfa", "backup_code"];
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
 
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
   if (outcome.type === "saml-post") {

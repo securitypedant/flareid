@@ -154,7 +154,7 @@ export async function saveRequireMfa(ctx: ServiceCtx, required: boolean): Promis
       throw new ServiceError(400, "At least one second factor must be on before one can be required.");
     }
     if (!(await Promise.all(ADMIN_FACTORS.map((k) => isFactorUsable(ctx.env, k)))).some(Boolean)) {
-      throw new ServiceError(400, "Administrators would need a second factor, but none they may use is on: keep the authenticator app, passkeys or email codes on.");
+      throw new ServiceError(400, "Administrators would need a second factor, but none they may use is on: keep the authenticator app, passkeys, backup codes or email codes on.");
     }
   }
   await setMfaRequired(ctx.env, required);
@@ -164,7 +164,7 @@ export async function saveRequireMfa(ctx: ServiceCtx, required: boolean): Promis
 /**
  * Turning a factor off is refused while a policy requires a second factor and
  * it is the last one on - or, while a policy requires one of an administrator,
- * the last of the authenticator app, passkeys and email codes.
+ * the last of the authenticator app, passkeys, backup codes and email codes.
  */
 export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean): Promise<void> {
   if (!isFactorKey(key)) throw new ServiceError(400, "Unknown factor.");
@@ -190,7 +190,7 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
     if ((ADMIN_FACTORS as readonly string[]).includes(key)) {
       const adminUsable = await Promise.all(ADMIN_FACTORS.filter((k) => k !== key).map((k) => isFactorUsable(ctx.env, k)));
       if (!adminUsable.some(Boolean) && (await anyAdminUnderMfaPolicy(ctx.env))) {
-        throw new ServiceError(400, "A policy requires administrators to use a second factor: keep the authenticator app, passkeys or email codes on.");
+        throw new ServiceError(400, "A policy requires administrators to use a second factor: keep the authenticator app, passkeys, backup codes or email codes on.");
       }
     }
   }

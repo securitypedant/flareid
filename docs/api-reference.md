@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.7.0.
+API version 4.8.0.
 
 ## Contents
 
@@ -4251,13 +4251,13 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Turn a second factor on or off.
 
-At least one factor must stay on while a policy requires a second factor, and one of totp, passkey and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
+At least one factor must stay on while a policy requires a second factor, and one of totp, passkey, backup_codes and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
 
 Permission: `security:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "totp" \\| "passkey" \\| "email_otp" \\| "security_questions" |
+| `key` | path | yes | "totp" \\| "passkey" \\| "backup_codes" \\| "email_otp" \\| "security_questions" |
 
 Request body:
 

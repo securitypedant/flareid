@@ -418,6 +418,7 @@ export function sendLoginForm(c: Context<{ Bindings: Env }>, flowId: string, app
 export interface MfaFactors {
   totp: boolean;
   passkey: boolean;
+  backupCodes?: boolean;
   emailOtp?: boolean;
   securityQuestions?: boolean;
 }
@@ -481,6 +482,15 @@ export function mfaForm(
     </form>`
       : "";
   const orTotp = factors.totp ? `<p class="auth-alt muted">${tx("mfa.totp.or")}</p>${totpForm(false)}` : "";
+  // The backup-code field posts to its own route; while the authenticator is
+  // offered its field takes a code too, so a second one is not rendered then.
+  const backupForm = (primary: boolean) => `<form method="POST" action="/login/mfa/backup-code">
+      <input type="hidden" name="mfa_id" value="${id}" />
+      <label for="backup_code">${tx("mfa.backup.label")}</label>
+      <input type="text" id="backup_code" name="code" maxlength="12" required ${primary ? "autofocus" : ""} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"${errors.attrs("backup_code", { primary })} />
+      <div class="row"><button class="${primary ? "primary" : "secondary"}" type="submit">${tx("common.verify")}</button></div>
+    </form>`;
+  const backupAlt = factors.backupCodes && !factors.totp ? `<p class="auth-alt muted">${tx("mfa.backup.or")}</p>${backupForm(false)}` : "";
 
   // A code is on its way: entering it is the main action.
   if (factors.emailOtp && email.sent) {
@@ -500,6 +510,7 @@ export function mfaForm(
     </form>
     ${sendForm("mfa.email.resend", false)}
     ${orTotp}
+    ${backupAlt}
     ${kbaButton(false)}
     ${passkey}`);
   }
@@ -522,6 +533,7 @@ export function mfaForm(
       <div class="row"><button class="primary" type="submit">${tx("common.verify")}</button></div>
     </form>
     ${orTotp}
+    ${backupAlt}
     ${factors.emailOtp ? sendForm("mfa.email.send", false) : ""}
     ${passkey}`);
   }
@@ -548,6 +560,7 @@ export function mfaForm(
     <p class="sub">${tx("mfa.email.intro")}</p>
     ${errors.html}
     ${sendForm("mfa.email.send", true)}
+    ${backupAlt}
     ${kbaButton(false)}
     ${passkey}`);
   }
@@ -558,6 +571,16 @@ export function mfaForm(
     <p class="sub">${tx("mfa.kba.only")}</p>
     ${errors.html}
     ${kbaButton(true)}
+    ${backupAlt}
+    ${passkey}`);
+  }
+
+  if (factors.backupCodes) {
+    return authPage(title("mfa.heading"), appearance, `
+    <h1>${tx("mfa.heading")}</h1>
+    <p class="sub">${tx("mfa.backup.intro")}</p>
+    ${errors.html}
+    ${backupForm(true)}
     ${passkey}`);
   }
 
@@ -565,6 +588,7 @@ export function mfaForm(
     <h1>${tx("mfa.heading")}</h1>
     <p class="sub">${tx("mfa.passkey.intro")}</p>
     ${errors.html}
+    ${factors.backupCodes ? backupForm(false) : ""}
     ${passkey}`);
 }
 

@@ -4,6 +4,30 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.8.0] - 2026-11-24
+
+Backup codes become a first-class second factor, independent of the
+authenticator app.
+
+- **A `backup_codes` factor.** Listed and toggleable under **Security →
+  Factors** like any other, counting toward "password + second factor"
+  policies and the administrator factor requirement. `hasSecondFactor` now
+  honours a user whose only factor is a set of unused codes.
+- **Enrolment and removal on My account.** The Security page gains a backup-
+  codes card for users without a set; generating requires the usual
+  fresh-session/password step-up and appends `backup_codes` to the session's
+  `amr`. Users can remove their set (also step-up gated). Forced enrolment
+  (`/account/mfa/setup`) offers codes alongside the authenticator app and
+  passkeys.
+- **Sign-in.** A password sign-in by a codes-only user now gets a second
+  step; a dedicated `/login/mfa/backup-code` challenge verifies and consumes
+  one code and records `backup_code` in `amr`. Inside an authenticator-app
+  challenge, backup codes stay available as the fallback - now gated on the
+  factor switch rather than TOTP enrolment.
+- **Surfaces.** Admin user list/detail report `has_backup_codes`; the users
+  API exposes it in `second_factors`; the factor enum accepts
+  `backup_codes` for `PATCH /api/v1/factors/{key}`.
+
 ## [4.7.0] - 2026-11-24
 
 One attribute-mapping model everywhere: every inbound and outbound flow is

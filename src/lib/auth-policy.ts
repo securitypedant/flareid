@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import { getUserGroupNames } from "./db.js";
 import { isEmailConfigured } from "./email.js";
+import { hasUnusedBackupCodes } from "./backup-codes.js";
 import { getSetting, setSetting } from "./settings.js";
 
 /**
@@ -33,8 +34,9 @@ export interface AuthPolicyRow {
 }
 
 export const FACTORS = [
-  { key: "totp", label: "Authenticator app", description: "Six-digit codes from an app such as 1Password, Google Authenticator or Authy, with single-use backup codes.", available: true },
+  { key: "totp", label: "Authenticator app", description: "Six-digit codes from an app such as 1Password, Google Authenticator or Authy.", available: true },
   { key: "passkey", label: "Passkeys", description: "WebAuthn credentials on a device or security key. Multi-factor on their own, and can replace the password.", available: true },
+  { key: "backup_codes", label: "Backup codes", description: "Single-use codes the user generates and keeps somewhere safe. Enrolling an authenticator app issues a set too; a set on its own is a second factor.", available: true },
   { key: "email_otp", label: "Email one-time code", description: "A six-digit code sent to the user's email address, using the Sign-in code email template. Needs email to be configured.", available: true },
   {
     key: "security_questions",
@@ -44,8 +46,8 @@ export const FACTORS = [
     available: true,
   },
 ] as const;
-export type FactorKey = "totp" | "passkey" | "email_otp" | "security_questions";
-export const FACTOR_KEYS: readonly FactorKey[] = ["totp", "passkey", "email_otp", "security_questions"];
+export type FactorKey = "totp" | "passkey" | "backup_codes" | "email_otp" | "security_questions";
+export const FACTOR_KEYS: readonly FactorKey[] = ["totp", "passkey", "backup_codes", "email_otp", "security_questions"];
 
 export function isFactorKey(key: string): key is FactorKey {
   return (FACTOR_KEYS as readonly string[]).includes(key);
@@ -74,7 +76,7 @@ export async function isFactorUsable(env: Env, key: FactorKey): Promise<boolean>
 }
 
 /** Short names for a factor a person has enrolled (lists, status lines). */
-export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authenticator app", passkey: "Passkey", email_otp: "Email codes", security_questions: "Security questions" };
+export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authenticator app", passkey: "Passkey", backup_codes: "Backup codes", email_otp: "Email codes", security_questions: "Security questions" };
 
 /**
  * What "has a second factor" means wherever it is counted, filtered or shown:
@@ -83,25 +85,27 @@ export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authentic
  * sign-in's business, not the directory's). SQL for a users row named `alias`.
  */
 export const hasPasskeySql = (alias: string) => `EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id = ${alias}.id)`;
+export const hasBackupCodesSql = (alias: string) => `EXISTS (SELECT 1 FROM mfa_backup_codes b WHERE b.user_id = ${alias}.id AND b.used_at IS NULL)`;
 export const anySecondFactorSql = (alias: string) =>
-  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)})`;
+  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)} OR ${hasBackupCodesSql(alias)})`;
 
 /** The factors a user row has enrolled, in FACTOR_KEYS order; `has_passkey` comes from hasPasskeySql. */
-export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean }): FactorKey[] {
-  const on: Record<FactorKey, boolean> = { totp: Boolean(u.mfa_enabled), passkey: Boolean(u.has_passkey), email_otp: Boolean(u.email_otp_enabled), security_questions: Boolean(u.security_questions_enabled) };
+export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean; has_backup_codes: number | boolean }): FactorKey[] {
+  const on: Record<FactorKey, boolean> = { totp: Boolean(u.mfa_enabled), passkey: Boolean(u.has_passkey), backup_codes: Boolean(u.has_backup_codes), email_otp: Boolean(u.email_otp_enabled), security_questions: Boolean(u.security_questions_enabled) };
   return FACTOR_KEYS.filter((k) => on[k]);
 }
 
-/** How many users have each factor enrolled (passkeys: users with at least one). */
+/** How many users have each factor enrolled (passkeys and backup codes: users with at least one). */
 export async function factorEnrolmentCounts(env: Env): Promise<Record<string, number>> {
-  const [totp, passkey, email, kba] = await env.DB.batch([
+  const [totp, passkey, backup, email, kba] = await env.DB.batch([
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
     env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials"),
+    env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM mfa_backup_codes WHERE used_at IS NULL"),
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE email_otp_enabled = 1"),
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE security_questions_enabled = 1"),
   ]);
   const n = (r: D1Result | undefined) => (r!.results[0] as { n: number }).n;
-  return { totp: n(totp), passkey: n(passkey), email_otp: n(email), security_questions: n(kba) };
+  return { totp: n(totp), passkey: n(passkey), backup_codes: n(backup), email_otp: n(email), security_questions: n(kba) };
 }
 
 /** Users with any second factor (anySecondFactorSql), and with each one, in one pass over users. */
@@ -111,10 +115,11 @@ export async function secondFactorCounts(env: Env): Promise<{ any: number } & Re
             COALESCE(SUM(u.mfa_enabled = 1), 0) AS totp,
             COALESCE(SUM(${hasPasskeySql("u")}), 0) AS passkey,
             COALESCE(SUM(u.email_otp_enabled = 1), 0) AS email_otp,
-            COALESCE(SUM(u.security_questions_enabled = 1), 0) AS security_questions
+            COALESCE(SUM(u.security_questions_enabled = 1), 0) AS security_questions,
+            COALESCE(SUM(${hasBackupCodesSql("u")}), 0) AS backup_codes
        FROM users u`
-  ).first<{ any_factor: number; totp: number; passkey: number; email_otp: number; security_questions: number }>();
-  return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, email_otp: row?.email_otp ?? 0, security_questions: row?.security_questions ?? 0 };
+  ).first<{ any_factor: number; totp: number; passkey: number; email_otp: number; security_questions: number; backup_codes: number }>();
+  return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, backup_codes: row?.backup_codes ?? 0, email_otp: row?.email_otp ?? 0, security_questions: row?.security_questions ?? 0 };
 }
 
 export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[] })[]> {
@@ -155,11 +160,12 @@ export async function isAdministrator(env: Env, userId: number): Promise<boolean
 }
 
 /** The second factors strong enough for administrators when their policy needs one: everything but security questions. */
-export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "email_otp"];
+export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "backup_codes", "email_otp"];
 
 /** Whether the user has a second factor enrolled that the instance currently accepts. */
 export async function hasSecondFactor(env: Env, user: SecondFactorUser, opts: { admin?: boolean } = {}): Promise<boolean> {
   if (user.mfa_enabled && (await isFactorEnabled(env, "totp"))) return true;
+  if ((await hasUnusedBackupCodes(env, user.id)) && (await isFactorEnabled(env, "backup_codes"))) return true;
   if (user.email_otp_enabled && (await isFactorUsable(env, "email_otp"))) return true;
   // Security questions are too weak to be an administrator's only second factor.
   if (!opts.admin && user.security_questions_enabled && (await isFactorUsable(env, "security_questions"))) return true;

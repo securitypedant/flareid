@@ -545,7 +545,7 @@ describe("TOTP replay guard", () => {
     expect(next.headers.get("Set-Cookie")).toContain("flareid_session");
   });
 
-  it("a disabled TOTP factor stops authorizing sign-ins, backup codes included", async () => {
+  it("a disabled factor stops authorizing sign-ins - TOTP and backup codes each on their own switch", async () => {
     const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
     const upn = `petra@${domain}`;
     await importUser(apiKey, { username: "petra", password: USER_PASSWORD, status: "active" });
@@ -558,22 +558,32 @@ describe("TOTP replay guard", () => {
     const { setFactorEnabled } = await import("../src/lib/auth-policy.js");
     await setFactorEnabled(env, "totp", false);
 
-    const tryCode = async (code: string) => {
+    const tryCode = async (code: string, route = "/login/mfa") => {
       const flowId = await getFlowId("/login");
       const pw = await postLogin({ flowId, upn, password: USER_PASSWORD });
       const mfaId = /name="mfa_id" value="([^"]+)"/.exec(await pw.text())?.[1] ?? "";
-      return SELF.fetch(`${BASE}/login/mfa`, {
+      return SELF.fetch(`${BASE}${route}`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE },
         body: new URLSearchParams({ mfa_id: mfaId, code }).toString(),
         redirect: "manual",
       });
     };
+    // The authenticator route refuses a TOTP code and a backup code alike.
     for (const code of [await totp(secret), backup!]) {
       const res = await tryCode(code);
       expect(res.headers.get("Set-Cookie")).toBeNull();
       expect(res.status).toBe(400);
     }
+    // Backup codes are their own factor now: the authenticator being off no
+    // longer stops them - their own switch does that.
+    const codes = await generateBackupCodes(env, uid);
+    const ok = await tryCode(codes[0]!, "/login/mfa/backup-code");
+    expect(ok.headers.get("Set-Cookie")).toContain("flareid_session");
+    await setFactorEnabled(env, "backup_codes", false);
+    const refused = await tryCode(codes[1]!, "/login/mfa/backup-code");
+    expect(refused.headers.get("Set-Cookie")).toBeNull();
+    expect(refused.status).toBe(400);
     // Re-enabling restores sign-in.
     await setFactorEnabled(env, "totp", true);
     expect((await mfaLogin(upn, secret)).headers.get("Set-Cookie")).toContain("flareid_session");

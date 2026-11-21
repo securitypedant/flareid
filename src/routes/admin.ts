@@ -2,7 +2,7 @@ import { accountScope, EMAIL_OTP_MINUTES, maskEmail, sendEmailOtp, userHasEmailO
 import { recordRateAttempt } from "../lib/rate-limit.js";
 import { verifyPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
-import { verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
+import { hasUnusedBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { userHasPasskey } from "../lib/auth-policy.js";
 import { isFreshlyAuthenticated, isSensitive, markSteppedUp, stashPendingAction, STEP_UP_WINDOW_MINUTES, takePendingAction } from "../lib/step-up.js";
 import { authenticationOptions, finishAuthentication } from "../lib/passkeys.js";
@@ -10,7 +10,7 @@ import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRoleWriteMap, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasBackupCodesSql, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts } from "../lib/metrics.js";
 import { Hono, type Context, type Next } from "hono";
@@ -920,7 +920,7 @@ admin.get("/admin", async (c) => {
             attr("Active sessions", activeSessions),
             attr("MFA enrolled", `${mfaEnrolled} of ${users}`),
             attr("MFA coverage", users ? `${Math.round((mfaEnrolled / users) * 100)}%` : "—"),
-            attr("By factor", (["totp", "passkey", "email_otp", "security_questions"] as const).map((f) => `${FACTOR_SHORT_LABELS[f]} ${stats.second_factors[f]}`).join(" · ")),
+            attr("By factor", (["totp", "passkey", "backup_codes", "email_otp", "security_questions"] as const).map((f) => `${FACTOR_SHORT_LABELS[f]} ${stats.second_factors[f]}`).join(" · ")),
             attr("Failed sign-ins (30d)", failedTotal),
           ])}
           <div style="margin-top:14px;"><a href="/admin/log">View the full log</a></div>
@@ -1102,7 +1102,7 @@ admin.get("/admin/users", async (c) => {
 
   const batchResults = await c.env.DB.batch([
     c.env.DB.prepare(`SELECT COUNT(*) as n FROM users ${whereClause}`).bind(...params),
-    c.env.DB.prepare(`SELECT *, ${hasPasskeySql("users")} AS has_passkey FROM users ${whereClause} ORDER BY display_name LIMIT ? OFFSET ?`).bind(
+    c.env.DB.prepare(`SELECT *, ${hasPasskeySql("users")} AS has_passkey, ${hasBackupCodesSql("users")} AS has_backup_codes FROM users ${whereClause} ORDER BY display_name LIMIT ? OFFSET ?`).bind(
       ...params,
       pageSize,
       (page - 1) * pageSize
@@ -1161,7 +1161,7 @@ admin.get("/admin/users", async (c) => {
         <table>
           <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th><th>Schema</th><th style="width:40px;"></th></tr></thead>
           <tbody>
-            ${(users as (UserRow & { has_passkey: number })[])
+            ${(users as (UserRow & { has_passkey: number; has_backup_codes: number })[])
               .map(
                 (u) => `<tr>
                   <td><a href="/admin/users/${u.id}">${avatar(u.id, u.display_name, "sm", { upn: u.upn })}${escapeHtml(u.display_name)}</a></td>
@@ -1555,7 +1555,7 @@ admin.get("/admin/users/:id", async (c) => {
   const isSelf = id === c.get("user").id;
   // What Reset MFA clears (passkeys are removed one by one, below).
   const anyMfa = Boolean(user.mfa_enabled || user.email_otp_enabled || user.security_questions_enabled);
-  const factors = enrolledFactors({ ...user, has_passkey: await userHasPasskey(c.env, id) });
+  const factors = enrolledFactors({ ...user, has_passkey: await userHasPasskey(c.env, id), has_backup_codes: await hasUnusedBackupCodes(c.env, id) });
   const userIsAdmin = await isAdministrator(c.env, id);
   // An administrator's security questions are not a second factor they can use.
   const countedFactors = userIsAdmin ? factors.filter((f) => f !== "security_questions") : factors;
@@ -6132,7 +6132,7 @@ admin.get("/admin/security/factors", async (c) => {
     }
     if (key === "security_questions") {
       return `<br /><span class="muted">People set ${kba.required} and are asked ${kba.asked} at sign-in. <a href="/admin/security/factors/security-questions">Questions and settings</a></span>${
-        on.get(key) ? `<br /><span class="muted"><strong>Recommended: keep a stronger factor on as well (authenticator app, passkeys or email codes) and encourage people to enrol one; security questions alone are easy to guess or research.</strong></span>` : ""
+        on.get(key) ? `<br /><span class="muted"><strong>Recommended: keep a stronger factor on as well (authenticator app, passkeys, backup codes or email codes) and encourage people to enrol one; security questions alone are easy to guess or research.</strong></span>` : ""
       }`;
     }
     return "";
@@ -6144,7 +6144,7 @@ admin.get("/admin/security/factors", async (c) => {
       `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
         <p class="muted" style="margin-top:0;">The second-factor methods people can enrol and sign in with. A password is always available; turning a factor off stops it counting toward a policy and hides its enrolment.
-          Security questions never count for an administrator, so while a <a href="/admin/security/policies">policy</a> requires an administrator to use a second factor, one of the authenticator app, passkeys and email codes stays on.</p>
+          Security questions never count for an administrator, so while a <a href="/admin/security/policies">policy</a> requires an administrator to use a second factor, one of the authenticator app, passkeys, backup codes and email codes stays on.</p>
         <table><thead><tr><th>Factor</th><th>Enrolled users</th><th>Status</th><th></th></tr></thead><tbody>
           <tr><td><strong>Password</strong><br /><span class="muted">Always on; rules are under Security &rarr; Settings.</span></td><td>&mdash;</td><td><span class="badge badge-active">On</span></td><td></td></tr>
           ${FACTORS.map((f) =>
@@ -6170,7 +6170,7 @@ admin.get("/admin/security/factors/security-questions", async (c) => {
       "Security questions",
       `${c.req.query("saved") ? successBanner("Saved.") : ""}${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        <p class="muted" style="margin-top:0;">Security questions are <strong>${on ? "on" : "off"}</strong> (switched under <a href="/admin/security/factors">Factors</a>). They are the weakest second factor: answers can often be guessed, looked up or phished. Prefer the authenticator app, passkeys or email codes, and if you use questions, keep one of those on too. Answers are normalised (case, spacing, Unicode) and stored hashed like passwords; nobody can read them back. A sign-in with security questions never counts as the step-up re-authentication Super Admins need for sensitive console actions.</p>
+        <p class="muted" style="margin-top:0;">Security questions are <strong>${on ? "on" : "off"}</strong> (switched under <a href="/admin/security/factors">Factors</a>). They are the weakest second factor: answers can often be guessed, looked up or phished. Prefer the authenticator app, passkeys, backup codes or email codes, and if you use questions, keep one of those on too. Answers are normalised (case, spacing, Unicode) and stored hashed like passwords; nobody can read them back. A sign-in with security questions never counts as the step-up re-authentication Super Admins need for sensitive console actions.</p>
         <h2>Settings</h2>
         <form method="POST" action="/admin/security/factors/security-questions/settings">
           <div class="form-grid">

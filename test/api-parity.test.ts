@@ -186,6 +186,8 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   "POST /account/mfa/questions": "security-question enrolment",
   "POST /account/mfa/questions/remove": "partial factor self-management; admin reset-mfa covers recovery",
   "POST /account/mfa/backup-codes/regenerate": "credential self-management; admin reset-mfa covers recovery",
+  "POST /account/mfa/backup-codes/generate": "codes are shown to their owner once; admin reset-mfa covers recovery",
+  "POST /account/backup-codes/remove": "partial factor self-management; admin reset-mfa covers recovery",
 };
 
 /**

@@ -267,6 +267,7 @@ describe("security questions", () => {
 
     // Questions are never left as the only factor while the (default) policy requires one of an administrator.
     expect((await post("/admin/security/factors/totp", { enabled: "0" }, adminCookie)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await post("/admin/security/factors/backup_codes", { enabled: "0" }, adminCookie)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await post("/admin/security/factors/passkey", { enabled: "0" }, adminCookie)).headers.get("Location")).toContain("error=A%20policy%20requires%20administrators%20to%20use%20a%20second%20factor");
     // Questions can go while passkeys stay; once switched off, they no longer count.
     expect((await factor(adminCookie, false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");

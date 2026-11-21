@@ -96,6 +96,7 @@ describe("authentication policies", () => {
 
     const off = (k: string) => SELF.fetch(`${BASE}/admin/security/factors/${k}`, { method: "POST", headers: { ...FORM, Cookie: adminCookie }, body: "enabled=0", redirect: "manual" });
     expect((await off("totp")).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await off("backup_codes")).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await off("passkey")).headers.get("Location")).toContain("error=");
     expect(await (await SELF.fetch(`${BASE}/admin/security/factors`, { headers: { Cookie: adminCookie } })).text()).toContain("Security questions");
   });
@@ -340,6 +341,7 @@ describe("administrators follow their policy: secure by default, but changeable"
 
     expect((await toggle("passkey", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await toggle("email_otp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await toggle("backup_codes", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     const refused = await toggle("totp", false);
     expect(refused.headers.get("Location")).toContain("error=A%20policy%20requires%20administrators%20to%20use%20a%20second%20factor");
     expect((await apiCall("/api/v1/security/factors/totp", { token: apiKey, method: "PUT", body: { enabled: false } })).status).toBe(400);

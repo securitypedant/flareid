@@ -247,9 +247,10 @@ describe("email one-time codes", () => {
     const done = await post(email, "/login/mfa/email", { mfa_id: mfaId!, code: email.lastCode() });
     expect(done.headers.get("Location")).toBe("/account");
 
-    // The last-factor guard counts email codes: TOTP and passkeys can go while they are on...
+    // The last-factor guard counts email codes: TOTP, passkeys and backup codes can go while they are on...
     expect((await factor(email, adminCookie, "totp", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     expect((await factor(email, adminCookie, "passkey", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
+    expect((await factor(email, adminCookie, "backup_codes", false)).headers.get("Location")).toBe("/admin/security/factors?saved=1");
     // ...but they cannot be the last one switched off.
     expect((await factor(email, adminCookie, "email_otp", false)).headers.get("Location")).toContain("error=");
     // And once switched off, they no longer count: enrolment is needed again.

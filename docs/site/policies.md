@@ -31,8 +31,9 @@ Turn factors on or off under **Security → Factors**:
 
 | Factor | Notes |
 |---|---|
-| **Authenticator app** | Six-digit codes from an app such as 1Password, Google Authenticator or Authy. Comes with backup codes. |
+| **Authenticator app** | Six-digit codes from an app such as 1Password, Google Authenticator or Authy. |
 | **Passkeys** | Face ID, Touch ID, Windows Hello or a security key. Counts as both factors. |
+| **Backup codes** | Single-use recovery codes shown once and stored as hashes. A user can hold them on their own or next to other factors. |
 | **Email one-time code** | A six-digit code by email. Needs [email](email.md). Off by default. |
 | **Security questions** | The weakest option. Never accepted for administrators. Off by default. |
 

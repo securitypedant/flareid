@@ -49,6 +49,11 @@ export async function verifyAndConsumeBackupCode(env: Env, userId: number, code:
   return result.meta.changes === 1;
 }
 
+/** Whether the user has at least one unused code - what "enrolled" means for the backup_codes factor. */
+export async function hasUnusedBackupCodes(env: Env, userId: number): Promise<boolean> {
+  return Boolean(await env.DB.prepare("SELECT 1 FROM mfa_backup_codes WHERE user_id = ? AND used_at IS NULL LIMIT 1").bind(userId).first());
+}
+
 export async function countRemainingBackupCodes(env: Env, userId: number): Promise<number> {
   const row = await env.DB.prepare("SELECT COUNT(*) as n FROM mfa_backup_codes WHERE user_id = ? AND used_at IS NULL")
     .bind(userId)

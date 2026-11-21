@@ -6,7 +6,8 @@ This page covers what the people in your directory see, so you can support them.
 
 People sign in at `/login` with their username or full UPN and their password, or with a passkey. Depending on their [authentication policy](policies.md), they're then asked for a second factor:
 
-- a code from an authenticator app, or a backup code
+- a code from an authenticator app
+- a single-use backup code
 - a code sent by email
 - answers to their security questions
 
@@ -22,7 +23,7 @@ Everyone can manage their own account at `/account`:
 |---|---|
 | **Account** | Edit the profile fields their schema allows, and upload a photo. |
 | **Applications** | A launchpad of the apps they may use — every app, or only the ones their groups are assigned to when an app restricts access. Each app opens from its card. |
-| **Security** | Change their password; set up an authenticator app, passkeys, email codes or security questions; regenerate backup codes; see active sessions, remembered devices and connected apps, and sign any of them out. |
+| **Security** | Change their password; set up an authenticator app, passkeys, backup codes, email codes or security questions; see active sessions, remembered devices and connected apps, and sign any of them out. |
 | **Groups** | See their groups, request access to groups that allow it, and manage groups they're a [manager](groups.md#group-managers) of. |
 
 ## When someone is locked out

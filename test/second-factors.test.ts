@@ -84,7 +84,7 @@ describe("second factors", () => {
     const stats = (await apiCall("/api/v1/stats", { token: apiKey })).body;
     const html = (await page("/admin", cookie)).html;
     expect(html).toContain(`${stats.counts.mfa_enrolled} of ${stats.counts.users}`);
-    expect(html).toContain(`Passkey 2 · Email codes 1 · Security questions 1`);
+    expect(html).toContain(`Passkey 2 · Backup codes 0 · Email codes 1 · Security questions 1`);
   });
 
   it("the user page and My account name the factors", async () => {
