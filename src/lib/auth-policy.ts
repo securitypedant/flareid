@@ -1,7 +1,6 @@
 import type { Env } from "../env.js";
 import { getUserGroupNames } from "./db.js";
 import { isEmailConfigured } from "./email.js";
-import { hasUnusedBackupCodes } from "./backup-codes.js";
 import { getSetting, setSetting } from "./settings.js";
 
 /**
@@ -36,7 +35,7 @@ export interface AuthPolicyRow {
 export const FACTORS = [
   { key: "totp", label: "Authenticator app", description: "Six-digit codes from an app such as 1Password, Google Authenticator or Authy.", available: true },
   { key: "passkey", label: "Passkeys", description: "WebAuthn credentials on a device or security key. Multi-factor on their own, and can replace the password.", available: true },
-  { key: "backup_codes", label: "Backup codes", description: "Single-use codes the user generates and keeps somewhere safe. Enrolling an authenticator app issues a set too; a set on its own is a second factor.", available: true },
+  { key: "backup_codes", label: "Backup codes", description: "Single-use codes for when the usual method isn't available. Issued when a second factor is set up; each one signs you in once.", available: true },
   { key: "email_otp", label: "Email one-time code", description: "A six-digit code sent to the user's email address, using the Sign-in code email template. Needs email to be configured.", available: true },
   {
     key: "security_questions",
@@ -86,8 +85,10 @@ export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authentic
  */
 export const hasPasskeySql = (alias: string) => `EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id = ${alias}.id)`;
 export const hasBackupCodesSql = (alias: string) => `EXISTS (SELECT 1 FROM mfa_backup_codes b WHERE b.user_id = ${alias}.id AND b.used_at IS NULL)`;
+// Matches hasSecondFactor's enrolment test: a backup-code set alone is not a
+// second factor (it is issued alongside one and stays usable at sign-in).
 export const anySecondFactorSql = (alias: string) =>
-  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)} OR ${hasBackupCodesSql(alias)})`;
+  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)})`;
 
 /** The factors a user row has enrolled, in FACTOR_KEYS order; `has_passkey` comes from hasPasskeySql. */
 export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean; has_backup_codes: number | boolean }): FactorKey[] {
@@ -169,13 +170,18 @@ export async function isAdministrator(env: Env, userId: number): Promise<boolean
   return (await accessFor(env, userId)).isAdmin;
 }
 
-/** The second factors strong enough for administrators when their policy needs one: everything but security questions. */
-export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "backup_codes", "email_otp"];
+/** The second factors strong enough for administrators when their policy needs one: everything but security questions and backup codes (not enrolable). */
+export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "email_otp"];
 
-/** Whether the user has a second factor enrolled that the instance currently accepts. */
+/**
+ * Whether the user has a second factor enrolled that the instance currently
+ * accepts. Backup codes don't count: they're an emergency fallback issued
+ * after a real factor enrols, not an enrolment of their own - a user holding
+ * only codes still owes their policy a real factor (though the codes keep
+ * working at sign-in as the second step).
+ */
 export async function hasSecondFactor(env: Env, user: SecondFactorUser, opts: { admin?: boolean } = {}): Promise<boolean> {
   if (user.mfa_enabled && (await isFactorEnabled(env, "totp"))) return true;
-  if ((await hasUnusedBackupCodes(env, user.id)) && (await isFactorEnabled(env, "backup_codes"))) return true;
   if (user.email_otp_enabled && (await isFactorUsable(env, "email_otp"))) return true;
   // Security questions are too weak to be an administrator's only second factor.
   if (!opts.admin && user.security_questions_enabled && (await isFactorUsable(env, "security_questions"))) return true;

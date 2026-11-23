@@ -1,7 +1,8 @@
-// Backup codes as a first-class factor: standalone enrolment from My account
-// and the forced-enrolment page, the sign-in step, the factor switch and the
-// API surface. The authenticator path issues a set too (tested in
-// admin-feedback and audit-fixes).
+// Backup codes as an emergency fallback: issued when a real factor enrols
+// (the authenticator path is covered in admin-feedback and audit-fixes),
+// usable once each at sign-in, but never an enrolment of their own. Covers
+// the generate/remove guards, the sign-in step, the factor switch and the
+// API surface.
 import { beforeEach, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { apiCall, BASE, bootstrapInstance, resetDatabase } from "./helpers.js";
@@ -48,33 +49,55 @@ async function mfaLogin(upn: string, code: string, route = "/login/mfa/backup-co
   });
 }
 
-describe("backup codes as a factor", () => {
-  it("enrols a standalone set from My account, then satisfies an MFA sign-in once each", async () => {
-    const { cookie, rita } = await setup({ requireMfa: true });
-    const ritaCookie = await cookie("rita");
+describe("backup codes as an emergency factor", () => {
+  it("signs a set-holder in once per code, without counting as an enrolled factor", async () => {
+    const { rita } = await setup({ requireMfa: true });
+    // A codes-only user still owes the policy a real factor...
+    expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("enrol");
+    await generateBackupCodes(env, rita);
     expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("enrol");
 
-    const page = await post("/account/mfa/backup-codes/generate", {}, ritaCookie);
-    expect(page.status).toBe(200);
-    const codes = codesFrom(await page.text());
-    expect(codes).toHaveLength(10);
-    // Generating the first factor ends the "enrol" gate for this user.
-    expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("login");
+    // ...but the codes they hold keep working as the emergency second step.
+    const codes = await env.DB.prepare("SELECT code_hash FROM mfa_backup_codes WHERE user_id = ?").bind(rita).all();
+    expect(codes.results).toHaveLength(10);
+  });
+
+  it("uses each code once at sign-in", async () => {
+    const { rita } = await setup({ requireMfa: true });
+    const codes = await generateBackupCodes(env, rita);
 
     const signIn = await mfaLogin("rita@horizon.test", codes[0]!);
     expect(signIn.headers.get("Set-Cookie")).toContain("flareid_session");
 
-    // Each code works once.
     const replay = await mfaLogin("rita@horizon.test", codes[0]!);
     expect(replay.headers.get("Set-Cookie")).toBeNull();
     const second = await mfaLogin("rita@horizon.test", codes[1]!);
     expect(second.headers.get("Set-Cookie")).toContain("flareid_session");
   });
 
-  it("asks for the password again when the session is not fresh", async () => {
+  it("refuses to mint a first set for a user with no factor, and offers none on the setup page", async () => {
+    const { cookie } = await setup({ requireMfa: true });
+    const ritaCookie = await cookie("rita");
+
+    const refused = await post("/account/mfa/backup-codes/generate", {}, ritaCookie);
+    expect(refused.headers.get("Location")).toContain("error=no-factor");
+
+    const pw = await passwordLogin("rita@horizon.test");
+    expect(pw.headers.get("Location")).toContain("/account/mfa/setup");
+    const setupCookie = pw.headers.get("Set-Cookie")!.split(";")[0]!;
+    const setupPage = await SELF.fetch(`${BASE}${pw.headers.get("Location")}`, { headers: { Cookie: setupCookie }, redirect: "manual" });
+    const html = await setupPage.text();
+    expect(html).not.toContain("backup-codes/generate");
+
+    // A forced-enrolment session can't satisfy its gate with codes either.
+    const also = await post("/account/mfa/backup-codes/generate", { password: PASSWORD }, setupCookie);
+    expect(also.headers.get("Location")).toContain("error=no-factor");
+  });
+
+  it("lets a codes holder refresh the set, asking for the password once the session is stale", async () => {
     const { cookie, rita } = await setup();
     const ritaCookie = await cookie("rita");
-    const sessionId = ritaCookie.split("=")[1]!.split(".")[0]!;
+    await generateBackupCodes(env, rita);
     await env.DB.prepare("UPDATE sessions SET created_at = ?").bind(new Date(Date.now() - 3600e3).toISOString()).run();
 
     const denied = await post("/account/mfa/backup-codes/generate", {}, ritaCookie);
@@ -88,30 +111,12 @@ describe("backup codes as a factor", () => {
     expect(codesFrom(await ok.text())).toHaveLength(10);
   });
 
-  it("enrols from the forced-enrolment page and resumes the paused sign-in", async () => {
-    const { rita } = await setup({ requireMfa: true });
-    const pw = await passwordLogin("rita@horizon.test");
-    expect(pw.headers.get("Location")).toContain("/account/mfa/setup");
-    const cookie = pw.headers.get("Set-Cookie")!.split(";")[0]!;
-    const setupPage = await SELF.fetch(`${BASE}${pw.headers.get("Location")}`, { headers: { Cookie: cookie }, redirect: "manual" });
-    const html = await setupPage.text();
-    const resume = /name="resume" value="([^"]+)"/.exec(html)![1]!;
-    expect(html).toContain("/account/mfa/backup-codes/generate");
-
-    const gen = await post("/account/mfa/backup-codes/generate", { from: "setup", resume, password: PASSWORD }, cookie);
-    expect(gen.status).toBe(200);
-    const codes = codesFrom(await gen.text());
-    expect(codes).toHaveLength(10);
-    expect(await secondFactorGate(env, await userRow(rita), ["pwd", "mfa", "backup_code"])).toBe("ok");
-  });
-
   it("removes the set only with the password once the session is stale", async () => {
     const { cookie, rita } = await setup({ requireMfa: true });
-    const ritaCookie = await cookie("rita");
-    await post("/account/mfa/backup-codes/generate", {}, ritaCookie);
-    expect(await secondFactorGate(env, await userRow(rita), ["pwd"])).toBe("login");
+    // Signed in with a code: the session carries the factor's amr, like a real login.
+    const ritaCookie = await cookie("rita", ["pwd", "mfa", "backup_code"]);
+    await generateBackupCodes(env, rita);
 
-    // A stale session must prove the password again, whatever it claims.
     await env.DB.prepare("UPDATE sessions SET created_at = ?").bind(new Date(Date.now() - 3600e3).toISOString()).run();
     const denied = await post("/account/backup-codes/remove", { password: "nope-wrong-1" }, ritaCookie);
     expect(denied.headers.get("Location")).toContain("error=password");
@@ -121,10 +126,8 @@ describe("backup codes as a factor", () => {
   });
 
   it("reports the factor on the API and stops authorizing once switched off", async () => {
-    const { apiKey, cookie } = await setup();
-    const ritaCookie = await cookie("rita");
-    const gen = await post("/account/mfa/backup-codes/generate", {}, ritaCookie);
-    const [code] = codesFrom(await gen.text());
+    const { apiKey, rita } = await setup();
+    const codes = await generateBackupCodes(env, rita);
 
     const factors = await apiCall("/api/v1/security/factors", { token: apiKey });
     const backup = factors.body.factors.find((f: { key: string }) => f.key === "backup_codes");
@@ -134,7 +137,7 @@ describe("backup codes as a factor", () => {
     expect(users.body.users[0].second_factors).toContain("backup_codes");
 
     expect((await apiCall("/api/v1/security/factors/backup_codes", { token: apiKey, method: "PUT", body: { enabled: false } })).status).toBe(200);
-    const refused = await mfaLogin("rita@horizon.test", code!);
+    const refused = await mfaLogin("rita@horizon.test", codes[0]!);
     expect(refused.headers.get("Set-Cookie")).toBeNull();
     expect(refused.status).toBe(400);
   });

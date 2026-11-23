@@ -90,7 +90,9 @@ describe("authentication policies", () => {
     const opts = (await (await SELF.fetch(`${BASE}/account/passkeys/options`, { headers: { Cookie: cookie } })).json()) as { challenge: string };
     await SELF.fetch(`${BASE}/account/passkeys`, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, Cookie: cookie }, body: JSON.stringify({ response: await auth.register(opts.challenge) }) });
     const enrolled = await SELF.fetch(`${BASE}/account/mfa/passkey-enrolled`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: "resume=", redirect: "manual" });
-    expect(enrolled.status).toBe(302);
+    // A first factor enrolment issues the emergency codes rather than redirecting away.
+    expect(enrolled.status).toBe(200);
+    expect(await enrolled.text()).toContain("backup codes");
     const acct = await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie }, redirect: "manual" });
     expect(acct.status).toBe(200);
 

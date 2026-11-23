@@ -138,6 +138,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "email-send": "We couldn't send the email. Try again in a moment.",
   "email-limit": "Too many codes requested. Please wait a few minutes before asking for another.",
   "email-unavailable": "Email codes aren't available right now.",
+  "no-factor": "Set up a sign-in method like an authenticator app or a passkey first - backup codes are a fallback, not a first factor.",
   password: "Incorrect password, please try again.",
 };
 
@@ -562,10 +563,14 @@ account.get("/account/security", async (c) => {
       : await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "")
     : "";
   // A person with an authenticator manages its set inside that card; this one
-  // is the standalone factor for everyone else.
+  // serves everyone else who holds a real factor (or codes to refresh).
   const backupCard =
     !user.mfa_enabled && (await isFactorUsable(c.env, "backup_codes"))
-      ? backupCodesCard(remainingBackupCodes, !(await isFreshlyAuthenticated(c.env, currentSessionId)))
+      ? backupCodesCard(
+          remainingBackupCodes,
+          !(await isFreshlyAuthenticated(c.env, currentSessionId)),
+          remainingBackupCodes > 0 || (await hasSecondFactor(c.env, user, { admin: isAdmin }))
+        )
       : "";
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
@@ -772,12 +777,13 @@ function emailCodesCard(user: UserRow, step: string): string {
 }
 
 /**
- * My account > Security: backup codes as their own factor, for a user without
- * an authenticator app (one manages its set inside that card). Generating or
- * removing the set proves the session is fresh or knows the password - the
- * same step-up a passkey enrolment takes.
+ * My account > Security: the emergency backup-code set, for a user without an
+ * authenticator app (one manages its set inside that card). A first set can't
+ * be minted before a real factor exists - enrolment hands the set out - but
+ * an existing set can be refreshed or removed here. Generating or removing
+ * proves the session is fresh or knows the password, as a passkey enrolment.
  */
-function backupCodesCard(remaining: number, needsPassword: boolean): string {
+function backupCodesCard(remaining: number, needsPassword: boolean, canGenerate: boolean): string {
   const passwordField = (id: string) =>
     needsPassword ? `<label for="${id}">Confirm with your password</label><input type="password" id="${id}" name="password" autocomplete="current-password" required style="max-width:220px;" />` : "";
   const body =
@@ -791,11 +797,13 @@ function backupCodesCard(remaining: number, needsPassword: boolean): string {
            ${passwordField("bc_rm_password")}
            <button class="danger" type="submit">Remove backup codes</button>
          </form>`
-      : `<p class="muted" style="margin-top:8px;">Ten single-use codes to print or keep somewhere safe; each one signs you in once, for when you cannot use another method.</p>
+      : canGenerate
+        ? `<p class="muted" style="margin-top:8px;">Ten single-use codes to print or keep somewhere safe; each one signs you in once, for when you cannot use another method.</p>
          <form method="POST" action="/account/mfa/backup-codes/generate">
            ${passwordField("bc_gen_password")}
            <button class="primary" type="submit">Generate backup codes</button>
-         </form>`;
+         </form>`
+        : `<p class="muted" style="margin-top:8px;">Single-use codes for when you cannot use another method. They are issued automatically when you set up a sign-in method such as an authenticator app or a passkey.</p>`;
   return cardSection(`
     <div class="row between" id="backup-codes">
       <h2 style="margin:0;">Backup codes</h2>
@@ -1249,10 +1257,9 @@ account.get("/account/mfa/setup", async (c) => {
   // its factor being switched off, and an 'enrol'-gated session would loop
   // between this page and the gate that sent it here.
   if (await hasSecondFactor(c.env, user, { admin: Boolean(c.get("access")?.isAdmin) })) return c.redirect("/account/security", 302);
-  const [totpOn, passkeyOn, backupOn, emailAvailable, kbaAvailable] = await Promise.all([
+  const [totpOn, passkeyOn, emailAvailable, kbaAvailable] = await Promise.all([
     isFactorEnabled(c.env, "totp"),
     isFactorEnabled(c.env, "passkey"),
-    isFactorEnabled(c.env, "backup_codes"),
     emailOtpAvailable(c.env),
     securityQuestionsAvailable(c.env),
   ]);
@@ -1307,20 +1314,6 @@ account.get("/account/mfa/setup", async (c) => {
         </form>`);
   }
 
-  // Backup codes are an enrolable factor too: the same generate action the
-  // security page posts to, carrying the paused sign-in through `from=setup`.
-  const backupCard =
-    backupOn && !(await hasUnusedBackupCodes(c.env, user.id))
-      ? cardSection(`
-        <h2>${passkeyOn || emailOn || kbaCard ? "Or use backup codes" : "Use backup codes"}</h2>
-        <p class="muted">Ten single-use codes to print or keep somewhere safe; each one signs you in once.</p>
-        <form method="POST" action="/account/mfa/backup-codes/generate">
-          <input type="hidden" name="resume" value="${escapeHtml(resume)}" /><input type="hidden" name="from" value="setup" />
-          ${needsPassword ? `<label for="bc_password">Confirm with your password</label><input type="password" id="bc_password" name="password" autocomplete="current-password" required />` : ""}
-          <button class="${passkeyOn || emailOn || kbaCard ? "secondary" : "primary"}" type="submit">Generate backup codes</button>
-        </form>`)
-      : "";
-
   let secret = await getPendingEnrollment(c.env, c.get("sessionId"));
   if (!secret) {
     secret = generateBase32Secret();
@@ -1347,10 +1340,9 @@ account.get("/account/mfa/setup", async (c) => {
         : "") +
       emailCard +
       kbaCard +
-      backupCard +
       (!totpOn ? "" : cardSection(`
         <div style="text-align:center;">
-          ${passkeyOn || emailOn || kbaCard || backupCard ? "<h2>Or use an authenticator app</h2>" : ""}
+          ${passkeyOn || emailOn || kbaCard ? "<h2>Or use an authenticator app</h2>" : ""}
           ${resume ? '<p class="sub">Multi-factor authentication is required before you can continue.</p>' : ""}
           ${c.req.query("error") === "1" ? '<p class="error">Incorrect code, please try again.</p>' : ""}
           ${c.req.query("error") === "2" ? '<p class="error">Incorrect password, please try again.</p>' : ""}
@@ -1397,7 +1389,7 @@ account.post("/account/mfa/passkey-enrolled", async (c) => {
   await revokeAllSessionsForUser(c.env, user.id, sessionId);
   await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
   const passkeyDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId) : { to: "/account/security?saved=passkey-added" };
-  return respondAuthorize(c, passkeyDest.to, passkeyDest.responseMode);
+  return finishEnrolment(c, user.id, passkeyDest, "Passkey added. Here are your emergency backup codes.");
 });
 
 account.post("/account/mfa/setup", async (c) => {
@@ -1440,10 +1432,8 @@ account.post("/account/mfa/setup", async (c) => {
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(["pwd", "mfa"]), c.get("sessionId")).run();
   await logAudit(c.env, user, "user.mfa_enabled", user.upn, undefined, c.req.raw);
 
-  const codes = await generateBackupCodes(c.env, user.id);
-  const continueTo = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, c.get("sessionId")) : "/account";
-
-  return c.html(layout(c, "MFA enabled", backupCodesPage(codes, continueTo)));
+  const continueTo = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, c.get("sessionId")) : { to: "/account" };
+  return finishEnrolment(c, user.id, continueTo, "MFA is now enabled. Here are your emergency backup codes.");
 });
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
@@ -1535,7 +1525,7 @@ account.post("/account/mfa/email/enable", async (c) => {
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.email_otp_enabled", user.upn, undefined, c.req.raw);
   const emailOtpDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId, amr) : { to: "/account/security?saved=email-otp-enabled" };
-  return respondAuthorize(c, emailOtpDest.to, emailOtpDest.responseMode);
+  return finishEnrolment(c, user.id, emailOtpDest, "Email codes turned on. Here are your emergency backup codes.");
 });
 
 /** Turning email codes off takes a fresh code, within the step-up budget - as disabling the authenticator does. */
@@ -1625,7 +1615,7 @@ account.post("/account/mfa/questions", async (c) => {
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.security_questions_enabled", user.upn, details, c.req.raw);
   const kbaDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId, amr) : { to: "/account/security?saved=kba-enabled" };
-  return respondAuthorize(c, kbaDest.to, kbaDest.responseMode);
+  return finishEnrolment(c, user.id, kbaDest, "Security questions saved. Here are your emergency backup codes.");
 });
 
 /** Removing security questions takes the current password, within the step-up budget. */
@@ -1641,6 +1631,20 @@ account.post("/account/mfa/questions/remove", async (c) => {
   await logAudit(c.env, user, "user.security_questions_disabled", user.upn, undefined, c.req.raw);
   return c.redirect("/account/security?saved=kba-removed", 302);
 });
+
+/**
+ * Where a completed factor enrolment goes next. The first factor a user
+ * enrols hands out the emergency backup-code set - once, and only when the
+ * instance allows codes and they hold no unused set (adding a second factor
+ * later must not silently replace the codes they saved).
+ */
+async function finishEnrolment(c: Context<{ Bindings: Env }>, userId: number, dest: { to: string; responseMode?: string }, heading: string): Promise<Response> {
+  if ((await isFactorEnabled(c.env, "backup_codes")) && !(await hasUnusedBackupCodes(c.env, userId))) {
+    const codes = await generateBackupCodes(c.env, userId);
+    return c.html(layout(c, "Backup codes", backupCodesPage(codes, dest, heading)));
+  }
+  return respondAuthorize(c, dest.to, dest.responseMode);
+}
 
 function backupCodesPage(codes: string[], continueTo: string | { to: string; responseMode?: string } = "/account", heading = "MFA is now enabled."): string {
   const fileContents = `${codes.join("\n")}\n`;
@@ -1687,14 +1691,14 @@ account.post("/account/mfa/backup-codes/regenerate", async (c) => {
   return c.html(layout(c, "Backup codes regenerated", backupCodesPage(codes)));
 });
 
-// Backup codes as their own factor: generating the first set is an enrolment,
-// like turning email codes on - other sessions end and a paused sign-in
-// resumes. Under /account/mfa so a forced-enrolment session can reach it.
+// Minting or refreshing a set from My account. Codes are an emergency
+// fallback for an enrolled factor, never the first factor: a user holding
+// neither a factor nor a set is sent to enrol a real method (this is also
+// what stops a forced-enrolment session from satisfying its gate with codes).
 account.post("/account/mfa/backup-codes/generate", async (c) => {
   const user = c.get("user");
   const body = await c.req.parseBody();
-  const resume = String(body.resume ?? "");
-  const back = (query: string) => (body.from === "setup" ? `/account/mfa/setup?${query}&resume=${encodeURIComponent(resume)}` : `/account/security?${query}#backup-codes`);
+  const back = (query: string) => `/account/security?${query}#backup-codes`;
 
   if (!(await isFactorEnabled(c.env, "backup_codes"))) return c.redirect("/account/security", 302);
   const step = await passkeyStepUp(c, String(body.password ?? ""));
@@ -1704,21 +1708,13 @@ account.post("/account/mfa/backup-codes/generate", async (c) => {
     return c.redirect(back("error=password"), 302);
   }
 
-  const hadSecondFactor = await hasSecondFactor(c.env, user, { admin: Boolean(c.get("access")?.isAdmin) });
+  if (!(await hasUnusedBackupCodes(c.env, user.id)) && !(await hasSecondFactor(c.env, user, { admin: Boolean(c.get("access")?.isAdmin) }))) {
+    return c.redirect(back("error=no-factor"), 302);
+  }
   const codes = await generateBackupCodes(c.env, user.id);
   await logAudit(c.env, user, "user.mfa_backup_codes_generated", user.upn, undefined, c.req.raw);
 
-  if (!hadSecondFactor) {
-    // Every other session predates the second factor, as the authenticator
-    // and email-code enrolments end them too.
-    await revokeAllSessionsForUser(c.env, user.id, c.get("sessionId"));
-    await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(["pwd", "mfa", "backup_code"]), c.get("sessionId")).run();
-  }
-
-  const continueTo = resume
-    ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, c.get("sessionId"), ["pwd", "mfa", "backup_code"])
-    : "/account/security?saved=backup-codes";
-  return c.html(layout(c, "Backup codes", backupCodesPage(codes, continueTo, "Your backup codes are ready.")));
+  return c.html(layout(c, "Backup codes", backupCodesPage(codes, "/account/security?saved=backup-codes", "Your backup codes are ready.")));
 });
 
 /** Removing the set is the same step-up as generating it. */

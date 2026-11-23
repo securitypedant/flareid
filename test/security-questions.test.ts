@@ -94,7 +94,9 @@ describe("security questions", () => {
     expect(account).toContain('name="question_3"');
 
     const saved = await post("/account/mfa/questions", enrolForm(qids), cookie);
-    expect(saved.headers.get("Location")).toBe("/account/security?saved=kba-enabled");
+    // A first factor enrolment issues the emergency codes; Continue keeps the old destination.
+    expect(saved.status).toBe(200);
+    expect(/href="([^"]+)"><button class="primary"[^>]*>Continue/.exec(await saved.text())?.[1]).toBe("/account/security?saved=kba-enabled");
     expect((await userRow(rita)).security_questions_enabled).toBe(1);
     const rows = await env.DB.prepare("SELECT * FROM user_security_answers WHERE user_id = ?").bind(rita).all<{ answer_hash: string }>();
     expect(rows.results).toHaveLength(3);
@@ -146,7 +148,9 @@ describe("security questions", () => {
     expect((await userRow(rita)).security_questions_enabled).toBe(0);
     expect(await page("/account/security?kba_error=kba-same#security-questions", cookie)).toContain("Each answer must be different from the others.");
 
-    expect((await post("/account/mfa/questions", enrolForm(qids), cookie)).headers.get("Location")).toBe("/account/security?saved=kba-enabled");
+    const enrolled = await post("/account/mfa/questions", enrolForm(qids), cookie);
+    expect(enrolled.status).toBe(200);
+    expect(/href="([^"]+)"><button class="primary"[^>]*>Continue/.exec(await enrolled.text())?.[1]).toBe("/account/security?saved=kba-enabled");
 
     // Changing: the current password, then a valid new set.
     const newSet = enrolForm(qids.slice(3), ["Ford Fiesta", "Maple Street", "Bunny"]);
@@ -257,7 +261,8 @@ describe("security questions", () => {
     expect(await page(bad.headers.get("Location")!, cookie)).toContain("Each answer must be different");
 
     const done = await post("/account/mfa/questions", { ...enrolForm(qids), from: "setup", resume }, cookie);
-    expect(done.headers.get("Location")).toBe("/account");
+    expect(done.status).toBe(200);
+    expect(/href="([^"]+)"><button class="primary"[^>]*>Continue/.exec(await done.text())?.[1]).toBe("/account");
     expect(await amrOf(sessionIdOf(res)!)).toEqual(["pwd", "kba", "mfa"]);
     expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(other.sessionId).first<{ revoked_at: string | null }>())!.revoked_at).not.toBeNull();
     expect((await call("/account", { headers: { Cookie: cookie } })).status).toBe(200);

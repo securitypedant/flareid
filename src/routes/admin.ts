@@ -2311,7 +2311,7 @@ admin.get("/admin/groups", async (c) => {
             <select name="type" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
               ${[["", "All types"], ["static", "Static"], ["dynamic", "Dynamic"]].map(([v, l]) => `<option value="${v}" ${v === typeFilter ? "selected" : ""}>${l}</option>`).join("")}
             </select>
-            <label class="check" style="margin-bottom:8px; white-space:nowrap;"><input type="checkbox" name="roles" value="1" ${rolesOnly ? "checked" : ""} data-autosubmit style="width:auto; margin:0 4px 0 0;" />With roles</label>
+            <label class="switch" style="white-space:nowrap;" title="Only groups that grant an administrator role"><input type="checkbox" name="roles" value="1" ${rolesOnly ? "checked" : ""} data-autosubmit /><span class="track"></span><span>With roles</span></label>
             <input type="hidden" name="page" value="1" />
             ${pageSizeSelect(pageSize)}
           </div>

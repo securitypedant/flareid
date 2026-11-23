@@ -23,7 +23,7 @@ Everyone can manage their own account at `/account`:
 |---|---|
 | **Account** | Edit the profile fields their schema allows, and upload a photo. |
 | **Applications** | A launchpad of the apps they may use — every app, or only the ones assigned to them or their groups when an app restricts access. Each app opens from its card. |
-| **Security** | Change their password; set up an authenticator app, passkeys, backup codes, email codes or security questions; see active sessions, remembered devices and connected apps, and sign any of them out. |
+| **Security** | Change their password; set up an authenticator app, passkeys, email codes or security questions (a backup-code set is issued with the first factor); see active sessions, remembered devices and connected apps, and sign any of them out. |
 | **Access** | See their groups, request access to requestable groups and applications from one picker, and manage groups they're a [manager](groups.md#group-managers) of. |
 
 ## When someone is locked out

@@ -4,6 +4,28 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.12.0] - 2026-11-24
+
+Backup codes become an emergency fallback issued after a real factor, rather
+than an enrolment choice of their own.
+
+- **Codes are issued, not enrolled.** Setting up the first second factor
+  (authenticator app, passkey, email codes or security questions) now ends on
+  a page that hands out the single-use backup-code set - once, and only when
+  the person holds no unused set, so adding a second factor later never
+  silently replaces saved codes. The forced-enrolment page no longer offers
+  codes as a factor, and a set on its own no longer counts as an enrolled
+  second factor (`hasSecondFactor`, the admin "last factor" guard and the
+  users-list MFA filter all agree). Someone holding only codes can still sign
+  in with them - they are the emergency path - but owes their policy a real
+  factor, and minting or refreshing a set now requires an enrolled factor (or
+  the set itself). **Access** navigation is promoted to a top-level console
+  section under **Overview**, and the Groups list's *With roles* filter is a
+  switch.
+- **Step-up pages.** The admin reauthentication page is centred like the
+  sign-in pages, and the resume page shows a spinner while the stashed action
+  replays instead of a "Confirmed" message.
+
 ## [4.11.0] - 2026-11-23
 
 Application access policies: each app can bind an authentication policy, app

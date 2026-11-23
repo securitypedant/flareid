@@ -219,10 +219,10 @@ export async function completeLoginFlow(
     return { outcome: { type: "redirect", to: "/admin/setup" }, setCookies };
   }
 
-  // Once setup is done, MFA can be made mandatory - anyone without it enrolled
-  // gets forced through setup (with backup codes) before reaching their
-  // original destination, whether that's a direct /account visit or an OIDC
-  // login to a relying party.
+  // Once setup is done, MFA can be made mandatory - anyone without a second
+  // factor enrolled gets forced through setup before reaching their original
+  // destination, whether that's a direct /account visit or an OIDC login to a
+  // relying party.
   // The user's authentication policy decides; a passkey sign-in (amr "hwk") is
   // already multi-factor.
   const gateUser = { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled, security_questions_enabled: user.security_questions_enabled };

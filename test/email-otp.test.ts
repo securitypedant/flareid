@@ -115,16 +115,19 @@ describe("email one-time codes", () => {
     expect(wrong.headers.get("Location")).toContain("error=email-code");
     expect((await userRow(rita)).email_otp_enabled).toBe(0);
     const ok = await post(email, "/account/mfa/email/enable", { code }, cookie);
-    expect(ok.headers.get("Location")).toBe("/account/security?saved=email-otp-enabled");
+    // A first factor enrolment issues the emergency codes; Continue keeps the old destination.
+    expect(ok.status).toBe(200);
+    expect(/href="([^"]+)"><button class="primary"[^>]*>Continue/.exec(await ok.text())?.[1]).toBe("/account/security?saved=email-otp-enabled");
     expect((await userRow(rita)).email_otp_enabled).toBe(1);
     expect(await env.DB.prepare("SELECT 1 FROM audit_log WHERE action = 'user.email_otp_enabled'").first()).not.toBeNull();
 
-    // Sign-in: email codes are the only factor, so the step is email-only.
+    // Sign-in: enrolment also issued backup codes, so the step offers those
+    // beside the email code - but never the authenticator form.
     const step = await passwordStep(email);
     expect(step.res.status).toBe(200);
     expect(step.html).toContain("Email me a code");
     expect(step.html).toContain('action="/login/mfa/email/send"');
-    expect(step.html).not.toContain('name="code"');
+    expect(step.html).not.toContain('action="/login/mfa"');
     const sent = await post(email, "/login/mfa/email/send", { mfa_id: step.mfaId! });
     const sentHtml = await sent.text();
     expect(sentHtml).toContain("Check your email");
@@ -280,7 +283,8 @@ describe("email one-time codes", () => {
     expect(await (await call(email, send.headers.get("Location")!, { headers: { Cookie: cookie } })).text()).toContain('action="/account/mfa/email/enable"');
 
     const done = await post(email, "/account/mfa/email/enable", { code: email.lastCode(), from: "setup", resume }, cookie);
-    expect(done.headers.get("Location")).toBe("/account");
+    expect(done.status).toBe(200);
+    expect(/href="([^"]+)"><button class="primary"[^>]*>Continue/.exec(await done.text())?.[1]).toBe("/account");
     expect(await amrOf(sessionIdOf(res)!)).toEqual(["pwd", "otp", "mfa"]);
     expect((await env.DB.prepare("SELECT revoked_at FROM sessions WHERE id = ?").bind(other.sessionId).first<{ revoked_at: string | null }>())!.revoked_at).not.toBeNull();
     expect((await call(email, "/account/security", { headers: { Cookie: cookie } })).status).toBe(200);
