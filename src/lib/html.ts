@@ -97,6 +97,14 @@ const STYLES = `
 
   .auth-passkey { margin-top: 12px; }
 
+  /* Narrow centered card (step-up, confirmations) */
+  .center-narrow { max-width: 460px; margin: 6vh auto 0; }
+  .center-narrow .card { padding: 26px 28px 22px; }
+  .center-narrow h2 { margin: 0 0 6px; }
+  .spin-wrap { display: flex; justify-content: center; padding: 40px 0; }
+  .spinner { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--fi-line); border-top-color: var(--fi-accent); animation: fi-spin 0.8s linear infinite; }
+  @keyframes fi-spin { to { transform: rotate(360deg); } }
+
   /* "Use these values" panels (OIDC client and SAML SP pages) */
   .info-panel { background: var(--fi-surface-2); border: 1px solid var(--fi-line); border-radius: var(--fi-radius); padding: 14px 16px; margin: 12px 0 18px; }
   .info-panel > p.muted { margin: 0 0 10px; }

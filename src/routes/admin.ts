@@ -263,7 +263,7 @@ admin.get("/admin/reauth", async (c) => {
     layout(
       c,
       "Confirm it's you",
-      cardSection(`
+      `<div class="center-narrow">${cardSection(`
         ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
         <p class="muted" style="margin-top:0;">This action changes credentials or security settings, so it needs you to have signed in within the last ${STEP_UP_WINDOW_MINUTES} minutes. Confirm, and what you were doing carries on.</p>
         <form method="POST" action="/admin/reauth">
@@ -288,7 +288,7 @@ admin.get("/admin/reauth", async (c) => {
               </div>${scriptTag(PASSKEY_LOGIN_SCRIPT)}`
             : ""
         }
-      `),
+      `)}</div>`,
       [{ label: "Admin", href: "/admin" }, { label: "Confirm it's you" }]
     )
   );
@@ -307,12 +307,12 @@ admin.get("/admin/reauth/resume", async (c) => {
     layout(
       c,
       "Continuing",
-      cardSection(`
-        <p class="muted">Confirmed - finishing what you were doing.</p>
+      `<div class="center-narrow">${cardSection(`
+        <div class="spin-wrap"><div class="spinner" role="status" aria-label="Continuing"></div></div>
         <form id="resume-action" method="POST" action="${escapeHtml(pending.path)}">
           ${pending.fields.map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`).join("")}
           <noscript><div class="form-actions"><button class="primary" type="submit">Continue</button></div></noscript>
-        </form>${scriptTag(RESUME_ACTION_SCRIPT)}`),
+        </form>${scriptTag(RESUME_ACTION_SCRIPT)}`)}</div>`,
       [{ label: "Admin", href: "/admin" }, { label: "Continuing" }]
     )
   );
