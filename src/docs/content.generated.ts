@@ -107,6 +107,10 @@ export const DOCS_NAV: DocSection[] = [
         "title": "Federation"
       },
       {
+        "slug": "social",
+        "title": "Social sign-in"
+      },
+      {
         "slug": "cloudflare-one",
         "title": "Cloudflare One"
       },
@@ -710,6 +714,36 @@ export const DOCS_PAGES: Record<string, DocPage> = {
       "add-a-saml-provider",
       "how-accounts-are-linked",
       "disable-a-provider"
+    ]
+  },
+  "social": {
+    "slug": "social",
+    "title": "Social sign-in",
+    "description": "Social sign-in puts Continue with Google, Continue with GitHub and other consumer-provider buttons on the sign-in page. Each provider is a normal upstream provider under the hood — the same JIT provisioning, claim mappings and linked identities — with its protocol details already filled in.",
+    "headings": [
+      {
+        "id": "providers",
+        "text": "Providers"
+      },
+      {
+        "id": "set-up-a-provider",
+        "text": "Set up a provider"
+      },
+      {
+        "id": "disable-or-remove",
+        "text": "Disable or remove"
+      },
+      {
+        "id": "claims-and-mapping",
+        "text": "Claims and mapping"
+      }
+    ],
+    "html": "<p>Social sign-in puts <strong>Continue with Google</strong>, <strong>Continue with GitHub</strong> and other consumer-provider buttons on the sign-in page. Each provider is a normal <a href=\"/docs/federation\">upstream provider</a> under the hood — the same JIT provisioning, claim mappings and linked identities — with its protocol details already filled in.</p>\n<p>Manage providers under <strong>Integrations → Social sign-in</strong>.</p>\n<h2 id=\"providers\"><a class=\"docs-anchor\" href=\"#providers\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Providers</h2>\n<table>\n<thead>\n<tr>\n<th>Provider</th>\n<th>Protocol</th>\n<th>Notes</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>Google</td>\n<td>OIDC</td>\n<td>Gmail and Google Workspace accounts.</td>\n</tr>\n<tr>\n<td>Microsoft</td>\n<td>OIDC</td>\n<td>Set <strong>Directory (tenant)</strong> to restrict to one organisation, or leave <code>common</code> for any Microsoft account.</td>\n</tr>\n<tr>\n<td>Apple</td>\n<td>OIDC</td>\n<td>Sign in with Apple. Instead of a client secret, provide the Team ID, Key ID and the Sign in with Apple <strong>.p8 key</strong> — FlareID signs the required client-secret JWT for each sign-in.</td>\n</tr>\n<tr>\n<td>Facebook</td>\n<td>OIDC</td>\n<td>Facebook Login with OpenID Connect.</td>\n</tr>\n<tr>\n<td>LinkedIn</td>\n<td>OIDC</td>\n<td>Needs the &quot;Sign In with LinkedIn using OpenID Connect&quot; product on the app.</td>\n</tr>\n<tr>\n<td>Slack</td>\n<td>OIDC</td>\n<td></td>\n</tr>\n<tr>\n<td>Yahoo</td>\n<td>OIDC</td>\n<td></td>\n</tr>\n<tr>\n<td>Twitch</td>\n<td>OIDC</td>\n<td></td>\n</tr>\n<tr>\n<td>LINE</td>\n<td>OIDC</td>\n<td></td>\n</tr>\n<tr>\n<td>Salesforce</td>\n<td>OIDC</td>\n<td>For a My Domain org, edit the issuer on the provider&#39;s Federation page after setup.</td>\n</tr>\n<tr>\n<td>GitLab</td>\n<td>OIDC</td>\n<td>gitlab.com, or a self-managed instance by editing the issuer.</td>\n</tr>\n<tr>\n<td>GitHub</td>\n<td>OAuth 2.0</td>\n<td>No OIDC — FlareID reads the profile, and the primary <em>verified</em> email when the profile hides it.</td>\n</tr>\n<tr>\n<td>Discord</td>\n<td>OAuth 2.0</td>\n<td></td>\n</tr>\n<tr>\n<td>X (Twitter)</td>\n<td>OAuth 2.0</td>\n<td>X never returns an email address — accounts link by username, and JIT-provisioned accounts have no email.</td>\n</tr>\n</tbody></table>\n<p>Any other OIDC or SAML provider can be added by hand under <strong>Integrations → Federation</strong>.</p>\n<h2 id=\"set-up-a-provider\"><a class=\"docs-anchor\" href=\"#set-up-a-provider\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Set up a provider</h2>\n<ol>\n<li>Register an OAuth app with the provider — its docs link is on the provider&#39;s page — using this redirect URI:\n<code>https://&lt;your hostname&gt;/federation/oidc/callback</code></li>\n<li>On the provider&#39;s page under <strong>Integrations → Social sign-in</strong>, enter the client ID and secret (or Apple&#39;s key material).</li>\n<li>Optionally tick <strong>Just-in-time provisioning</strong> so people with no account here get one — see <a href=\"/docs/federation#how-accounts-are-linked\">how accounts are linked</a>.</li>\n<li>Save. The button appears on the sign-in page straight away.</li>\n</ol>\n<h2 id=\"disable-or-remove\"><a class=\"docs-anchor\" href=\"#disable-or-remove\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Disable or remove</h2>\n<p>Untick <strong>Enabled</strong> to hide the button without losing linked identities. <strong>Remove</strong> deletes the provider and forgets its links — the accounts themselves are kept.</p>\n<h2 id=\"claims-and-mapping\"><a class=\"docs-anchor\" href=\"#claims-and-mapping\" aria-hidden=\"true\" tabindex=\"-1\">#</a>Claims and mapping</h2>\n<p>Each provider&#39;s sign-in claims run through the same <a href=\"/docs/mappings\">JIT mapping rules</a> as federation: <strong>Flows → Federation sign-in</strong>. The OAuth 2.0 adapters (GitHub, Discord, X) synthesize OIDC-shaped claims — <code>sub</code>, <code>name</code>, <code>preferred_username</code>, <code>picture</code>, and <code>email</code> where the provider offers one.</p>",
+    "ids": [
+      "providers",
+      "set-up-a-provider",
+      "disable-or-remove",
+      "claims-and-mapping"
     ]
   },
   "cloudflare-one": {

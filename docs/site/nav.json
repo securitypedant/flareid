@@ -33,6 +33,7 @@
     "pages": [
       "scim",
       "federation",
+      "social",
       "cloudflare-one",
       "shared-signals"
     ]

@@ -77,6 +77,7 @@ const PATH_AREAS: [string, Area][] = [
   ["/admin/integrations/ldap", "ldap"],
   ["/admin/ldap", "ldap"],
   ["/admin/integrations/federation", "federation"],
+  ["/admin/integrations/social", "federation"],
   ["/admin/integrations/email", "email"],
   ["/admin/email", "email"],
   ["/admin/integrations/cf-one", "cfone"],
@@ -129,6 +130,9 @@ export function requiredPermission(method: string, path: string): Permission | n
   // same blast radius as minting an admin key, so writes are Super-Admin-only.
   // Reads stay delegated (federation:read via /admin/integrations/federation).
   if (under(path, "/admin/federation")) return write ? "super" : "federation:read";
+  // Configuring a social provider is registering an upstream IdP - the same
+  // write bar as the generic federation form.
+  if (under(path, "/admin/social")) return write ? "super" : "federation:read";
   // Trusting a SET transmitter hands its verified claims authority over every
   // account (session revocation, risk flags) - the same trust-anchor decision
   // as an upstream IdP, so transmitter writes are Super-Admin-only too.

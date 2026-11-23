@@ -16,7 +16,7 @@ import { apiCall, bootstrapInstance } from "./helpers.js";
  * operation that exists in the spec - or, if it genuinely has no meaning for
  * a token, listed in CONSOLE_ONLY with the reason.
  */
-const CONSOLE_TO_API: Record<string, string> = {
+const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/setup": "POST /api/v1/setup",
   "POST /admin/users/import": "POST /api/v1/directory/import",
   "POST /admin/users": "POST /api/v1/users",
@@ -132,6 +132,8 @@ const CONSOLE_TO_API: Record<string, string> = {
   "POST /admin/federation/idps": "POST /api/v1/federation/idps",
   "POST /admin/federation/idps/:id": "PATCH /api/v1/federation/idps/{id}",
   "POST /admin/federation/idps/:id/delete": "DELETE /api/v1/federation/idps/{id}",
+  "POST /admin/social/:key": ["POST /api/v1/federation/idps", "PATCH /api/v1/federation/idps/{id}"],
+  "POST /admin/social/:key/delete": "DELETE /api/v1/federation/idps/{id}",
   "POST /admin/integrations/ldap/settings": "POST /api/v1/ldap/settings",
   "POST /admin/ldap": "POST /api/v1/ldap/apps",
   "POST /admin/ldap/:slug": "POST /api/v1/ldap/apps",
@@ -223,6 +225,8 @@ const CONSOLE_GET_TO_API: Record<string, string[]> = {
   "GET /admin/integrations/email": ["GET /api/v1/email"],
   "GET /admin/integrations/federation": ["GET /api/v1/federation/idps"],
   "GET /admin/integrations/federation/:id": ["GET /api/v1/federation/idps/{id}"],
+  "GET /admin/integrations/social": ["GET /api/v1/social/providers", "GET /api/v1/federation/idps"],
+  "GET /admin/integrations/social/:key": ["GET /api/v1/social/providers", "GET /api/v1/federation/idps/{id}"],
   "GET /admin/integrations/ldap": ["GET /api/v1/ldap/settings", "GET /api/v1/ldap/apps"],
   "GET /admin/integrations/saml": ["GET /api/v1/saml/settings"],
   "GET /admin/integrations/scim": ["GET /api/v1/scim/config", "GET /api/v1/scim/targets"],
@@ -318,7 +322,7 @@ describe("API parity with the admin console", () => {
     const consoleRoutes = [...new Set(admin.routes.filter((r) => r.method === "POST" && r.path.startsWith("/admin")).map((r) => `${r.method} ${r.path}`))];
     const unmapped = consoleRoutes.filter((r) => !(r in CONSOLE_TO_API) && !(r in CONSOLE_ONLY));
     expect(unmapped, "console actions with no API operation: add the operation, then map it here").toEqual([]);
-    const missing = consoleRoutes.filter((r) => r in CONSOLE_TO_API && !ops.has(CONSOLE_TO_API[r]!)).map((r) => `${r} -> ${CONSOLE_TO_API[r]}`);
+    const missing = consoleRoutes.flatMap((r) => [CONSOLE_TO_API[r] ?? []].flat().filter((o) => !ops.has(o)).map((o) => `${r} -> ${o}`));
     expect(missing, "mapped to operations the spec does not have").toEqual([]);
     // A stale entry (the console route was removed or renamed) is a mistake too.
     expect(Object.keys(CONSOLE_TO_API).filter((k) => !consoleRoutes.includes(k))).toEqual([]);

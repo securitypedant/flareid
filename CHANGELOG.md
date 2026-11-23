@@ -4,6 +4,32 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.9.0] - 2026-11-24
+
+Social sign-in: consumer identity providers as first-class "Continue with"
+buttons, administered from a new **Integrations → Social sign-in** section.
+
+- **A 14-provider catalog.** Presets for Google, Microsoft (with tenant
+  choice), Apple, Facebook, LinkedIn, Slack, Yahoo, Twitch, LINE, Salesforce,
+  GitLab, GitHub, Discord and X. Each is an ordinary upstream IdP under the
+  hood - the same JIT provisioning, claim mappings and linked-identity
+  tracking - with issuer, endpoints and scopes supplied by the catalog so
+  admins only bring a client id and secret. Any other provider still goes
+  through the generic Federation form.
+- **OAuth 2.0 adapter.** GitHub, Discord and X have no OIDC id_token, so a
+  userinfo adapter exchanges the code (PKCE-protected, X via HTTP Basic),
+  reads the profile and synthesizes OIDC-shaped claims - including GitHub's
+  primary *verified* email when the profile hides it.
+- **Sign in with Apple.** Apple's client secret is an ES256 JWT minted per
+  sign-in from the developer's .p8 key (sealed at rest); the admin supplies
+  the Team ID, Key ID and Services ID.
+- **Surfaces.** `/api/v1/social/providers` lists the catalog with each
+  provider's configured state; social rows are redacted in
+  `/api/v1/federation/idps` (Apple key material never leaves the store).
+  Social provider pages delegate reads to `federation:read`; writes stay
+  Super-Admin like every upstream-IdP change. The social catalog page is
+  documented at /docs/social.
+
 ## [4.8.0] - 2026-11-24
 
 Backup codes become a first-class second factor, independent of the

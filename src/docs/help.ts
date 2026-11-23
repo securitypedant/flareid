@@ -21,6 +21,7 @@ export const ADMIN_HELP: Record<string, string> = {
   "integrations/scim": "/docs/scim",
   "integrations/ldap": "/docs/ldap",
   "integrations/federation": "/docs/federation",
+  "integrations/social": "/docs/social",
   "integrations/email": "/docs/email",
   "integrations/cf-one": "/docs/cloudflare-one",
   "integrations/signals": "/docs/shared-signals",

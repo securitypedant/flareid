@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.8.0",
+    "version": "4.9.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -8802,6 +8802,126 @@
           },
           "404": {
             "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/social/providers": {
+      "get": {
+        "tags": [
+          "Federation"
+        ],
+        "summary": "List social sign-in providers",
+        "description": "The curated social-provider catalog the Social sign-in console page offers: each entry's key, display name, protocol shape and app-registration link, plus - when it is configured - the upstream IdP row it lives as. Configure providers through POST/PATCH /api/v1/federation/idps with config.social set to the key.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "federation:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "oidc",
+                              "apple",
+                              "oauth2"
+                            ]
+                          },
+                          "scopes": {
+                            "type": "string"
+                          },
+                          "docs_url": {
+                            "type": "string"
+                          },
+                          "idp": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "number"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "name",
+                          "kind",
+                          "scopes",
+                          "docs_url",
+                          "idp"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "providers"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
             "content": {
               "application/json": {
                 "schema": {

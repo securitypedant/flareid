@@ -10,6 +10,7 @@ import { domainExists } from "./domains.js";
 import { getUserByAnyEmail } from "./user-emails.js";
 import { randomToken } from "./tokens.js";
 import { sealMaybe, unsealMaybe } from "./sealed.js";
+import { appleClientSecret, socialProvider, type AppleSecretConfig } from "./social.js";
 import { claimOnce } from "./one-shot.js";
 import type { UserRow } from "./types.js";
 import { effectiveMappings, getCollisionPolicy, JIT_COLUMN_TARGETS, resolveUsernameCollision } from "./mappings.js";
@@ -46,6 +47,10 @@ export interface OidcIdpConfig {
   client_id: string;
   client_secret: string;
   scopes?: string;
+  /** Social-provider key from lib/social.ts; set on rows the Social sign-in section manages. */
+  social?: string;
+  /** Apple: the client_secret is generated from this key material at exchange time. */
+  apple?: { team_id: string; key_id: string; private_key: string };
 }
 
 export interface SamlIdpConfig {
@@ -139,13 +144,29 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
   if (input.protocol === "oidc") {
     const cfg = input.config as Partial<OidcIdpConfig>;
     const issuer = (cfg.issuer ?? "").trim().replace(/\/+$/, "");
-    if (!issuer || !/^https:\/\//.test(issuer)) throw new FederationError("The issuer must be an https:// URL.");
+    const social = cfg.social ? socialProvider(cfg.social) : undefined;
+    if (cfg.social && !social) throw new FederationError(`Unknown social provider "${cfg.social}".`);
+    // OAuth2-only providers never run discovery - their issuer is the
+    // catalog's "social:<key>" placeholder, kept only for display.
+    if (social?.kind !== "oauth2" && (!issuer || !/^https:\/\//.test(issuer))) throw new FederationError("The issuer must be an https:// URL.");
     if (!(cfg.client_id ?? "").trim()) throw new FederationError("A client id is required.");
+    const apple = social?.kind === "apple" ? cfg.apple : undefined;
+    if (social?.kind === "apple" && !(apple?.team_id?.trim() && apple?.key_id?.trim())) throw new FederationError("Apple needs the developer Team ID and the Sign in with Apple key's Key ID.");
     const config: OidcIdpConfig = {
       issuer,
       client_id: cfg.client_id!.trim(),
       client_secret: cfg.client_secret ? await sealMaybe(env, cfg.client_secret) : "",
       ...(cfg.scopes?.trim() ? { scopes: cfg.scopes.trim() } : {}),
+      ...(social ? { social: social.key } : {}),
+      ...(apple
+        ? {
+            apple: {
+              team_id: apple.team_id!.trim(),
+              key_id: apple.key_id!.trim(),
+              private_key: apple.private_key?.trim() ? await sealMaybe(env, apple.private_key.trim()) : "",
+            },
+          }
+        : {}),
     };
     return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, created_at: "", updated_at: "" };
   }
@@ -178,9 +199,12 @@ export async function updateUpstreamIdp(env: Env, id: number, input: UpstreamIdp
   const existing = await getUpstreamIdp(env, id);
   if (!existing) throw new FederationError("That upstream IdP doesn't exist any more.");
   const v = await validateUpstreamIdp(env, input, id);
-  // An empty secret on an OIDC update keeps the stored one.
+  // An empty secret on an OIDC update keeps the stored one - and the Apple key.
   if (input.protocol === "oidc" && input.keepSecret) {
-    const merged = { ...(idpConfig<OidcIdpConfig>(v as UpstreamIdpRow)), client_secret: idpConfig<OidcIdpConfig>(existing).client_secret };
+    const prev = idpConfig<OidcIdpConfig>(existing);
+    const next = idpConfig<OidcIdpConfig>(v as UpstreamIdpRow);
+    const merged = { ...next, client_secret: next.client_secret || prev.client_secret };
+    if (next.apple) merged.apple = { ...next.apple, private_key: next.apple.private_key || prev.apple?.private_key || "" };
     v.config = JSON.stringify(merged);
   }
   await env.DB.prepare("UPDATE upstream_idps SET name = ?, protocol = ?, enabled = ?, config = ?, jit = ?, jit_domain = ?, jit_groups = ?, updated_at = ? WHERE id = ?")
@@ -280,7 +304,7 @@ export function oidcAuthorizeUrl(meta: OidcMetadata, cfg: OidcIdpConfig, callbac
   u.searchParams.set("redirect_uri", callbackUrl);
   u.searchParams.set("scope", cfg.scopes ?? "openid profile email");
   u.searchParams.set("state", state);
-  u.searchParams.set("nonce", nonce);
+  if (nonce) u.searchParams.set("nonce", nonce);
   u.searchParams.set("code_challenge", challenge);
   u.searchParams.set("code_challenge_method", "S256");
   return u.toString();
@@ -294,7 +318,7 @@ export async function pkcePair(): Promise<{ verifier: string; challenge: string 
 
 /** Exchange the code and verify the id_token; returns its claims. */
 export async function oidcExchange(env: Env, meta: OidcMetadata, cfg: OidcIdpConfig, code: string, callbackUrl: string, verifier: string, expectedNonce: string): Promise<JWTPayload> {
-  const clientSecret = await unsealMaybe(env, cfg.client_secret);
+  const clientSecret = cfg.apple ? await appleClientSecret(env, cfg.apple, cfg.client_id) : await unsealMaybe(env, cfg.client_secret);
   const res = await fetch(meta.token_endpoint, {
     method: "POST",
     signal: AbortSignal.timeout(10_000),

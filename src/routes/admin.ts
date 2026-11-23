@@ -33,7 +33,8 @@ import { logAudit, verifyAuditChain } from "../lib/audit.js";
 import { CORRELATION_KEYS, getCorrelationKeys, getMasteredFields, listScimMappings, MASTERING_FIELDS, masteringKeyFor, replaceScimMappings, setCorrelationKeys, setMasteredFields, USER_MAPPING_TARGETS } from "../lib/scim-mapping.js";
 import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, listScimTargetsForApp, updateScimTarget, type ScimTarget } from "../lib/scim-targets.js";
 import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructions, type CatalogEntry } from "../lib/catalog.js";
-import { createUpstreamIdp, deleteUpstreamIdp, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
+import { createUpstreamIdp, deleteUpstreamIdp, FederationError, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
+import { SOCIAL_PROVIDERS, socialIssuer, socialMeta, socialProvider, type SocialProvider } from "../lib/social.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
@@ -490,6 +491,7 @@ const INTEGRATION_PAGES = [
   { key: "scim", label: "SCIM provisioning" },
   { key: "ldap", label: "LDAP" },
   { key: "federation", label: "Federation" },
+  { key: "social", label: "Social sign-in" },
   { key: "email", label: "Email" },
   { key: "cf-one", label: "Cloudflare One" },
   { key: "signals", label: "Signals" },
@@ -3156,6 +3158,7 @@ admin.get("/admin/integrations", async (c) => {
   ]);
   const activeKeys = apiKeys.filter((k) => !k.revoked_at);
   const revokedKeys = apiKeys.length - activeKeys.length;
+  const socialIdps = upstreamIdps.filter((u) => u.protocol === "oidc" && idpConfig<OidcIdpConfig>(u).social);
 
   return c.html(
     layout(
@@ -3200,6 +3203,16 @@ admin.get("/admin/integrations", async (c) => {
           ),
           empty: "Nobody signs in through an upstream IdP.",
           manage: "federation",
+        })}
+        ${summaryCard({
+          title: "Social sign-in",
+          count: `${socialIdps.length} of ${SOCIAL_PROVIDERS.length} set up`,
+          rows: socialIdps.map(
+            (u) =>
+              `<tr><td><a href="/admin/integrations/social/${idpConfig<OidcIdpConfig>(u).social}">${escapeHtml(u.name)}</a></td><td class="muted">${u.jit ? "JIT" : "link only"}</td>${u.enabled ? "" : '<td><span class="badge badge-disabled">Disabled</span></td>'}</tr>`
+          ),
+          empty: "No consumer providers set up - Google, GitHub, Microsoft and more are a client id and secret away.",
+          manage: "social",
         })}
         ${summaryCard({
           title: "SAML",
@@ -6572,6 +6585,23 @@ function upstreamFormFields(
             <label for="nameid_format">NameID format <span class="muted">(optional)</span></label>
             <input type="text" id="nameid_format" name="nameid_format" value="${v("nameid_format")}" placeholder="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" />`
       }
+      ${jitFields(idp, groups, roleGrants)}
+      ${
+        idp
+          ? `<label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${idp.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; offered on the sign-in page</label>`
+          : ""
+      }
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+      <div class="form-actions" style="margin-top:16px;">
+        <button class="primary" type="submit">${idp ? "Save" : "Create provider"}</button>
+        ${cancelLink("/admin/integrations/federation", "Cancel")}
+      </div>
+    </form>`;
+}
+
+/** The provisioning block every upstream-provider form shares. */
+function jitFields(idp: UpstreamIdpRow | null, groups: { id: number; name: string }[], roleGrants: Map<number, { roles: string[]; writable: boolean }>): string {
+  return `
       <h3 style="margin-top:18px;">Accounts</h3>
       <label style="font-weight:400;"><input type="checkbox" name="jit" value="1" ${idp?.jit ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Just-in-time provisioning &mdash; create an account for an upstream identity nobody here has</label>
       <label for="jit_domain">JIT domain <span class="muted">(optional - else the claim's email domain when managed, or the default)</span></label>
@@ -6588,23 +6618,17 @@ function upstreamFormFields(
         new Set(idp ? upstreamJitGroups(idp) : []),
         "Search groups..."
       )}
-      <p class="muted">Every account this provider provisions is added to these groups at creation - including, deliberately, groups that grant a read-only admin role. A group whose role can <em>write</em> is refused on save; give it a read-only role (like Auditor) instead.</p>
-      ${
-        idp
-          ? `<label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${idp.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; offered on the sign-in page</label>`
-          : ""
-      }
-      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-      <div class="form-actions" style="margin-top:16px;">
-        <button class="primary" type="submit">${idp ? "Save" : "Create provider"}</button>
-        ${cancelLink("/admin/integrations/federation", "Cancel")}
-      </div>
-    </form>`;
+      <p class="muted">Every account this provider provisions is added to these groups at creation - including, deliberately, groups that grant a read-only admin role. A group whose role can <em>write</em> is refused on save; give it a read-only role (like Auditor) instead.</p>`;
+}
+
+/** Which groups the body chose for JIT provisioning. */
+function jitGroupsFrom(body: Record<string, unknown>): number[] {
+  return (Array.isArray(body.jit_groups) ? body.jit_groups : body.jit_groups === undefined ? [] : [body.jit_groups]).map(Number).filter((n) => Number.isInteger(n) && n > 0);
 }
 
 function upstreamInputFrom(body: Record<string, unknown>, idp: UpstreamIdpRow | null): UpstreamIdpInput & { enabled: boolean; keepSecret: boolean } {
   const protocol = String(body.protocol ?? "") === "saml" ? "saml" : "oidc";
-  const jitGroups = (Array.isArray(body.jit_groups) ? body.jit_groups : body.jit_groups === undefined ? [] : [body.jit_groups]).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  const jitGroups = jitGroupsFrom(body);
   return {
     name: String(body.name ?? ""),
     protocol,
@@ -6627,7 +6651,9 @@ function upstreamInputFrom(body: Record<string, unknown>, idp: UpstreamIdpRow | 
 }
 
 admin.get("/admin/integrations/federation", async (c) => {
-  const idps = await listUpstreamIdps(c.env);
+  const allIdps = await listUpstreamIdps(c.env);
+  const idps = allIdps.filter((u) => !(u.protocol === "oidc" && idpConfig<OidcIdpConfig>(u).social));
+  const socialCount = allIdps.length - idps.length;
   const { results: linkCounts } = await c.env.DB.prepare("SELECT idp_id, COUNT(*) AS n FROM federated_identities GROUP BY idp_id").all<{ idp_id: number; n: number }>();
   const linkedBy = new Map(linkCounts.map((r) => [r.idp_id, r.n]));
   return c.html(
@@ -6638,7 +6664,7 @@ admin.get("/admin/integrations/federation", async (c) => {
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        ${integrationIntro("Sign in <em>through</em> an upstream identity provider &mdash; FlareID as the relying party. Each provider gets a \"Continue with ...\" button on the sign-in page; the first sign-in links the upstream identity to an account here (by address match, or by JIT provisioning when switched on).", { href: "/admin/integrations/federation/new", label: "+ New provider" })}
+        ${integrationIntro(`Sign in <em>through</em> an upstream identity provider &mdash; FlareID as the relying party. Each provider gets a &quot;Continue with ...&quot; button on the sign-in page; the first sign-in links the upstream identity to an account here (by address match, or by JIT provisioning when switched on).${socialCount ? ` Consumer providers like Google or GitHub are managed under <a href="/admin/integrations/social">Social sign-in</a> (${socialCount} set up).` : ""}`, { href: "/admin/integrations/federation/new", label: "+ New provider" })}
         ${
           idps.length === 0
             ? '<p class="muted">No upstream providers yet &mdash; everyone signs in with a password or passkey.</p>'
@@ -6676,7 +6702,7 @@ admin.get("/admin/integrations/federation/new", async (c) => {
       `
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
       ${cardSection(`
-        <p class="sub">One upstream identity provider people can sign in through.</p>
+        <p class="sub">One upstream identity provider people can sign in through. For a consumer provider (Google, GitHub, Apple, ...) use <a href="/admin/integrations/social">Social sign-in</a> - its details are already filled in.</p>
         <p class="muted">Protocol:
           <a href="/admin/integrations/federation/new?protocol=oidc"${protocol === "oidc" ? ' style="font-weight:600;"' : ""}>OIDC</a> &middot;
           <a href="/admin/integrations/federation/new?protocol=saml"${protocol === "saml" ? ' style="font-weight:600;"' : ""}>SAML</a>
@@ -6700,6 +6726,8 @@ admin.get("/admin/integrations/federation/new", async (c) => {
 admin.get("/admin/integrations/federation/:id", async (c) => {
   const idp = await getUpstreamIdp(c.env, Number(c.req.param("id")));
   if (!idp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const socialKey = idp.protocol === "oidc" ? idpConfig<OidcIdpConfig>(idp).social : undefined;
+  if (socialKey && socialProvider(socialKey)) return c.redirect(`/admin/integrations/social/${socialKey}`, 302);
   const { n: linked } = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE idp_id = ?").bind(idp.id).first<{ n: number }>()) ?? { n: 0 };
   const { results: links } = await c.env.DB.prepare(
     "SELECT f.subject, f.email, f.last_login_at, u.upn FROM federated_identities f JOIN users u ON u.id = f.user_id WHERE f.idp_id = ? ORDER BY f.last_login_at DESC LIMIT 50"
@@ -6795,6 +6823,199 @@ admin.post("/admin/federation/idps/:id/delete", async (c) => {
     await logAudit(c.env, c.get("user"), "federation.idp_deleted", idp.name, { protocol: idp.protocol }, c.req.raw);
   }
   return c.redirect("/admin/integrations/federation?saved=1", 302);
+});
+
+
+// ---------- Integrations: Social sign-in ----------
+//
+// A curated set of consumer identity providers (lib/social.ts). Each is an
+// ordinary upstream_idps OIDC row marked config.social = <key>; the catalog
+// supplies issuer/endpoints/scopes so the admin only brings client
+// credentials and the JIT choices every provider shares.
+
+/** The upstream row a social provider is configured as, if any. */
+async function socialIdpFor(env: Env, key: string): Promise<UpstreamIdpRow | null> {
+  return env.DB.prepare("SELECT * FROM upstream_idps WHERE protocol = 'oidc' AND json_extract(config, '$.social') = ?").bind(key).first<UpstreamIdpRow>();
+}
+
+admin.get("/admin/integrations/social", async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT id, name, enabled, jit, config FROM upstream_idps WHERE protocol = 'oidc' AND json_extract(config, '$.social') IS NOT NULL").all<Pick<UpstreamIdpRow, "id" | "name" | "enabled" | "jit"> & { config: string }>();
+  const configured = new Map(results.map((u) => [(JSON.parse(u.config) as OidcIdpConfig).social, u] as const));
+  return c.html(
+    layout(
+      c,
+      "Social sign-in",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro(`Sign-in buttons for consumer identity providers &mdash; &quot;Continue with Google&quot;, &quot;Continue with GitHub&quot; and friends. Each is an ordinary upstream provider under the hood (the same JIT provisioning, claim mappings and linked-identity tracking as <a href="/admin/integrations/federation">Federation</a>); this page just fills in the protocol details for you. Any other OIDC or SAML provider can be added there.`)}
+        <table>
+          <thead><tr><th>Provider</th><th></th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${SOCIAL_PROVIDERS.map((p) => {
+              const idp = configured.get(p.key);
+              return `<tr${idp && !idp.enabled ? ' style="opacity:.55;"' : ""}>
+                <td><strong>${escapeHtml(p.name)}</strong><br /><span class="muted">${escapeHtml(p.blurb)}</span></td>
+                <td class="muted">${p.kind === "oauth2" ? "OAuth 2.0" : "OIDC"}</td>
+                <td>${idp ? `<span class="badge ${idp.enabled ? "badge-active" : "badge-disabled"}">${idp.enabled ? "Enabled" : "Disabled"}</span>` : '<span class="muted">Not set up</span>'}</td>
+                <td style="text-align:right;"><a href="/admin/integrations/social/${p.key}">${idp ? "Manage" : "Set up"}</a></td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("social")]
+    )
+  );
+});
+
+/** The credential fields a provider's form shows: client id plus a secret, or Apple's key material. */
+function socialCredentialFields(p: SocialProvider, idp: UpstreamIdpRow | null): string {
+  const cfg = idp ? idpConfig<OidcIdpConfig>(idp) : ({} as OidcIdpConfig);
+  const cid = `<div>
+      <label for="client_id">${p.kind === "apple" ? "Services ID (client ID)" : "Client ID"}</label>
+      <input type="text" id="client_id" name="client_id" required value="${escapeHtml(cfg.client_id ?? "")}" />
+    </div>`;
+  if (p.kind === "apple") {
+    return `<div class="field-row">
+        <div>
+          <label for="apple_team_id">Team ID</label>
+          <input type="text" id="apple_team_id" name="apple_team_id" required value="${escapeHtml(cfg.apple?.team_id ?? "")}" placeholder="10 characters, from the Apple Developer membership page" />
+        </div>
+        <div>
+          <label for="apple_key_id">Key ID</label>
+          <input type="text" id="apple_key_id" name="apple_key_id" required value="${escapeHtml(cfg.apple?.key_id ?? "")}" placeholder="The Sign in with Apple key's id" />
+        </div>
+      </div>
+      ${cid}
+      <label for="apple_private_key">Private key (.p8)</label>
+      <textarea id="apple_private_key" name="apple_private_key" rows="6" ${idp ? "" : "required"} placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+      <p class="muted" style="margin-top:-6px;">${idp ? "Saved - leave blank to keep it." : "Write-only: never shown again after saving."} FlareID signs the client secret JWT with it for each sign-in.</p>`;
+  }
+  return `<div class="field-row">
+      ${cid}
+      <div>
+        <label for="client_secret">Client secret</label>
+        <input type="password" id="client_secret" name="client_secret" autocomplete="new-password" placeholder="${idp ? "Saved - leave blank to keep it" : "From the provider's app registration"}" ${idp ? "" : "required"} />
+        <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
+      </div>
+    </div>`;
+}
+
+admin.get("/admin/integrations/social/:key", async (c) => {
+  const p = socialProvider(c.req.param("key"));
+  if (!p) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const idp = await socialIdpFor(c.env, p.key);
+  const cfg = idp ? idpConfig<OidcIdpConfig>(idp) : null;
+  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<{ id: number; name: string }>();
+  const origin = new URL(c.req.url).origin;
+  // Microsoft's tenant survives in the stored issuer; pull it back out.
+  const tenant = p.tenant && cfg ? /login\.microsoftonline\.com\/([^/]+)\/v2\.0/.exec(cfg.issuer)?.[1] ?? "" : "";
+  const { n: linked } = idp ? ((await c.env.DB.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE idp_id = ?").bind(idp.id).first<{ n: number }>()) ?? { n: 0 }) : { n: 0 };
+  const endpoints = p.kind === "oauth2" ? socialMeta(p) : null;
+  return c.html(
+    layout(
+      c,
+      p.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        <h2 style="margin-top:0;">Register with ${escapeHtml(p.name)}</h2>
+        <p class="muted">${escapeHtml(p.registerHint)} <a href="${escapeHtml(p.docsUrl)}" target="_blank" rel="noopener">${escapeHtml(p.docsUrl)}</a></p>
+        <dl class="attr-list">
+          ${attrHtml("Redirect URI (to register)", `<code>${escapeHtml(oidcCallbackUrl(origin))}</code>`)}
+          ${endpoints ? attrHtml("Authorize URL", `<code>${escapeHtml(endpoints.authorization_endpoint)}</code>`) : attrHtml("Issuer", `<code>${escapeHtml(p.tenant ? socialIssuer(p, tenant) : p.issuer)}</code>`)}
+        </dl>
+        <form method="POST" action="/admin/social/${p.key}">
+          <label for="name">Name <span class="muted">(the "Continue with" button's wording)</span></label>
+          <input type="text" id="name" name="name" required value="${escapeHtml(idp?.name ?? p.name)}" />
+          ${p.tenant ? `<label for="tenant">${escapeHtml(p.tenant.label)}</label><input type="text" id="tenant" name="tenant" value="${escapeHtml(tenant)}" placeholder="${escapeHtml(p.tenant.placeholder)}" /><p class="muted" style="margin-top:-6px;">${escapeHtml(p.tenant.help)}</p>` : ""}
+          ${socialCredentialFields(p, idp)}
+          <p class="muted">Scopes requested: <code>${escapeHtml(p.scopes)}</code>${p.key === "x" ? " - X returns no email address, so new accounts are named from the handle." : ""}</p>
+          ${jitFields(idp, groups, await groupRoleWriteMap(c.env))}
+          ${
+            idp
+              ? `<label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${idp.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled &mdash; offered on the sign-in page</label>`
+              : ""
+          }
+          <div class="form-actions" style="margin-top:16px;">
+            <button class="primary" type="submit">${idp ? "Save" : "Set up " + escapeHtml(p.name)}</button>
+            ${cancelLink("/admin/integrations/social", "Cancel")}
+          </div>
+        </form>
+        ${
+          idp
+            ? `<div class="row" style="justify-content:flex-start; gap:10px; margin-top:14px;">
+                <form method="POST" action="/admin/social/${p.key}/delete" ${confirmAttrs(
+                  `Removing ${p.name} deletes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`,
+                  { title: `Remove ${p.name}?`, action: "Remove provider", danger: true }
+                )}>
+                  <button class="danger" type="submit">Remove ${escapeHtml(p.name)}</button>
+                </form>
+              </div>`
+            : ""
+        }
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("social"), { label: p.name }]
+    )
+  );
+});
+
+admin.post("/admin/social/:key", async (c) => {
+  const p = socialProvider(c.req.param("key"));
+  if (!p) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const body = await c.req.parseBody({ all: true });
+  const existing = await socialIdpFor(c.env, p.key);
+  try {
+    if (p.kind === "apple" && !existing && !String(body.apple_private_key ?? "").trim()) {
+      throw new FederationError("Apple needs the Sign in with Apple private key (.p8).");
+    }
+    const input = {
+      name: String(body.name ?? "").trim() || p.name,
+      protocol: "oidc" as const,
+      jit: String(body.jit ?? "") === "1",
+      jitDomain: String(body.jit_domain ?? ""),
+      jitGroups: jitGroupsFrom(body),
+      enabled: !existing || String(body.enabled ?? "") === "1",
+      keepSecret: existing !== null && !String(body.client_secret ?? "").trim() && !String(body.apple_private_key ?? "").trim(),
+      config: {
+        social: p.key,
+        issuer: socialIssuer(p, String(body.tenant ?? "")),
+        client_id: String(body.client_id ?? ""),
+        client_secret: String(body.client_secret ?? ""),
+        scopes: p.scopes,
+        ...(p.kind === "apple"
+          ? {
+              apple: {
+                team_id: String(body.apple_team_id ?? ""),
+                key_id: String(body.apple_key_id ?? ""),
+                private_key: String(body.apple_private_key ?? ""),
+              },
+            }
+          : {}),
+      },
+    };
+    const saved = existing ? await updateUpstreamIdp(c.env, existing.id, input) : await createUpstreamIdp(c.env, input);
+    await logAudit(c.env, c.get("user"), existing ? "federation.idp_updated" : "federation.idp_created", saved.name, { protocol: "oidc", social: p.key, enabled: saved.enabled }, c.req.raw);
+    return c.redirect(`/admin/integrations/social/${p.key}?saved=1`, 302);
+  } catch (e) {
+    return c.redirect(`/admin/integrations/social/${p.key}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post("/admin/social/:key/delete", async (c) => {
+  const p = socialProvider(c.req.param("key"));
+  if (!p) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const existing = await socialIdpFor(c.env, p.key);
+  if (existing) {
+    await deleteUpstreamIdp(c.env, existing.id);
+    await logAudit(c.env, c.get("user"), "federation.idp_deleted", existing.name, { protocol: "oidc", social: p.key }, c.req.raw);
+  }
+  return c.redirect("/admin/integrations/social?saved=1", 302);
 });
 
 // ---------- Audit log ----------

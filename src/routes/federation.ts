@@ -28,6 +28,7 @@ import { getLoginFlow } from "../lib/authorize-state.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
 import { samlId } from "../lib/saml/xml.js";
 import { randomToken } from "../lib/tokens.js";
+import { socialExchange, socialMeta, socialProvider } from "../lib/social.js";
 import { completeLoginFlow } from "./login.js";
 
 /**
@@ -52,16 +53,19 @@ federation.get("/login/federated/:id", async (c) => {
 
   if (idp.protocol === "oidc") {
     const cfg = idpConfig<OidcIdpConfig>(idp);
+    const social = socialProvider(cfg.social);
     let meta;
     try {
-      meta = await oidcMetadata(c.env, cfg.issuer);
+      meta = social?.kind === "oauth2" ? socialMeta(social) : await oidcMetadata(c.env, cfg.issuer);
     } catch (e) {
       return renderAuthMessage(c, 400, appConfigError(e instanceof FederationError ? e.message : "The provider's configuration could not be read."), { domain: flow.brandDomain });
     }
     const { verifier, challenge } = await pkcePair();
-    const nonce = randomToken(16);
+    // OAuth2-only providers have no id_token for the nonce to live in - state
+    // and PKCE carry the same guarantees there.
+    const nonce = social?.kind === "oauth2" ? "" : randomToken(16);
     const state = await storeFedState(c.env, { flowId, idpId: idp.id, nonce, verifier, brandDomain: flow.brandDomain, locale: flow.locale });
-    await logAudit(c.env, null, "federation.start", idp.name, { protocol: "oidc" }, c.req.raw);
+    await logAudit(c.env, null, "federation.start", idp.name, { protocol: social ? `${social.key} (social)` : "oidc" }, c.req.raw);
     return c.redirect(oidcAuthorizeUrl(meta, cfg, oidcCallbackUrl(origin), state, nonce, challenge), 302);
   }
 
@@ -119,10 +123,15 @@ federation.get("/federation/oidc/callback", async (c) => {
   if (!code) return renderAuthMessage(c, 400, appConfigError("The provider returned no authorization code."), hint);
 
   const cfg = idpConfig<OidcIdpConfig>(idp);
+  const social = socialProvider(cfg.social);
   let claims;
   try {
-    const meta = await oidcMetadata(c.env, cfg.issuer);
-    claims = await oidcExchange(c.env, meta, cfg, code, oidcCallbackUrl(new URL(c.req.url).origin), st.verifier ?? "", st.nonce ?? "");
+    if (social?.kind === "oauth2") {
+      claims = await socialExchange(c.env, social, cfg, code, oidcCallbackUrl(new URL(c.req.url).origin), st.verifier ?? "");
+    } else {
+      const meta = await oidcMetadata(c.env, cfg.issuer);
+      claims = await oidcExchange(c.env, meta, cfg, code, oidcCallbackUrl(new URL(c.req.url).origin), st.verifier ?? "", st.nonce ?? "");
+    }
   } catch (e) {
     await logAudit(c.env, null, "federation.failed", idp.name, { error: e instanceof Error ? e.message : String(e) }, c.req.raw);
     return renderAuthMessage(c, 400, appConfigError(e instanceof FederationError ? e.message : "The provider's response could not be verified."), hint);

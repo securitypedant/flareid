@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.8.0.
+API version 4.9.0.
 
 ## Contents
 
@@ -2625,6 +2625,7 @@ Inbound federation: upstream identity providers people sign in through (FlareID 
 | `GET` | `/api/v1/federation/idps/{id}` | `federation:read` | Read one upstream identity provider |
 | `PATCH` | `/api/v1/federation/idps/{id}` | `admin` | Change an upstream identity provider |
 | `DELETE` | `/api/v1/federation/idps/{id}` | `admin` | Remove an upstream identity provider |
+| `GET` | `/api/v1/social/providers` | `federation:read` | List social sign-in providers |
 
 ### `GET /api/v1/federation/idps`
 
@@ -2752,6 +2753,22 @@ Response `200`:
 | `ok` | true | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `GET /api/v1/social/providers`
+
+List social sign-in providers.
+
+The curated social-provider catalog the Social sign-in console page offers: each entry's key, display name, protocol shape and app-registration link, plus - when it is configured - the upstream IdP row it lives as. Configure providers through POST/PATCH /api/v1/federation/idps with config.social set to the key.
+
+Permission: `federation:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `providers` | object[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 ## Cloudflare One
 

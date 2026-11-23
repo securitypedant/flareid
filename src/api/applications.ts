@@ -4,6 +4,7 @@ import { listDomains } from "../lib/domains.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri, parseAllowedClaims } from "../lib/oidc.js";
 import { getScimTarget, listScimTargets, type ScimTarget } from "../lib/scim-targets.js";
 import { getUpstreamIdp, idpConfig, listUpstreamIdps, upstreamJitGroups, type UpstreamIdpRow } from "../lib/federation.js";
+import { SOCIAL_PROVIDERS } from "../lib/social.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { spAttributeDefinitions } from "../lib/saml/service-providers.js";
@@ -359,6 +360,10 @@ function idpJson(u: UpstreamIdpRow) {
   const cfg = { ...idpConfig(u) } as Record<string, unknown>;
   const secretSet = Boolean(cfg.client_secret);
   delete cfg.client_secret;
+  // The Apple material is key material like the client secret: report the ids,
+  // never the .p8 contents.
+  const apple = cfg.apple as { team_id?: string; key_id?: string; private_key?: string } | undefined;
+  if (apple) cfg.apple = { team_id: apple.team_id ?? "", key_id: apple.key_id ?? "", key_set: Boolean(apple.private_key) };
   return {
     id: u.id,
     name: u.name,
@@ -384,6 +389,33 @@ defineRoute(
     return u ? c.json(idpJson(u)) : notFound(c, "No such upstream identity provider.");
   }
 );
+
+defineRoute({
+  method: "get", path: "/api/v1/social/providers", tag: "Federation", permission: "federation:read", summary: "List social sign-in providers",
+  description:
+    "The curated social-provider catalog the Social sign-in console page offers: each entry's key, display name, protocol shape and app-registration link, plus - when it is configured - the upstream IdP row it lives as. Configure providers through POST/PATCH /api/v1/federation/idps with config.social set to the key.",
+  response: z.object({
+    providers: z.array(
+      z.object({
+        key: z.string(),
+        name: z.string(),
+        kind: z.enum(["oidc", "apple", "oauth2"]),
+        scopes: z.string(),
+        docs_url: z.string(),
+        idp: z.object({ id: z.number(), name: z.string(), enabled: z.boolean() }).nullable(),
+      })
+    ),
+  }),
+}, async (c) => {
+  const idps = (await listUpstreamIdps(c.env)).filter((u) => u.protocol === "oidc");
+  const byKey = new Map(idps.map((u) => [(idpConfig(u) as { social?: string }).social, u] as const));
+  return c.json({
+    providers: SOCIAL_PROVIDERS.map((p) => {
+      const idp = byKey.get(p.key);
+      return { key: p.key, name: p.name, kind: p.kind, scopes: p.scopes, docs_url: p.docsUrl, idp: idp ? { id: idp.id, name: idp.name, enabled: idp.enabled === 1 } : null };
+    }),
+  });
+});
 
 // ---------------------------------------------------------------------------
 // App catalog
