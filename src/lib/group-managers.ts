@@ -22,7 +22,7 @@ export async function managedGroups(env: Env, userId: number): Promise<(GroupRow
     await env.DB.prepare(
       `SELECT g.*,
         (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count,
-        (SELECT COUNT(*) FROM access_requests ar WHERE ar.group_id = g.id AND ar.status = 'pending') AS pending
+        (SELECT COUNT(*) FROM access_requests ar WHERE ar.target_type = 'group' AND ar.target_id = g.id AND ar.status = 'pending') AS pending
        FROM group_managers m JOIN groups g ON g.id = m.group_id
        WHERE m.user_id = ? ORDER BY g.name`
     )
@@ -46,10 +46,10 @@ export async function groupManagers(env: Env, groupId: number): Promise<UserRow[
 export async function pendingRequestsForManager(env: Env, userId: number, limit = 50): Promise<{ id: number; user_id: number; group_id: number; reason: string; upn: string; display_name: string; group_name: string; created_at: string }[]> {
   return (
     await env.DB.prepare(
-      `SELECT r.id, r.user_id, r.group_id, r.reason, u.upn, u.display_name, g.name AS group_name, r.created_at
+      `SELECT r.id, r.user_id, r.target_id AS group_id, r.reason, u.upn, u.display_name, g.name AS group_name, r.created_at
        FROM access_requests r
-       JOIN group_managers m ON m.group_id = r.group_id AND m.user_id = ?
-       JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id
+       JOIN group_managers m ON r.target_type = 'group' AND m.group_id = r.target_id AND m.user_id = ?
+       JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.target_id
        WHERE r.status = 'pending' AND r.user_id != ? ORDER BY r.created_at DESC LIMIT ?`
     )
       .bind(userId, userId, limit)

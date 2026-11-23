@@ -45,21 +45,21 @@ describe("access requests", () => {
     // name or description, with both shown.
     const accountPage = await (await SELF.fetch(`${BASE}/account/groups`, { headers: { Cookie: cookie } })).text();
     expect(accountPage).toContain("Request access");
-    const found = await (await SELF.fetch(`${BASE}/account/access/groups?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string; badges: { label: string }[] }[];
-    expect(found).toEqual([{ id: groupId, label: "VPN users", desc: "For the field team", badges: [] }]);
-    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=nomatch`, { headers: { Cookie: cookie } })).json()).toEqual([]);
+    const found = await (await SELF.fetch(`${BASE}/account/access/targets?q=field`, { headers: { Cookie: cookie } })).json() as { id: number; label: string; desc: string; badges: { label: string }[] }[];
+    expect(found).toEqual([{ id: `group:${groupId}`, label: "VPN users", desc: "For the field team", badges: [] }]);
+    expect(await (await SELF.fetch(`${BASE}/account/access/targets?q=nomatch`, { headers: { Cookie: cookie } })).json()).toEqual([]);
 
     const ask = await SELF.fetch(`${BASE}/account/access/request`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie },
-      body: new URLSearchParams({ group_id: String(groupId), reason: "need it for the field team" }).toString(),
+      body: new URLSearchParams({ target: `group:${groupId}`, reason: "need it for the field team" }).toString(),
       redirect: "manual",
     });
     expect(ask.headers.get("Location")).toContain("saved=access-requested");
     const req = await env.DB.prepare("SELECT id, status FROM access_requests WHERE user_id = ?").bind(uid).first<{ id: number; status: string }>();
     expect(req!.status).toBe("pending");
     // While the ask waits it drops out of the picker - asking twice would only error.
-    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
+    expect(await (await SELF.fetch(`${BASE}/account/access/targets?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
 
     // The console queue lists it for a groups admin.
     const admin = await adminCookie();
@@ -83,7 +83,7 @@ describe("access requests", () => {
     const after = await (await SELF.fetch(`${BASE}/account/groups`, { headers: { Cookie: cookie } })).text();
     expect(after).toContain("Approved");
     // And can't ask again - already a member.
-    expect(await (await SELF.fetch(`${BASE}/account/access/groups?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
+    expect(await (await SELF.fetch(`${BASE}/account/access/targets?q=VPN`, { headers: { Cookie: cookie } })).json()).toEqual([]);
   });
 
   it("refuses requests for anything not open to them, and double-asking", async () => {
@@ -97,20 +97,20 @@ describe("access requests", () => {
       const res = await SELF.fetch(`${BASE}/account/access/request`, {
         method: "POST",
         headers: { ...FORM, Cookie: cookie },
-        body: new URLSearchParams({ group_id: String(gid), reason: "x" }).toString(),
+        body: new URLSearchParams({ target: `group:${gid}`, reason: "x" }).toString(),
       });
       expect(res.status).toBe(200); // the friendly error page
-      expect(await env.DB.prepare("SELECT 1 FROM access_requests WHERE group_id = ? AND user_id = ?").bind(gid, uid).first()).toBeNull();
+      expect(await env.DB.prepare("SELECT 1 FROM access_requests WHERE target_type = 'group' AND target_id = ? AND user_id = ?").bind(gid, uid).first()).toBeNull();
     }
     // A dynamic group can never become requestable even via the API.
     const dyn = await env.DB.prepare("SELECT requestable FROM groups WHERE id = ?").bind(dynamic).first<{ requestable: number }>();
     expect(dyn!.requestable).toBe(0);
 
     const open = await makeGroup(apiKey, "Open", { requestable: true });
-    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `group_id=${open}&reason=a` });
-    const again = await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `group_id=${open}&reason=b` });
+    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `target=group%3A${open}&reason=a` });
+    const again = await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `target=group%3A${open}&reason=b` });
     expect(await again.text()).toContain("already waiting");
-    expect((await env.DB.prepare("SELECT COUNT(*) n FROM access_requests WHERE group_id = ?").bind(open).first<{ n: number }>())!.n).toBe(1);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM access_requests WHERE target_type = 'group' AND target_id = ?").bind(open).first<{ n: number }>())!.n).toBe(1);
   });
 
   it("denies a request without granting membership, and lets the requester withdraw", async () => {
@@ -119,7 +119,7 @@ describe("access requests", () => {
     const uid2 = await seedUser(apiKey, "sam");
     const groupId = await makeGroup(apiKey, "VPN users", { requestable: true });
     const cookie = await sessionFor(uid);
-    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `group_id=${groupId}&reason=` });
+    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `target=group%3A${groupId}&reason=` });
     const req = (await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ?").bind(uid).first<{ id: number }>())!;
 
     // Someone else can't withdraw it.
@@ -138,7 +138,7 @@ describe("access requests", () => {
     expect(again.status).toBe(409);
 
     // Asking again is allowed after a decision.
-    const reAsk = await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `group_id=${groupId}`, redirect: "manual" });
+    const reAsk = await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `target=group%3A${groupId}`, redirect: "manual" });
     expect(reAsk.headers.get("Location")).toContain("saved=access-requested");
     const pending = (await env.DB.prepare("SELECT id FROM access_requests WHERE status = 'pending'").first<{ id: number }>())!;
     const withdraw = await SELF.fetch(`${BASE}/account/access/requests/${pending.id}/cancel`, { method: "POST", headers: { ...FORM, Cookie: cookie }, redirect: "manual" });
@@ -153,7 +153,7 @@ describe("access requests", () => {
     const sup = (await env.DB.prepare("SELECT id FROM groups WHERE name = 'Super Admins'").first<{ id: number }>())!;
     await env.DB.prepare("UPDATE groups SET requestable = 1 WHERE id = ?").bind(sup.id).run();
     const cookie = await sessionFor(uid);
-    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `group_id=${sup.id}` });
+    await SELF.fetch(`${BASE}/account/access/request`, { method: "POST", headers: { ...FORM, Cookie: cookie }, body: `target=group%3A${sup.id}` });
     const req = (await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ?").bind(uid).first<{ id: number }>())!;
 
     // A key with groups:write but not admin can decide requests in general -
@@ -181,7 +181,7 @@ describe("the requests queue", () => {
       await SELF.fetch(`${BASE}/account/access/request`, {
         method: "POST",
         headers: { ...FORM, Cookie: cookie },
-        body: new URLSearchParams({ group_id: String(groupId), reason: i === 7 ? "needle project" : "access" }).toString(),
+        body: new URLSearchParams({ target: `group:${groupId}`, reason: i === 7 ? "needle project" : "access" }).toString(),
       });
     }
 

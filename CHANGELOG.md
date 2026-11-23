@@ -4,6 +4,32 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.10.0] - 2026-11-23
+
+Application access governance: apps are deny-by-default, access is assignable
+to people as well as groups, apps can demand a second factor, and access
+requests now cover applications alongside groups.
+
+- **Deny by default.** New OIDC clients and SAML apps start **restricted** —
+  nobody can sign in until the app is assigned. Assignments now take
+  individual people as well as static and dynamic groups, or flip the mode to
+  **Everyone** to open the app to the whole directory.
+- **Per-app MFA.** A new **Require a second-factor sign-in** switch on each
+  app forces an MFA step on SSO into that app, whatever the person's
+  authentication policy asked — an existing password-only session is stepped
+  up before a code or assertion is issued.
+- **Access requests cover apps.** `access_requests` is polymorphic
+  (`target_type`/`target_id`), so requestable apps appear in the same picker
+  as requestable groups under **My account → Access** (the page and nav item
+  formerly called Groups; `/account/groups` redirects). Approving an app
+  request assigns the person to the app directly.
+- **Better lists.** **Applications** gains name search, protocol and access
+  filters, and 25/50/100 paging; the **App catalog** gains the same
+  search/filter/paging and lays its cards out three across.
+- **API.** `access_mode`, `assigned_users`, `require_mfa` and `requestable`
+  on the client and service-provider objects; access requests accept a
+  `target_type`/`target_id` pair (the legacy `group_id` form still works).
+
 ## [4.9.0] - 2026-11-24
 
 Social sign-in: consumer identity providers as first-class "Continue with"

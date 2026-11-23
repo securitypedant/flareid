@@ -1,10 +1,11 @@
 import { canSignIn } from "../lib/admin-roles.js";
 import { isConsumed, markConsumed } from "../lib/one-shot.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
+import { hasSecondStep, secondStepFactors } from "../lib/second-step.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, loginAppearance, msg, renderAuthMessage, sendLoginForm, type AuthMessage } from "../lib/login-views.js";
-import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, type PendingSamlRequest } from "../lib/authorize-state.js";
+import { appConfigError, AUTH_MESSAGES, loginAppearance, mfaForm, msg, renderAuthMessage, sendLoginForm, type AuthMessage } from "../lib/login-views.js";
+import { deleteLoginFlow, getFlowBinding, getLoginFlow, sealLoginFlow, storeLoginFlow, storePendingMfa, type PendingSamlRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { getUserById, getUserGroupIds } from "../lib/db.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
@@ -34,7 +35,7 @@ import {
   type RequestedAuthnContext,
   type SignatureCheck,
 } from "../lib/saml/authn-request.js";
-import { appVisibleTo, getSpByEntityId, getSpById, parseAssignedGroupIds, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
+import { amrSatisfiesMfa, appAccessAllowed, getSpByEntityId, getSpById, parseAssignedGroupIds, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
 import type { SamlServiceProviderRow, UserRow } from "../lib/types.js";
 
 export const saml = new Hono<{ Bindings: Env }>();
@@ -65,10 +66,11 @@ export async function issueSamlResponse(
   // Single-use, enforced here rather than when the request arrives: marking at
   // receipt made every anonymous AuthnRequest a KV write. An ID that has already
   // been answered gets nothing new to post (null), even if it verifies.
+  // IdP-initiated sign-ons carry no AuthnRequest id - nothing to replay.
   const replayKey = `saml:req:${sp.id}:${request.requestId}`;
   // The marker is an atomic D1 claim - the KV get+put it replaces raced by
   // minutes of propagation time, and its row outlives REQUEST_ID_TTL anyway.
-  if (!(await markConsumed(env, replayKey))) return null;
+  if (request.requestId !== null && !(await markConsumed(env, replayKey))) return null;
   // The NameIDPolicy the request asked for was validated before the flow was
   // stored and rides along as extra fields (the flow is JSON-serialised, so
   // they survive the login that may happen in between).
@@ -145,11 +147,17 @@ saml.get("/saml/idp-initiated", async (c) => {
   if (gate === "login") return c.redirect(`/login?next=${encodeURIComponent(self.pathname + self.search)}`, 302);
   if (gate === "enrol") return c.redirect("/account/mfa/setup", 302);
 
-  // App assignment: an SP restricted to groups is not for this user. There is
-  // no AuthnRequest to answer, so the denial is a page, not a posted status.
-  if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+  // App assignment: a restricted SP is not for this user. There is no
+  // AuthnRequest to answer, so the denial is a page, not a posted status.
+  if (!appAccessAllowed(sp, await getUserGroupIds(c.env, user.id), user.id)) {
     await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned", idp_initiated: true }, c.req.raw);
     return renderAuthMessage(c, 403, appConfigError("Your account is not allowed to use this application."));
+  }
+  if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+    if (!(await hasSecondStep(c.env, user))) {
+      return renderAuthMessage(c, 403, appConfigError("This application requires a sign-in with a second factor, but your account has none enrolled."));
+    }
+    return samlStepUp(c, { spId: sp.id, requestId: null, acsUrl, relayState: c.req.query("RelayState") !== undefined ? decodeURIComponent(c.req.query("RelayState") ?? "").slice(0, 4000) : null }, user);
   }
 
   let relayState: string | null = null;
@@ -254,11 +262,22 @@ saml.get("/saml/complete", async (c) => {
   // Same re-evaluation rule as the signin permission above: assignment is
   // checked at redemption. The denial answers the request in protocol - a
   // signed RequestDenied posted to the registered ACS.
-  if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+  if (!appAccessAllowed(sp, await getUserGroupIds(c.env, user.id), user.id)) {
     await deleteLoginFlow(c.env, flowId);
     await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned" }, c.req.raw);
     const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
     return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
+  }
+  if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+    if (!(await hasSecondStep(c.env, user))) {
+      await deleteLoginFlow(c.env, flowId);
+      await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "mfa_required" }, c.req.raw);
+      const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+      return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
+    }
+    // The parked request becomes a fresh flow behind a second-step challenge.
+    await deleteLoginFlow(c.env, flowId);
+    return samlStepUp(c, flow.request, user);
   }
 
   await deleteLoginFlow(c.env, flowId);
@@ -267,6 +286,18 @@ saml.get("/saml/complete", async (c) => {
   await logAudit(c.env, user, "saml.assertion_issued", sp.entity_id, { request_id: flow.request.requestId, sso: true }, c.req.raw);
   return c.html(samlPostForm(c.get("appName"), issued.acsUrl, issued.samlResponse, issued.relayState));
 });
+
+/**
+ * An app-level require_mfa against a live session: park the request behind a
+ * second-step challenge. Completing it mints an upgraded session and runs the
+ * usual completeLoginFlow path, which issues the assertion.
+ */
+async function samlStepUp(c: Context<{ Bindings: Env }>, request: PendingSamlRequest, user: UserRow): Promise<Response> {
+  const appearance = await loginAppearance(c, { userId: user.id });
+  const flowId = await sealLoginFlow(c.env, { kind: "saml", request, locale: appearance.locale });
+  const mfaId = await storePendingMfa(c.env, user.id, flowId, appearance.locale);
+  return c.html(mfaForm(mfaId, appearance, msg("mfa.appRequired"), await secondStepFactors(c.env, user)));
+}
 
 /**
  * Signature-rejection delivery differs by binding. A redirect-binding refusal
@@ -403,8 +434,15 @@ async function continueSsoRequest(
       // App assignment: the user is authenticated, but this SP is restricted
       // to groups they are not in - a protocol-level RequestDenied, same
       // delivery as every other refusal here.
-      if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(c.env, user.id))) {
+      if (!appAccessAllowed(sp, await getUserGroupIds(c.env, user.id), user.id)) {
         return postProtocolError(c, request, acsUrl, relayState, "RequestDenied", "app_not_assigned");
+      }
+      // Same rule as /authorize: the app demands a factor this session never
+      // presented - park the request behind a second-step challenge, unless
+      // IsPassive forbids the UI (then the SP gets NoPassive).
+      if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+        if (!request.isPassive && (await hasSecondStep(c.env, user))) return samlStepUp(c, pending, user);
+        return postProtocolError(c, request, acsUrl, relayState, "NoPassive", "mfa_required");
       }
       // Same rule as /authorize: a password-only session minted before forced
       // enrolment parks the request and goes through MFA setup first - but

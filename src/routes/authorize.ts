@@ -1,21 +1,22 @@
 import { canSignIn } from "../lib/admin-roles.js";
 import { claimGroupsFromParameter } from "../lib/oidc.js";
 import { secondFactorGate } from "../lib/auth-policy.js";
+import { secondStepFactors } from "../lib/second-step.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
-import { appConfigError, AUTH_MESSAGES, loginAppearance, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
+import { appConfigError, AUTH_MESSAGES, loginAppearance, mfaForm, msg, renderAuthMessage, sendLoginForm } from "../lib/login-views.js";
 import { domainFromHint } from "../lib/brands.js";
 import { uiLocalesPreference } from "../lib/i18n.js";
 import { getClientByClientId, getUserById, getUserGroupIds } from "../lib/db.js";
 import { randomToken } from "../lib/tokens.js";
-import { sealLoginFlow, storeLoginFlow, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
+import { sealLoginFlow, storeLoginFlow, storePendingMfa, type PendingAuthorizeRequest } from "../lib/authorize-state.js";
 import { getSession } from "../lib/sessions.js";
 import { isMfaRequired, isSetupCompleted } from "../lib/settings.js";
 import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAllowed, sessionState } from "../lib/oidc.js";
 import { formPostPage } from "../lib/saml/post-form.js";
 import { decodeJwt } from "jose";
 import { resolveRequestObject } from "../lib/request-object.js";
-import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
+import { amrSatisfiesMfa, appAccessAllowed } from "../services/clients.js";
 import { logAudit } from "../lib/audit.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
@@ -61,14 +62,19 @@ export async function finishOidcAuthorize(
   opts: { consented?: boolean } = {}
 ): Promise<{ redirectTo: string }> {
   const client = await getClientByClientId(env, req.clientId);
-  // App assignment: a client restricted to groups refuses anyone outside them,
-  // whichever path got here (reused session, fresh login, consent, MFA resume).
-  // The redirect_uri was validated when the request was parked, so the denial
-  // goes back to the client per RFC 6749 4.1.2.1. The membership fetch is
-  // skipped for the common unrestricted app.
-  if (client && parseAssignedGroupIds(client.assigned_groups).length > 0 && !appVisibleTo(client.assigned_groups, await getUserGroupIds(env, userId))) {
+  // App assignment: a restricted client refuses anyone outside its assigned
+  // users/groups, whichever path got here (reused session, fresh login,
+  // consent, MFA resume). The redirect_uri was validated when the request was
+  // parked, so the denial goes back to the client per RFC 6749 4.1.2.1.
+  if (client && !appAccessAllowed(client, await getUserGroupIds(env, userId), userId)) {
     await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id });
     return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "Your account is not allowed to use this application.") };
+  }
+  // Defence in depth: the step-up lives on the session-reuse and password
+  // paths, but any flow that arrives here without the factor still fails.
+  if (client?.require_mfa && !amrSatisfiesMfa(amr)) {
+    await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id, reason: "mfa_required" });
+    return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "This application requires a sign-in with a second factor.") };
   }
   const prompts = new Set((req.prompt ?? "").split(/\s+/).filter(Boolean));
   if (client && !opts.consented && (!client.trusted || prompts.has("consent"))) {
@@ -284,6 +290,21 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
       const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest, resumeFor: user.id });
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
     } else {
+      if (client.require_mfa && !amrSatisfiesMfa(session.amr)) {
+        // The app demands a factor this session never presented. With no
+        // factor enrolled there is nothing to step up with; otherwise park
+        // the request behind a fresh second-step challenge - completing it
+        // mints an upgraded session and finishes the authorize.
+        if (prompts.has("none")) return fail("login_required", "This app needs a sign-in with a second factor.");
+        const factors = await secondStepFactors(c.env, user);
+        if (!Object.values(factors).some(Boolean)) {
+          return fail("access_denied", "This application requires a sign-in with a second factor, but your account has none enrolled.");
+        }
+        const mfaAppearance = await loginAppearance(c, { userId: user.id, locale: uiLocale, clientId });
+        const stepFlowId = await sealLoginFlow(c.env, { kind: "oidc", request: pendingRequest, locale: mfaAppearance.locale });
+        const mfaId = await storePendingMfa(c.env, user.id, stepFlowId, mfaAppearance.locale);
+        return c.html(mfaForm(mfaId, mfaAppearance, msg("mfa.appRequired"), factors));
+      }
       const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);
       return respondAuthorize(c, redirectTo, pendingRequest.responseMode);
     }

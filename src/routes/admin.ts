@@ -35,7 +35,7 @@ import { createScimTarget, deleteScimTarget, getScimTarget, listScimTargets, lis
 import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructions, type CatalogEntry } from "../lib/catalog.js";
 import { createUpstreamIdp, deleteUpstreamIdp, FederationError, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { SOCIAL_PROVIDERS, socialIssuer, socialMeta, socialProvider, type SocialProvider } from "../lib/social.js";
-import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
+import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
 import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
@@ -72,7 +72,7 @@ import { idpEntityId, supportedNameIdFormats, nameIdFormatUri } from "../lib/sam
 import { isSamlConfigured } from "../lib/saml/sign.js";
 import { certNotAfter, normalizeCertPem } from "../lib/saml/x509.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
-import { normalizeAttributeDefinitions, parseAssignedGroupIds, spAttributeDefinitions, type SpAttributeDefinition } from "../lib/saml/service-providers.js";
+import { normalizeAttributeDefinitions, parseAssignedGroupIds, parseAssignedUserIds, spAttributeDefinitions, type SpAttributeDefinition } from "../lib/saml/service-providers.js";
 import { resolveManyGroupMemberUserIds, parseRule, userMatchesRule, ruleDescription, ruleFields, ruleFromForm, type RuleTerm } from "../lib/groups.js";
 import {
   listSchemas,
@@ -2662,13 +2662,17 @@ admin.get("/admin/access", async (c) => {
           requests.length === 0
             ? `<p class="muted">No ${search ? `requests matching "${escapeHtml(search)}"` : statusFilter === "pending" ? "requests waiting for a decision" : statusFilter === "all" ? "requests yet" : `${statusFilter} requests`}.</p>`
             : `<table>
-                <thead><tr><th>Person</th><th>Group</th><th>Reason</th><th>Asked</th><th>Status</th><th></th></tr></thead>
+                <thead><tr><th>Person</th><th>For</th><th>Reason</th><th>Asked</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   ${requests
                     .map(
                       (r) => `<tr>
                         <td><a href="/admin/users/${r.user_id}">${avatar(r.user_id, r.display_name, "sm", { upn: r.upn })}${escapeHtml(r.upn)}</a><br/><span class="muted">${escapeHtml(r.display_name)}</span></td>
-                        <td><a href="/admin/groups/${r.group_id}">${escapeHtml(r.group_name)}</a>${roleGroups.has(r.group_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}</td>
+                        <td>${
+                          r.target_type === "group"
+                            ? `<a href="/admin/groups/${r.target_id}">${escapeHtml(r.target_name)}</a>${roleGroups.has(r.target_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}`
+                            : `<a href="${r.target_type === "oidc_app" ? `/admin/clients/${r.target_id}` : `/admin/saml/${r.target_id}`}">${escapeHtml(r.target_name)}</a><br/><span class="badge">${r.target_type === "oidc_app" ? "OIDC" : "SAML"} app</span>`
+                        }</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
                         <td class="muted">${ts(r.created_at)}</td>
                         <td>${requestBadge(r.status)}${r.status !== "pending" && r.decided_at ? `<br/><span class="muted" style="font-size:12px;">${ts(r.decided_at)}${r.note ? ` · ${escapeHtml(r.note)}` : ""}</span>` : ""}</td>
@@ -2678,7 +2682,7 @@ admin.get("/admin/access", async (c) => {
                               ? ""
                               : r.user_id === c.get("user").id
                               ? `<span class="muted" style="font-size:12px;">Your request - another approver must decide it.</span>`
-                              : roleGroups.has(r.group_id) && !privileged
+                              : r.target_type === "group" && roleGroups.has(r.target_id) && !privileged
                               ? `<span class="muted" style="font-size:12px;">Needs a Super Admin</span>`
                               : `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
                                   <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
@@ -2822,6 +2826,14 @@ admin.post("/admin/access/requests/:id", async (c) => {
   const body = await c.req.parseBody();
   const decision = String(body.decision ?? "") === "approved" ? "approved" : "denied";
   try {
+    // Approving an app request writes the app's assignees, so it asks for the
+    // app's own write permission rather than the groups one this page runs on.
+    const req = await getAccessRequest(c.env, Number(c.req.param("id")));
+    if (req && req.target_type !== "group") {
+      const access = c.get("access");
+      const perm = req.target_type === "oidc_app" ? "oidc:write" : "saml:write";
+      if (!access?.isSuper && !grants(access?.perms ?? [], perm)) throw new ServiceError(403, `Deciding this request needs ${perm}.`);
+    }
     await decideAccessRequest(consoleCtx(c), Number(c.req.param("id")), decision, String(body.note ?? ""));
   } catch (e) {
     return c.redirect(`/admin/access?status=pending&error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
@@ -2944,21 +2956,35 @@ admin.get("/admin/apps", async (c) => {
   const access = c.get("access")!;
   const canOidc = access.isSuper || grants(access.perms, "oidc:read");
   const canSaml = access.isSuper || grants(access.perms, "saml:read");
+  const search = (c.req.query("search") ?? "").slice(0, 100).trim().toLowerCase();
+  const protocolFilter = ["oidc", "saml"].includes(c.req.query("protocol") ?? "") ? c.req.query("protocol")! : "";
+  const accessFilter = ["everyone", "restricted"].includes(c.req.query("access") ?? "") ? c.req.query("access")! : "";
+  const pageSize = [25, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 25;
+  const page = Math.max(1, Number(c.req.query("page")) || 1);
   const [clients, sps] = await Promise.all([
     canOidc
-      ? c.env.DB.prepare("SELECT id, name, logo_uri, assigned_groups, created_at FROM oauth_clients").all<Pick<OAuthClientRow, "id" | "name" | "logo_uri" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      ? c.env.DB.prepare("SELECT id, name, logo_uri, access_mode, assigned_groups, assigned_users, require_mfa, created_at FROM oauth_clients").all<Pick<OAuthClientRow, "id" | "name" | "logo_uri" | "access_mode" | "assigned_groups" | "assigned_users" | "require_mfa" | "created_at">>().then((r) => r.results)
       : Promise.resolve([]),
     canSaml
-      ? c.env.DB.prepare("SELECT id, name, logo_uri, assigned_groups, created_at FROM saml_service_providers").all<Pick<SamlServiceProviderRow, "id" | "name" | "logo_uri" | "assigned_groups" | "created_at">>().then((r) => r.results)
+      ? c.env.DB.prepare("SELECT id, name, logo_uri, access_mode, assigned_groups, assigned_users, require_mfa, created_at FROM saml_service_providers").all<Pick<SamlServiceProviderRow, "id" | "name" | "logo_uri" | "access_mode" | "assigned_groups" | "assigned_users" | "require_mfa" | "created_at">>().then((r) => r.results)
       : Promise.resolve([]),
   ]);
-  const rows = [
-    ...clients.map((cl) => ({ name: cl.name, logo: cl.logo_uri, protocol: "OIDC", assignedGroups: cl.assigned_groups, createdAt: cl.created_at, href: `/admin/clients/${cl.id}` })),
-    ...sps.map((sp) => ({ name: sp.name, logo: sp.logo_uri, protocol: "SAML", assignedGroups: sp.assigned_groups, createdAt: sp.created_at, href: `/admin/saml/${sp.id}` })),
-  ].sort((a, b) => a.name.localeCompare(b.name));
-  const restriction = (assignedGroups: string | null) => {
-    const n = parseAssignedGroupIds(assignedGroups).length;
-    return n === 0 ? "Everyone" : `${n} group${n === 1 ? "" : "s"}`;
+  const all = [
+    ...clients.map((cl) => ({ name: cl.name, logo: cl.logo_uri, protocol: "OIDC", accessMode: cl.access_mode, assignedGroups: cl.assigned_groups, assignedUsers: cl.assigned_users, requireMfa: cl.require_mfa === 1, createdAt: cl.created_at, href: `/admin/clients/${cl.id}` })),
+    ...sps.map((sp) => ({ name: sp.name, logo: sp.logo_uri, protocol: "SAML", accessMode: sp.access_mode, assignedGroups: sp.assigned_groups, assignedUsers: sp.assigned_users, requireMfa: sp.require_mfa === 1, createdAt: sp.created_at, href: `/admin/saml/${sp.id}` })),
+  ]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .filter((r) => !search || r.name.toLowerCase().includes(search))
+    .filter((r) => !protocolFilter || r.protocol.toLowerCase() === protocolFilter)
+    .filter((r) => !accessFilter || (accessFilter === "everyone" ? r.accessMode === "everyone" : r.accessMode !== "everyone"));
+  const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+  const rows = all.slice((page - 1) * pageSize, page * pageSize);
+  const restriction = (r: (typeof all)[number]) => {
+    if (r.accessMode === "everyone") return "Everyone";
+    const users = parseAssignedUserIds(r.assignedUsers).length;
+    const groups = parseAssignedGroupIds(r.assignedGroups).length;
+    if (users + groups === 0) return "Nobody";
+    return [users ? `${users} ${users === 1 ? "person" : "people"}` : "", groups ? `${groups} group${groups === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ");
   };
   // External logo URLs need their exact origins in img-src for this response.
   const logos = [...new Set(rows.map((r) => r.logo).filter((u): u is string => Boolean(u)))];
@@ -2978,21 +3004,35 @@ admin.get("/admin/apps", async (c) => {
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${cardSection(`
-        <p class="muted" style="margin:0 0 14px 0; max-width:720px;">Every application people sign in to through this directory - OIDC clients and SAML service providers in one list. Restrict an app to groups and only those members see it on their launchpad and may sign in.</p>
+        <p class="muted" style="margin:0 0 14px 0; max-width:720px;">Every application people sign in to through this directory - OIDC clients and SAML service providers in one list. Restrict an app to people or groups and only they see it on their launchpad and may sign in.</p>
+        <form method="GET" class="list-toolbar">
+          <div class="list-toolbar-filters">
+            <input type="text" name="search" placeholder="Search name" value="${escapeHtml(search)}" />
+            <select name="protocol" data-autosubmit style="margin-bottom:0; width:auto;">
+              ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+            <select name="access" data-autosubmit style="margin-bottom:0; width:auto;">
+              ${[["", "Any access"], ["restricted", "Restricted"], ["everyone", "Everyone"]].map(([v, l]) => `<option value="${v}" ${v === accessFilter ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+            <input type="hidden" name="page" value="1" />
+            ${pageSizeSelect(pageSize, [25, 50, 100])}
+          </div>
+        </form>
         ${
           rows.length === 0
-            ? `<p class="muted">${canOidc || canSaml ? "No applications yet - add one from the catalog, or create a blank one." : "Your roles do not cover any applications."}</p>`
+            ? `<p class="muted">${all.length === 0 && !search && !protocolFilter && !accessFilter ? (canOidc || canSaml ? "No applications yet - add one from the catalog, or create a blank one." : "Your roles do not cover any applications.") : `No applications matching ${search ? `"${escapeHtml(search)}"` : "those filters"}.`}</p>`
             : `<table>
                 <thead><tr><th>Name</th><th>Protocol</th><th>Who can use it</th><th>Created</th></tr></thead>
                 <tbody>
                   ${rows
                     .map(
                       (r) =>
-                        `<tr><td><span style="display:inline-flex; align-items:center; gap:8px;">${r.logo ? `<img src="${escapeHtml(r.logo)}" alt="" style="width:18px; height:18px; object-fit:contain;" data-hide-on-error />` : ""}<a href="${r.href}">${escapeHtml(r.name)}</a></span></td><td><span class="badge">${r.protocol}</span></td><td>${restriction(r.assignedGroups)}</td><td class="muted">${ts(r.createdAt, { dateOnly: true })}</td></tr>`
+                        `<tr><td><span style="display:inline-flex; align-items:center; gap:8px;">${r.logo ? `<img src="${escapeHtml(r.logo)}" alt="" style="width:18px; height:18px; object-fit:contain;" data-hide-on-error />` : ""}<a href="${r.href}">${escapeHtml(r.name)}</a></span></td><td><span class="badge">${r.protocol}</span>${r.requireMfa ? ' <span class="badge badge-pending" title="Sign-in must include a second factor">MFA</span>' : ""}</td><td>${restriction(r)}</td><td class="muted">${ts(r.createdAt, { dateOnly: true })}</td></tr>`
                     )
                     .join("")}
                 </tbody>
-              </table>`
+              </table>
+              ${paginationControls("/admin/apps", page, totalPages, { search, protocol: protocolFilter, access: accessFilter, pageSize })}`
         }
       `)}
       `,
@@ -3005,14 +3045,35 @@ admin.get("/admin/apps", async (c) => {
 
 /** App-side {placeholders} an administrator fills in before a catalog entry applies - {idp_*} resolve from the issuer, and {client_id}/{client_secret} only exist after the record is created. */
 admin.get("/admin/apps/catalog", async (c) => {
-  const entries = listCatalog();
+  const search = (c.req.query("search") ?? "").slice(0, 100).trim().toLowerCase();
+  const protocolFilter = ["oidc", "saml"].includes(c.req.query("protocol") ?? "") ? c.req.query("protocol")! : "";
+  const pageSize = [25, 50, 100].includes(Number(c.req.query("pageSize"))) ? Number(c.req.query("pageSize")) : 25;
+  const page = Math.max(1, Number(c.req.query("page")) || 1);
+  const filtered = listCatalog()
+    .filter((e) => !search || e.name.toLowerCase().includes(search) || e.slug.includes(search))
+    .filter((e) => !protocolFilter || e.protocol === protocolFilter);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const entries = filtered.slice((page - 1) * pageSize, page * pageSize);
   return c.html(
     layout(
       c,
       "App catalog",
       `
-      <p class="muted" style="margin:-6px 0 16px; max-width:720px;">Guided setup for well-known applications: the steps for both sides of the integration, and a template that creates the FlareID record prefilled.</p>
-      <div class="two-col">
+      <p class="muted" style="margin:-6px 0 16px; max-width:720px;">Guided setup for well-known applications: the steps for both sides of the integration, and a template that creates the FlareID record prefilled. Apps a template creates start restricted - assign people or groups on the app's page.</p>
+      <form method="GET" class="list-toolbar">
+        <div class="list-toolbar-filters">
+          <input type="text" name="search" placeholder="Search the catalog" value="${escapeHtml(search)}" />
+          <select name="protocol" data-autosubmit style="margin-bottom:0; width:auto;">
+            ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+          <input type="hidden" name="page" value="1" />
+          ${pageSizeSelect(pageSize, [25, 50, 100])}
+        </div>
+      </form>
+      ${
+        entries.length === 0
+          ? `<p class="muted">No catalog entries matching ${search ? `"${escapeHtml(search)}"` : "that filter"}.</p>`
+          : `<div class="three-col">
         ${entries
           .map(
             (e) =>
@@ -3027,6 +3088,8 @@ admin.get("/admin/apps/catalog", async (c) => {
           )
           .join("")}
       </div>
+      ${paginationControls("/admin/apps/catalog", page, totalPages, { search, protocol: protocolFilter, pageSize })}`
+      }
       `,
       [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "App catalog" }]
     )
@@ -4185,8 +4248,49 @@ admin.post("/admin/api-keys/:id/revoke", async (c) => {
   return c.redirect("/admin/integrations/api-keys?saved=1", 302);
 });
 
+/** Labels for the assigned-people picker: upn plus display name when one is set. */
+async function assignedUserLabels(env: Env, raw: string | null | undefined): Promise<{ id: number; label: string }[]> {
+  const ids = parseAssignedUserIds(raw);
+  if (ids.length === 0) return [];
+  const { results } = await env.DB.prepare("SELECT id, upn, display_name FROM users WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ids)).all<Pick<UserRow, "id" | "upn" | "display_name">>();
+  const byId = new Map(results.map((u) => [u.id, u]));
+  return ids.filter((id) => byId.has(id)).map((id) => {
+    const u = byId.get(id)!;
+    return { id, label: u.display_name ? `${u.upn} (${u.display_name})` : u.upn };
+  });
+}
+
+/**
+ * The "who can use this app" block shared by the OIDC and SAML forms:
+ * everyone vs assigned people/groups, plus the sign-in strength and
+ * requestability switches.
+ */
+function appAccessFields(opts: { accessMode?: string; groups: Pick<GroupRow, "id" | "name">[]; assignedGroups: number[]; assignedUsers: { id: number; label: string }[]; requireMfa: boolean; requestable: boolean }): string {
+  const restricted = opts.accessMode !== "everyone";
+  return `
+    <label style="margin-top:12px;">Who can use this app</label>
+    <label style="font-weight:400;"><input type="radio" name="access_mode" value="restricted" ${restricted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Only the people and groups assigned below</label>
+    <label style="font-weight:400;"><input type="radio" name="access_mode" value="everyone" ${restricted ? "" : "checked"} style="width:auto; display:inline; margin-right:6px;" /> Everyone</label>
+    <div class="field-row" style="margin-top:10px;">
+      <div>
+        <label>Assigned people</label>
+        <p class="muted" style="margin-top:-6px;">Individual users who may see and sign in to this app.</p>
+        ${remoteMultiSelect("assigned_user_ids", "/admin/users/lookup", opts.assignedUsers, "Search people...")}
+      </div>
+      <div>
+        <label>Assigned groups</label>
+        <p class="muted" style="margin-top:-6px;">Members of these groups - static or rule-driven - may use the app.</p>
+        ${multiSelect("assigned_group_ids", opts.groups.map((g) => ({ id: g.id, label: g.name })), new Set(opts.assignedGroups), "Search groups...")}
+      </div>
+    </div>
+    <label style="font-weight:400; margin-top:12px;"><input type="checkbox" name="require_mfa" value="1" ${opts.requireMfa ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require a second-factor sign-in</label>
+    <p class="muted" style="margin-top:-6px;">The sign-in must have used a second factor - authenticator code, passkey, email code, security questions, backup code or a federated identity. Sessions without one are asked for it when they open the app.</p>
+    <label style="font-weight:400;"><input type="checkbox" name="requestable" value="1" ${opts.requestable ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Let people request access</label>
+    <p class="muted" style="margin-top:-6px;">A restricted app appears under My account &rarr; Access; approving a request adds the person to Assigned people.</p>`;
+}
+
 /** The v3 client settings, shared by the new and edit forms. */
-function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[]): string {
+function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[]): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
   const extraClaimsHint = client
     ? `<p class="muted" style="margin-top:4px;">Computed or renamed claims for this app are on <a href="/admin/flows/edit?channel=oidc&owner=${encodeURIComponent(client.client_id)}">Flows &rarr; OIDC claims</a>.</p>`
@@ -4228,9 +4332,7 @@ function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<G
       </div>
     </div>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
-    <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
-    <p class="muted" style="margin-top:-6px;">Only members of the selected groups see this app on their launchpad and may sign in to it.</p>
-    ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), assigned, "Search groups...")}
+    ${appAccessFields({ accessMode: client?.access_mode, groups, assignedGroups: [...assigned], assignedUsers, requireMfa: client?.require_mfa === 1, requestable: client?.requestable === 1 })}
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
     ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}
@@ -4250,7 +4352,7 @@ admin.get("/admin/clients/new", async (c) => {
           <label>Client type</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="confidential" checked style="width:auto; display:inline; margin-right:6px;" /> Confidential &mdash; a server that can keep a secret (Cloudflare Access, a web backend)</label>
           <label style="font-weight:400;"><input type="radio" name="client_type" value="public" style="width:auto; display:inline; margin-right:6px;" /> Public &mdash; a single-page or native app: no secret, PKCE required, loopback redirects on any port</label>
-          ${clientSettingsFields(undefined, groups)}
+          ${clientSettingsFields(undefined, groups, [])}
           <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">Create client</button></div>
         </form>
       `),
@@ -4300,7 +4402,10 @@ admin.get("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
   if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
-  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  const [{ results: groups }, assignedUsers] = await Promise.all([
+    c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>(),
+    assignedUserLabels(c.env, client.assigned_users),
+  ]);
 
   return c.html(
     layout(
@@ -4314,7 +4419,7 @@ admin.get("/admin/clients/:id", async (c) => {
           <label for="name">Name</label>
           <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
           <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
-          ${clientSettingsFields(client, groups)}
+          ${clientSettingsFields(client, groups, assignedUsers)}
           <div class="form-actions end">${cancelLink(`/admin/clients/${id}`)}<button class="primary" type="submit">Save</button></div>
         </form>
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
@@ -4404,7 +4509,7 @@ function samlIdpBlock(env: Env) {
 }
 
 /** Every cert-shaped thing in a pasted textarea: PEM blocks, or a single bare base64 blob. */
-function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[]): string {
+function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[]): string {
   // Shown back in the write shape (name_format), not the stored one.
   const defsJson = (v.attributeDefinitions ?? []).map((d) => ({ name: d.name, field: d.field, ...(d.nameFormat ? { name_format: d.nameFormat } : {}) }));
   return `
@@ -4466,9 +4571,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
         ${[["", "None"], ["pairwise-id", "pairwise-id (different for every SP; recommended)"], ["subject-id", "subject-id (the same for every SP)"]].map(([val, label]) => `<option value="${val}" ${(v.subjectId ?? "") === val ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <p class="muted" style="margin:-8px 0 14px;">SAML V2.0 Subject Identifier Attributes Profile. Set automatically when the SP's metadata asks for one.</p>
-      <label style="margin-top:12px;">Restrict to groups (empty = everyone)</label>
-      <p class="muted" style="margin-top:-6px;">Only members of the selected groups see this app on their launchpad and may sign in to it.</p>
-      ${multiSelect("assigned_group_ids", groups.map((g) => ({ id: g.id, label: g.name })), new Set(v.assignedGroups ?? []), "Search groups...")}
+      ${appAccessFields({ accessMode: v.accessMode, groups, assignedGroups: v.assignedGroups ?? [], assignedUsers, requireMfa: !!v.requireMfa, requestable: !!v.requestable })}
       <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
@@ -4494,7 +4597,7 @@ admin.get("/admin/saml/new", async (c) => {
           <div class="form-actions end"><button class="primary" type="submit">Import metadata</button></div>
         </form>
       `)}
-      ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider", groups)}`)}`,
+      ${cardSection(`<h2>Or enter it by hand</h2>${spForm({}, "/admin/saml", "Create service provider", groups, [])}`)}`,
       [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: "New service provider" }]
     )
   );
@@ -4527,7 +4630,10 @@ admin.get("/admin/saml/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
-  const { results: groups } = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>();
+  const [{ results: groups }, assignedUsers] = await Promise.all([
+    c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>(),
+    assignedUserLabels(c.env, sp.assigned_users),
+  ]);
 
   return c.html(
     layout(
@@ -4555,11 +4661,16 @@ admin.get("/admin/saml/:id", async (c) => {
             subjectId: sp.subject_id ?? "",
             encryptAssertions: !!sp.encrypt_assertions,
             logoUri: sp.logo_uri ?? "",
+            accessMode: sp.access_mode,
             assignedGroups: parseAssignedGroupIds(sp.assigned_groups),
+            assignedUsers: [],
+            requireMfa: !!sp.require_mfa,
+            requestable: !!sp.requestable,
           },
           `/admin/saml/${id}`,
           "Save",
-          groups
+          groups,
+          assignedUsers
         )}
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
           <form method="POST" action="/admin/saml/${id}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
@@ -4583,9 +4694,9 @@ admin.post("/admin/saml/:id", async (c) => {
   if (typeof v === "string") return consoleError(c, v, 400);
 
   await c.env.DB.prepare(
-    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, logo_uri = ?, assigned_groups = ?, updated_at = ? WHERE id = ?`
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, logo_uri = ?, assigned_groups = ?, access_mode = ?, assigned_users = ?, require_mfa = ?, requestable = ?, updated_at = ? WHERE id = ?`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), new Date().toISOString(), id)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), v.accessMode, JSON.stringify(v.assignedUsers), v.requireMfa ? 1 : 0, v.requestable ? 1 : 0, new Date().toISOString(), id)
     .run();
 
   await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, id).run();
@@ -4598,7 +4709,10 @@ admin.post("/admin/saml/:id/delete", async (c) => {
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
 
-  await c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM saml_service_providers WHERE id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'saml_app' AND target_id = ?").bind(id),
+  ]);
   await logAudit(c.env, c.get("user"), "saml_sp.deleted", sp.name, { entity_id: sp.entity_id }, c.req.raw);
   return c.redirect("/admin/apps?saved=1", 302);
 });

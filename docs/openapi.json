@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.9.0",
+    "version": "4.10.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -518,10 +518,18 @@
           "display_name": {
             "type": "string"
           },
-          "group_id": {
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "group",
+              "oidc_app",
+              "saml_app"
+            ]
+          },
+          "target_id": {
             "type": "number"
           },
-          "group_name": {
+          "target_name": {
             "type": "string"
           },
           "reason": {
@@ -560,8 +568,9 @@
           "user_id",
           "upn",
           "display_name",
-          "group_id",
-          "group_name",
+          "target_type",
+          "target_id",
+          "target_name",
           "reason",
           "status",
           "decided_by",
@@ -729,12 +738,35 @@
             },
             "description": "Claim groups released to this client; null = every group."
           },
+          "access_mode": {
+            "type": "string",
+            "enum": [
+              "everyone",
+              "restricted"
+            ],
+            "description": "restricted = only assigned_users/groups may see and sign in to this app."
+          },
           "assigned_groups": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "Group ids whose members may see and sign in to this app; [] = everyone."
+            "description": "Group ids (static or dynamic) assigned to this app."
+          },
+          "assigned_users": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "User ids assigned to this app."
+          },
+          "require_mfa": {
+            "type": "boolean",
+            "description": "The session must carry a second factor to SSO into this app."
+          },
+          "requestable": {
+            "type": "boolean",
+            "description": "People without access may request it under My account -> Access."
           },
           "id_token_signed_response_alg": {
             "type": "string",
@@ -758,7 +790,11 @@
           "frontchannel_logout_uri",
           "trusted",
           "allowed_claims",
+          "access_mode",
           "assigned_groups",
+          "assigned_users",
+          "require_mfa",
+          "requestable",
           "id_token_signed_response_alg",
           "created_at"
         ],
@@ -835,12 +871,35 @@
           "encrypt_assertions": {
             "type": "boolean"
           },
+          "access_mode": {
+            "type": "string",
+            "enum": [
+              "everyone",
+              "restricted"
+            ],
+            "description": "restricted = only assigned_users/groups may see and SSO into this app."
+          },
           "assigned_groups": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "Group ids whose members may see and SSO into this app; [] = everyone."
+            "description": "Group ids (static or dynamic) assigned to this app."
+          },
+          "assigned_users": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "User ids assigned to this app."
+          },
+          "require_mfa": {
+            "type": "boolean",
+            "description": "The session must carry a second factor to SSO into this app."
+          },
+          "requestable": {
+            "type": "boolean",
+            "description": "People without access may request it under My account -> Access."
           },
           "created_at": {
             "type": "string"
@@ -865,7 +924,11 @@
           "slo_url",
           "encryption_cert",
           "encrypt_assertions",
+          "access_mode",
           "assigned_groups",
+          "assigned_users",
+          "require_mfa",
+          "requestable",
           "created_at",
           "updated_at"
         ],
@@ -5544,7 +5607,7 @@
           "Access"
         ],
         "summary": "File an access request",
-        "description": "Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.",
+        "description": "Requests a target for `username` - the same flow the My account requester follows. `group_id` or a `target_type`/`target_id` pair names it: a group must be requestable and static and the user must not already belong or have a pending ask; an app must be requestable and restricted with the user outside its assignees.",
         "security": [
           {
             "bearer": []
@@ -5564,13 +5627,23 @@
                   "group_id": {
                     "type": "integer"
                   },
+                  "target_type": {
+                    "type": "string",
+                    "enum": [
+                      "group",
+                      "oidc_app",
+                      "saml_app"
+                    ]
+                  },
+                  "target_id": {
+                    "type": "integer"
+                  },
                   "reason": {
                     "type": "string"
                   }
                 },
                 "required": [
-                  "username",
-                  "group_id"
+                  "username"
                 ]
               }
             }
@@ -6493,6 +6566,36 @@
                       "ES256"
                     ],
                     "description": "How this client's id_tokens are signed."
+                  },
+                  "access_mode": {
+                    "type": "string",
+                    "enum": [
+                      "everyone",
+                      "restricted"
+                    ],
+                    "description": "restricted = only assigned users/groups reach the app."
+                  },
+                  "assigned_groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "Group ids (static or dynamic) assigned to this app."
+                  },
+                  "assigned_users": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "User ids assigned to this app."
+                  },
+                  "require_mfa": {
+                    "type": "boolean",
+                    "description": "The session must carry a second factor to SSO into this app."
+                  },
+                  "requestable": {
+                    "type": "boolean",
+                    "description": "People without access may request it under My account -> Access."
                   }
                 }
               }
@@ -17554,7 +17657,33 @@
                     "items": {
                       "type": "number"
                     },
-                    "description": "Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction."
+                    "description": "Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment."
+                  },
+                  "access_mode": {
+                    "type": "string",
+                    "enum": [
+                      "everyone",
+                      "restricted"
+                    ],
+                    "description": "restricted = only assigned users/groups reach the app; default for new apps."
+                  },
+                  "assigned_users": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "User ids assigned to this app. On update, omitted keeps the current assignment."
+                  },
+                  "require_mfa": {
+                    "type": "boolean",
+                    "description": "The session must carry a second factor to SSO into this app."
+                  },
+                  "requestable": {
+                    "type": "boolean",
+                    "description": "People without access may request it under My account -> Access."
                   }
                 },
                 "required": [
@@ -18872,7 +19001,33 @@
                     "items": {
                       "type": "number"
                     },
-                    "description": "Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction."
+                    "description": "Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment."
+                  },
+                  "access_mode": {
+                    "type": "string",
+                    "enum": [
+                      "everyone",
+                      "restricted"
+                    ],
+                    "description": "restricted = only assigned users/groups reach the app; default for new apps."
+                  },
+                  "assigned_users": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "User ids assigned to this app. On update, omitted keeps the current assignment."
+                  },
+                  "require_mfa": {
+                    "type": "boolean",
+                    "description": "The session must carry a second factor to SSO into this app."
+                  },
+                  "requestable": {
+                    "type": "boolean",
+                    "description": "People without access may request it under My account -> Access."
                   }
                 },
                 "required": [

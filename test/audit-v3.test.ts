@@ -36,7 +36,7 @@ async function setup() {
   const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
   await env.DB.prepare("INSERT OR REPLACE INTO idp_settings (key, value, updated_at) VALUES ('email_from_address', 'no-reply@horizon.test', '')").run();
   await apiCall("/api/v1/directory/import", { token: apiKey, body: { version: 1, users: [{ username: "ola", password: PW, status: "active" }, { username: "nina", status: "disabled" }] } });
-  const client = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [CB] } });
+  const client = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [CB], access_mode: "everyone" } });
   return { apiKey, upn: `ola@${domain}`, clientId: client.body.client_id as string, clientSecret: client.body.client_secret as string };
 }
 const authz = (clientId: string, extra: Record<string, string> = {}) =>
@@ -172,7 +172,7 @@ async function spSigned(param: "SAMLRequest", xml: string) {
 describe("SAML", () => {
   it("SLO refuses a request without SessionIndex, a stale one, and a replay", async () => {
     const { apiKey, upn } = await setup();
-    await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://sp.test/saml", name: "SP", acs_urls: ["https://sp.test/acs"], signing_certs: [TEST_SAML_SP_CERT_PEM], slo_url: "https://sp.test/slo" } });
+    await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://sp.test/saml", name: "SP", acs_urls: ["https://sp.test/acs"], signing_certs: [TEST_SAML_SP_CERT_PEM], slo_url: "https://sp.test/slo", access_mode: "everyone" } });
     const { cookie } = await login(upn);
     const req = (id: string, instant: string, index = "") =>
       `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${id}" Version="2.0" IssueInstant="${instant}"><saml:Issuer>https://sp.test/saml</saml:Issuer>${index}</samlp:LogoutRequest>`;
@@ -186,7 +186,7 @@ describe("SAML", () => {
 
   it("ForceAuthn=\"1\" forces a fresh login", async () => {
     const { apiKey, upn } = await setup();
-    await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://sp.test/saml", name: "SP", acs_urls: ["https://sp.test/acs"] } });
+    await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://sp.test/saml", name: "SP", acs_urls: ["https://sp.test/acs"], access_mode: "everyone" } });
     const { cookie } = await login(upn);
     const xml = `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_f1" Version="2.0" IssueInstant="${new Date().toISOString()}" AssertionConsumerServiceURL="https://sp.test/acs" ForceAuthn="1"><saml:Issuer>https://sp.test/saml</saml:Issuer></samlp:AuthnRequest>`;
     const html = await (await call(`/saml/sso?SAMLRequest=${encodeURIComponent(await deflateB64(xml))}`, { headers: { Cookie: cookie } })).text();

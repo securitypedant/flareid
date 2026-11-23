@@ -173,6 +173,7 @@ export async function deleteGroup(ctx: ServiceCtx, id: number): Promise<GroupRow
   // Local first with the remote id queued in the same batch, as for users.
   await ctx.env.DB.batch([
     ...(await scimDeprovisionStatements(ctx.env, "group", group.id, group.name)),
+    ctx.env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'group' AND target_id = ?").bind(id),
     ctx.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
   ]);
   await afterResponse(ctx, async (later) => {

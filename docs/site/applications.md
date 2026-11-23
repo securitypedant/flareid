@@ -4,9 +4,16 @@ An application is anything people sign in to through FlareID — an [OIDC client
 
 ## The applications list
 
-**Applications → All apps** shows every registered app with its protocol, who may use it (everyone, or the groups it is restricted to) and when it was created. Select an app to open its page.
+**Applications → All apps** shows every registered app with its protocol, who may use it and when it was created. Search by name, filter by protocol or access mode, and pick 25, 50 or 100 rows per page. Select an app to open its page.
 
-Use **Restrict to groups** on an app's page to limit it: only members of the chosen groups see the app on their My account launchpad and may sign in to it.
+## Who may use an app
+
+Every app is **restricted** by default — nobody can sign in until you assign people or groups on the app's page. Switch the mode to **Everyone** to open it to the whole directory. Assignments accept individual people as well as static *and* dynamic groups (dynamic membership follows the group's rule).
+
+Two more switches live on the same card:
+
+- **Require a second-factor sign-in** — people signing in to this app must complete a second factor, whatever their authentication policy would normally ask.
+- **Let people request access** — the app appears in the request picker under **My account → Access** for people it excludes. An approved request assigns the person directly.
 
 ## Add an app
 

@@ -1,7 +1,9 @@
 import type { Env } from "../env.js";
 import { addGroupMembers, removeGroupMember } from "../services/groups.js";
 import { audit, ServiceError, type ServiceCtx } from "../services/context.js";
-import type { GroupRow, UserRow } from "./types.js";
+import { appAccessAllowed, parseAssignedUserIds } from "./saml/service-providers.js";
+import { getUserGroupIds } from "./db.js";
+import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "./types.js";
 
 /**
  * Access governance: self-service requests for group membership, and
@@ -29,10 +31,15 @@ const now = () => new Date().toISOString();
 // Access requests
 // ---------------------------------------------------------------------------
 
+/** What a request can ask for: a static group, or either kind of application. */
+export type AccessTargetType = "group" | "oidc_app" | "saml_app";
+export type AccessTarget = { type: AccessTargetType; id: number };
+
 export interface AccessRequestRow {
   id: number;
   user_id: number;
-  group_id: number;
+  target_type: AccessTargetType;
+  target_id: number;
   reason: string;
   status: "pending" | "approved" | "denied" | "cancelled";
   decided_by: number | null;
@@ -42,7 +49,13 @@ export interface AccessRequestRow {
   updated_at: string;
 }
 
-export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; group_name: string };
+export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; target_name: string };
+
+/** Resolves a request's target name whichever table it lives in. */
+const TARGET_NAME_JOINS = `LEFT JOIN groups g ON r.target_type = 'group' AND g.id = r.target_id
+  LEFT JOIN oauth_clients oc ON r.target_type = 'oidc_app' AND oc.id = r.target_id
+  LEFT JOIN saml_service_providers sp ON r.target_type = 'saml_app' AND sp.id = r.target_id`;
+const TARGET_NAME = "COALESCE(g.name, oc.name, sp.name) AS target_name";
 
 /**
  * Requestable static groups `userId` could still ask for: not already a
@@ -55,7 +68,7 @@ export async function requestableGroups(env: Env, userId: number, search = "", l
     await env.DB.prepare(
       `SELECT * FROM groups WHERE requestable = 1 AND (rule IS NULL OR rule = '') AND (system IS NULL OR system = '')
         AND id NOT IN (SELECT group_id FROM group_members WHERE user_id = ?)
-        AND id NOT IN (SELECT group_id FROM access_requests WHERE user_id = ? AND status = 'pending')
+        AND id NOT IN (SELECT target_id FROM access_requests WHERE user_id = ? AND target_type = 'group' AND status = 'pending')
         AND id NOT IN (SELECT group_id FROM group_managers WHERE user_id = ?)
         AND (name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
         ORDER BY name LIMIT ?`
@@ -68,13 +81,44 @@ export async function requestableGroups(env: Env, userId: number, search = "", l
 export async function myAccessRequests(env: Env, userId: number): Promise<AccessRequestView[]> {
   return (
     await env.DB.prepare(
-      `SELECT r.*, u.upn, u.display_name, g.name AS group_name FROM access_requests r
-        JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id
+      `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} FROM access_requests r
+        JOIN users u ON u.id = r.user_id ${TARGET_NAME_JOINS}
         WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 50`
     )
       .bind(userId)
       .all<AccessRequestView>()
   ).results;
+}
+
+export interface RequestableApp {
+  target_type: "oidc_app" | "saml_app";
+  id: number;
+  name: string;
+  protocol: "OIDC" | "SAML";
+}
+
+/**
+ * Restricted apps marked requestable that `userId` cannot already reach and
+ * has no pending ask for - the app half of the self-service list.
+ */
+export async function requestableApps(env: Env, userId: number, groupIds: number[], search = ""): Promise<RequestableApp[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT 'oidc_app' AS target_type, id, name, access_mode, assigned_groups, assigned_users FROM oauth_clients WHERE requestable = 1
+      UNION ALL SELECT 'saml_app', id, name, access_mode, assigned_groups, assigned_users FROM saml_service_providers WHERE requestable = 1`
+  ).all<{ target_type: "oidc_app" | "saml_app"; id: number; name: string; access_mode: string; assigned_groups: string | null; assigned_users: string | null }>();
+  const needle = search.trim().toLowerCase();
+  const { results: pending } = await env.DB.prepare(
+    "SELECT target_type, target_id FROM access_requests WHERE user_id = ? AND status = 'pending' AND target_type IN ('oidc_app','saml_app')"
+  )
+    .bind(userId)
+    .all<{ target_type: string; target_id: number }>();
+  const pendingSet = new Set(pending.map((r) => `${r.target_type}:${r.target_id}`));
+  return results
+    .filter((a) => a.access_mode !== "everyone")
+    .filter((a) => !appAccessAllowed(a, groupIds, userId))
+    .filter((a) => !pendingSet.has(`${a.target_type}:${a.id}`))
+    .filter((a) => !needle || a.name.toLowerCase().includes(needle))
+    .map((a) => ({ target_type: a.target_type, id: a.id, name: a.name, protocol: a.target_type === "oidc_app" ? "OIDC" : "SAML" }));
 }
 
 export interface AccessRequestQuery {
@@ -98,60 +142,75 @@ export async function listAccessRequests(env: Env, q: AccessRequestQuery = {}): 
   const needle = q.search?.trim().toLowerCase();
   if (needle) {
     const like = `%${needle.replace(/[%_]/g, (m) => `\\${m}`)}%`;
-    conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(g.name) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
+    conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(COALESCE(g.name, oc.name, sp.name)) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
     params.push(like, like, like, like);
   }
   if (q.groupId) {
-    conditions.push("r.group_id = ?");
+    conditions.push("r.target_type = 'group' AND r.target_id = ?");
     params.push(q.groupId);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const from = `FROM access_requests r JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id ${where}`;
+  const from = `FROM access_requests r JOIN users u ON u.id = r.user_id ${TARGET_NAME_JOINS} ${where}`;
   const limit = Math.min(q.limit ?? 100, 500);
   const offset = Math.max(q.offset ?? 0, 0);
   const [count, rows] = await env.DB.batch([
     env.DB.prepare(`SELECT COUNT(*) AS n ${from}`).bind(...params),
-    env.DB.prepare(`SELECT r.*, u.upn, u.display_name, g.name AS group_name ${from} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).bind(...params, limit, offset),
+    env.DB.prepare(`SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} ${from} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).bind(...params, limit, offset),
   ]);
   return { total: Number((count?.results[0] as { n: number } | undefined)?.n ?? 0), rows: (rows?.results ?? []) as AccessRequestView[] };
 }
 
 export async function getAccessRequest(env: Env, id: number): Promise<AccessRequestView | null> {
   return env.DB.prepare(
-    `SELECT r.*, u.upn, u.display_name, g.name AS group_name FROM access_requests r
-      JOIN users u ON u.id = r.user_id JOIN groups g ON g.id = r.group_id WHERE r.id = ?`
+    `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} FROM access_requests r
+      JOIN users u ON u.id = r.user_id ${TARGET_NAME_JOINS} WHERE r.id = ?`
   )
     .bind(id)
     .first<AccessRequestView>();
 }
 
-/** The self-service ask. Throws AccessError on anything not requestable. */
-export async function requestAccess(ctx: ServiceCtx, groupId: number, reason: string): Promise<AccessRequestRow> {
+/** The self-service ask. Throws ServiceError on anything not requestable. */
+export async function requestAccess(ctx: ServiceCtx, target: AccessTarget, reason: string): Promise<AccessRequestRow> {
   const userId = ctx.selfId;
   if (!userId) throw new ServiceError(403, "Only a signed-in person can request access.");
-  const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(groupId).first<GroupRow>();
-  if (!group) throw new ServiceError(404, "That group does not exist.");
-  if (group.rule) throw new ServiceError(400, `"${group.name}" assigns members by rule - its membership cannot be requested.`);
-  if (group.system) throw new ServiceError(400, `"${group.name}" is maintained by the system - its membership cannot be requested.`);
-  if (!group.requestable) throw new ServiceError(400, `"${group.name}" is not open to requests.`);
-  if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first()) {
-    throw new ServiceError(409, `You are already a member of "${group.name}".`);
+  let name: string;
+  if (target.type === "group") {
+    const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(target.id).first<GroupRow>();
+    if (!group) throw new ServiceError(404, "That group does not exist.");
+    if (group.rule) throw new ServiceError(400, `"${group.name}" assigns members by rule - its membership cannot be requested.`);
+    if (group.system) throw new ServiceError(400, `"${group.name}" is maintained by the system - its membership cannot be requested.`);
+    if (!group.requestable) throw new ServiceError(400, `"${group.name}" is not open to requests.`);
+    if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(target.id, userId).first()) {
+      throw new ServiceError(409, `You are already a member of "${group.name}".`);
+    }
+    // A manager decides other people's requests, never their own - membership
+    // is a direct add on the group's Manage page instead.
+    if (await ctx.env.DB.prepare("SELECT 1 FROM group_managers WHERE group_id = ? AND user_id = ?").bind(target.id, userId).first()) {
+      throw new ServiceError(400, `You manage "${group.name}" - add yourself on its Manage page instead of requesting.`);
+    }
+    name = group.name;
+  } else {
+    const app =
+      target.type === "oidc_app"
+        ? await ctx.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(target.id).first<OAuthClientRow>()
+        : await ctx.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(target.id).first<SamlServiceProviderRow>();
+    if (!app) throw new ServiceError(404, "That application does not exist.");
+    if (!app.requestable) throw new ServiceError(400, `"${app.name}" is not open to requests.`);
+    if (app.access_mode === "everyone" || (await appAccessAllowed(app, await getUserGroupIds(ctx.env, userId), userId))) {
+      throw new ServiceError(409, `You already have access to "${app.name}".`);
+    }
+    name = app.name;
   }
-  // A manager decides other people's requests, never their own - membership
-  // is a direct add on the group's Manage page instead.
-  if (await ctx.env.DB.prepare("SELECT 1 FROM group_managers WHERE group_id = ? AND user_id = ?").bind(groupId, userId).first()) {
-    throw new ServiceError(400, `You manage "${group.name}" - add yourself on its Manage page instead of requesting.`);
-  }
-  if (await ctx.env.DB.prepare("SELECT 1 FROM access_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'").bind(groupId, userId).first()) {
-    throw new ServiceError(409, `A request for "${group.name}" is already waiting for a decision.`);
+  if (await ctx.env.DB.prepare("SELECT 1 FROM access_requests WHERE target_type = ? AND target_id = ? AND user_id = ? AND status = 'pending'").bind(target.type, target.id, userId).first()) {
+    throw new ServiceError(409, `A request for "${name}" is already waiting for a decision.`);
   }
   const t = now();
   const { meta } = await ctx.env.DB.prepare(
-    "INSERT INTO access_requests (user_id, group_id, reason, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)"
+    "INSERT INTO access_requests (user_id, target_type, target_id, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
   )
-    .bind(userId, groupId, reason.trim().slice(0, 500), t, t)
+    .bind(userId, target.type, target.id, reason.trim().slice(0, 500), t, t)
     .run();
-  await audit(ctx, "access.requested", group.name, { group_id: groupId });
+  await audit(ctx, "access.requested", name, { target_type: target.type, target_id: target.id });
   return (await ctx.env.DB.prepare("SELECT * FROM access_requests WHERE id = ?").bind(Number(meta.last_row_id)).first<AccessRequestRow>())!;
 }
 
@@ -161,8 +220,8 @@ export async function cancelAccessRequest(ctx: ServiceCtx, requestId: number): P
   if (!req || (req.user_id !== ctx.selfId && !ctx.privileged)) throw new ServiceError(404, "That request doesn't exist any more.");
   if (req.status !== "pending") throw new ServiceError(409, "Only a request still waiting can be withdrawn.");
   await ctx.env.DB.prepare("UPDATE access_requests SET status = 'cancelled', decided_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), requestId).run();
-  const g = await ctx.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(req.group_id).first<{ name: string }>();
-  await audit(ctx, "access.request_cancelled", g?.name);
+  const target = await targetName(ctx.env, req);
+  await audit(ctx, "access.request_cancelled", target);
 }
 
 /** Approve or deny a pending request. An approval writes the membership like an edit does. */
@@ -172,15 +231,37 @@ export async function decideAccessRequest(ctx: ServiceCtx, requestId: number, de
   if (req.status !== "pending") throw new ServiceError(409, `That request was already ${req.status}.`);
   // Nobody decides their own ask - approval has to come from someone else.
   if (ctx.selfId === req.user_id) throw new ServiceError(403, "You can't decide your own access request - another approver must.");
-  // The membership write goes first: if the group is protected for this actor
+  // The grant write goes first: if the target is protected for this actor
   // (an admin role group) the request must stay pending, not read "approved".
-  if (decision === "approved") await addGroupMembers(ctx, req.group_id, [req.user_id]);
+  if (decision === "approved") {
+    if (req.target_type === "group") await addGroupMembers(ctx, req.target_id, [req.user_id]);
+    else await assignUserToApp(ctx, req);
+  }
   const t = now();
   await ctx.env.DB.prepare("UPDATE access_requests SET status = ?, decided_by = ?, decided_at = ?, note = ?, updated_at = ? WHERE id = ?")
     .bind(decision, ctx.selfId, t, note.trim().slice(0, 500), t, requestId)
     .run();
-  await audit(ctx, decision === "approved" ? "access.request_approved" : "access.request_denied", req.group_name, { user: req.upn });
+  await audit(ctx, decision === "approved" ? "access.request_approved" : "access.request_denied", req.target_name, { user: req.upn, target_type: req.target_type });
   return (await getAccessRequest(ctx.env, requestId))!;
+}
+
+/** The name an access request points at, whichever table it lives in. */
+async function targetName(env: Env, req: Pick<AccessRequestRow, "target_type" | "target_id">): Promise<string | undefined> {
+  const table = req.target_type === "group" ? "groups" : req.target_type === "oidc_app" ? "oauth_clients" : "saml_service_providers";
+  const row = await env.DB.prepare(`SELECT name FROM ${table} WHERE id = ?`).bind(req.target_id).first<{ name: string }>();
+  return row?.name;
+}
+
+/** An approved app request assigns the person directly - the same grant an admin would make on the app's page. */
+async function assignUserToApp(ctx: ServiceCtx, req: AccessRequestView): Promise<void> {
+  const table = req.target_type === "oidc_app" ? "oauth_clients" : "saml_service_providers";
+  const app = await ctx.env.DB.prepare(`SELECT id, name, assigned_users FROM ${table} WHERE id = ?`).bind(req.target_id).first<{ id: number; name: string; assigned_users: string | null }>();
+  if (!app) throw new ServiceError(404, "That application doesn't exist any more.");
+  const ids = new Set(parseAssignedUserIds(app.assigned_users));
+  if (!ids.has(req.user_id)) {
+    ids.add(req.user_id);
+    await ctx.env.DB.prepare(`UPDATE ${table} SET assigned_users = ? WHERE id = ?`).bind(JSON.stringify([...ids]), app.id).run();
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -25,8 +25,8 @@ export interface PendingAuthorizeRequest {
 export interface PendingSamlRequest {
   /** saml_service_providers.id of the SP this request came from. */
   spId: number;
-  /** The AuthnRequest's ID - echoed as InResponseTo in the assertion. */
-  requestId: string;
+  /** The AuthnRequest's ID - echoed as InResponseTo in the assertion. NULL for IdP-initiated sign-ons. */
+  requestId: string | null;
   /** The allowlisted ACS URL the response will be posted to. */
   acsUrl: string;
   relayState: string | null;

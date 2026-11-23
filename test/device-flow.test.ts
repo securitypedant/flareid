@@ -15,7 +15,7 @@ async function setup(client: Record<string, unknown> = {}) {
     token: apiKey,
     body: { version: 1, users: [{ username: "ola", given_name: "Ola", family_name: "Berg", password: PASSWORD, status: "active" }] },
   });
-  const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Device App", redirect_uris: ["https://app.test/cb"], ...client } });
+  const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Device App", redirect_uris: ["https://app.test/cb"], access_mode: "everyone", ...client } });
   if (created.status !== 200) throw new Error(JSON.stringify(created.body));
   return { apiKey, upn: `ola@${domain}`, clientId: created.body.client_id as string, clientSecret: created.body.client_secret as string | undefined };
 }
@@ -126,7 +126,7 @@ describe("device authorization grant (RFC 8628)", () => {
 
   it("rejects unknown codes, wrong clients, and unknown user_codes", async () => {
     const { apiKey, clientId } = await setup({ client_type: "public" });
-    const other = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Other", client_type: "public", redirect_uris: ["https://app.test/cb"] } });
+    const other = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Other", client_type: "public", redirect_uris: ["https://app.test/cb"], access_mode: "everyone" } });
     const auth = await deviceAuthorize(clientId);
 
     expect((await poll(String(other.body.client_id), String(auth.body.device_code))).body.error).toBe("invalid_grant");
@@ -174,7 +174,7 @@ describe("client_credentials grant", () => {
     expect(info.scope).toBe("report:read report:write");
 
     // Another client cannot introspect a token that is not theirs.
-    const other = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Other", redirect_uris: ["https://app.test/cb"] } });
+    const other = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Other", redirect_uris: ["https://app.test/cb"], access_mode: "everyone" } });
     const foreign = await SELF.fetch(`${BASE}/introspect`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -221,7 +221,7 @@ describe("client_credentials grant", () => {
 
   it("refuses public clients and bad secrets", async () => {
     const { apiKey, clientId, clientSecret } = await setup();
-    const pub = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "CLI", client_type: "public", redirect_uris: ["https://app.test/cb"] } });
+    const pub = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "CLI", client_type: "public", redirect_uris: ["https://app.test/cb"], access_mode: "everyone" } });
 
     const publicClient = await SELF.fetch(`${BASE}/token`, {
       method: "POST",

@@ -25,7 +25,7 @@ async function seedUser(apiKey: string, username = "ada"): Promise<number> {
 }
 
 async function seedClient(apiKey: string, extra: Record<string, unknown> = {}): Promise<{ client_id: string; client_secret: string }> {
-  const res = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp", redirect_uris: [REDIRECT], trusted: true, ...extra } });
+  const res = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp", redirect_uris: [REDIRECT], trusted: true, access_mode: "everyone", ...extra } });
   if (res.status !== 200) throw new Error(`client create failed: ${JSON.stringify(res.body)}`);
   return res.body as { client_id: string; client_secret: string };
 }
@@ -648,7 +648,7 @@ describe("pairwise subjects (OIDC Core 8)", () => {
 
   // DCR clients register untrusted; mark them trusted so the flow does not
   // stop at the consent screen.
-  const trust = async (clientId: string) => env.DB.prepare("UPDATE oauth_clients SET trusted = 1 WHERE client_id = ?").bind(clientId).run();
+  const trust = async (clientId: string) => env.DB.prepare("UPDATE oauth_clients SET trusted = 1, access_mode = 'everyone' WHERE client_id = ?").bind(clientId).run();
 
   it("derives a stable sector-scoped sub across id_token and userinfo, per sector", async () => {
     const { apiKey } = await bootstrapInstance();
@@ -715,7 +715,7 @@ describe("JAR request objects (RFC 9101)", () => {
     const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
     const jwk = { ...(await exportJWK(publicKey)), kid: "jar-k1" };
     const { json } = await registerDynamic({ redirect_uris: [REDIRECT], jwks: { keys: [jwk] } });
-    await env.DB.prepare("UPDATE oauth_clients SET trusted = 1 WHERE client_id = ?").bind(json.client_id as string).run();
+    await env.DB.prepare("UPDATE oauth_clients SET trusted = 1, access_mode = 'everyone' WHERE client_id = ?").bind(json.client_id as string).run();
     return { client: json as { client_id: string }, privateKey };
   }
 

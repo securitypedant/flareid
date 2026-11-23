@@ -207,6 +207,7 @@
     "login.error.device_cert": "This account must sign in from a managed device. Connect with the WARP client and try again.",
     "login.error.risk": "Sign-in was blocked: this account's current risk level is above what its sign-in policy allows. Ask an administrator.",
     "consent.claims.address": "Postal address",
-    "consent.claims.phone": "Phone number"
+    "consent.claims.phone": "Phone number",
+    "mfa.appRequired": "This application needs you to confirm it's you with a second factor."
   }
 }

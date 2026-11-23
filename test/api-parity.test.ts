@@ -278,7 +278,8 @@ const CONSOLE_GET_ONLY: Record<string, string> = {
 /** Self-service pages and the API reads carrying their data. */
 const ACCOUNT_GET_TO_API: Record<string, string[]> = {
   "GET /account": ["GET /api/v1/users/{username}", "GET /api/v1/users/{username}/apps"],
-  "GET /account/access/groups": ["GET /api/v1/access/requests", "GET /api/v1/groups"],
+  "GET /account/access": ["GET /api/v1/access/requests", "GET /api/v1/groups", "GET /api/v1/clients", "GET /api/v1/saml/service-providers"],
+  "GET /account/access/targets": ["GET /api/v1/access/requests", "GET /api/v1/groups", "GET /api/v1/clients", "GET /api/v1/saml/service-providers"],
   "GET /account/applications": ["GET /api/v1/users/{username}/apps"],
   "GET /account/groups": ["GET /api/v1/groups"],
   "GET /account/groups/:id": ["GET /api/v1/groups/{id}"],

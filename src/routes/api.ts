@@ -51,7 +51,7 @@ import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "
 import { normalizeCertPem } from "../lib/saml/x509.js";
 import { fetchSpMetadata, parseSpMetadata, SpMetadataError, upsertSpFromMetadata, type ParsedSpMetadata } from "../lib/saml/sp-metadata.js";
 import { CONTENT_ALGORITHMS, TRANSPORT_ALGORITHMS } from "../lib/saml/encrypt.js";
-import { disabledAlgorithmInPolicy, normalizeAttributeDefinitions, parseAssignedGroupIds, spAttributeDefinitions, spEncryptionPolicy } from "../lib/saml/service-providers.js";
+import { disabledAlgorithmInPolicy, normalizeAttributeDefinitions, parseAssignedGroupIds, parseAssignedUserIds, spAttributeDefinitions, spEncryptionPolicy } from "../lib/saml/service-providers.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
 import { USER_ATTRIBUTE_FIELDS } from "../lib/saml/attributes.js";
 
@@ -517,7 +517,7 @@ defineRoute({
   response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()), created_at: z.string() })) }),
 }, async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, assigned_groups, created_at FROM oauth_clients ORDER BY name"
+    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, access_mode, assigned_groups, assigned_users, require_mfa, requestable, created_at FROM oauth_clients ORDER BY name"
   ).all<Omit<OAuthClientRow, "client_secret_hash">>();
 
   return c.json({
@@ -527,7 +527,11 @@ defineRoute({
       name: cl.name,
       redirect_uris: JSON.parse(cl.redirect_uris) as string[],
       id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
+      access_mode: cl.access_mode,
       assigned_groups: parseAssignedGroupIds(cl.assigned_groups),
+      assigned_users: parseAssignedUserIds(cl.assigned_users),
+      require_mfa: cl.require_mfa === 1,
+      requestable: cl.requestable === 1,
       created_at: cl.created_at,
     })),
   });
@@ -562,7 +566,11 @@ defineRoute({
     backchannel_logout_uri: z.string().optional(),
     initiate_login_uri: z.string().optional(),
     id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed (default RS256)." }),
-    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction." }),
+    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment." }),
+    access_mode: z.enum(["everyone", "restricted"]).optional().openapi({ description: "restricted = only assigned users/groups reach the app; default for new apps." }),
+    assigned_users: z.array(z.number()).nullable().optional().openapi({ description: "User ids assigned to this app. On update, omitted keeps the current assignment." }),
+    require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
+    requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
@@ -580,6 +588,10 @@ defineRoute({
     initiate_login_uri?: string;
     id_token_signed_response_alg?: string;
     assigned_groups?: number[] | null;
+    access_mode?: "everyone" | "restricted";
+    assigned_users?: number[] | null;
+    require_mfa?: boolean;
+    requestable?: boolean;
   }>(c);
   const isPublic = body.client_type === "public";
   if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
@@ -622,8 +634,10 @@ defineRoute({
     return c.json(badRequest(`client_secret is ${seededSecret.length} characters; at least 24 are required.`), 400);
   }
 
-  // undefined keeps the stored restriction; null and [] both mean everyone.
+  // undefined keeps the stored restriction.
   const assigned = body.assigned_groups === undefined ? undefined : Array.isArray(body.assigned_groups) ? JSON.stringify(body.assigned_groups.filter((n) => Number.isInteger(n))) : null;
+  const assignedUsers = body.assigned_users === undefined ? undefined : Array.isArray(body.assigned_users) ? JSON.stringify(body.assigned_users.filter((n) => Number.isInteger(n))) : null;
+  if (body.access_mode !== undefined && body.access_mode !== "everyone" && body.access_mode !== "restricted") return c.json(badRequest('access_mode must be "everyone" or "restricted".'), 400);
 
   const existing = seededId
     ? await c.env.DB.prepare("SELECT id, assigned_groups FROM oauth_clients WHERE client_id = ?").bind(seededId).first<{ id: number; assigned_groups: string | null }>()
@@ -646,6 +660,10 @@ defineRoute({
     if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
     if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(idTokenAlg, existing.id).run();
     if (assigned !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE id = ?").bind(assigned, existing.id).run();
+    if (assignedUsers !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_users = ? WHERE id = ?").bind(assignedUsers, existing.id).run();
+    if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE id = ?").bind(body.access_mode, existing.id).run();
+    if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, existing.id).run();
+    if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, existing.id).run();
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
     return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256", assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
@@ -663,6 +681,10 @@ defineRoute({
   if (init !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET initiate_login_uri = ? WHERE client_id = ?").bind(init, clientId).run();
   if (idTokenAlg) await c.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE client_id = ?").bind(idTokenAlg, clientId).run();
   if (assigned !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE client_id = ?").bind(assigned, clientId).run();
+  if (assignedUsers !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET assigned_users = ? WHERE client_id = ?").bind(assignedUsers, clientId).run();
+  if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE client_id = ?").bind(body.access_mode, clientId).run();
+  if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE client_id = ?").bind(body.require_mfa ? 1 : 0, clientId).run();
+  if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE client_id = ?").bind(body.requestable ? 1 : 0, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({
@@ -1106,7 +1128,11 @@ function spJson(sp: SamlServiceProviderRow) {
     slo_url: sp.slo_url,
     encryption_cert: sp.encryption_cert,
     encrypt_assertions: sp.encrypt_assertions === 1,
+    access_mode: sp.access_mode,
     assigned_groups: parseAssignedGroupIds(sp.assigned_groups),
+    assigned_users: parseAssignedUserIds(sp.assigned_users),
+    require_mfa: sp.require_mfa === 1,
+    requestable: sp.requestable === 1,
     created_at: sp.created_at,
     updated_at: sp.updated_at,
   };
@@ -1168,6 +1194,10 @@ interface SpUpsertBody {
   encrypt_assertions?: boolean;
   encryption_policy?: { content?: string; transport?: string; digest?: string; mgf?: string | null } | null;
   assigned_groups?: number[] | null;
+  access_mode?: "everyone" | "restricted";
+  assigned_users?: number[] | null;
+  require_mfa?: boolean;
+  requestable?: boolean;
 }
 
 /**
@@ -1206,7 +1236,11 @@ defineRoute({
       mgf: z.string().nullable().optional(),
     }).nullable().optional(),
     subject_id: z.enum(["", "subject-id", "pairwise-id"]).optional(),
-    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction." }),
+    assigned_groups: z.array(z.number()).nullable().optional().openapi({ description: "Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment." }),
+    access_mode: z.enum(["everyone", "restricted"]).optional().openapi({ description: "restricted = only assigned users/groups reach the app; default for new apps." }),
+    assigned_users: z.array(z.number()).nullable().optional().openapi({ description: "User ids assigned to this app. On update, omitted keeps the current assignment." }),
+    require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
+    requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string(), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
@@ -1298,8 +1332,16 @@ defineRoute({
   } else encryptionPolicy = undefined;
 
   const name = String(body.name ?? existing?.name ?? entityId).trim();
-  // undefined keeps the stored restriction; null and [] both mean everyone.
+  // undefined keeps the stored assignment.
   const assigned = body.assigned_groups === undefined ? undefined : Array.isArray(body.assigned_groups) ? JSON.stringify(body.assigned_groups.filter((n) => Number.isInteger(n))) : null;
+  const assignedUsers = body.assigned_users === undefined ? undefined : Array.isArray(body.assigned_users) ? JSON.stringify(body.assigned_users.filter((n) => Number.isInteger(n))) : null;
+  const writeAccess = async (id: number) => {
+    if (assigned !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_groups = ? WHERE id = ?").bind(assigned, id).run();
+    if (assignedUsers !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_users = ? WHERE id = ?").bind(assignedUsers, id).run();
+    if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET access_mode = ? WHERE id = ?").bind(body.access_mode, id).run();
+    if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, id).run();
+    if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, id).run();
+  };
   const now = new Date().toISOString();
   const values = [
     entityId,
@@ -1324,7 +1366,7 @@ defineRoute({
       .bind(...values, encryptionPolicy === undefined ? (existing.encryption_policy ?? null) : encryptionPolicy, attributeDefinitions === undefined ? (existing.attribute_definitions ?? null) : attributeDefinitions, now, existing.id)
       .run();
     if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
-    if (assigned !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_groups = ? WHERE id = ?").bind(assigned, existing.id).run();
+    await writeAccess(existing.id);
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.updated", name, { entity_id: entityId }, c.req.raw);
     return c.json({ ok: true, created: false, id: existing.id, entity_id: entityId, assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
   }
@@ -1337,7 +1379,7 @@ defineRoute({
     .run();
 
   if (body.subject_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE entity_id = ?").bind(["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "", entityId).run();
-  if (assigned !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET assigned_groups = ? WHERE id = ?").bind(assigned, result.meta.last_row_id).run();
+  await writeAccess(Number(result.meta.last_row_id));
   await logAudit(c.env, auditActor(c.get("apiActor")), "saml_sp.created", name, { entity_id: entityId }, c.req.raw);
   return c.json({ ok: true, created: true, id: result.meta.last_row_id, entity_id: entityId, assigned_groups: parseAssignedGroupIds(assigned ?? null) });
 });

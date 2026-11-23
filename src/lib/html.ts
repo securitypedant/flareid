@@ -301,6 +301,10 @@ const STYLES = `
   .two-col > div:not(.card) { display: flex; flex-direction: column; }
   .two-col > div:not(.card) > .card:last-child { margin-bottom: 0; }
   @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+  .three-col > .card { margin-bottom: 0; height: 100%; }
+  @media (max-width: 1100px) { .three-col { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 700px) { .three-col { grid-template-columns: 1fr; } }
 
   .breadcrumbs { font-size: 0.8125rem; color: var(--fi-muted); margin-bottom: 6px; }
   .breadcrumbs a { color: var(--fi-muted); text-decoration: none; }
@@ -1432,7 +1436,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
       <span class="nav-links">
         <a href="/account">Account</a>
         <a href="/account/applications">Applications</a>
-        <a href="/account/groups">Groups</a>
+        <a href="/account/access">Access</a>
         <a href="/account/security">Security</a>
       </span>
       ${isAdmin ? '<span class="nav-links"><a href="/admin" class="nav-admin">Admin</a></span>' : ""}
@@ -1441,7 +1445,7 @@ export function nav(appName: string, isAdmin: boolean, logoUrl?: string | null, 
         <div class="nav-menu-list">
           <a href="/account">Account</a>
           <a href="/account/applications">Applications</a>
-          <a href="/account/groups">Groups</a>
+          <a href="/account/access">Access</a>
           <a href="/account/security">Security</a>
           ${isAdmin ? '<a href="/admin" class="nav-admin">Admin</a>' : ""}
           <hr class="nav-menu-divider" />

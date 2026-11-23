@@ -121,8 +121,16 @@ export interface OAuthClientRow {
   request_uris: string | null;
   /** OIDC Registration 2: alg the client wants /userinfo signed with; NULL = plain JSON. */
   userinfo_signed_response_alg: string | null;
-  /** JSON array of group ids allowed to see and SSO into this app; NULL/'[]' = everyone. */
+  /** JSON array of group ids allowed to see and SSO into this app (restricted mode). */
   assigned_groups: string | null;
+  /** 'everyone' | 'restricted': in restricted mode only assigned_users/groups reach the app. */
+  access_mode: string;
+  /** JSON array of user ids allowed when access_mode = 'restricted'. */
+  assigned_users: string | null;
+  /** 1 = the session must carry a second factor ('mfa'/'hwk'/'ext' in amr) to SSO. */
+  require_mfa: number;
+  /** 1 = users without access may ask for it from My account -> Access. */
+  requestable: number;
 }
 
 export interface SamlServiceProviderRow {
@@ -153,8 +161,16 @@ export interface SamlServiceProviderRow {
   subject_id: string;
   /** App icon shown on the user launchpad; absolute https URL, NULL = letter tile. */
   logo_uri: string | null;
-  /** JSON array of group ids allowed to see and SSO into this app; NULL/'[]' = everyone. */
+  /** JSON array of group ids allowed to see and SSO into this app (restricted mode). */
   assigned_groups: string | null;
+  /** 'everyone' | 'restricted': in restricted mode only assigned_users/groups reach the app. */
+  access_mode: string;
+  /** JSON array of user ids allowed when access_mode = 'restricted'. */
+  assigned_users: string | null;
+  /** 1 = the session must carry a second factor ('mfa'/'hwk'/'ext' in amr) to SSO. */
+  require_mfa: number;
+  /** 1 = users without access may ask for it from My account -> Access. */
+  requestable: number;
   created_at: string;
   updated_at: string;
 }

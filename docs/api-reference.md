@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.9.0.
+API version 4.10.0.
 
 ## Contents
 
@@ -964,7 +964,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 File an access request.
 
-Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.
+Requests a target for `username` - the same flow the My account requester follows. `group_id` or a `target_type`/`target_id` pair names it: a group must be requestable and static and the user must not already belong or have a pending ask; an app must be requestable and restricted with the user outside its assignees.
 
 Permission: `groups:write`
 
@@ -973,7 +973,9 @@ Request body:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `username` | string | yes |  |
-| `group_id` | integer | yes |  |
+| `group_id` | integer | no |  |
+| `target_type` | "group" \| "oidc_app" \| "saml_app" | no |  |
+| `target_id` | integer | no |  |
 | `reason` | string | no |  |
 
 Response `201`:
@@ -1503,7 +1505,11 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
-| `assigned_groups` | number[] | yes | Group ids whose members may see and sign in to this app; [] = everyone. |
+| `access_mode` | "everyone" \| "restricted" | yes | restricted = only assigned_users/groups may see and sign in to this app. |
+| `assigned_groups` | number[] | yes | Group ids (static or dynamic) assigned to this app. |
+| `assigned_users` | number[] | yes | User ids assigned to this app. |
+| `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | yes | People without access may request it under My account -> Access. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1534,6 +1540,11 @@ Request body:
 | `backchannel_logout_uri` | string | no | https URL; empty clears it. |
 | `initiate_login_uri` | string | no | https URL; empty clears it. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed. |
+| `access_mode` | "everyone" \| "restricted" | no | restricted = only assigned users/groups reach the app. |
+| `assigned_groups` | number[] | no | Group ids (static or dynamic) assigned to this app. |
+| `assigned_users` | number[] | no | User ids assigned to this app. |
+| `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | no | People without access may request it under My account -> Access. |
 
 Response `200`:
 
@@ -1550,7 +1561,11 @@ Response `200`:
 | `frontchannel_logout_uri` | string \| null | yes |  |
 | `trusted` | boolean | yes |  |
 | `allowed_claims` | array \| null | yes | Claim groups released to this client; null = every group. |
-| `assigned_groups` | number[] | yes | Group ids whose members may see and sign in to this app; [] = everyone. |
+| `access_mode` | "everyone" \| "restricted" | yes | restricted = only assigned_users/groups may see and sign in to this app. |
+| `assigned_groups` | number[] | yes | Group ids (static or dynamic) assigned to this app. |
+| `assigned_users` | number[] | yes | User ids assigned to this app. |
+| `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | yes | People without access may request it under My account -> Access. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1638,7 +1653,11 @@ Request body:
 | `backchannel_logout_uri` | string | no |  |
 | `initiate_login_uri` | string | no |  |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | no | How this client's id_tokens are signed (default RS256). |
-| `assigned_groups` | array \| null | no | Group ids whose members may see and sign in to this app; empty or null = everyone. On update, omitted keeps the current restriction. |
+| `assigned_groups` | array \| null | no | Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment. |
+| `access_mode` | "everyone" \| "restricted" | no | restricted = only assigned users/groups reach the app; default for new apps. |
+| `assigned_users` | array \| null | no | User ids assigned to this app. On update, omitted keeps the current assignment. |
+| `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | no | People without access may request it under My account -> Access. |
 
 Response `200`:
 
@@ -1703,7 +1722,11 @@ Response `200`:
 | `slo_url` | string \| null | yes |  |
 | `encryption_cert` | string \| null | yes |  |
 | `encrypt_assertions` | boolean | yes |  |
-| `assigned_groups` | number[] | yes | Group ids whose members may see and SSO into this app; [] = everyone. |
+| `access_mode` | "everyone" \| "restricted" | yes | restricted = only assigned_users/groups may see and SSO into this app. |
+| `assigned_groups` | number[] | yes | Group ids (static or dynamic) assigned to this app. |
+| `assigned_users` | number[] | yes | User ids assigned to this app. |
+| `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | yes | People without access may request it under My account -> Access. |
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 
@@ -1771,7 +1794,11 @@ Request body:
 | `encrypt_assertions` | boolean | no |  |
 | `encryption_policy` | object \| null { content, transport, digest, mgf } | no |  |
 | `subject_id` | "" \| "subject-id" \| "pairwise-id" | no |  |
-| `assigned_groups` | array \| null | no | Group ids whose members may see and SSO into this app; empty or null = everyone. On update, omitted keeps the current restriction. |
+| `assigned_groups` | array \| null | no | Group ids (static or dynamic) assigned to this app. On update, omitted keeps the current assignment. |
+| `access_mode` | "everyone" \| "restricted" | no | restricted = only assigned users/groups reach the app; default for new apps. |
+| `assigned_users` | array \| null | no | User ids assigned to this app. On update, omitted keeps the current assignment. |
+| `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
+| `requestable` | boolean | no | People without access may request it under My account -> Access. |
 
 Response `200`:
 

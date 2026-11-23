@@ -128,7 +128,7 @@ describe("Security > Signing keys (console)", () => {
   it("signs with the new key after a rotation, and tokens from the old key still verify", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const upn = await seedUser(apiKey);
-    const client = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [REDIRECT_URI] } })).body;
+    const client = (await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [REDIRECT_URI], access_mode: "everyone" } })).body;
     const oldToken = await idTokenFor(client.client_id, client.client_secret, upn);
     const oldKid = decodeProtectedHeader(oldToken).kid;
 
@@ -147,7 +147,7 @@ describe("per-client id_token signing algorithm", () => {
   it("issues ES256 id_tokens to a client that asks for them, verifiable against the JWKS", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const upn = await seedUser(apiKey);
-    const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "EC RP", redirect_uris: [REDIRECT_URI], id_token_signed_response_alg: "ES256" } });
+    const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "EC RP", redirect_uris: [REDIRECT_URI], id_token_signed_response_alg: "ES256", access_mode: "everyone" } });
     expect(created.status).toBe(200);
     expect(created.body.id_token_signed_response_alg).toBe("ES256");
     expect((await apiCall(`/api/v1/clients/${created.body.client_id}`, { token: apiKey })).body.id_token_signed_response_alg).toBe("ES256");
@@ -162,7 +162,7 @@ describe("per-client id_token signing algorithm", () => {
   it("accepts and validates the algorithm on API create and PATCH", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     expect((await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Bad", redirect_uris: [REDIRECT_URI], id_token_signed_response_alg: "HS256" } })).status).toBe(400);
-    const made = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [REDIRECT_URI] } });
+    const made = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [REDIRECT_URI], access_mode: "everyone" } });
     expect(made.body.id_token_signed_response_alg).toBe("RS256");
     const path = `/api/v1/clients/${made.body.client_id}`;
     expect((await apiCall(path, { token: apiKey, method: "PATCH", body: { id_token_signed_response_alg: "none" } })).status).toBe(400);

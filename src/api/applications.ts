@@ -7,7 +7,7 @@ import { getUpstreamIdp, idpConfig, listUpstreamIdps, upstreamJitGroups, type Up
 import { SOCIAL_PROVIDERS } from "../lib/social.js";
 import type { OAuthClientRow, SamlServiceProviderRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
-import { spAttributeDefinitions } from "../lib/saml/service-providers.js";
+import { parseAssignedGroupIds, parseAssignedUserIds, spAttributeDefinitions } from "../lib/saml/service-providers.js";
 import { apiCtx } from "../services/context.js";
 import { applyCatalogEntry } from "../services/apps.js";
 import { catalogIconUrl, catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructions, type CatalogEntry } from "../lib/catalog.js";
@@ -41,6 +41,11 @@ function clientJson(cl: OAuthClientRow) {
     trusted: cl.trusted === 1,
     allowed_claims: cl.allowed_claims === null ? null : parseAllowedClaims(cl),
     id_token_signed_response_alg: isIdTokenAlg(cl.id_token_signed_response_alg) ? cl.id_token_signed_response_alg : "RS256",
+    access_mode: cl.access_mode,
+    assigned_groups: parseAssignedGroupIds(cl.assigned_groups),
+    assigned_users: parseAssignedUserIds(cl.assigned_users),
+    require_mfa: cl.require_mfa === 1,
+    requestable: cl.requestable === 1,
     created_at: cl.created_at,
   };
 }
@@ -77,6 +82,11 @@ defineRoute(
       backchannel_logout_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
       initiate_login_uri: z.string().optional().openapi({ description: "https URL; empty clears it." }),
       id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS).optional().openapi({ description: "How this client's id_tokens are signed." }),
+      access_mode: z.enum(["everyone", "restricted"]).optional().openapi({ description: "restricted = only assigned users/groups reach the app." }),
+      assigned_groups: z.array(z.number()).optional().openapi({ description: "Group ids (static or dynamic) assigned to this app." }),
+      assigned_users: z.array(z.number()).optional().openapi({ description: "User ids assigned to this app." }),
+      require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
+      requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
     }),
     errors: [404],
     response: ClientSchema,
@@ -84,7 +94,7 @@ defineRoute(
   async (c) => {
     const client = await clientFor(c);
     if (!client) return noClient(c);
-    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; backchannel_logout_uri?: string; initiate_login_uri?: string; id_token_signed_response_alg?: string }>(c);
+    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; backchannel_logout_uri?: string; initiate_login_uri?: string; id_token_signed_response_alg?: string; access_mode?: "everyone" | "restricted"; assigned_groups?: number[]; assigned_users?: number[]; require_mfa?: boolean; requestable?: boolean }>(c);
     const current = clientJson(client);
     const name = String(body.name ?? current.name).trim();
     if (!name) return c.json(badRequest("name cannot be empty."), 400);
@@ -115,6 +125,11 @@ defineRoute(
       ...(bcl !== undefined ? { backchannelLogoutUri: bcl } : {}),
       ...(init !== undefined ? { initiateLoginUri: init } : {}),
       idTokenAlg: body.id_token_signed_response_alg as "RS256" | "ES256" | undefined,
+      ...(body.access_mode !== undefined ? { accessMode: body.access_mode } : {}),
+      ...(body.assigned_groups !== undefined ? { assignedGroups: JSON.stringify(body.assigned_groups.filter((n) => Number.isInteger(n))) } : {}),
+      ...(body.assigned_users !== undefined ? { assignedUsers: JSON.stringify(body.assigned_users.filter((n) => Number.isInteger(n))) } : {}),
+      ...(body.require_mfa !== undefined ? { requireMfa: body.require_mfa ? 1 : 0 } : {}),
+      ...(body.requestable !== undefined ? { requestable: body.requestable ? 1 : 0 } : {}),
     });
     return c.json(clientJson((await clientFor(c))!));
   }
@@ -186,6 +201,11 @@ defineRoute(
       encryption_policy: sp.encryption_policy ? (JSON.parse(sp.encryption_policy) as Record<string, unknown>) : null,
       subject_id: sp.subject_id ?? "",
       metadata_url: sp.metadata_url,
+      access_mode: sp.access_mode,
+      assigned_groups: parseAssignedGroupIds(sp.assigned_groups),
+      assigned_users: parseAssignedUserIds(sp.assigned_users),
+      require_mfa: sp.require_mfa === 1,
+      requestable: sp.requestable === 1,
       created_at: sp.created_at,
       updated_at: sp.updated_at,
     });

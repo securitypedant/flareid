@@ -20,7 +20,7 @@ async function setup(client: Record<string, unknown> = {}) {
     token: apiKey,
     body: { version: 1, users: [{ username: "ola", given_name: "Ola", family_name: "Berg", job_title: "Engineer", password: PASSWORD, status: "active" }] },
   });
-  const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [CB], ...client } });
+  const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "RP", redirect_uris: [CB], access_mode: "everyone", ...client } });
   if (created.status !== 200) throw new Error(JSON.stringify(created.body));
   return { apiKey, upn: `ola@${domain}`, clientId: created.body.client_id as string, clientSecret: created.body.client_secret as string | undefined };
 }
@@ -194,7 +194,7 @@ describe("consent for non-trusted clients", () => {
 describe("public clients", () => {
   it("have no secret, must use PKCE, and may use a loopback redirect on any port", async () => {
     const { apiKey, upn } = await setup();
-    const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "CLI", client_type: "public", redirect_uris: ["http://127.0.0.1/callback"] } });
+    const created = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "CLI", client_type: "public", redirect_uris: ["http://127.0.0.1/callback"], access_mode: "everyone" } });
     expect(created.body.client_secret).toBeUndefined();
     const clientId = created.body.client_id as string;
     const redirect = "http://127.0.0.1:53682/callback";

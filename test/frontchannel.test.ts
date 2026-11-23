@@ -13,7 +13,7 @@ describe("front-channel logout", () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const reg = await apiCall("/api/v1/clients", {
       token: apiKey,
-      body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"], frontchannel_logout_uri: "https://app.test/fcl?x=1" },
+      body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"], frontchannel_logout_uri: "https://app.test/fcl?x=1", access_mode: "everyone" },
     });
     expect(reg.status).toBe(200);
     const bad = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "Bad", redirect_uris: ["https://b.test/cb"], frontchannel_logout_uri: "http://b.test/fcl" } });
@@ -54,7 +54,7 @@ describe("front-channel logout", () => {
 describe("conformance fixes", () => {
   it("accepts POST at /authorize and /userinfo, and refuses unsigned request objects", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"] } });
+    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"], access_mode: "everyone" } });
     const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
     const cookie = (await createSession(env, uid, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
     const params = { response_type: "code", client_id: "app", redirect_uri: "https://app.test/cb", scope: "openid email", state: "s1", nonce: "n1" };
@@ -89,7 +89,7 @@ describe("conformance fixes 2", () => {
 
   it("revokes the tokens a reused code issued, and honours the claims parameter", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"] } });
+    await apiCall("/api/v1/clients", { token: apiKey, body: { name: "App", client_id: "app", client_secret: "s".repeat(32), redirect_uris: ["https://app.test/cb"], access_mode: "everyone" } });
     const uid = (await env.DB.prepare("SELECT id FROM users WHERE username = 'admin'").first<{ id: number }>())!.id;
     const cookie = (await createSession(env, uid, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
 

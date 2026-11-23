@@ -50,7 +50,7 @@ describe("group managers", () => {
     expect(await (await get(`/admin/groups/${groupId}`, admin)).text()).toContain("rosa@");
 
     // Her My account groups page lists it under management.
-    const mine = await (await get("/account/groups", rosa)).text();
+    const mine = await (await get("/account/access", rosa)).text();
     expect(mine).toContain("Groups you manage");
     expect(mine).toContain("Facilities");
 
@@ -65,7 +65,7 @@ describe("group managers", () => {
     expect(await memberOf(groupId, member)).toBeFalsy();
 
     // Ned asks to join; she answers it from the same page.
-    await post("/account/access/request", new URLSearchParams({ group_id: String(groupId), reason: "please" }), await sessionFor(asker));
+    await post("/account/access/request", new URLSearchParams({ target: `group:${groupId}`, reason: "please" }), await sessionFor(asker));
     const pending = await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ? AND status = 'pending'").bind(asker).first<{ id: number }>();
     const queue = await (await get(`/account/groups/${groupId}`, rosa)).text();
     expect(queue).toContain("ned@");
@@ -85,7 +85,7 @@ describe("group managers", () => {
     // Eve neither sees nor acts on Rosa's group.
     const denied = await get(`/account/groups/${groupId}`, eveCookie);
     expect(denied.status).toBe(404);
-    expect(await (await get("/account/groups", eveCookie)).text()).not.toContain("Groups you manage");
+    expect(await (await get("/account/access", eveCookie)).text()).not.toContain("Groups you manage");
     const forged = await post(`/account/groups/${groupId}/members`, `user_ids=${eve}`, eveCookie);
     expect(forged.headers.get("Location")).toContain("error=");
     expect(await memberOf(groupId, eve)).toBeFalsy();
@@ -112,14 +112,14 @@ describe("group managers", () => {
     await post(`/admin/groups/${groupId}/managers`, `manager_ids=${rosa}`, admin);
 
     // The picker no longer offers it, and a direct POST refuses.
-    expect(await (await get(`/account/access/groups?q=Facil`, rosaCookie)).json()).toEqual([]);
-    const ask = await post("/account/access/request", `group_id=${groupId}`, rosaCookie);
+    expect(await (await get(`/account/access/targets?q=Facil`, rosaCookie)).json()).toEqual([]);
+    const ask = await post("/account/access/request", `target=group%3A${groupId}`, rosaCookie);
     expect(await memberOf(groupId, rosa)).toBeFalsy();
     expect(ask.headers.get("Location")).toBeNull(); // an error page, not a redirect
 
     // A request filed *before* she became a manager is still not hers to decide.
     await env.DB.prepare("DELETE FROM group_managers WHERE group_id = ?").bind(groupId).run();
-    await post("/account/access/request", `group_id=${groupId}`, rosaCookie);
+    await post("/account/access/request", `target=group%3A${groupId}`, rosaCookie);
     const req = await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ? AND status = 'pending'").bind(rosa).first<{ id: number }>();
     await post(`/admin/groups/${groupId}/managers`, `manager_ids=${rosa}`, admin);
     const decide = await post(`/account/groups/${groupId}/requests/${req!.id}`, "decision=approved", rosaCookie);
@@ -155,7 +155,7 @@ describe("account pages and notifications", () => {
     const security = await (await get("/account/security", cookie)).text();
     expect(security).toContain("Change password");
     expect(security).toContain("Authenticator app");
-    const groups = await (await get("/account/groups", cookie)).text();
+    const groups = await (await get("/account/access", cookie)).text();
     expect(groups).toContain("Your groups");
   });
 
@@ -166,7 +166,7 @@ describe("account pages and notifications", () => {
     const admin = await adminCookie();
     // Nothing pending: no badge anywhere.
     expect(await (await get("/admin", admin)).text()).not.toContain('class="nav-badge"');
-    await post("/account/access/request", `group_id=${groupId}`, await sessionFor(uid));
+    await post("/account/access/request", `target=group%3A${groupId}`, await sessionFor(uid));
     const page = await (await get("/admin", admin)).text();
     expect(page).toContain('class="nav-badge"');
     expect(page).toContain("asked to join VPN users");
@@ -183,8 +183,8 @@ describe("account pages and notifications", () => {
     const groupId = await makeGroup(apiKey, "Facilities", { requestable: true });
     const admin = await adminCookie();
     await post(`/admin/groups/${groupId}/managers`, `manager_ids=${rosa}`, admin);
-    await post("/account/access/request", `group_id=${groupId}`, await sessionFor(ned));
-    const rosaPage = await (await get("/account/groups", await sessionFor(rosa))).text();
+    await post("/account/access/request", `target=group%3A${groupId}`, await sessionFor(ned));
+    const rosaPage = await (await get("/account/access", await sessionFor(rosa))).text();
     expect(rosaPage).toContain("asked to join Facilities");
     expect(rosaPage).toContain('class="notif-dot"');
     expect(await (await get("/account", await sessionFor(eve))).text()).not.toContain('class="notif-dot"');

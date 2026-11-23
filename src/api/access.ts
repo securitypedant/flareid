@@ -18,8 +18,9 @@ const RequestSchema = z
     user_id: z.number(),
     upn: z.string(),
     display_name: z.string(),
-    group_id: z.number(),
-    group_name: z.string(),
+    target_type: z.enum(["group", "oidc_app", "saml_app"]),
+    target_id: z.number(),
+    target_name: z.string(),
     reason: z.string(),
     status: z.enum(["pending", "approved", "denied", "cancelled"]),
     decided_by: z.number().nullable(),
@@ -115,18 +116,27 @@ defineRoute(
     permission: "groups:write",
     summary: "File an access request",
     description:
-      "Requests `group_id` for `username` - the same flow the My account requester follows: the group must be requestable and static, the user must not already belong or have a pending ask, and their own managed groups are refused.",
-    body: z.object({ username: z.string(), group_id: z.number().int(), reason: z.string().optional() }),
+      "Requests a target for `username` - the same flow the My account requester follows. `group_id` or a `target_type`/`target_id` pair names it: a group must be requestable and static and the user must not already belong or have a pending ask; an app must be requestable and restricted with the user outside its assignees.",
+    body: z.object({
+      username: z.string(),
+      group_id: z.number().int().optional(),
+      target_type: z.enum(["group", "oidc_app", "saml_app"]).optional(),
+      target_id: z.number().int().optional(),
+      reason: z.string().optional(),
+    }),
     status: 201,
     errors: [404, 409],
     response: z.object({ request: RequestSchema }),
   },
   async (c) => {
-    const body = await readJson<{ username: string; group_id: number; reason?: string }>(c);
+    const body = await readJson<{ username: string; group_id?: number; target_type?: "group" | "oidc_app" | "saml_app"; target_id?: number; reason?: string }>(c);
     const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(String(body.username ?? "").toLowerCase()).first<UserRow>();
     if (!user) return notFound(c, `No user "${body.username}".`);
+    // `group_id` stays accepted for older callers; the typed pair is the same ask.
+    const target = body.target_type ? { type: body.target_type, id: Number(body.target_id) } : body.group_id !== undefined ? { type: "group" as const, id: Number(body.group_id) } : null;
+    if (!target || !Number.isInteger(target.id)) return notFound(c, "Pass group_id or (target_type, target_id).");
     // selfId is who the request is for; the token stays the audited actor.
-    const request = await requestAccess({ ...apiCtx(c), selfId: user.id }, Number(body.group_id), String(body.reason ?? ""));
+    const request = await requestAccess({ ...apiCtx(c), selfId: user.id }, target, String(body.reason ?? ""));
     return c.json({ request: (await getAccessRequest(c.env, request.id))! }, 201);
   }
 );

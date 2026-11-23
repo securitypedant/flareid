@@ -105,7 +105,7 @@ async function userId(username: string): Promise<number> {
 }
 
 async function seedClient(apiKey: string): Promise<{ clientId: string; clientSecret: string }> {
-  const r = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp", redirect_uris: [REDIRECT_URI] } });
+  const r = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp", redirect_uris: [REDIRECT_URI], access_mode: "everyone" } });
   if (r.status !== 200) throw new Error(`client seed: ${JSON.stringify(r.body)}`);
   return { clientId: r.body.client_id, clientSecret: r.body.client_secret };
 }
@@ -113,7 +113,7 @@ async function seedClient(apiKey: string): Promise<{ clientId: string; clientSec
 async function seedSp(apiKey: string): Promise<void> {
   const r = await apiCall("/api/v1/saml/service-providers", {
     token: apiKey,
-    body: { entity_id: SP_ENTITY_ID, name: "sp", acs_urls: [SP_ACS] },
+    body: { entity_id: SP_ENTITY_ID, name: "sp", acs_urls: [SP_ACS], access_mode: "everyone" },
   });
   if (r.status !== 200) throw new Error(`sp seed: ${JSON.stringify(r.body)}`);
 }
@@ -199,7 +199,7 @@ describe("mandatory MFA", () => {
     await seedClient(apiKey);
     await seedSp(apiKey);
     const { clientId } = await apiCall("/api/v1/clients", { token: apiKey }).then(async () => {
-      const r = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp2", redirect_uris: [REDIRECT_URI] } });
+      const r = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "rp2", redirect_uris: [REDIRECT_URI], access_mode: "everyone" } });
       return { clientId: r.body.client_id };
     });
 

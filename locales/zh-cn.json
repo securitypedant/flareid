@@ -207,6 +207,7 @@
     "login.error.device_cert": "此账户需从受管理的设备登录。请用 WARP 客户端连接后重试。",
     "login.error.risk": "登录被拦截：该账户当前风险等级超过了其登录策略允许的范围。请联系管理员。",
     "consent.claims.address": "邮政地址",
-    "consent.claims.phone": "电话号码"
+    "consent.claims.phone": "电话号码",
+    "mfa.appRequired": "。"
   }
 }

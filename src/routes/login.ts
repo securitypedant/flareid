@@ -14,7 +14,7 @@ import { matchLocale, t, type MessageKey } from "../lib/i18n.js";
 import { brandFor, domainFromHint, type Brand } from "../lib/brands.js";
 import { accessFor } from "../lib/admin-roles.js";
 import { grants } from "../lib/permissions.js";
-import { getUserById, getUserByLoginIdentifier, getUserGroupIds } from "../lib/db.js";
+import { getClientByClientId, getUserById, getUserByLoginIdentifier, getUserGroupIds } from "../lib/db.js";
 import { turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { timed } from "../lib/metrics.js";
@@ -35,7 +35,7 @@ import {
 import { clearSessionCookies, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
-import { appVisibleTo, getSpById, parseAssignedGroupIds } from "../lib/saml/service-providers.js";
+import { appAccessAllowed, getSpById } from "../lib/saml/service-providers.js";
 import { buildErrorResponse } from "../lib/saml/messages.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
@@ -45,6 +45,7 @@ import { logAudit } from "../lib/audit.js";
 import { clearLoginAttempts, clearMfaAttempts, getClientIp, loginRateKey, recordLoginAttempt, recordMfaAttempt, recordRateAttempt } from "../lib/rate-limit.js";
 import { hasUnusedBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { isDeviceTrusted, trustDevice } from "../lib/trusted-devices.js";
+import { secondStepFactors } from "../lib/second-step.js";
 
 export const login = new Hono<{ Bindings: Env }>();
 
@@ -76,26 +77,6 @@ function dummyPasswordHash(env: Env, hasher?: "scrypt" | "pbkdf2"): Promise<Stor
     );
   }
   return dummyHashes.get(key)!;
-}
-
-/** The second-step methods this user can use now: enrolled, and switched on by the administrator. */
-async function secondStepFactors(env: Env, user: UserRow): Promise<MfaFactors> {
-  const [totpOn, passkeyOn, backupOn, emailOtp, securityQuestions, admin] = await Promise.all([
-    isFactorEnabled(env, "totp"),
-    isFactorEnabled(env, "passkey"),
-    isFactorEnabled(env, "backup_codes"),
-    userHasEmailOtp(env, user),
-    userHasSecurityQuestions(env, user),
-    isAdministrator(env, user.id),
-  ]);
-  return {
-    totp: Boolean(user.mfa_enabled) && totpOn,
-    passkey: passkeyOn && (await userHasPasskey(env, user.id)),
-    backupCodes: backupOn && (await hasUnusedBackupCodes(env, user.id)),
-    emailOtp,
-    // Never offered to an administrator: too weak to be their second factor.
-    securityQuestions: securityQuestions && !admin,
-  };
 }
 
 /**
@@ -258,7 +239,7 @@ export async function completeLoginFlow(
     if (!sp || !fullUser) return { outcome: { type: "redirect", to: "/account" }, setCookies };
     // App assignment, re-evaluated after authentication like the signin
     // permission above: the request gets a signed RequestDenied at its ACS.
-    if (parseAssignedGroupIds(sp.assigned_groups).length > 0 && !appVisibleTo(sp.assigned_groups, await getUserGroupIds(env, fullUser.id))) {
+    if (!appAccessAllowed(sp, await getUserGroupIds(env, fullUser.id), fullUser.id)) {
       await logAudit(env, fullUser, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned" }, request);
       const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
       return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
@@ -349,7 +330,14 @@ login.post("/login", async (c) => {
   // otherwise a passkey when the user's policy needs a second factor.
   const factors = await secondStepFactors(c.env, user);
   const { totp, passkey, backupCodes, emailOtp, securityQuestions } = factors;
-  const needsStep = totp ? !(await isDeviceTrusted(c.env, c.req.raw, user.id)) : backupCodes || emailOtp || securityQuestions || (passkey && (await mfaRequiredFor(c.env, user.id)));
+  // The app this flow ends at may demand a second factor on its own
+  // (require_mfa), even when the user's policy does not: a password-only
+  // sign-in takes the step too, as long as they have a method to answer with.
+  const target = flow.kind === "oidc" ? await getClientByClientId(c.env, flow.request.clientId) : flow.kind === "saml" ? await getSpById(c.env, flow.request.spId) : null;
+  const appWantsStep = Boolean(target?.require_mfa) && (totp || passkey || backupCodes || emailOtp || securityQuestions);
+  const needsStep = totp
+    ? appWantsStep || !(await isDeviceTrusted(c.env, c.req.raw, user.id))
+    : backupCodes || emailOtp || securityQuestions || appWantsStep || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId, appearance.locale);
     // Identified now: the second step wears the person's brand (in the same language).

@@ -4,7 +4,7 @@ import { authPage, loginAppearance, msg, renderAuthMessage } from "../lib/login-
 import { t, type MessageKey } from "../lib/i18n.js";
 import { escapeHtml } from "../lib/html.js";
 import { getClientByClientId, getUserById, getUserGroupIds } from "../lib/db.js";
-import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
+import { appAccessAllowed } from "../services/clients.js";
 import { getSession } from "../lib/sessions.js";
 import { authenticateClient } from "../lib/oauth-client-auth.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
@@ -183,7 +183,7 @@ device.post("/device/approve", async (c) => {
   const client = await getClientByClientId(c.env, row.client_id);
   // App assignment, same bar as /authorize: a restricted client stamps the
   // code denied for anyone outside its groups - audited as app_denied below.
-  const allowed = !!client && (parseAssignedGroupIds(client.assigned_groups).length === 0 || (await appVisibleTo(client.assigned_groups, await getUserGroupIds(c.env, session.userId))));
+  const allowed = !!client && (await appAccessAllowed(client, await getUserGroupIds(c.env, session.userId), session.userId));
   const approve = decision === "approve" && allowed;
   // Only a pending row flips; a second tab racing the same code loses and
   // the answer it already gave stands.

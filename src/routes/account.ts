@@ -46,14 +46,14 @@ import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from ".
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
-import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessRequests, requestAccess, requestableGroups } from "../lib/access.js";
+import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessRequests, requestAccess, requestableApps, requestableGroups, type AccessTargetType } from "../lib/access.js";
 import { groupRolesMap } from "../lib/admin-roles.js";
 import { isGroupManager, managedGroups } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
 import { avatarUrl, deleteUserPhoto, getUserPhoto, getUserPhotoVersion, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { consoleCtx, ServiceError } from "../services/context.js";
 import { addGroupMembers, getGroupById, groupMembers, removeGroupMember } from "../services/groups.js";
-import { appVisibleTo, parseAssignedGroupIds } from "../services/clients.js";
+import { appAccessAllowed, parseAssignedGroupIds } from "../services/clients.js";
 import { assertMayManageGroup } from "../services/guards.js";
 
 export const account = new Hono<{ Bindings: Env }>();
@@ -247,7 +247,7 @@ account.get("/account/applications", async (c) => {
   ]);
   // Memberships are only worth fetching when at least one app is restricted.
   const myGroupIds =
-    clients.results.some((cl) => parseAssignedGroupIds(cl.assigned_groups).length > 0) || sps.results.some((sp) => parseAssignedGroupIds(sp.assigned_groups).length > 0)
+    clients.results.some((cl) => cl.access_mode !== "everyone") || sps.results.some((sp) => sp.access_mode !== "everyone")
       ? await getUserGroupIds(c.env, user.id)
       : [];
 
@@ -257,7 +257,7 @@ account.get("/account/applications", async (c) => {
   // third-party login URI, else a bare authorization request.
   const launchpad = [
     ...clients.results
-      .filter((cl) => appVisibleTo(cl.assigned_groups, myGroupIds))
+      .filter((cl) => appAccessAllowed(cl, myGroupIds, user.id))
       .map((cl) => {
         const firstRedirect = (JSON.parse(cl.redirect_uris || "[]") as string[])[0];
         const href =
@@ -266,7 +266,7 @@ account.get("/account/applications", async (c) => {
         return { name: cl.name, logo: cl.logo_uri, href, kind: "OIDC" };
       }),
     ...sps.results
-      .filter((sp) => appVisibleTo(sp.assigned_groups, myGroupIds))
+      .filter((sp) => appAccessAllowed(sp, myGroupIds, user.id))
       .map((sp) => ({ name: sp.name, logo: sp.logo_uri, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
   ];
   // External client logos need their exact URLs admitted to img-src for this
@@ -300,30 +300,33 @@ account.get("/account/applications", async (c) => {
   );
 });
 
-account.get("/account/groups", async (c) => {
+account.get("/account/groups", (c) => c.redirect("/account/access", 301));
+
+account.get("/account/access", async (c) => {
   const user = c.get("user");
-  const [groups, requestable, myRequests, managed] = await Promise.all([
+  const [groups, requestable, apps, myRequests, managed] = await Promise.all([
     getUserGroupNames(c.env, user.id),
     requestableGroups(c.env, user.id),
+    requestableApps(c.env, user.id, await getUserGroupIds(c.env, user.id)),
     myAccessRequests(c.env, user.id),
     managedGroups(c.env, user.id),
   ]);
   return c.html(
     layout(
       c,
-      "Groups",
+      "Access",
       `
       ${savedBanner(c)}
       ${cardSection(`
         <h2>Your groups</h2>
         ${groups.length > 0 ? groups.map((g) => `<span class="pill">${escapeHtml(g)}</span>`).join("") : '<p class="muted">No group memberships</p>'}
         ${
-          requestable.length
+          requestable.length || apps.length
             ? `<h3 style="margin-top:16px;">Request access</h3>
-               <p class="muted">Some groups accept self-service requests - an administrator approves or denies each ask.</p>
+               <p class="muted">Some groups and apps accept self-service requests - an administrator approves or denies each ask.</p>
                <form method="POST" action="/account/access/request">
-                 <label>Group</label>
-                 ${remoteMultiSelect("group_id", "/account/access/groups", [], "Search groups you can ask for...", true)}
+                 <label>Group or app</label>
+                 ${remoteMultiSelect("target", "/account/access/targets", [], "Search groups and apps you can ask for...", true)}
                  <label for="access_reason">Reason (optional)</label>
                  <input type="text" id="access_reason" name="reason" maxlength="500" placeholder="Why you need it" />
                  <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Request access</button></div>
@@ -334,12 +337,12 @@ account.get("/account/groups", async (c) => {
           myRequests.length
             ? `<h3 style="margin-top:16px;">Your requests</h3>
                <table>
-                 <thead><tr><th>Group</th><th>Asked</th><th>Status</th><th></th></tr></thead>
+                 <thead><tr><th>For</th><th>Asked</th><th>Status</th><th></th></tr></thead>
                  <tbody>
                    ${myRequests
                      .map(
                        (r) => `<tr>
-                         <td>${escapeHtml(r.group_name)}${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
+                         <td>${escapeHtml(r.target_name)} <span class="badge">${r.target_type === "group" ? "Group" : r.target_type === "oidc_app" ? "OIDC app" : "SAML app"}</span>${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
                          <td class="muted">${ts(r.created_at)}</td>
                          <td><span class="badge ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
                            r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
@@ -529,7 +532,7 @@ account.post("/account/groups/:id/requests/:rid", async (c) => {
   const body = await c.req.parseBody();
   try {
     const req = await getAccessRequest(c.env, Number(c.req.param("rid")));
-    if (!req || req.group_id !== groupId) throw new ServiceError(404, "That request doesn't exist any more.");
+    if (!req || req.target_type !== "group" || req.target_id !== groupId) throw new ServiceError(404, "That request doesn't exist any more.");
     await assertMayManageGroup(ctx, groupId);
     const decision = String(body.decision ?? "");
     if (decision !== "approved" && decision !== "denied") throw new ServiceError(400, "Pick Approve or Deny.");
@@ -966,33 +969,46 @@ account.post("/account/photo/remove", async (c) => {
 
 // Feeds the request-access picker's search-as-you-type: only the requestable
 // static groups this person could still ask for, as {id, label, desc} items.
-account.get("/account/access/groups", async (c) => {
+account.get("/account/access/targets", async (c) => {
   const q = (c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
   if (!q) return c.json([]);
-  const [groups, roleMap] = await Promise.all([requestableGroups(c.env, c.get("user").id, q, 20), groupRolesMap(c.env)]);
-  return c.json(
-    groups.map((g) => {
+  const user = c.get("user");
+  const [groups, roleMap, apps] = await Promise.all([
+    requestableGroups(c.env, user.id, q, 20),
+    groupRolesMap(c.env),
+    requestableApps(c.env, user.id, await getUserGroupIds(c.env, user.id), q),
+  ]);
+  return c.json([
+    ...groups.map((g) => {
       const roles = roleMap.get(g.id) ?? [];
       return {
-        id: g.id,
+        id: `group:${g.id}`,
         label: g.name,
         // Asking for a role-bearing group is asking for the roles - name them,
         // with each role's own description, before the group's.
         badges: roles.map((r) => ({ label: r.name, title: r.description })),
         desc: [...roles.map((r) => `Grants ${r.name}${r.description ? ` — ${r.description}` : ""}`), ...(g.description ? [g.description] : [])].join(" · "),
       };
-    })
-  );
+    }),
+    ...apps.map((a) => ({
+      id: `${a.target_type}:${a.id}`,
+      label: a.name,
+      badges: [{ label: a.protocol, title: `${a.protocol} application` }],
+      desc: "Application - approved requests add you to its assigned people",
+    })),
+  ]);
 });
 
 account.post("/account/access/request", async (c) => {
   const body = await c.req.parseBody();
   try {
-    await requestAccess(consoleCtx(c), Number(body.group_id), String(body.reason ?? ""));
+    const m = String(body.target ?? "").match(/^(group|oidc_app|saml_app):(\d+)$/);
+    if (!m) throw new ServiceError(400, "Pick a group or app to ask for.");
+    await requestAccess(consoleCtx(c), { type: m[1] as AccessTargetType, id: Number(m[2]) }, String(body.reason ?? ""));
   } catch (e) {
     return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
   }
-  return c.redirect("/account/groups?saved=access-requested", 302);
+  return c.redirect("/account/access?saved=access-requested", 302);
 });
 
 account.post("/account/access/requests/:id/cancel", async (c) => {
@@ -1001,7 +1017,7 @@ account.post("/account/access/requests/:id/cancel", async (c) => {
   } catch (e) {
     return c.html(errorRedirectPage(c, e instanceof Error ? e.message : "That didn't work."));
   }
-  return c.redirect("/account/groups?saved=access-cancelled", 302);
+  return c.redirect("/account/access?saved=access-cancelled", 302);
 });
 
 account.post("/account/devices/:id/revoke", async (c) => {

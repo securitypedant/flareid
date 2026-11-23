@@ -20,7 +20,7 @@ export const isIdTokenAlg = (v: unknown): v is IdTokenAlg => (ID_TOKEN_ALGS as r
 // App assignment is shared between OIDC clients and SAML service providers;
 // the helpers live with the SP row utilities. Re-exported so callers touching
 // either app kind use one spelling.
-export { appVisibleTo, parseAssignedGroupIds } from "../lib/saml/service-providers.js";
+export { amrSatisfiesMfa, appAccessAllowed, parseAssignedGroupIds, parseAssignedUserIds } from "../lib/saml/service-providers.js";
 
 export async function getClientById(env: Env, id: number): Promise<OAuthClientRow | null> {
   return env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
@@ -42,8 +42,16 @@ export interface ClientSettings {
   logoUri?: string | null;
   /** id_token signing algorithm; omitted keeps the current one. */
   idTokenAlg?: IdTokenAlg;
-  /** JSON array of group ids allowed to use the app ('[]' = everyone); omitted keeps the current one. */
+  /** JSON array of group ids allowed to use the app; omitted keeps the current one. */
   assignedGroups?: string;
+  /** 'everyone' | 'restricted'; omitted keeps the current one. */
+  accessMode?: string;
+  /** JSON array of user ids assigned to the app; omitted keeps the current one. */
+  assignedUsers?: string;
+  /** 0|1: sessions must carry a second factor; omitted keeps the current one. */
+  requireMfa?: number;
+  /** 0|1: people without access may ask for it; omitted keeps the current one. */
+  requestable?: number;
 }
 
 /** Saves a client's editable settings; its id, type and secret stay as they are. */
@@ -57,6 +65,10 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
   if (s.logoUri !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET logo_uri = ? WHERE id = ?").bind(s.logoUri, id).run();
   if (s.idTokenAlg) await ctx.env.DB.prepare("UPDATE oauth_clients SET id_token_signed_response_alg = ? WHERE id = ?").bind(s.idTokenAlg, id).run();
   if (s.assignedGroups !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_groups = ? WHERE id = ?").bind(s.assignedGroups, id).run();
+  if (s.accessMode !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE id = ?").bind(s.accessMode === "everyone" ? "everyone" : "restricted", id).run();
+  if (s.assignedUsers !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_users = ? WHERE id = ?").bind(s.assignedUsers, id).run();
+  if (s.requireMfa !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(s.requireMfa, id).run();
+  if (s.requestable !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(s.requestable, id).run();
   await audit(ctx, "oidc_client.updated", s.name);
 }
 
@@ -76,6 +88,7 @@ export async function deleteClient(ctx: ServiceCtx, client: OAuthClientRow): Pro
     ctx.env.DB.prepare("DELETE FROM access_tokens WHERE client_id = ?").bind(client.client_id),
     ctx.env.DB.prepare("DELETE FROM refresh_tokens WHERE client_id = ?").bind(client.client_id),
     ctx.env.DB.prepare("DELETE FROM oauth_consents WHERE client_id = ?").bind(client.client_id),
+    ctx.env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'oidc_app' AND target_id = ?").bind(client.id),
     ctx.env.DB.prepare("DELETE FROM oauth_clients WHERE id = ?").bind(client.id),
   ]);
   await audit(ctx, "oidc_client.deleted", client.name);

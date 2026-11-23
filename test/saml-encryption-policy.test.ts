@@ -17,7 +17,7 @@ async function seed(sp: Record<string, unknown> = {}): Promise<{ upn: string; ap
   const { apiKey, domain } = await bootstrapInstance({ domain: "horizon.test" });
   const created = await apiCall("/api/v1/saml/service-providers", {
     token: apiKey,
-    body: { entity_id: SP_ENTITY_ID, name: "Test SP", acs_urls: [SP_ACS], ...sp },
+    body: { entity_id: SP_ENTITY_ID, name: "Test SP", acs_urls: [SP_ACS], access_mode: "everyone", ...sp },
   });
   if (created.status !== 200) throw new Error(`SP seed failed: ${JSON.stringify(created.body)}`);
   await apiCall("/api/v1/directory/import", {

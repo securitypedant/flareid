@@ -22,11 +22,11 @@ Groups are flat: a group can't contain another group.
 
 ## Group managers
 
-Managers can add and remove members and answer membership requests from **My account → Groups**, without any admin console access. Add them on the group's page under **Managers**.
+Managers can add and remove members and answer membership requests from **My account → Access**, without any admin console access. Add them on the group's page under **Managers**.
 
 ## Access requests and reviews
 
-**Requests.** Tick **People can request membership** on a static group, and people can ask for it from **My account → Groups**. Requests show up in the console under **Groups → Access** and in the notifications bell. Approving one adds the person to the group.
+**Requests.** Tick **People can request membership** on a static group, and people can ask for it from **My account → Access**. Requests show up in the console under **Directory → Access requests** and in the notifications bell. Approving one adds the person to the group.
 
 **Reviews.** A review certifies the members of chosen groups. Go to **Groups → Access → New review**, pick the groups, and decide **Keep** or **Revoke** for each membership. Close the review when you're done. Only members added by hand can be reviewed; dynamic members follow their rule.
 

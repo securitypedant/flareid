@@ -207,6 +207,7 @@
     "login.error.device_cert": "Esta cuenta debe iniciar sesión desde un dispositivo administrado. Conéctate con el cliente WARP e inténtalo de nuevo.",
     "login.error.risk": "Inicio de sesión bloqueado: el nivel de riesgo actual de esta cuenta supera lo que permite su política. Pregunta a un administrador.",
     "consent.claims.address": "Dirección postal",
-    "consent.claims.phone": "Número de teléfono"
+    "consent.claims.phone": "Número de teléfono",
+    "mfa.appRequired": "Esta aplicación requiere que confirmes tu identidad con un segundo factor."
   }
 }

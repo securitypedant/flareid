@@ -26,8 +26,16 @@ export const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token", "clien
 
 /** The non-name/redirect fields a client carries, in stored (JSON/int) shape. */
 export interface ClientSettings {
-  /** JSON array of group ids restricting who may use the app; "[]" = everyone. */
+  /** 'everyone' | 'restricted' - restricted means only assigned users/groups. */
+  accessMode: string;
+  /** JSON array of group ids restricting who may use the app. */
   assignedGroups: string;
+  /** JSON array of user ids assigned to the app. */
+  assignedUsers: string;
+  /** 1 = sessions must carry a second factor. */
+  requireMfa: number;
+  /** 1 = people without access may ask for it. */
+  requestable: number;
   trusted: number;
   /** JSON array of allowed claim-group names. */
   allowedClaims: string;
@@ -42,7 +50,11 @@ export interface ClientSettings {
 export function readClientSettings(body: Record<string, string | File | (string | File)[]>): ClientSettings {
   const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(String);
   return {
+    accessMode: body.access_mode === "everyone" ? "everyone" : "restricted",
     assignedGroups: JSON.stringify(list(body.assigned_group_ids).map(Number).filter((n) => Number.isInteger(n) && n > 0)),
+    assignedUsers: JSON.stringify(list(body.assigned_user_ids).map(Number).filter((n) => Number.isInteger(n) && n > 0)),
+    requireMfa: body.require_mfa ? 1 : 0,
+    requestable: body.requestable ? 1 : 0,
     trusted: body.trusted ? 1 : 0,
     allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => list(body.allowed_claims).includes(g))),
     // Unusable entries are dropped rather than stored: /oidc/logout follows only exact, valid matches.
@@ -104,7 +116,9 @@ export async function insertClient(
   )
     .bind(clientId, clientSecretHash, input.name, JSON.stringify(input.redirectUris), new Date().toISOString(), isPublic ? "public" : "confidential", input.settings.trusted, input.settings.allowedClaims, input.settings.postLogoutRedirectUris)
     .run();
-  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, logo_uri = ?, assigned_groups = ? WHERE client_id = ?").bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.logoUri, input.settings.assignedGroups, clientId).run();
+  await env.DB.prepare("UPDATE oauth_clients SET frontchannel_logout_uri = ?, id_token_signed_response_alg = ?, logo_uri = ?, assigned_groups = ?, access_mode = ?, assigned_users = ?, require_mfa = ?, requestable = ? WHERE client_id = ?")
+    .bind(input.settings.frontchannelLogoutUri, input.settings.idTokenAlg, input.settings.logoUri, input.settings.assignedGroups, input.settings.accessMode ?? "restricted", input.settings.assignedUsers ?? "[]", input.settings.requireMfa ?? 0, input.settings.requestable ?? 0, clientId)
+    .run();
   if (input.grantTypes?.length) await env.DB.prepare("UPDATE oauth_clients SET grant_types = ? WHERE client_id = ?").bind(JSON.stringify(input.grantTypes), clientId).run();
   return { id: Number(result.meta.last_row_id), clientId, clientSecret };
 }
@@ -149,8 +163,16 @@ export interface SpFormValues {
   encryptAssertions: boolean;
   /** App icon for the launchpad; "" = letter tile. */
   logoUri: string;
-  /** Group ids this SP is restricted to; [] = everyone. */
+  /** 'everyone' | 'restricted' - restricted means only assigned users/groups. */
+  accessMode: string;
+  /** Group ids this SP is restricted to. */
   assignedGroups: number[];
+  /** User ids assigned to this SP. */
+  assignedUsers: number[];
+  /** Sessions must carry a second factor. */
+  requireMfa: boolean;
+  /** People without access may ask for it. */
+  requestable: boolean;
 }
 
 /** Parses and validates SP input (the create form's shape; the API and catalog feed the same fields). Returns the values, or a message for the caller. */
@@ -245,9 +267,15 @@ export function parseSpForm(body: Record<string, unknown>): SpFormValues | strin
     encryptAssertions: !!body.encrypt_assertions,
     logoUri,
     subjectId: ["subject-id", "pairwise-id"].includes(String(body.subject_id)) ? String(body.subject_id) : "",
+    accessMode: body.access_mode === "everyone" ? "everyone" : "restricted",
     assignedGroups: (Array.isArray(body.assigned_group_ids) ? body.assigned_group_ids : body.assigned_group_ids ? [body.assigned_group_ids] : [])
       .map(Number)
       .filter((n) => Number.isInteger(n) && n > 0),
+    assignedUsers: (Array.isArray(body.assigned_user_ids) ? body.assigned_user_ids : body.assigned_user_ids ? [body.assigned_user_ids] : [])
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0),
+    requireMfa: !!body.require_mfa,
+    requestable: !!body.requestable,
   };
 }
 
@@ -255,10 +283,10 @@ export function parseSpForm(body: Record<string, unknown>): SpFormValues | strin
 export async function insertServiceProvider(env: Env, v: SpFormValues): Promise<number> {
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
-    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, logo_uri, assigned_groups, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, logo_uri, assigned_groups, access_mode, assigned_users, require_mfa, requestable, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), now, now)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), v.accessMode ?? "restricted", JSON.stringify(v.assignedUsers ?? []), v.requireMfa ? 1 : 0, v.requestable ? 1 : 0, now, now)
     .run();
 
   await env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, result.meta.last_row_id).run();
@@ -294,7 +322,11 @@ export async function applyCatalogEntry(env: Env, entry: CatalogEntry, values: R
   const tpl = templateToClientInput(entry, values);
   if (!tpl) return { ok: false, error: "That catalog entry has no OIDC template." };
   const settings: ClientSettings = {
+    accessMode: "restricted",
     assignedGroups: "[]",
+    assignedUsers: "[]",
+    requireMfa: 0,
+    requestable: 0,
     trusted: tpl.trusted ? 1 : 0,
     allowedClaims: JSON.stringify(CLAIM_GROUPS.filter((g) => tpl.allowed_claims.includes(g))),
     postLogoutRedirectUris: JSON.stringify(

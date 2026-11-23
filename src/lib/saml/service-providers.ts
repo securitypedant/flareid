@@ -164,8 +164,8 @@ export function disabledAlgorithmInPolicy(
 
 /**
  * The group ids an app is restricted to, from its `assigned_groups` column.
- * NULL, unparseable or '[]' all mean "everyone" - a hand-edited row degrades
- * to open, matching how every other JSON column here resolves malformed.
+ * NULL, unparseable or '[]' parse to no groups - whether that means
+ * "everyone" or "nobody" is decided by the app's access_mode.
  */
 export function parseAssignedGroupIds(raw: string | null | undefined): number[] {
   const parsed = parseJson<unknown>(raw ?? null, []);
@@ -173,15 +173,37 @@ export function parseAssignedGroupIds(raw: string | null | undefined): number[] 
   return parsed.filter((id): id is number => typeof id === "number" && Number.isInteger(id));
 }
 
+/** The user ids an app is restricted to, from its `assigned_users` column. */
+export function parseAssignedUserIds(raw: string | null | undefined): number[] {
+  const parsed = parseJson<unknown>(raw ?? null, []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((id): id is number => typeof id === "number" && Number.isInteger(id));
+}
+
+/** The app-shaped row the access check reads - both app tables share these columns. */
+export interface AppAccessRow {
+  access_mode?: string | null;
+  assigned_groups?: string | null;
+  assigned_users?: string | null;
+  require_mfa?: number | null;
+}
+
 /**
- * Whether an app with this assignment list is visible to a user holding
- * `userGroupIds` (their effective memberships, static and dynamic). An empty
- * assignment is everyone; otherwise one shared group is enough.
+ * Whether the app lets this person see and SSO into it. 'everyone' mode
+ * opens the app; 'restricted' needs them in assigned_users or sharing one
+ * of their effective group memberships (static or dynamic). Anything
+ * unrecognised - a missing mode, malformed JSON - resolves to restricted,
+ * so a hand-edited row fails closed.
  */
-export function appVisibleTo(assignedJson: string | null | undefined, userGroupIds: readonly number[]): boolean {
-  const ids = parseAssignedGroupIds(assignedJson);
-  if (ids.length === 0) return true;
-  return ids.some((id) => userGroupIds.includes(id));
+export function appAccessAllowed(app: AppAccessRow, userGroupIds: readonly number[], userId: number): boolean {
+  if (app.access_mode === "everyone") return true;
+  if (parseAssignedUserIds(app.assigned_users).includes(userId)) return true;
+  return parseAssignedGroupIds(app.assigned_groups).some((id) => userGroupIds.includes(id));
+}
+
+/** Whether the session's amr satisfies an app's require_mfa flag. 'mfa' covers a verified second factor, 'ext' a federated sign-in. */
+export function amrSatisfiesMfa(amr: readonly string[]): boolean {
+  return amr.some((a) => a === "mfa" || a === "ext");
 }
 
 /**

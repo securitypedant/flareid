@@ -207,6 +207,7 @@
     "login.error.device_cert": "Dieses Konto muss sich von einem verwalteten Gerät anmelden. Verbinden Sie sich mit dem WARP-Client und versuchen Sie es erneut.",
     "login.error.risk": "Anmeldung blockiert: Die aktuelle Risikostufe dieses Kontos liegt über dem, was seine Anmelderichtlinie erlaubt. Fragen Sie einen Administrator.",
     "consent.claims.address": "Postanschrift",
-    "consent.claims.phone": "Telefonnummer"
+    "consent.claims.phone": "Telefonnummer",
+    "mfa.appRequired": "Diese Anwendung erfordert eine Bestätigung mit einem zweiten Faktor."
   }
 }

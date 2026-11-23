@@ -14,7 +14,7 @@ async function seedRelyingParty(): Promise<{ clientId: string; clientSecret: str
 
   const client = await apiCall("/api/v1/clients", {
     token: apiKey,
-    body: { name: "Test RP", redirect_uris: [REDIRECT_URI] },
+    body: { name: "Test RP", redirect_uris: [REDIRECT_URI], access_mode: "everyone" },
   });
 
   // "All Employees" is dynamic, the way the lab defines it - so these tests
@@ -315,7 +315,7 @@ describe("authorization code flow", () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
     const client = await apiCall("/api/v1/clients", {
       token: apiKey,
-      body: { name: "Test RP", redirect_uris: [REDIRECT_URI] },
+      body: { name: "Test RP", redirect_uris: [REDIRECT_URI], access_mode: "everyone" },
     });
     await apiCall("/api/v1/directory/import", {
       token: apiKey,

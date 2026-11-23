@@ -207,6 +207,7 @@
     "login.error.device_cert": "Esta conta precisa entrar a partir de um dispositivo gerenciado. Conecte-se com o cliente WARP e tente novamente.",
     "login.error.risk": "Login bloqueado: o nível de risco atual desta conta está acima do que a política de entrada permite. Peça a um administrador.",
     "consent.claims.address": "Endereço postal",
-    "consent.claims.phone": "Número de telefone"
+    "consent.claims.phone": "Número de telefone",
+    "mfa.appRequired": "Este aplicativo exige confirmação com um segundo fator."
   }
 }

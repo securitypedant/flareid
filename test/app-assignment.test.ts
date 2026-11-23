@@ -83,10 +83,10 @@ async function authorizeAndLogin(clientId: string, upn: string): Promise<string 
   return submitted.headers.get("Location");
 }
 
-async function createClient(apiKey: string, name: string, assignedGroups?: number[]): Promise<string> {
+async function createClient(apiKey: string, name: string, assignedGroups?: number[], extra: Record<string, unknown> = {}): Promise<string> {
   const res = await apiCall("/api/v1/clients", {
     token: apiKey,
-    body: { name, redirect_uris: [REDIRECT_URI], ...(assignedGroups !== undefined ? { assigned_groups: assignedGroups } : {}) },
+    body: { name, redirect_uris: [REDIRECT_URI], ...(assignedGroups !== undefined ? { assigned_groups: assignedGroups } : {}), ...extra },
   });
   if (res.status !== 200) throw new Error(`client seed failed: ${JSON.stringify(res.body)}`);
   return res.body.client_id as string;
@@ -107,10 +107,10 @@ async function ssoQuery(xml: string): Promise<string> {
   return `SAMLRequest=${encodeURIComponent(b64encode(buf))}`;
 }
 
-async function createSp(apiKey: string, entityId: string, assignedGroups?: number[]): Promise<void> {
+async function createSp(apiKey: string, entityId: string, assignedGroups?: number[], extra: Record<string, unknown> = {}): Promise<void> {
   const res = await apiCall("/api/v1/saml/service-providers", {
     token: apiKey,
-    body: { entity_id: entityId, name: entityId, acs_urls: [SP_ACS], ...(assignedGroups !== undefined ? { assigned_groups: assignedGroups } : {}) },
+    body: { entity_id: entityId, name: entityId, acs_urls: [SP_ACS], ...(assignedGroups !== undefined ? { assigned_groups: assignedGroups } : {}), ...extra },
   });
   if (res.status !== 200) throw new Error(`SP seed failed: ${JSON.stringify(res.body)}`);
 }
@@ -177,10 +177,14 @@ describe("OIDC app assignment", () => {
     expect(new URL(denied!).searchParams.get("error")).toBe("access_denied");
   });
 
-  it("leaves unassigned apps open to everyone", async () => {
+  it("denies an app with no assignees by default - 'everyone' must be explicit", async () => {
     const { apiKey } = await seedDirectory();
-    const clientId = await createClient(apiKey, "Open App");
-    const location = await authorizeAndLogin(clientId, "con.tractor@horizon.test");
+    const closed = await createClient(apiKey, "Unassigned App");
+    const denied = await authorizeAndLogin(closed, "con.tractor@horizon.test");
+    expect(new URL(denied!).searchParams.get("error")).toBe("access_denied");
+
+    const open = await createClient(apiKey, "Open App", undefined, { access_mode: "everyone" });
+    const location = await authorizeAndLogin(open, "con.tractor@horizon.test");
     expect(new URL(location!).searchParams.get("code")).toBeTruthy();
   });
 });
@@ -242,7 +246,7 @@ describe("launchpad", () => {
     const { apiKey, execGroupId, otherGroupId } = await seedDirectory();
     await createClient(apiKey, "Exec OIDC App", [execGroupId]);
     await createClient(apiKey, "Other OIDC App", [otherGroupId]);
-    await createClient(apiKey, "Everyone OIDC App");
+    await createClient(apiKey, "Everyone OIDC App", undefined, { access_mode: "everyone" });
     await createSp(apiKey, SP_ENTITY_ID, [execGroupId]);
     await createSp(apiKey, "https://other.test/saml", [otherGroupId]);
 
@@ -266,5 +270,110 @@ describe("launchpad", () => {
     const conPage = await (await SELF.fetch(`${BASE}/account/applications`, { headers: { Cookie: await sessionFor(await userId("con.tractor")) } })).text();
     expect(conPage).toContain("No apps assigned yet.");
     expect(conPage).not.toContain("Exec OIDC App");
+  });
+});
+
+describe("assigned users", () => {
+  it("lets a directly assigned person in without any group membership", async () => {
+    const { apiKey } = await seedDirectory();
+    const conId = await userId("con.tractor");
+    const clientId = await createClient(apiKey, "Named People App", undefined, { assigned_users: [conId] });
+
+    const location = await authorizeAndLogin(clientId, "con.tractor@horizon.test");
+    expect(new URL(location!).searchParams.get("code")).toBeTruthy();
+
+    // A group member who is NOT named is still out.
+    const denied = await authorizeAndLogin(clientId, "ada.kowalski@horizon.test");
+    expect(new URL(denied!).searchParams.get("error")).toBe("access_denied");
+  });
+
+  it("combines users and groups: either path opens the app", async () => {
+    const { apiKey, execGroupId } = await seedDirectory();
+    const conId = await userId("con.tractor");
+    const clientId = await createClient(apiKey, "Exec Plus Named", [execGroupId], { assigned_users: [conId] });
+
+    expect(new URL((await authorizeAndLogin(clientId, "ada.kowalski@horizon.test"))!).searchParams.get("code")).toBeTruthy();
+    expect(new URL((await authorizeAndLogin(clientId, "con.tractor@horizon.test"))!).searchParams.get("code")).toBeTruthy();
+  });
+});
+
+describe("require_mfa", () => {
+  it("steps a password-only sign-in up to a second factor before issuing a code", async () => {
+    const { apiKey } = await seedDirectory();
+    const clientId = await createClient(apiKey, "MFA App", undefined, { access_mode: "everyone", require_mfa: true });
+
+    // Ada has TOTP: after the password step she must land on the MFA challenge,
+    // not on a code redirect.
+    const page = await SELF.fetch(`${BASE}/authorize?${authorizeQuery(clientId)}`, { redirect: "manual" });
+    const html = await page.text();
+    const flowId = /name="flow_id" value="([^"]*)"/.exec(html)?.[1];
+    expect(flowId).toBeTruthy();
+
+    // Give Ada a TOTP factor.
+    const adaId = await userId("ada.kowalski");
+    await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(adaId).run();
+
+    const submitted = await SELF.fetch(`${BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ flow_id: flowId!, upn: "ada.kowalski@horizon.test", password: USER_PASSWORD }).toString(),
+      redirect: "manual",
+    });
+    const body = await submitted.text();
+    // An MFA challenge form - not a code redirect.
+    expect(submitted.headers.get("Location")).toBeNull();
+    expect(body).toMatch(/code|authenticator|factor/i);
+    expect(new URL(submitted.headers.get("Location") ?? "https://x.test/").searchParams.get("code")).toBeNull();
+  });
+});
+
+describe("app access requests", () => {
+  const FORM = { "Content-Type": "application/x-www-form-urlencoded", Origin: BASE };
+
+  it("runs ask -> approve -> assigned-user for a requestable app", async () => {
+    const { apiKey } = await seedDirectory();
+    const clientId = await createClient(apiKey, "Requestable App", undefined, { requestable: true });
+    const appRow = await env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(clientId).first<{ id: number }>();
+    const conId = await userId("con.tractor");
+    const cookie = await sessionFor(conId);
+
+    // The app shows in the targets picker for someone outside it.
+    const targets = (await (await SELF.fetch(`${BASE}/account/access/targets?q=Requestable`, { headers: { Cookie: cookie } })).json()) as { id: string; label: string }[];
+    expect(targets.some((t) => t.id === `oidc_app:${appRow!.id}`)).toBe(true);
+
+    // Ask -> approve through the API -> the user lands in assigned_users.
+    const ask = await SELF.fetch(`${BASE}/account/access/request`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie },
+      body: `target=oidc_app%3A${appRow!.id}&reason=need+it`,
+      redirect: "manual",
+    });
+    expect(ask.headers.get("Location")).toContain("saved=access-requested");
+    const req = await env.DB.prepare("SELECT id FROM access_requests WHERE user_id = ? AND target_type = 'oidc_app'").bind(conId).first<{ id: number }>();
+    expect(req).toBeTruthy();
+    const decide = await apiCall(`/api/v1/access/requests/${req!.id}`, { token: apiKey, body: { decision: "approved" } });
+    expect(decide.status).toBe(200);
+    const assigned = await env.DB.prepare("SELECT assigned_users FROM oauth_clients WHERE id = ?").bind(appRow!.id).first<{ assigned_users: string }>();
+    expect(JSON.parse(assigned!.assigned_users)).toContain(conId);
+
+    // And sign-in works now.
+    const location = await authorizeAndLogin(clientId, "con.tractor@horizon.test");
+    expect(new URL(location!).searchParams.get("code")).toBeTruthy();
+  });
+
+  it("refuses a request for a non-requestable app", async () => {
+    const { apiKey } = await seedDirectory();
+    const clientId = await createClient(apiKey, "Closed App");
+    const appRow = await env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(clientId).first<{ id: number }>();
+    const conId = await userId("con.tractor");
+    const cookie = await sessionFor(conId);
+
+    const res = await SELF.fetch(`${BASE}/account/access/request`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie },
+      body: `target=oidc_app%3A${appRow!.id}`,
+    });
+    expect(res.status).toBe(200); // the friendly error page
+    expect(await env.DB.prepare("SELECT 1 FROM access_requests WHERE user_id = ? AND target_type = 'oidc_app'").bind(conId).first()).toBeNull();
   });
 });
