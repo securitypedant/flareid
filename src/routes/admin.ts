@@ -488,12 +488,12 @@ function oidcEndpointsBlock(env: Env, clientId: string) {
 /** The Integrations pages, which the sidebar lists under their section. Labels double as the third breadcrumb. */
 const INTEGRATION_PAGES = [
   { key: "saml", label: "SAML" },
-  { key: "api-keys", label: "API keys" },
   { key: "scim", label: "SCIM provisioning" },
   { key: "ldap", label: "LDAP" },
   { key: "federation", label: "Federation" },
   { key: "social", label: "Social sign-in" },
   { key: "email", label: "Email" },
+  { key: "api-keys", label: "API keys" },
   { key: "cf-one", label: "Cloudflare One" },
   { key: "signals", label: "Signals" },
 ] as const;
@@ -523,11 +523,11 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
     ["groups", "/admin/groups", "Groups"],
     ["applications", "/admin/apps", "Applications"],
     ["integrations", "/admin/integrations", "Integrations"],
-    ["domains", "/admin/domains", "Domains"],
-    ["branding", "/admin/branding", "Branding"],
     ["security", "/admin/security", "Security"],
+    ["domains", "/admin/domains", "Domains"],
     ["schemas", "/admin/schemas", "Schemas"],
     ["flows", "/admin/flows", "Flows"],
+    ["branding", "/admin/branding", "Branding"],
     ["audit", "/admin/audit", "Log"],
   ];
   const activeLabel = items.find(([k]) => k === active)?.[2] ?? "Overview";
@@ -3232,14 +3232,11 @@ admin.get("/admin/integrations", async (c) => {
       <p class="muted" style="margin:-6px 0 16px;">The connections into and out of this directory: global SAML settings, API keys that automate it, where users are provisioned, and the upstream IdPs people sign in through. The apps users sign in to are under <a href="/admin/apps">Applications</a>.</p>
       <div class="two-col">
         ${summaryCard({
-          title: "API keys",
-          count: `${activeKeys.length} active${revokedKeys ? ` &middot; ${revokedKeys} revoked` : ""}`,
-          rows: activeKeys.map(
-            (k) =>
-              `<tr><td>${escapeHtml(k.name)}</td><td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td><td class="muted">${k.last_used_at ? `used ${ts(k.last_used_at)}` : "never used"}</td></tr>`
-          ),
-          empty: "No active API keys.",
-          manage: "api-keys",
+          title: "SAML",
+          count: `<span class="badge ${isSamlConfigured(c.env) ? "badge-active" : "badge-disabled"}">${isSamlConfigured(c.env) ? "Configured" : "No signing cert"}</span>`,
+          rows: [`<tr><td>Entity ID</td><td><code>${escapeHtml(idpEntityId(c.env))}</code></td></tr>`, `<tr><td>SSO URL</td><td><code>${escapeHtml(idpEntityId(c.env))}/saml/sso</code></td></tr>`],
+          empty: "",
+          manage: "saml",
         })}
         ${summaryCard({
           title: "SCIM provisioning",
@@ -3279,11 +3276,14 @@ admin.get("/admin/integrations", async (c) => {
           manage: "social",
         })}
         ${summaryCard({
-          title: "SAML",
-          count: `<span class="badge ${isSamlConfigured(c.env) ? "badge-active" : "badge-disabled"}">${isSamlConfigured(c.env) ? "Configured" : "No signing cert"}</span>`,
-          rows: [`<tr><td>Entity ID</td><td><code>${escapeHtml(idpEntityId(c.env))}</code></td></tr>`, `<tr><td>SSO URL</td><td><code>${escapeHtml(idpEntityId(c.env))}/saml/sso</code></td></tr>`],
-          empty: "",
-          manage: "saml",
+          title: "API keys",
+          count: `${activeKeys.length} active${revokedKeys ? ` &middot; ${revokedKeys} revoked` : ""}`,
+          rows: activeKeys.map(
+            (k) =>
+              `<tr><td>${escapeHtml(k.name)}</td><td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td><td class="muted">${k.last_used_at ? `used ${ts(k.last_used_at)}` : "never used"}</td></tr>`
+          ),
+          empty: "No active API keys.",
+          manage: "api-keys",
         })}
       </div>
       `,
