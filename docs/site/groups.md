@@ -26,9 +26,9 @@ Managers can add and remove members and answer membership requests from **My acc
 
 ## Access requests and reviews
 
-**Requests.** Tick **People can request membership** on a static group, and people can ask for it from **My account → Access**. Requests show up in the console under **Directory → Access requests** and in the notifications bell. Approving one adds the person to the group.
+**Requests.** Tick **People can request membership** on a static group, and people can ask for it from **My account → Access**. Requests show up in the console under **Access** and in the notifications bell. Approving one adds the person to the group; app requests assign the person to the app.
 
-**Reviews.** A review certifies the members of chosen groups. Go to **Groups → Access → New review**, pick the groups, and decide **Keep** or **Revoke** for each membership. Close the review when you're done. Only members added by hand can be reviewed; dynamic members follow their rule.
+**Reviews.** A review certifies the members of chosen groups. Go to **Access → New review**, pick the groups, and decide **Keep** or **Revoke** for each membership. Close the review when you're done. Only members added by hand can be reviewed; dynamic members follow their rule.
 
 ## Built-in groups
 

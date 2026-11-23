@@ -12,7 +12,7 @@ export const ADMIN_HELP: Record<string, string> = {
   "overview/performance": "/docs/monitoring#performance",
   users: "/docs/users",
   groups: "/docs/groups",
-  "groups/access": "/docs/groups#access-requests-and-reviews",
+  access: "/docs/groups#access-requests-and-reviews",
   applications: "/docs/applications",
   "applications/catalog": "/docs/applications#app-catalog",
   integrations: "/docs",

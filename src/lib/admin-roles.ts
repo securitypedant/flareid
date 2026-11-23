@@ -180,7 +180,7 @@ export function visibleSections(access: Access): Set<string> {
   const can = (a: Area) => grants(access.perms, `${a}:read`) || (a === "import" && grants(access.perms, "import:write"));
   const s = new Set<string>(["overview", "applications"]);
   if (can("users")) s.add("users");
-  if (can("groups")) s.add("groups");
+  if (can("groups")) { s.add("groups"); s.add("access"); }
   if (can("domains")) s.add("domains");
   if (can("schemas")) { s.add("schemas"); s.add("flows"); }
   if (can("oidc") || can("saml") || can("scim") || can("ldap") || can("email") || can("cfone") || can("signals") || can("api_keys")) s.add("integrations");

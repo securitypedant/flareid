@@ -394,6 +394,7 @@ admin.post("/admin/reauth/passkey", async (c) => {
 
 /** Section labels (second breadcrumb) -> nav key, so detail pages highlight their section too. */
 const CRUMB_SECTIONS: Record<string, string> = {
+  Access: "access",
   Users: "users",
   Groups: "groups",
   Applications: "applications",
@@ -435,7 +436,7 @@ function layout(
       : section === "branding"
       ? ({ "Email templates": "email-templates", Brands: "brands" } as Record<string, string>)[crumbs?.[2]?.label ?? ""] ?? "settings"
       : section === "groups"
-      ? (crumbs?.[2]?.label === "Access" ? "access" : "groups")
+      ? "groups"
       : section === "applications"
       ? (crumbs?.[2]?.label === "App catalog" ? "catalog" : "all")
       : section !== "integrations"
@@ -517,6 +518,7 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
   const pendingBadge = pending > 0 ? `<span class="nav-badge">${pending > 99 ? "99+" : pending}</span>` : "";
   const items: [string, string, string][] = [
     ["overview", "/admin", "Overview"],
+    ["access", "/admin/access", "Access"],
     ["users", "/admin/users", "Users"],
     ["groups", "/admin/groups", "Groups"],
     ["applications", "/admin/apps", "Applications"],
@@ -532,13 +534,8 @@ function adminNav(active: string, sub = "", visible?: Set<string>, pending = 0) 
   const html = items
     .filter(([key]) => !visible || visible.has(key))
     .map(([key, href, label]) => {
-      const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}${key === "groups" && active !== "groups" ? pendingBadge : ""}</a>`;
+      const link = `<a href="${href}" class="${active === key ? "active" : ""}">${label}${key === "access" ? pendingBadge : ""}</a>`;
       // A section's pages are listed only while you are in that section.
-      if (key === "groups" && active === "groups") {
-        return link + [["groups", "/admin/groups", "Groups"], ["access", "/admin/access", `Access${pendingBadge}`]]
-          .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "groups") === k ? " active" : ""}">${l}</a>`)
-          .join("");
-      }
       if (key === "applications" && active === "applications") {
         return link + [["all", "/admin/apps", "All apps"], ["catalog", "/admin/apps/catalog", "App catalog"]]
           .map(([k, h, l]) => `<a href="${h}" class="sub${(sub || "all") === k ? " active" : ""}">${l}</a>`)
@@ -2618,7 +2615,7 @@ const requestBadge = (status: string) =>
       ? '<span class="badge badge-active">Approved</span>'
       : `<span class="badge badge-disabled">${REQUEST_STATUS_LABELS[status] ?? escapeHtml(status)}</span>`;
 
-const ACCESS_CRUMBS: Breadcrumb[] = [{ label: "Admin", href: "/admin" }, { label: "Groups", href: "/admin/groups" }, { label: "Access", href: "/admin/access" }];
+const ACCESS_CRUMBS: Breadcrumb[] = [{ label: "Admin", href: "/admin" }, { label: "Access", href: "/admin/access" }];
 
 admin.get("/admin/access", async (c) => {
   const statusFilter = c.req.query("status") ?? "pending";
