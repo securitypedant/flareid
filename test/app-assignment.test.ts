@@ -459,6 +459,31 @@ describe("bound authentication policy", () => {
     expect(list).toContain(`href="/admin/clients/${appRow!.id}?tab=policies"`);
   });
 
+  it("round-trips bind, read and clear through the API on both app kinds", async () => {
+    const { apiKey } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Strict", requirement: "mfa", groups: [] });
+
+    const cl = await apiCall("/api/v1/clients", { token: apiKey, body: { name: "API App", redirect_uris: [REDIRECT_URI], policy_id: policyId } });
+    expect(cl.status).toBe(200);
+    expect((await apiCall(`/api/v1/clients/${cl.body.client_id}`, { token: apiKey })).body.policy_id).toBe(policyId);
+
+    const patch = await apiCall(`/api/v1/clients/${cl.body.client_id}`, { token: apiKey, method: "PATCH", body: { policy_id: null } });
+    expect(patch.body.policy_id).toBeNull();
+
+    const sp = await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://pol-sp.test", name: "SP", acs_urls: [SP_ACS], policy_id: policyId } });
+    expect(sp.body.created).toBe(true);
+    const spRow = await env.DB.prepare("SELECT id, policy_id FROM saml_service_providers WHERE entity_id = 'https://pol-sp.test'").first<{ id: number; policy_id: number | null }>();
+    expect(spRow!.policy_id).toBe(policyId);
+
+    await apiCall("/api/v1/saml/service-providers", { token: apiKey, body: { entity_id: "https://pol-sp.test", policy_id: null } });
+    expect((await env.DB.prepare("SELECT policy_id FROM saml_service_providers WHERE id = ?").bind(spRow!.id).first<{ policy_id: number | null }>())!.policy_id).toBeNull();
+
+    // The policy read endpoint reports the bound apps (cleared ones are gone).
+    const policies = (await apiCall("/api/v1/security/policies", { token: apiKey })).body.policies as { id: number; apps: { kind: string; name: string }[] }[];
+    const cleared = policies.find((p) => p.id === policyId)!;
+    expect(cleared.apps).toEqual([]);
+  });
+
   it("does not wipe access fields when the Settings tab saves", async () => {
     const { apiKey, execGroupId } = await seedDirectory();
     const policyId = await makePolicy(apiKey, { name: "Strict", requirement: "mfa", groups: [] });

@@ -659,11 +659,11 @@ defineRoute(
 // ---------------------------------------------------------------------------
 
 const PolicySchema = z
-  .object({ id: z.number(), name: z.string(), description: z.string(), requirement: z.enum(["password", "mfa"]), priority: z.number(), is_default: z.boolean(), groups: z.array(z.string()), device_cert: z.boolean(), max_risk: z.string() })
+  .object({ id: z.number(), name: z.string(), description: z.string(), requirement: z.enum(["password", "mfa"]), priority: z.number(), is_default: z.boolean(), groups: z.array(z.string()), apps: z.array(z.object({ kind: z.enum(["oidc", "saml"]), id: z.number(), name: z.string() })).openapi({ description: "Apps bound to this policy on their Policies tab." }), device_cert: z.boolean(), max_risk: z.string() })
   .openapi("AuthPolicy");
 
 async function policiesJson(env: Env) {
-  return (await listPolicies(env)).map((p) => ({ id: p.id, name: p.name, description: p.description, requirement: p.requirement, priority: p.priority, is_default: p.is_default === 1, groups: p.groups.map((g) => g.name), device_cert: p.device_cert === 1, max_risk: p.max_risk }));
+  return (await listPolicies(env)).map((p) => ({ id: p.id, name: p.name, description: p.description, requirement: p.requirement, priority: p.priority, is_default: p.is_default === 1, groups: p.groups.map((g) => g.name), apps: p.apps, device_cert: p.device_cert === 1, max_risk: p.max_risk }));
 }
 
 const PolicyWrite = {

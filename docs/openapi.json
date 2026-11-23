@@ -1518,6 +1518,33 @@
               "type": "string"
             }
           },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "oidc",
+                    "saml"
+                  ]
+                },
+                "id": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "name"
+              ]
+            },
+            "description": "Apps bound to this policy on their Policies tab."
+          },
           "device_cert": {
             "type": "boolean"
           },
@@ -1533,6 +1560,7 @@
           "priority",
           "is_default",
           "groups",
+          "apps",
           "device_cert",
           "max_risk"
         ]

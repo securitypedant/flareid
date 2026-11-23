@@ -4185,6 +4185,7 @@ Response `201`:
 | `priority` | number | yes |  |
 | `is_default` | boolean | yes |  |
 | `groups` | string[] | yes |  |
+| `apps` | object[] | yes | Apps bound to this policy on their Policies tab. |
 | `device_cert` | boolean | yes |  |
 | `max_risk` | string | yes |  |
 
@@ -4213,6 +4214,7 @@ Response `200`:
 | `priority` | number | yes |  |
 | `is_default` | boolean | yes |  |
 | `groups` | string[] | yes |  |
+| `apps` | object[] | yes | Apps bound to this policy on their Policies tab. |
 | `device_cert` | boolean | yes |  |
 | `max_risk` | string | yes |  |
 
@@ -4256,6 +4258,7 @@ Response `200`:
 | `priority` | number | yes |  |
 | `is_default` | boolean | yes |  |
 | `groups` | string[] | yes |  |
+| `apps` | object[] | yes | Apps bound to this policy on their Policies tab. |
 | `device_cert` | boolean | yes |  |
 | `max_risk` | string | yes |  |
 
