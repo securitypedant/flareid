@@ -123,7 +123,13 @@ export async function deletePolicy(ctx: ServiceCtx, id: number): Promise<void> {
   if (!p) throw new ServiceError(404, "Not found");
   if (p.is_default) throw new ServiceError(400, "The default policy cannot be deleted; make another policy the default first.");
   const before = await adminsWithoutMfaPolicy(ctx.env);
-  await ctx.env.DB.batch([ctx.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id), ctx.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(id)]);
+  await ctx.env.DB.batch([
+    ctx.env.DB.prepare("DELETE FROM auth_policy_groups WHERE policy_id = ?").bind(id),
+    // Apps bound to it fall back to each sign-in's own policy.
+    ctx.env.DB.prepare("UPDATE oauth_clients SET policy_id = NULL WHERE policy_id = ?").bind(id),
+    ctx.env.DB.prepare("UPDATE saml_service_providers SET policy_id = NULL WHERE policy_id = ?").bind(id),
+    ctx.env.DB.prepare("DELETE FROM auth_policies WHERE id = ?").bind(id),
+  ]);
   const relaxed = await adminMfaRelaxedDetail(ctx.env, before);
   await audit(ctx, "auth_policy.deleted", p.name, relaxed.admin_mfa_relaxed ? relaxed : undefined);
 }

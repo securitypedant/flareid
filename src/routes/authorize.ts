@@ -16,7 +16,7 @@ import { authorizeErrorRedirect, effectiveClaimGroups, hasConsent, redirectUriAl
 import { formPostPage } from "../lib/saml/post-form.js";
 import { decodeJwt } from "jose";
 import { resolveRequestObject } from "../lib/request-object.js";
-import { amrSatisfiesMfa, appAccessAllowed } from "../services/clients.js";
+import { amrSatisfiesMfa, appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa } from "../services/clients.js";
 import { logAudit } from "../lib/audit.js";
 
 export const authorize = new Hono<{ Bindings: Env }>();
@@ -55,6 +55,7 @@ export interface PendingConsent {
  */
 export async function finishOidcAuthorize(
   env: Env,
+  request: Request,
   req: PendingAuthorizeRequest,
   userId: number,
   amr: string[],
@@ -70,9 +71,17 @@ export async function finishOidcAuthorize(
     await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id });
     return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "Your account is not allowed to use this application.") };
   }
-  // Defence in depth: the step-up lives on the session-reuse and password
-  // paths, but any flow that arrives here without the factor still fails.
-  if (client?.require_mfa && !amrSatisfiesMfa(amr)) {
+  // The app's bound policy puts posture conditions on the sign-in, checked
+  // for every session that reaches the app - like the person's own policy at
+  // /login. The step-up lives on the session-reuse and password paths, but
+  // any flow that arrives here without the factor still fails.
+  const policy = client ? await appPolicy(env, client.policy_id) : null;
+  const postureDenied = client ? await appPostureDenied(env, policy, request, userId) : null;
+  if (postureDenied) {
+    await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client!.name, { client_id: client!.client_id, reason: `${postureDenied}_required` });
+    return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "This application's policy does not allow this sign-in.") };
+  }
+  if (client && appRequiresMfa(client, policy) && !amrSatisfiesMfa(amr)) {
     await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id, reason: "mfa_required" });
     return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "This application requires a sign-in with a second factor.") };
   }
@@ -290,7 +299,11 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
       const resumeFlowId = await storeLoginFlow(c.env, { kind: "oidc", request: pendingRequest, resumeFor: user.id });
       return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
     } else {
-      if (client.require_mfa && !amrSatisfiesMfa(session.amr)) {
+      const policy = await appPolicy(c.env, client.policy_id);
+      if (await appPostureDenied(c.env, policy, c.req.raw, user.id)) {
+        return fail("access_denied", "This application's policy does not allow this sign-in.");
+      }
+      if (appRequiresMfa(client, policy) && !amrSatisfiesMfa(session.amr)) {
         // The app demands a factor this session never presented. With no
         // factor enrolled there is nothing to step up with; otherwise park
         // the request behind a fresh second-step challenge - completing it
@@ -305,7 +318,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
         const mfaId = await storePendingMfa(c.env, user.id, stepFlowId, mfaAppearance.locale);
         return c.html(mfaForm(mfaId, mfaAppearance, msg("mfa.appRequired"), factors));
       }
-      const { redirectTo } = await finishOidcAuthorize(c.env, pendingRequest, user.id, session.amr, session.id);
+      const { redirectTo } = await finishOidcAuthorize(c.env, c.req.raw, pendingRequest, user.id, session.amr, session.id);
       return respondAuthorize(c, redirectTo, pendingRequest.responseMode);
     }
   }

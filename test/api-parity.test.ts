@@ -61,6 +61,8 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/api-keys/:id/revoke": "DELETE /api/v1/api-keys/{id}",
   "POST /admin/clients": "POST /api/v1/clients",
   "POST /admin/clients/:id": "PATCH /api/v1/clients/{client_id}",
+  "POST /admin/clients/:id/access": "PATCH /api/v1/clients/{client_id}",
+  "POST /admin/clients/:id/policies": "PATCH /api/v1/clients/{client_id}",
   "POST /admin/clients/:id/rotate-secret": "POST /api/v1/clients/{client_id}/rotate-secret",
   "POST /admin/clients/:id/delete": "DELETE /api/v1/clients/{client_id}",
   "POST /admin/saml/import-metadata": "POST /api/v1/saml/service-providers/import-metadata",
@@ -68,6 +70,8 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/saml": "POST /api/v1/saml/service-providers",
   // The API's register call is an upsert keyed on entity_id.
   "POST /admin/saml/:id": "POST /api/v1/saml/service-providers",
+  "POST /admin/saml/:id/access": "POST /api/v1/saml/service-providers",
+  "POST /admin/saml/:id/policies": "POST /api/v1/saml/service-providers",
   "POST /admin/saml/:id/delete": "DELETE /api/v1/saml/service-providers/{id}",
   "POST /admin/apps/catalog/:slug/apply": "POST /api/v1/app-catalog/{slug}/apply",
   "POST /admin/schemas": "POST /api/v1/schemas",

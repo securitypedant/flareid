@@ -377,3 +377,106 @@ describe("app access requests", () => {
     expect(await env.DB.prepare("SELECT 1 FROM access_requests WHERE user_id = ? AND target_type = 'oidc_app'").bind(conId).first()).toBeNull();
   });
 });
+
+describe("bound authentication policy", () => {
+  async function makePolicy(apiKey: string, body: Record<string, unknown>): Promise<number> {
+    const res = await apiCall("/api/v1/security/policies", { token: apiKey, body });
+    if (res.status !== 201 && res.status !== 200) throw new Error(`policy seed failed: ${JSON.stringify(res.body)}`);
+    return res.body.id as number;
+  }
+
+  it("steps a password-only sign-in up when the app binds an MFA policy (no require_mfa switch)", async () => {
+    const { apiKey } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Strict", requirement: "mfa", groups: [] });
+    const clientId = await createClient(apiKey, "Policy App", undefined, { access_mode: "everyone", policy_id: policyId });
+
+    const adaId = await userId("ada.kowalski");
+    await env.DB.prepare("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE id = ?").bind(adaId).run();
+
+    const page = await SELF.fetch(`${BASE}/authorize?${authorizeQuery(clientId)}`, { redirect: "manual" });
+    const html = await page.text();
+    const flowId = /name="flow_id" value="([^"]*)"/.exec(html)?.[1];
+    expect(flowId).toBeTruthy();
+
+    const submitted = await SELF.fetch(`${BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ flow_id: flowId!, upn: "ada.kowalski@horizon.test", password: USER_PASSWORD }).toString(),
+      redirect: "manual",
+    });
+    const body = await submitted.text();
+    // An MFA challenge form - the bound policy, not a code redirect.
+    expect(submitted.headers.get("Location")).toBeNull();
+    expect(body).toMatch(/code|authenticator|factor/i);
+  });
+
+  it("denies sign-in when the bound policy requires a device certificate the request lacks", async () => {
+    const { apiKey } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Managed devices", requirement: "password", device_cert: true, groups: [] });
+    const clientId = await createClient(apiKey, "Device Policy App", undefined, { access_mode: "everyone", policy_id: policyId });
+
+    const location = await authorizeAndLogin(clientId, "ada.kowalski@horizon.test");
+    expect(location).toBeTruthy();
+    expect(location).toContain("error=access_denied");
+  });
+
+  it("lets the sign-in through when no certificate is required by the bound policy", async () => {
+    const { apiKey } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Password is fine", requirement: "password", groups: [] });
+    const clientId = await createClient(apiKey, "Relaxed Policy App", undefined, { access_mode: "everyone", policy_id: policyId });
+
+    const location = await authorizeAndLogin(clientId, "ada.kowalski@horizon.test");
+    expect(location).toBeTruthy();
+    expect(location).toContain("code=");
+  });
+
+  it("keeps the console Policies tab and the policies list in sync with the binding", async () => {
+    const { apiKey } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Strict", requirement: "mfa", groups: [] });
+    const clientId = await createClient(apiKey, "Console App", undefined, { access_mode: "everyone" });
+    const appRow = await env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(clientId).first<{ id: number }>();
+    const adminId = await userId("admin");
+    const cookie = await sessionFor(adminId);
+
+    // The Policies tab offers every policy.
+    const tab = await (await SELF.fetch(`${BASE}/admin/clients/${appRow!.id}?tab=policies`, { headers: { Cookie: cookie } })).text();
+    expect(tab).toContain('name="policy_id"');
+    expect(tab).toContain("Strict");
+
+    // Binding through the console writes policy_id.
+    const save = await SELF.fetch(`${BASE}/admin/clients/${appRow!.id}/policies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie, Origin: BASE },
+      body: `policy_id=${policyId}`,
+      redirect: "manual",
+    });
+    expect(save.headers.get("Location")).toContain("tab=policies");
+    const bound = await env.DB.prepare("SELECT policy_id FROM oauth_clients WHERE id = ?").bind(appRow!.id).first<{ policy_id: number | null }>();
+    expect(bound!.policy_id).toBe(policyId);
+
+    // And the policies list shows the app under "Applies to".
+    const list = await (await SELF.fetch(`${BASE}/admin/security/policies`, { headers: { Cookie: cookie } })).text();
+    expect(list).toContain(`href="/admin/clients/${appRow!.id}?tab=policies"`);
+  });
+
+  it("does not wipe access fields when the Settings tab saves", async () => {
+    const { apiKey, execGroupId } = await seedDirectory();
+    const policyId = await makePolicy(apiKey, { name: "Strict", requirement: "mfa", groups: [] });
+    const clientId = await createClient(apiKey, "Settings App", [execGroupId], { require_mfa: true, policy_id: policyId });
+    const appRow = await env.DB.prepare("SELECT id FROM oauth_clients WHERE client_id = ?").bind(clientId).first<{ id: number }>();
+    const cookie = await sessionFor(await userId("admin"));
+
+    const save = await SELF.fetch(`${BASE}/admin/clients/${appRow!.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie, Origin: BASE },
+      body: new URLSearchParams({ name: "Settings App", redirect_uris: REDIRECT_URI, trusted: "1", allowed_claims: "sub" }).toString(),
+      redirect: "manual",
+    });
+    expect(save.headers.get("Location")).toContain("saved=1");
+    const row = await env.DB.prepare("SELECT access_mode, assigned_groups, require_mfa, policy_id FROM oauth_clients WHERE id = ?").bind(appRow!.id).first<{ access_mode: string; assigned_groups: string; require_mfa: number; policy_id: number | null }>();
+    expect(row!.access_mode).toBe("restricted");
+    expect(JSON.parse(row!.assigned_groups)).toEqual([execGroupId]);
+    expect(row!.require_mfa).toBe(1);
+    expect(row!.policy_id).toBe(policyId);
+  });
+});

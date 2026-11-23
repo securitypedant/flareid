@@ -20,7 +20,7 @@ export const isIdTokenAlg = (v: unknown): v is IdTokenAlg => (ID_TOKEN_ALGS as r
 // App assignment is shared between OIDC clients and SAML service providers;
 // the helpers live with the SP row utilities. Re-exported so callers touching
 // either app kind use one spelling.
-export { amrSatisfiesMfa, appAccessAllowed, parseAssignedGroupIds, parseAssignedUserIds } from "../lib/saml/service-providers.js";
+export { amrSatisfiesMfa, appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa, parseAssignedGroupIds, parseAssignedUserIds } from "../lib/saml/service-providers.js";
 
 export async function getClientById(env: Env, id: number): Promise<OAuthClientRow | null> {
   return env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
@@ -52,6 +52,8 @@ export interface ClientSettings {
   requireMfa?: number;
   /** 0|1: people without access may ask for it; omitted keeps the current one. */
   requestable?: number;
+  /** Bound authentication policy; omitted keeps the current one. */
+  policyId?: number | null;
 }
 
 /** Saves a client's editable settings; its id, type and secret stay as they are. */
@@ -69,6 +71,7 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
   if (s.assignedUsers !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_users = ? WHERE id = ?").bind(s.assignedUsers, id).run();
   if (s.requireMfa !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(s.requireMfa, id).run();
   if (s.requestable !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(s.requestable, id).run();
+  if (s.policyId !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(s.policyId, id).run();
   await audit(ctx, "oidc_client.updated", s.name);
 }
 

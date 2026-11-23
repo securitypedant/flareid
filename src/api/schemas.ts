@@ -103,6 +103,7 @@ export const ClientSchema = z
     assigned_users: z.array(z.number()).openapi({ description: "User ids assigned to this app." }),
     require_mfa: z.boolean().openapi({ description: "The session must carry a second factor to SSO into this app." }),
     requestable: z.boolean().openapi({ description: "People without access may request it under My account -> Access." }),
+    policy_id: z.number().nullable().openapi({ description: "Authentication policy bound to this app, or null for each sign-in's own policy." }),
     id_token_signed_response_alg: z.enum(["RS256", "ES256"]).openapi({ description: "How this client's id_tokens are signed." }),
     created_at: z.string(),
   })
@@ -139,6 +140,7 @@ export const ServiceProviderSchema = z
     assigned_users: z.array(z.number()).openapi({ description: "User ids assigned to this app." }),
     require_mfa: z.boolean().openapi({ description: "The session must carry a second factor to SSO into this app." }),
     requestable: z.boolean().openapi({ description: "People without access may request it under My account -> Access." }),
+    policy_id: z.number().nullable().openapi({ description: "Authentication policy bound to this app, or null for each sign-in's own policy." }),
     created_at: z.string(),
     updated_at: z.string(),
   })

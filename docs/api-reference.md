@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.10.0.
+API version 4.11.0.
 
 ## Contents
 
@@ -1510,6 +1510,7 @@ Response `200`:
 | `assigned_users` | number[] | yes | User ids assigned to this app. |
 | `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | yes | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | yes | Authentication policy bound to this app, or null for each sign-in's own policy. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1545,6 +1546,7 @@ Request body:
 | `assigned_users` | number[] | no | User ids assigned to this app. |
 | `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | no | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | no | Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one. |
 
 Response `200`:
 
@@ -1566,6 +1568,7 @@ Response `200`:
 | `assigned_users` | number[] | yes | User ids assigned to this app. |
 | `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | yes | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | yes | Authentication policy bound to this app, or null for each sign-in's own policy. |
 | `id_token_signed_response_alg` | "RS256" \| "ES256" | yes | How this client's id_tokens are signed. |
 | `created_at` | string | yes |  |
 
@@ -1658,6 +1661,7 @@ Request body:
 | `assigned_users` | array \| null | no | User ids assigned to this app. On update, omitted keeps the current assignment. |
 | `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | no | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | no | Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one. |
 
 Response `200`:
 
@@ -1727,6 +1731,7 @@ Response `200`:
 | `assigned_users` | number[] | yes | User ids assigned to this app. |
 | `require_mfa` | boolean | yes | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | yes | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | yes | Authentication policy bound to this app, or null for each sign-in's own policy. |
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 
@@ -1799,6 +1804,7 @@ Request body:
 | `assigned_users` | array \| null | no | User ids assigned to this app. On update, omitted keeps the current assignment. |
 | `require_mfa` | boolean | no | The session must carry a second factor to SSO into this app. |
 | `requestable` | boolean | no | People without access may request it under My account -> Access. |
+| `policy_id` | number \| null | no | Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one. |
 
 Response `200`:
 

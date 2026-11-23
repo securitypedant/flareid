@@ -6,14 +6,27 @@ An application is anything people sign in to through FlareID — an [OIDC client
 
 **Applications → All apps** shows every registered app with its protocol, who may use it and when it was created. Search by name, filter by protocol or access mode, and pick 25, 50 or 100 rows per page. Select an app to open its page.
 
-## Who may use an app
+## The app's tabs
 
-Every app is **restricted** by default — nobody can sign in until you assign people or groups on the app's page. Switch the mode to **Everyone** to open it to the whole directory. Assignments accept individual people as well as static *and* dynamic groups (dynamic membership follows the group's rule).
+Each app's page is split into four tabs:
 
-Two more switches live on the same card:
+- **Settings** — endpoints, credentials and protocol options.
+- **Access** — who may use the app (below).
+- **Policies** — what a sign-in must satisfy to open the app (below).
+- **Provisioning** — the SCIM target that pushes users and groups to the app.
 
-- **Require a second-factor sign-in** — people signing in to this app must complete a second factor, whatever their authentication policy would normally ask.
-- **Let people request access** — the app appears in the request picker under **My account → Access** for people it excludes. An approved request assigns the person directly.
+## Who may use an app (Access tab)
+
+Every app is **restricted** by default — nobody can sign in until you assign people or groups on the **Access** tab. Switch the mode to **Everyone** to open it to the whole directory. Assignments accept individual people as well as static *and* dynamic groups (dynamic membership follows the group's rule).
+
+**Let people request access** — the app appears in the request picker under **My account → Access** for people it excludes. An approved request assigns the person directly.
+
+## Sign-in requirements (Policies tab)
+
+Two controls decide what a sign-in must present before it may open the app:
+
+- **Authentication policy** — bind one of the policies defined under [Security → Policies](policies.md). The app then demands whatever that policy requires: a second-factor policy steps the session up, and device-certificate or risk conditions deny the sign-in outright. The default, *Person's own policy*, applies each sign-in's own requirement with no extra demands.
+- **Require a second-factor sign-in** — the simpler option: the session must have used a second factor, whatever the person's policy would normally ask.
 
 ## Add an app
 
@@ -37,4 +50,4 @@ Every app can carry a **Logo URL** (on its page, https only) — the mark shown 
 
 ## Provisioning
 
-Each app's page has a **Provisioning** card. **Set up provisioning** creates a [SCIM target](scim.md) linked to that app, so its users and groups can be pushed to the app's own provisioning endpoint. Directory-wide targets still live under **Integrations → SCIM provisioning**.
+Each app's **Provisioning** tab carries its provisioning card. **Set up provisioning** creates a [SCIM target](scim.md) linked to that app, so its users and groups can be pushed to the app's own provisioning endpoint. Directory-wide targets still live under **Integrations → SCIM provisioning**.

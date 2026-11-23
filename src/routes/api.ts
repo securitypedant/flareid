@@ -517,7 +517,7 @@ defineRoute({
   response: z.object({ clients: z.array(z.object({ id: z.number(), client_id: z.string(), name: z.string(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()), created_at: z.string() })) }),
 }, async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, access_mode, assigned_groups, assigned_users, require_mfa, requestable, created_at FROM oauth_clients ORDER BY name"
+    "SELECT id, client_id, name, redirect_uris, id_token_signed_response_alg, access_mode, assigned_groups, assigned_users, require_mfa, requestable, policy_id, created_at FROM oauth_clients ORDER BY name"
   ).all<Omit<OAuthClientRow, "client_secret_hash">>();
 
   return c.json({
@@ -532,6 +532,7 @@ defineRoute({
       assigned_users: parseAssignedUserIds(cl.assigned_users),
       require_mfa: cl.require_mfa === 1,
       requestable: cl.requestable === 1,
+      policy_id: cl.policy_id,
       created_at: cl.created_at,
     })),
   });
@@ -571,6 +572,7 @@ defineRoute({
     assigned_users: z.array(z.number()).nullable().optional().openapi({ description: "User ids assigned to this app. On update, omitted keeps the current assignment." }),
     require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
     requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
+    policy_id: z.number().nullable().optional().openapi({ description: "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one." }),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), client_id: z.string(), client_secret: z.string().optional(), client_type: z.string().optional(), redirect_uris: z.array(z.string()), id_token_signed_response_alg: z.enum(ID_TOKEN_ALGS), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
@@ -592,6 +594,7 @@ defineRoute({
     assigned_users?: number[] | null;
     require_mfa?: boolean;
     requestable?: boolean;
+    policy_id?: number | null;
   }>(c);
   const isPublic = body.client_type === "public";
   if (body.client_type !== undefined && body.client_type !== "public" && body.client_type !== "confidential") {
@@ -664,6 +667,7 @@ defineRoute({
     if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE id = ?").bind(body.access_mode, existing.id).run();
     if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, existing.id).run();
     if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, existing.id).run();
+    if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, existing.id).run();
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
     return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256", assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
@@ -685,6 +689,7 @@ defineRoute({
   if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE client_id = ?").bind(body.access_mode, clientId).run();
   if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE client_id = ?").bind(body.require_mfa ? 1 : 0, clientId).run();
   if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE client_id = ?").bind(body.requestable ? 1 : 0, clientId).run();
+  if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE client_id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, clientId).run();
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({
@@ -1133,6 +1138,7 @@ function spJson(sp: SamlServiceProviderRow) {
     assigned_users: parseAssignedUserIds(sp.assigned_users),
     require_mfa: sp.require_mfa === 1,
     requestable: sp.requestable === 1,
+    policy_id: sp.policy_id,
     created_at: sp.created_at,
     updated_at: sp.updated_at,
   };
@@ -1198,6 +1204,7 @@ interface SpUpsertBody {
   assigned_users?: number[] | null;
   require_mfa?: boolean;
   requestable?: boolean;
+  policy_id?: number | null;
 }
 
 /**
@@ -1241,6 +1248,7 @@ defineRoute({
     assigned_users: z.array(z.number()).nullable().optional().openapi({ description: "User ids assigned to this app. On update, omitted keeps the current assignment." }),
     require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
     requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
+    policy_id: z.number().nullable().optional().openapi({ description: "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one." }),
   }),
   response: z.object({ ok: z.literal(true), created: z.boolean(), id: z.number(), entity_id: z.string(), assigned_groups: z.array(z.number()) }),
 }, async (c) => {
@@ -1341,6 +1349,7 @@ defineRoute({
     if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET access_mode = ? WHERE id = ?").bind(body.access_mode, id).run();
     if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, id).run();
     if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, id).run();
+    if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET policy_id = ? WHERE id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, id).run();
   };
   const now = new Date().toISOString();
   const values = [

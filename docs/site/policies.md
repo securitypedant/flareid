@@ -15,6 +15,13 @@ Each policy applies to the groups you choose. Someone in several policies' group
 
 FlareID starts with two policies, *Password only* and *Password and a second factor*. On a fresh install, Super Admins are in the second one.
 
+### Where a policy applies
+
+A policy governs two things:
+
+- **FlareID sign-in** — the built-in application everyone can log in to (the console and My account). Each person's policy resolves from their groups and the default.
+- **Applications** — an app can bind a policy on its **Policies** tab (Applications → app → Policies). Signing in to that app then must satisfy the policy: a *second factor* requirement steps the session up, while a device-certificate or risk condition denies the sign-in outright. Bound apps appear in each policy's **Applies to** column next to its groups.
+
 ### Create a policy
 
 1. Go to **Security → Policies**.

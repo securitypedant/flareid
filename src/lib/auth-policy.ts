@@ -122,10 +122,20 @@ export async function secondFactorCounts(env: Env): Promise<{ any: number } & Re
   return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, backup_codes: row?.backup_codes ?? 0, email_otp: row?.email_otp ?? 0, security_questions: row?.security_questions ?? 0 };
 }
 
-export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[] })[]> {
+export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[]; apps: { kind: "oidc" | "saml"; id: number; name: string }[] })[]> {
   const { results } = await env.DB.prepare("SELECT * FROM auth_policies ORDER BY is_default DESC, priority, name").all<AuthPolicyRow>();
-  const { results: links } = await env.DB.prepare("SELECT apg.policy_id, g.id, g.name FROM auth_policy_groups apg JOIN groups g ON g.id = apg.group_id ORDER BY g.name").all<{ policy_id: number; id: number; name: string }>();
-  return results.map((p) => ({ ...p, groups: links.filter((l) => l.policy_id === p.id).map((l) => ({ id: l.id, name: l.name })) }));
+  const [{ results: links }, { results: appLinks }] = await Promise.all([
+    env.DB.prepare("SELECT apg.policy_id, g.id, g.name FROM auth_policy_groups apg JOIN groups g ON g.id = apg.group_id ORDER BY g.name").all<{ policy_id: number; id: number; name: string }>(),
+    env.DB.prepare(
+      `SELECT policy_id, 'oidc' AS kind, id, name FROM oauth_clients WHERE policy_id IS NOT NULL
+       UNION ALL SELECT policy_id, 'saml' AS kind, id, name FROM saml_service_providers WHERE policy_id IS NOT NULL ORDER BY name`
+    ).all<{ policy_id: number; kind: "oidc" | "saml"; id: number; name: string }>(),
+  ]);
+  return results.map((p) => ({
+    ...p,
+    groups: links.filter((l) => l.policy_id === p.id).map((l) => ({ id: l.id, name: l.name })),
+    apps: appLinks.filter((l) => l.policy_id === p.id).map((l) => ({ kind: l.kind, id: l.id, name: l.name })),
+  }));
 }
 
 /** The policy that applies to a user. */

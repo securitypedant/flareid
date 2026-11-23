@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.10.0",
+    "version": "4.11.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -768,6 +768,13 @@
             "type": "boolean",
             "description": "People without access may request it under My account -> Access."
           },
+          "policy_id": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Authentication policy bound to this app, or null for each sign-in's own policy."
+          },
           "id_token_signed_response_alg": {
             "type": "string",
             "enum": [
@@ -795,6 +802,7 @@
           "assigned_users",
           "require_mfa",
           "requestable",
+          "policy_id",
           "id_token_signed_response_alg",
           "created_at"
         ],
@@ -901,6 +909,13 @@
             "type": "boolean",
             "description": "People without access may request it under My account -> Access."
           },
+          "policy_id": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Authentication policy bound to this app, or null for each sign-in's own policy."
+          },
           "created_at": {
             "type": "string"
           },
@@ -929,6 +944,7 @@
           "assigned_users",
           "require_mfa",
           "requestable",
+          "policy_id",
           "created_at",
           "updated_at"
         ],
@@ -6596,6 +6612,13 @@
                   "requestable": {
                     "type": "boolean",
                     "description": "People without access may request it under My account -> Access."
+                  },
+                  "policy_id": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one."
                   }
                 }
               }
@@ -17684,6 +17707,13 @@
                   "requestable": {
                     "type": "boolean",
                     "description": "People without access may request it under My account -> Access."
+                  },
+                  "policy_id": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one."
                   }
                 },
                 "required": [
@@ -19028,6 +19058,13 @@
                   "requestable": {
                     "type": "boolean",
                     "description": "People without access may request it under My account -> Access."
+                  },
+                  "policy_id": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one."
                   }
                 },
                 "required": [

@@ -10,7 +10,7 @@ import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRoleWriteMap, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasBackupCodesSql, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type FactorKey } from "../lib/auth-policy.js";
+import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasBackupCodesSql, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type AuthPolicyRow, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts } from "../lib/metrics.js";
 import { Hono, type Context, type Next } from "hono";
@@ -2994,30 +2994,32 @@ admin.get("/admin/apps", async (c) => {
     grants(access.perms, "oidc:write") ? `<a href="/admin/clients/new"><button class="secondary" type="button">New OIDC client</button></a>` : "",
     grants(access.perms, "saml:write") ? `<a href="/admin/saml/new"><button class="secondary" type="button">New SAML app</button></a>` : "",
   ].filter(Boolean);
-  const headerActionsHtml = headerActions.length
-    ? `<div style="display:flex; gap:8px; flex-wrap:wrap;">${headerActions.join("")}</div>`
-    : "";
   return c.html(
     layout(
       c,
       "Applications",
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      <p class="muted" style="margin:-6px 0 16px; max-width:720px;">Every application people sign in to through this directory - OIDC clients and SAML service providers in one list. Restrict an app to people or groups and only they see it on their launchpad and may sign in.</p>
       ${cardSection(`
-        <p class="muted" style="margin:0 0 14px 0; max-width:720px;">Every application people sign in to through this directory - OIDC clients and SAML service providers in one list. Restrict an app to people or groups and only they see it on their launchpad and may sign in.</p>
-        <form method="GET" class="list-toolbar">
-          <div class="list-toolbar-filters">
-            <input type="text" name="search" placeholder="Search name" value="${escapeHtml(search)}" />
-            <select name="protocol" data-autosubmit style="margin-bottom:0; width:auto;">
-              ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
-            </select>
-            <select name="access" data-autosubmit style="margin-bottom:0; width:auto;">
-              ${[["", "Any access"], ["restricted", "Restricted"], ["everyone", "Everyone"]].map(([v, l]) => `<option value="${v}" ${v === accessFilter ? "selected" : ""}>${l}</option>`).join("")}
-            </select>
-            <input type="hidden" name="page" value="1" />
-            ${pageSizeSelect(pageSize, [25, 50, 100])}
+        <form method="GET">
+          <div class="row between" style="align-items:flex-start; gap:12px; flex-wrap:wrap;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; flex:1;">
+              <input type="text" name="search" placeholder="Search name" value="${escapeHtml(search)}" style="max-width:260px; margin-bottom:0;" />
+              <select name="protocol" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
+                ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
+              </select>
+              <select name="access" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
+                ${[["", "Any access"], ["restricted", "Restricted"], ["everyone", "Everyone"]].map(([v, l]) => `<option value="${v}" ${v === accessFilter ? "selected" : ""}>${l}</option>`).join("")}
+              </select>
+              <input type="hidden" name="page" value="1" />
+              ${pageSizeSelect(pageSize, [25, 50, 100])}
+            </div>
+            ${headerActions.join("")}
           </div>
         </form>
+      `)}
+      ${cardSection(`
         ${
           rows.length === 0
             ? `<p class="muted">${all.length === 0 && !search && !protocolFilter && !accessFilter ? (canOidc || canSaml ? "No applications yet - add one from the catalog, or create a blank one." : "Your roles do not cover any applications.") : `No applications matching ${search ? `"${escapeHtml(search)}"` : "those filters"}.`}</p>`
@@ -3036,9 +3038,7 @@ admin.get("/admin/apps", async (c) => {
         }
       `)}
       `,
-      [{ label: "Admin", href: "/admin" }, { label: "Applications" }],
-      undefined,
-      headerActionsHtml
+      [{ label: "Admin", href: "/admin" }, { label: "Applications" }]
     )
   );
 });
@@ -3060,19 +3060,23 @@ admin.get("/admin/apps/catalog", async (c) => {
       "App catalog",
       `
       <p class="muted" style="margin:-6px 0 16px; max-width:720px;">Guided setup for well-known applications: the steps for both sides of the integration, and a template that creates the FlareID record prefilled. Apps a template creates start restricted - assign people or groups on the app's page.</p>
-      <form method="GET" class="list-toolbar">
-        <div class="list-toolbar-filters">
-          <input type="text" name="search" placeholder="Search the catalog" value="${escapeHtml(search)}" />
-          <select name="protocol" data-autosubmit style="margin-bottom:0; width:auto;">
-            ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
-          </select>
-          <input type="hidden" name="page" value="1" />
-          ${pageSizeSelect(pageSize, [25, 50, 100])}
-        </div>
-      </form>
+      ${cardSection(`
+        <form method="GET">
+          <div class="row between" style="align-items:flex-start; gap:12px; flex-wrap:wrap;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; flex:1;">
+              <input type="text" name="search" placeholder="Search the catalog" value="${escapeHtml(search)}" style="max-width:260px; margin-bottom:0;" />
+              <select name="protocol" data-autosubmit style="width:auto; display:inline-block; margin-bottom:0;">
+                ${[["", "All protocols"], ["oidc", "OIDC"], ["saml", "SAML"]].map(([v, l]) => `<option value="${v}" ${v === protocolFilter ? "selected" : ""}>${l}</option>`).join("")}
+              </select>
+              <input type="hidden" name="page" value="1" />
+              ${pageSizeSelect(pageSize, [25, 50, 100])}
+            </div>
+          </div>
+        </form>
+      `)}
       ${
         entries.length === 0
-          ? `<p class="muted">No catalog entries matching ${search ? `"${escapeHtml(search)}"` : "that filter"}.</p>`
+          ? cardSection(`<p class="muted">No catalog entries matching ${search ? `"${escapeHtml(search)}"` : "that filter"}.</p>`)
           : `<div class="three-col">
         ${entries
           .map(
@@ -4265,6 +4269,14 @@ async function assignedUserLabels(env: Env, raw: string | null | undefined): Pro
  * everyone vs assigned people/groups, plus the sign-in strength and
  * requestability switches.
  */
+/** Settings | Access | Policies | Provisioning nav for the two app edit pages. */
+function appTabs(baseUrl: string, active: "settings" | "access" | "policies" | "provisioning"): string {
+  const tabs: [string, string][] = [["settings", "Settings"], ["access", "Access"], ["policies", "Policies"], ["provisioning", "Provisioning"]];
+  return `<div class="range-tabs" style="margin-bottom:16px;">${tabs
+    .map(([key, label]) => `<a href="${baseUrl}${key === "settings" ? "" : `?tab=${key}`}" class="${key === active ? "active" : ""}">${label}</a>`)
+    .join("")}</div>`;
+}
+
 function appAccessFields(opts: { accessMode?: string; groups: Pick<GroupRow, "id" | "name">[]; assignedGroups: number[]; assignedUsers: { id: number; label: string }[]; requireMfa: boolean; requestable: boolean }): string {
   const restricted = opts.accessMode !== "everyone";
   return `
@@ -4283,14 +4295,31 @@ function appAccessFields(opts: { accessMode?: string; groups: Pick<GroupRow, "id
         ${multiSelect("assigned_group_ids", opts.groups.map((g) => ({ id: g.id, label: g.name })), new Set(opts.assignedGroups), "Search groups...")}
       </div>
     </div>
-    <label style="font-weight:400; margin-top:12px;"><input type="checkbox" name="require_mfa" value="1" ${opts.requireMfa ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require a second-factor sign-in</label>
-    <p class="muted" style="margin-top:-6px;">The sign-in must have used a second factor - authenticator code, passkey, email code, security questions, backup code or a federated identity. Sessions without one are asked for it when they open the app.</p>
-    <label style="font-weight:400;"><input type="checkbox" name="requestable" value="1" ${opts.requestable ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Let people request access</label>
+    <label style="font-weight:400; margin-top:12px;"><input type="checkbox" name="requestable" value="1" ${opts.requestable ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Let people request access</label>
     <p class="muted" style="margin-top:-6px;">A restricted app appears under My account &rarr; Access; approving a request adds the person to Assigned people.</p>`;
 }
 
+/** The Policies tab: which authentication policy a sign-in must satisfy before it may open this app. */
+function appPolicyFields(opts: { policies: Pick<AuthPolicyRow, "id" | "name" | "requirement" | "device_cert" | "max_risk">[]; policyId: number | null | undefined; requireMfa: boolean }): string {
+  const describe = (p: (typeof opts.policies)[number]) => {
+    const bits = [p.requirement === "mfa" ? "second factor" : "password only"];
+    if (p.device_cert) bits.push("device certificate");
+    if (p.max_risk) bits.push(`risk at most ${p.max_risk}`);
+    return bits.join(" + ");
+  };
+  return `
+    <label for="policy_id">Authentication policy</label>
+    <select id="policy_id" name="policy_id">
+      <option value="0" ${!opts.policyId ? "selected" : ""}>Person's own policy (default)</option>
+      ${opts.policies.map((p) => `<option value="${p.id}" ${opts.policyId === p.id ? "selected" : ""}>${escapeHtml(p.name)} (${describe(p)})</option>`).join("")}
+    </select>
+    <p class="muted" style="margin-top:2px;">The policy a sign-in must satisfy to open this app. Defined under <a href="/admin/security/policies">Security &rarr; Policies</a>; "Person's own policy" applies each sign-in's own requirement plus any extra needs below. A bound policy's device-certificate and risk conditions deny sign-in outright.</p>
+    <label style="font-weight:400; margin-top:12px;"><input type="checkbox" name="require_mfa" value="1" ${opts.requireMfa ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require a second-factor sign-in</label>
+    <p class="muted" style="margin-top:-6px;">The sign-in must have used a second factor - authenticator code, passkey, email code, security questions, backup code or a federated identity. Sessions without one are asked for it when they open the app. The simpler option when you do not need a named policy.</p>`;
+}
+
 /** The v3 client settings, shared by the new and edit forms. */
-function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[]): string {
+function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[], opts: { includeAccess?: boolean } = {}): string {
   const allowed = new Set(client ? parseAllowedClaims(client) : CLAIM_GROUPS);
   const extraClaimsHint = client
     ? `<p class="muted" style="margin-top:4px;">Computed or renamed claims for this app are on <a href="/admin/flows/edit?channel=oidc&owner=${encodeURIComponent(client.client_id)}">Flows &rarr; OIDC claims</a>.</p>`
@@ -4332,7 +4361,7 @@ function clientSettingsFields(client: OAuthClientRow | undefined, groups: Pick<G
       </div>
     </div>
     <label style="font-weight:400; margin-top:8px;"><input type="checkbox" name="trusted" value="1" ${trusted ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Trusted first-party app &mdash; skip the consent screen</label>
-    ${appAccessFields({ accessMode: client?.access_mode, groups, assignedGroups: [...assigned], assignedUsers, requireMfa: client?.require_mfa === 1, requestable: client?.requestable === 1 })}
+    ${opts.includeAccess === false ? "" : appAccessFields({ accessMode: client?.access_mode, groups, assignedGroups: [...assigned], assignedUsers, requireMfa: client?.require_mfa === 1, requestable: client?.requestable === 1 })}
     <label style="margin-top:12px;">Claims this app may receive</label>
     <p class="muted" style="margin-top:-6px;">Released only when the app also asks for them by scope (<code>email</code>, <code>profile</code>, <code>groups</code>). Untick anything it does not need.</p>
     ${CLAIM_GROUPS.map((g) => `<label style="font-weight:400;"><input type="checkbox" name="allowed_claims" value="${g}" ${allowed.has(g) ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> ${escapeHtml(CLAIM_GROUP_LABELS[g])}</label>`).join("")}
@@ -4402,10 +4431,55 @@ admin.get("/admin/clients/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const client = await c.env.DB.prepare("SELECT * FROM oauth_clients WHERE id = ?").bind(id).first<OAuthClientRow>();
   if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const tab = c.req.query("tab") ?? "settings";
   const [{ results: groups }, assignedUsers] = await Promise.all([
     c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>(),
     assignedUserLabels(c.env, client.assigned_users),
   ]);
+
+  const base = `/admin/clients/${id}`;
+  const tabs = appTabs(base, (["access", "policies", "provisioning"].includes(tab) ? tab : "settings") as "settings" | "access" | "policies" | "provisioning");
+  let body: string;
+  if (tab === "access") {
+    body = cardSection(`
+      <h2>Access</h2>
+      <form method="POST" action="${base}/access">
+        ${appAccessFields({ accessMode: client.access_mode, groups, assignedGroups: parseAssignedGroupIds(client.assigned_groups), assignedUsers, requireMfa: client.require_mfa === 1, requestable: client.requestable === 1 })}
+        <div class="form-actions end">${cancelLink(base + "?tab=access")}<button class="primary" type="submit">Save</button></div>
+      </form>`);
+  } else if (tab === "policies") {
+    const policies = await listPolicies(c.env);
+    body = cardSection(`
+      <h2>Policies</h2>
+      <form method="POST" action="${base}/policies">
+        ${appPolicyFields({ policies, policyId: client.policy_id, requireMfa: client.require_mfa === 1 })}
+        <div class="form-actions end">${cancelLink(base + "?tab=policies")}<button class="primary" type="submit">Save</button></div>
+      </form>`);
+  } else if (tab === "provisioning") {
+    body = await appProvisioningCard(c.env, "oidc", id);
+  } else {
+    body = cardSection(`
+      ${oidcEndpointsBlock(c.env, client.client_id)}
+      <form method="POST" action="${base}">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
+        <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
+        ${clientSettingsFields(client, groups, assignedUsers, { includeAccess: false })}
+        <div class="form-actions end">${cancelLink(base)}<button class="primary" type="submit">Save</button></div>
+      </form>
+      <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
+        ${
+          client.client_type === "public"
+            ? ""
+            : `<form method="POST" action="${base}/rotate-secret">
+          <button class="secondary" type="submit">Rotate secret</button>
+        </form>`
+        }
+        <form method="POST" action="${base}/delete" ${confirmAttrs(`Anything still using this client_id will stop working immediately.`, { title: `Delete the OIDC client "${client.name}"?`, action: "Delete client", danger: true })}>
+          <button class="danger" type="submit">Delete client</button>
+        </form>
+      </div>`);
+  }
 
   return c.html(
     layout(
@@ -4413,33 +4487,37 @@ admin.get("/admin/clients/:id", async (c) => {
       client.name,
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
-      ${cardSection(`
-        ${oidcEndpointsBlock(c.env, client.client_id)}
-        <form method="POST" action="/admin/clients/${id}">
-          <label for="name">Name</label>
-          <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
-          <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
-          ${clientSettingsFields(client, groups, assignedUsers)}
-          <div class="form-actions end">${cancelLink(`/admin/clients/${id}`)}<button class="primary" type="submit">Save</button></div>
-        </form>
-        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          ${
-            client.client_type === "public"
-              ? ""
-              : `<form method="POST" action="/admin/clients/${id}/rotate-secret">
-            <button class="secondary" type="submit">Rotate secret</button>
-          </form>`
-          }
-          <form method="POST" action="/admin/clients/${id}/delete" ${confirmAttrs(`Anything still using this client_id will stop working immediately.`, { title: `Delete the OIDC client "${client.name}"?`, action: "Delete client", danger: true })}>
-            <button class="danger" type="submit">Delete client</button>
-          </form>
-        </div>
-      `)}
-      ${await appProvisioningCard(c.env, "oidc", id)}
+      ${tabs}
+      ${body}
       `,
       [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: client.name }]
     )
   );
+});
+
+admin.post("/admin/clients/:id/access", async (c) => {
+  const id = Number(c.req.param("id"));
+  const client = await c.env.DB.prepare("SELECT name FROM oauth_clients WHERE id = ?").bind(id).first<{ name: string }>();
+  if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ?, assigned_groups = ?, assigned_users = ?, requestable = ? WHERE id = ?")
+    .bind(body.access_mode === "everyone" ? "everyone" : "restricted", JSON.stringify(list(body.assigned_group_ids)), JSON.stringify(list(body.assigned_user_ids)), body.requestable ? 1 : 0, id)
+    .run();
+  await logAudit(c.env, c.get("user"), "oidc_client.updated", client.name, { fields: "access" }, c.req.raw);
+  return c.redirect(`/admin/clients/${id}?tab=access&saved=1`, 302);
+});
+
+admin.post("/admin/clients/:id/policies", async (c) => {
+  const id = Number(c.req.param("id"));
+  const client = await c.env.DB.prepare("SELECT name FROM oauth_clients WHERE id = ?").bind(id).first<{ name: string }>();
+  if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const body = await c.req.parseBody();
+  await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ?, policy_id = ? WHERE id = ?")
+    .bind(body.require_mfa ? 1 : 0, Number(body.policy_id) > 0 ? Number(body.policy_id) : null, id)
+    .run();
+  await logAudit(c.env, c.get("user"), "oidc_client.updated", client.name, { fields: "policies" }, c.req.raw);
+  return c.redirect(`/admin/clients/${id}?tab=policies&saved=1`, 302);
 });
 
 admin.post("/admin/clients/:id", async (c) => {
@@ -4509,7 +4587,7 @@ function samlIdpBlock(env: Env) {
 }
 
 /** Every cert-shaped thing in a pasted textarea: PEM blocks, or a single bare base64 blob. */
-function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[]): string {
+function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[], opts: { includeAccess?: boolean } = {}): string {
   // Shown back in the write shape (name_format), not the stored one.
   const defsJson = (v.attributeDefinitions ?? []).map((d) => ({ name: d.name, field: d.field, ...(d.nameFormat ? { name_format: d.nameFormat } : {}) }));
   return `
@@ -4571,7 +4649,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
         ${[["", "None"], ["pairwise-id", "pairwise-id (different for every SP; recommended)"], ["subject-id", "subject-id (the same for every SP)"]].map(([val, label]) => `<option value="${val}" ${(v.subjectId ?? "") === val ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <p class="muted" style="margin:-8px 0 14px;">SAML V2.0 Subject Identifier Attributes Profile. Set automatically when the SP's metadata asks for one.</p>
-      ${appAccessFields({ accessMode: v.accessMode, groups, assignedGroups: v.assignedGroups ?? [], assignedUsers, requireMfa: !!v.requireMfa, requestable: !!v.requestable })}
+      ${opts.includeAccess === false ? "" : appAccessFields({ accessMode: v.accessMode, groups, assignedGroups: v.assignedGroups ?? [], assignedUsers, requireMfa: !!v.requireMfa, requestable: !!v.requestable })}
       <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
@@ -4630,17 +4708,34 @@ admin.get("/admin/saml/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const sp = await c.env.DB.prepare("SELECT * FROM saml_service_providers WHERE id = ?").bind(id).first<SamlServiceProviderRow>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const tab = c.req.query("tab") ?? "settings";
   const [{ results: groups }, assignedUsers] = await Promise.all([
     c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all<Pick<GroupRow, "id" | "name">>(),
     assignedUserLabels(c.env, sp.assigned_users),
   ]);
 
-  return c.html(
-    layout(
-      c,
-      sp.name,
-      `
-      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+  const base = `/admin/saml/${id}`;
+  const tabs = appTabs(base, (["access", "policies", "provisioning"].includes(tab) ? tab : "settings") as "settings" | "access" | "policies" | "provisioning");
+  let body: string;
+  if (tab === "access") {
+    body = cardSection(`
+      <h2>Access</h2>
+      <form method="POST" action="${base}/access">
+        ${appAccessFields({ accessMode: sp.access_mode, groups, assignedGroups: parseAssignedGroupIds(sp.assigned_groups), assignedUsers, requireMfa: !!sp.require_mfa, requestable: !!sp.requestable })}
+        <div class="form-actions end">${cancelLink(base + "?tab=access")}<button class="primary" type="submit">Save</button></div>
+      </form>`);
+  } else if (tab === "policies") {
+    const policies = await listPolicies(c.env);
+    body = cardSection(`
+      <h2>Policies</h2>
+      <form method="POST" action="${base}/policies">
+        ${appPolicyFields({ policies, policyId: sp.policy_id, requireMfa: !!sp.require_mfa })}
+        <div class="form-actions end">${cancelLink(base + "?tab=policies")}<button class="primary" type="submit">Save</button></div>
+      </form>`);
+  } else if (tab === "provisioning") {
+    body = await appProvisioningCard(c.env, "saml", id);
+  } else {
+    body = `
       ${samlIdpBlock(c.env)}
       ${cardSection(`
         ${spForm(
@@ -4667,22 +4762,57 @@ admin.get("/admin/saml/:id", async (c) => {
             requireMfa: !!sp.require_mfa,
             requestable: !!sp.requestable,
           },
-          `/admin/saml/${id}`,
+          base,
           "Save",
           groups,
-          assignedUsers
+          assignedUsers,
+          { includeAccess: false }
         )}
         <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          <form method="POST" action="/admin/saml/${id}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
+          <form method="POST" action="${base}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
             <button class="danger" type="submit">Delete service provider</button>
           </form>
         </div>
-      `)}
-      ${await appProvisioningCard(c.env, "saml", id)}
+      `)}`;
+  }
+
+  return c.html(
+    layout(
+      c,
+      sp.name,
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${tabs}
+      ${body}
       `,
       [{ label: "Admin", href: "/admin" }, APPS_CRUMB, { label: sp.name }]
     )
   );
+});
+
+admin.post("/admin/saml/:id/access", async (c) => {
+  const id = Number(c.req.param("id"));
+  const sp = await c.env.DB.prepare("SELECT name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ name: string; entity_id: string }>();
+  if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const body = await c.req.parseBody({ all: true });
+  const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  await c.env.DB.prepare("UPDATE saml_service_providers SET access_mode = ?, assigned_groups = ?, assigned_users = ?, requestable = ?, updated_at = ? WHERE id = ?")
+    .bind(body.access_mode === "everyone" ? "everyone" : "restricted", JSON.stringify(list(body.assigned_group_ids)), JSON.stringify(list(body.assigned_user_ids)), body.requestable ? 1 : 0, new Date().toISOString(), id)
+    .run();
+  await logAudit(c.env, c.get("user"), "saml_sp.updated", sp.name, { entity_id: sp.entity_id, fields: "access" }, c.req.raw);
+  return c.redirect(`/admin/saml/${id}?tab=access&saved=1`, 302);
+});
+
+admin.post("/admin/saml/:id/policies", async (c) => {
+  const id = Number(c.req.param("id"));
+  const sp = await c.env.DB.prepare("SELECT name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ name: string; entity_id: string }>();
+  if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
+  const body = await c.req.parseBody();
+  await c.env.DB.prepare("UPDATE saml_service_providers SET require_mfa = ?, policy_id = ?, updated_at = ? WHERE id = ?")
+    .bind(body.require_mfa ? 1 : 0, Number(body.policy_id) > 0 ? Number(body.policy_id) : null, new Date().toISOString(), id)
+    .run();
+  await logAudit(c.env, c.get("user"), "saml_sp.updated", sp.name, { entity_id: sp.entity_id, fields: "policies" }, c.req.raw);
+  return c.redirect(`/admin/saml/${id}?tab=policies&saved=1`, 302);
 });
 
 admin.post("/admin/saml/:id", async (c) => {
@@ -4694,9 +4824,9 @@ admin.post("/admin/saml/:id", async (c) => {
   if (typeof v === "string") return consoleError(c, v, 400);
 
   await c.env.DB.prepare(
-    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, logo_uri = ?, assigned_groups = ?, access_mode = ?, assigned_users = ?, require_mfa = ?, requestable = ?, updated_at = ? WHERE id = ?`
+    `UPDATE saml_service_providers SET entity_id = ?, name = ?, acs_urls = ?, default_acs_url = ?, nameid_format = ?, attribute_map = ?, attribute_definitions = ?, sign_response = ?, sign_assertion = ?, want_authn_requests_signed = ?, signing_certs = ?, slo_url = ?, encryption_cert = ?, encrypt_assertions = ?, logo_uri = ?, updated_at = ? WHERE id = ?`
   )
-    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, JSON.stringify(v.assignedGroups), v.accessMode, JSON.stringify(v.assignedUsers), v.requireMfa ? 1 : 0, v.requestable ? 1 : 0, new Date().toISOString(), id)
+    .bind(v.entityId, v.name, JSON.stringify(v.acsUrls), v.defaultAcsUrl || null, v.nameidFormat, JSON.stringify(v.attributeMap), v.attributeDefinitions.length ? JSON.stringify(v.attributeDefinitions) : null, v.signResponse ? 1 : 0, v.signAssertion ? 1 : 0, v.wantSigned ? 1 : 0, JSON.stringify(v.signingCerts), v.sloUrl || null, v.encryptionCert || null, v.encryptAssertions ? 1 : 0, v.logoUri || null, new Date().toISOString(), id)
     .run();
 
   await c.env.DB.prepare("UPDATE saml_service_providers SET subject_id = ? WHERE id = ?").bind(v.subjectId, id).run();
@@ -5938,7 +6068,7 @@ admin.get("/admin/security/policies", async (c) => {
     <tr>
       <td><strong>${escapeHtml(p.name)}</strong>${p.is_default ? ' <span class="badge badge-active">Default</span>' : ""}<br /><span class="muted">${escapeHtml(p.description)}</span></td>
       <td>${reqLabel(p.requirement)}${p.device_cert ? '<br /><span class="badge badge-pending">WARP device cert</span>' : ""}${p.max_risk ? `<br /><span class="badge badge-pending">Risk cap: ${escapeHtml(p.max_risk)}</span>` : ""}</td>
-      <td>${p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ")}${p.is_default ? `${p.groups.length ? " and " : ""}<span class="muted">everyone not matched by another policy</span>` : p.groups.length ? "" : '<span class="muted">No groups yet</span>'}</td>
+      <td>${p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ")}${p.is_default ? `${p.groups.length ? " and " : ""}<span class="muted">everyone not matched by another policy</span>` : p.groups.length ? "" : '<span class="muted">No groups yet</span>'}${p.apps.length ? `<br/>${p.apps.map((a) => `<a class="pill" href="${a.kind === "oidc" ? `/admin/clients/${a.id}` : `/admin/saml/${a.id}`}?tab=policies">${escapeHtml(a.name)}</a>`).join(" ")}` : ""}</td>
       <td>${p.groups.length ? p.priority : "&mdash;"}</td>
       <td style="text-align:right;"><a href="/admin/security/policies/${p.id}">Edit</a></td>
     </tr>`;
@@ -5953,6 +6083,8 @@ admin.get("/admin/security/policies", async (c) => {
           anyone not in a policy's groups gets the default. A passkey satisfies every policy: it is multi-factor on its own.
           Administrators follow their policy too: a fresh install puts Super Admins in "Password and a second factor", and taking them out of it lets them sign in with a password alone.
           When a policy does require a second factor of an administrator, security questions never count.</p>
+        <p class="muted">Policies govern two things. <strong>FlareID sign-in</strong> - the built-in application everyone can log in to, covering the console and My account - resolves each person's policy from their groups.
+          And any <strong>app</strong> can bind a policy on its Policies tab, making its device-certificate, risk and second-factor demands part of signing in to that app; bound apps appear beside the groups above.</p>
         <table><thead><tr><th>Policy</th><th>Requires</th><th>Applies to</th><th>Priority</th><th></th></tr></thead><tbody>${policies.map(row).join("")}</tbody></table>
       `)}
       ${cardSection(`
@@ -6067,6 +6199,10 @@ admin.get("/admin/security/policies/:id", async (c) => {
           </div>
           <label for="p_pri">Priority (lower wins)</label><input type="number" id="p_pri" name="priority" min="1" max="1000" value="${p.priority}" style="max-width:120px;" />
           ${multiSelect("group_ids", groups.results.map((g) => ({ id: g.id, label: g.name })), new Set(p.groups.map((g) => g.id)), "Search groups...")}
+          <label style="margin-top:12px;">Apps using this policy</label>
+          ${p.apps.length
+            ? `<p class="muted" style="margin-top:-6px;">${p.apps.map((a) => `<a href="${a.kind === "oidc" ? `/admin/clients/${a.id}` : `/admin/saml/${a.id}`}?tab=policies">${escapeHtml(a.name)}</a>`).join(", ")} &mdash; bound on each app's Policies tab.</p>`
+            : '<p class="muted" style="margin-top:-6px;">None &mdash; apps bind a policy on their own Policies tab.</p>'}
           ${p.is_default ? "" : `<label style="font-weight:400;"><input type="checkbox" name="make_default" value="1" style="width:auto; display:inline; margin-right:6px;" /> Make this the default policy</label>`}
           <div class="form-actions end">
             ${p.is_default ? "" : `<button class="danger" type="submit" formaction="/admin/security/policies/${p.id}/delete" formnovalidate ${confirmAttrs(`Its groups fall back to another matching policy or the default.${deleteNote}`, { title: `Delete the policy "${p.name}"?`, action: "Delete policy", danger: true })}>Delete policy</button>`}

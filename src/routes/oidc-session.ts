@@ -85,7 +85,7 @@ oidcSession.post("/consent/:id", async (c) => {
   const shownGroups = [...effectiveClaimGroups(client, request.scope, [...(request.claimGroups?.id_token ?? []), ...(request.claimGroups?.userinfo ?? [])])];
   await recordConsent(c.env, userId, client.client_id, request.scope, shownGroups);
   await logAudit(c.env, { id: userId, upn: String(userId) }, "oauth.consent_granted", client.name, { scope: request.scope }, c.req.raw);
-  const { redirectTo } = await finishOidcAuthorize(c.env, request, userId, amr, sid, { consented: true });
+  const { redirectTo } = await finishOidcAuthorize(c.env, c.req.raw, request, userId, amr, sid, { consented: true });
   return respondAuthorize(c, redirectTo, request.responseMode);
 });
 

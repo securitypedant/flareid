@@ -46,6 +46,7 @@ function clientJson(cl: OAuthClientRow) {
     assigned_users: parseAssignedUserIds(cl.assigned_users),
     require_mfa: cl.require_mfa === 1,
     requestable: cl.requestable === 1,
+    policy_id: cl.policy_id,
     created_at: cl.created_at,
   };
 }
@@ -87,6 +88,7 @@ defineRoute(
       assigned_users: z.array(z.number()).optional().openapi({ description: "User ids assigned to this app." }),
       require_mfa: z.boolean().optional().openapi({ description: "The session must carry a second factor to SSO into this app." }),
       requestable: z.boolean().optional().openapi({ description: "People without access may request it under My account -> Access." }),
+      policy_id: z.number().nullable().optional().openapi({ description: "Authentication policy the sign-in must satisfy to use this app. null/0 clears the binding; omitted keeps the current one." }),
     }),
     errors: [404],
     response: ClientSchema,
@@ -94,7 +96,7 @@ defineRoute(
   async (c) => {
     const client = await clientFor(c);
     if (!client) return noClient(c);
-    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; backchannel_logout_uri?: string; initiate_login_uri?: string; id_token_signed_response_alg?: string; access_mode?: "everyone" | "restricted"; assigned_groups?: number[]; assigned_users?: number[]; require_mfa?: boolean; requestable?: boolean }>(c);
+    const body = await readJson<{ name?: string; redirect_uris?: string[]; trusted?: boolean; allowed_claims?: string[] | null; post_logout_redirect_uris?: string[]; frontchannel_logout_uri?: string; backchannel_logout_uri?: string; initiate_login_uri?: string; id_token_signed_response_alg?: string; access_mode?: "everyone" | "restricted"; assigned_groups?: number[]; assigned_users?: number[]; require_mfa?: boolean; requestable?: boolean; policy_id?: number | null }>(c);
     const current = clientJson(client);
     const name = String(body.name ?? current.name).trim();
     if (!name) return c.json(badRequest("name cannot be empty."), 400);
@@ -130,6 +132,7 @@ defineRoute(
       ...(body.assigned_users !== undefined ? { assignedUsers: JSON.stringify(body.assigned_users.filter((n) => Number.isInteger(n))) } : {}),
       ...(body.require_mfa !== undefined ? { requireMfa: body.require_mfa ? 1 : 0 } : {}),
       ...(body.requestable !== undefined ? { requestable: body.requestable ? 1 : 0 } : {}),
+      ...(body.policy_id !== undefined ? { policyId: Number(body.policy_id) > 0 ? Number(body.policy_id) : null } : {}),
     });
     return c.json(clientJson((await clientFor(c))!));
   }
@@ -206,6 +209,7 @@ defineRoute(
       assigned_users: parseAssignedUserIds(sp.assigned_users),
       require_mfa: sp.require_mfa === 1,
       requestable: sp.requestable === 1,
+      policy_id: sp.policy_id,
       created_at: sp.created_at,
       updated_at: sp.updated_at,
     });

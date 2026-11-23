@@ -174,7 +174,7 @@ describe("per-app SCIM provisioning", () => {
     expect(target!.app_id).toBe(spDbId);
 
     // The SP's page lists the linked target in its Provisioning card.
-    const spPage = await (await get(`/admin/saml/${spDbId}`, cookie)).text();
+    const spPage = await (await get(`/admin/saml/${spDbId}?tab=provisioning`, cookie)).text();
     expect(spPage).toContain("Provisioning");
     expect(spPage).toContain("Slack provisioning");
     expect(spPage).toContain(`app_type=saml&app_id=${spDbId}`);

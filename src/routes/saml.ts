@@ -35,7 +35,7 @@ import {
   type RequestedAuthnContext,
   type SignatureCheck,
 } from "../lib/saml/authn-request.js";
-import { amrSatisfiesMfa, appAccessAllowed, getSpByEntityId, getSpById, parseAssignedGroupIds, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
+import { amrSatisfiesMfa, appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa, getSpByEntityId, getSpById, parseAssignedGroupIds, resolveAcsUrl, spAcsUrls } from "../lib/saml/service-providers.js";
 import type { SamlServiceProviderRow, UserRow } from "../lib/types.js";
 
 export const saml = new Hono<{ Bindings: Env }>();
@@ -153,7 +153,12 @@ saml.get("/saml/idp-initiated", async (c) => {
     await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "app_not_assigned", idp_initiated: true }, c.req.raw);
     return renderAuthMessage(c, 403, appConfigError("Your account is not allowed to use this application."));
   }
-  if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+  const spPolicy = await appPolicy(c.env, sp.policy_id);
+  if (await appPostureDenied(c.env, spPolicy, c.req.raw, user.id)) {
+    await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "posture_policy", idp_initiated: true }, c.req.raw);
+    return renderAuthMessage(c, 403, appConfigError("This application's policy does not allow this sign-in."));
+  }
+  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
     if (!(await hasSecondStep(c.env, user))) {
       return renderAuthMessage(c, 403, appConfigError("This application requires a sign-in with a second factor, but your account has none enrolled."));
     }
@@ -268,7 +273,14 @@ saml.get("/saml/complete", async (c) => {
     const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
     return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
   }
-  if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+  const spPolicy = await appPolicy(c.env, sp.policy_id);
+  if (await appPostureDenied(c.env, spPolicy, c.req.raw, user.id)) {
+    await deleteLoginFlow(c.env, flowId);
+    await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "posture_policy" }, c.req.raw);
+    const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+    return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
+  }
+  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
     if (!(await hasSecondStep(c.env, user))) {
       await deleteLoginFlow(c.env, flowId);
       await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "mfa_required" }, c.req.raw);
@@ -437,10 +449,14 @@ async function continueSsoRequest(
       if (!appAccessAllowed(sp, await getUserGroupIds(c.env, user.id), user.id)) {
         return postProtocolError(c, request, acsUrl, relayState, "RequestDenied", "app_not_assigned");
       }
+      const spPolicy = await appPolicy(c.env, sp.policy_id);
+      if (await appPostureDenied(c.env, spPolicy, c.req.raw, user.id)) {
+        return postProtocolError(c, request, acsUrl, relayState, "RequestDenied", "posture_policy");
+      }
       // Same rule as /authorize: the app demands a factor this session never
       // presented - park the request behind a second-step challenge, unless
       // IsPassive forbids the UI (then the SP gets NoPassive).
-      if (sp.require_mfa && !amrSatisfiesMfa(session.amr)) {
+      if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
         if (!request.isPassive && (await hasSecondStep(c.env, user))) return samlStepUp(c, pending, user);
         return postProtocolError(c, request, acsUrl, relayState, "NoPassive", "mfa_required");
       }

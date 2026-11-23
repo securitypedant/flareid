@@ -35,7 +35,7 @@ import {
 import { clearSessionCookies, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
-import { appAccessAllowed, getSpById } from "../lib/saml/service-providers.js";
+import { appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa, getSpById } from "../lib/saml/service-providers.js";
 import { buildErrorResponse } from "../lib/saml/messages.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
@@ -244,6 +244,11 @@ export async function completeLoginFlow(
       const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
       return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
     }
+    if (await appPostureDenied(env, await appPolicy(env, sp.policy_id), request, fullUser.id)) {
+      await logAudit(env, fullUser, "saml.request_rejected", sp.entity_id, { reason: "posture_policy" }, request);
+      const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+      return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
+    }
     const issued = await issueSamlResponse(env, sp, flow.request, fullUser, sessionId, new Date());
     // Already answered (a replayed request): the sign-in still stands, but no second response.
     if (!issued) return { outcome: { type: "redirect", to: "/account" }, setCookies };
@@ -251,7 +256,7 @@ export async function completeLoginFlow(
     return { outcome: { type: "saml-post", ...issued }, setCookies };
   }
 
-  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
+  const { redirectTo } = await finishOidcAuthorize(env, request, flow.request, userId, amr, sessionId);
   return { outcome: { type: "redirect", to: redirectTo, responseMode: flow.request.responseMode }, setCookies };
 }
 
@@ -334,7 +339,8 @@ login.post("/login", async (c) => {
   // (require_mfa), even when the user's policy does not: a password-only
   // sign-in takes the step too, as long as they have a method to answer with.
   const target = flow.kind === "oidc" ? await getClientByClientId(c.env, flow.request.clientId) : flow.kind === "saml" ? await getSpById(c.env, flow.request.spId) : null;
-  const appWantsStep = Boolean(target?.require_mfa) && (totp || passkey || backupCodes || emailOtp || securityQuestions);
+  const targetPolicy = target ? await appPolicy(c.env, target.policy_id) : null;
+  const appWantsStep = (target ? appRequiresMfa(target, targetPolicy) : false) && (totp || passkey || backupCodes || emailOtp || securityQuestions);
   const needsStep = totp
     ? appWantsStep || !(await isDeviceTrusted(c.env, c.req.raw, user.id))
     : backupCodes || emailOtp || securityQuestions || appWantsStep || (passkey && (await mfaRequiredFor(c.env, user.id)));

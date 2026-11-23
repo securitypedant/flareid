@@ -1396,7 +1396,7 @@ account.post("/account/mfa/passkey-enrolled", async (c) => {
   if (!amr.includes("hwk")) return c.redirect(`/account/mfa/setup?resume=${encodeURIComponent(resume)}`, 302);
   await revokeAllSessionsForUser(c.env, user.id, sessionId);
   await logAudit(c.env, user, "user.mfa_enrolled_passkey", user.upn, undefined, c.req.raw);
-  const passkeyDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId) : { to: "/account/security?saved=passkey-added" };
+  const passkeyDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId) : { to: "/account/security?saved=passkey-added" };
   return respondAuthorize(c, passkeyDest.to, passkeyDest.responseMode);
 });
 
@@ -1441,13 +1441,13 @@ account.post("/account/mfa/setup", async (c) => {
   await logAudit(c.env, user, "user.mfa_enabled", user.upn, undefined, c.req.raw);
 
   const codes = await generateBackupCodes(c.env, user.id);
-  const continueTo = resume ? await resumeLoginFlow(c.env, resume, user.id, c.get("sessionId")) : "/account";
+  const continueTo = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, c.get("sessionId")) : "/account";
 
   return c.html(layout(c, "MFA enabled", backupCodesPage(codes, continueTo)));
 });
 
 /** Completes a login flow that was paused for forced MFA enrollment, returning where to send the user next. */
-async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, sessionId: string, amr: string[] = ["pwd", "mfa"]): Promise<{ to: string; responseMode?: string }> {
+async function resumeLoginFlow(env: Env, request: Request, resumeFlowId: string, userId: number, sessionId: string, amr: string[] = ["pwd", "mfa"]): Promise<{ to: string; responseMode?: string }> {
   // Only a flow this user parked after authenticating: never a sealed
   // anonymous one, which would let enrolment stand in for a fresh login.
   if (isSealedFlowId(resumeFlowId)) return { to: "/account" };
@@ -1473,7 +1473,7 @@ async function resumeLoginFlow(env: Env, resumeFlowId: string, userId: number, s
   }
 
   await deleteLoginFlow(env, resumeFlowId);
-  const { redirectTo } = await finishOidcAuthorize(env, flow.request, userId, amr, sessionId);
+  const { redirectTo } = await finishOidcAuthorize(env, request, flow.request, userId, amr, sessionId);
   return { to: redirectTo, responseMode: flow.request.responseMode };
 }
 
@@ -1534,7 +1534,7 @@ account.post("/account/mfa/email/enable", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "otp", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.email_otp_enabled", user.upn, undefined, c.req.raw);
-  const emailOtpDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : { to: "/account/security?saved=email-otp-enabled" };
+  const emailOtpDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId, amr) : { to: "/account/security?saved=email-otp-enabled" };
   return respondAuthorize(c, emailOtpDest.to, emailOtpDest.responseMode);
 });
 
@@ -1624,7 +1624,7 @@ account.post("/account/mfa/questions", async (c) => {
   const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "kba", "mfa"])];
   await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
   await logAudit(c.env, user, "user.security_questions_enabled", user.upn, details, c.req.raw);
-  const kbaDest = resume ? await resumeLoginFlow(c.env, resume, user.id, sessionId, amr) : { to: "/account/security?saved=kba-enabled" };
+  const kbaDest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId, amr) : { to: "/account/security?saved=kba-enabled" };
   return respondAuthorize(c, kbaDest.to, kbaDest.responseMode);
 });
 
@@ -1716,7 +1716,7 @@ account.post("/account/mfa/backup-codes/generate", async (c) => {
   }
 
   const continueTo = resume
-    ? await resumeLoginFlow(c.env, resume, user.id, c.get("sessionId"), ["pwd", "mfa", "backup_code"])
+    ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, c.get("sessionId"), ["pwd", "mfa", "backup_code"])
     : "/account/security?saved=backup-codes";
   return c.html(layout(c, "Backup codes", backupCodesPage(codes, continueTo, "Your backup codes are ready.")));
 });

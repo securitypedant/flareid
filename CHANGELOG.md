@@ -4,6 +4,32 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.11.0] - 2026-11-23
+
+Application access policies: each app can bind an authentication policy, app
+pages are organised into tabs, and the policies page shows what its rules
+govern.
+
+- **App-bound policies.** Every app gains a **Policies** tab with an
+  authentication-policy dropdown (migration 0056 adds `policy_id` to both app
+  tables). A bound policy's requirements apply to sign-ins into that app:
+  *second factor* steps the session up before a code or assertion is issued,
+  and device-certificate or risk-cap conditions deny the sign-in outright.
+  The app's **Require a second-factor sign-in** switch stays as the simpler
+  option, and *Person's own policy* (the default) keeps today's behaviour.
+- **Tabbed app pages.** The OIDC client and SAML app pages now split into
+  **Settings**, **Access**, **Policies** and **Provisioning** tabs, each with
+  its own save — so one tab's save can't touch another's fields.
+- **Policies page reframed.** Each policy's **Applies to** column now lists
+  the apps bound to it alongside its groups, and the page explains the
+  built-in **FlareID sign-in** application that every person's policy
+  governs. Deleting a policy unbinds its apps.
+- **List toolbars.** The All apps and App catalog pages now place search,
+  filters and actions in their own card above the results — the same layout
+  as the Users page.
+- **API.** `policy_id` on the client and service-provider objects, writable
+  on create and update; `null`/`0` clears the binding.
+
 ## [4.10.0] - 2026-11-23
 
 Application access governance: apps are deny-by-default, access is assignable

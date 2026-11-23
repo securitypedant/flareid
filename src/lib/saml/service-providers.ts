@@ -1,4 +1,7 @@
 import type { Env } from "../../env.js";
+import type { AuthPolicyRow } from "../auth-policy.js";
+import { cfOneReady, deviceCertVerified, getCfOne, riskAtMost, riskScoreFor } from "../cfone.js";
+import { getUserById } from "../db.js";
 import type { SamlServiceProviderRow } from "../types.js";
 import { CONTENT_ALGORITHMS, DEFAULT_ENCRYPTION_POLICY, TRANSPORT_ALGORITHMS, type EncryptionPolicy } from "./encrypt.js";
 
@@ -204,6 +207,38 @@ export function appAccessAllowed(app: AppAccessRow, userGroupIds: readonly numbe
 /** Whether the session's amr satisfies an app's require_mfa flag. 'mfa' covers a verified second factor, 'ext' a federated sign-in. */
 export function amrSatisfiesMfa(amr: readonly string[]): boolean {
   return amr.some((a) => a === "mfa" || a === "ext");
+}
+
+/** The authentication policy an app names, if any. */
+export async function appPolicy(env: Env, policyId: number | null | undefined): Promise<AuthPolicyRow | null> {
+  if (!policyId) return null;
+  return env.DB.prepare("SELECT * FROM auth_policies WHERE id = ?").bind(policyId).first<AuthPolicyRow>();
+}
+
+/** Whether SSO into this app must carry a second factor: its own require_mfa switch, or a bound policy that demands one. */
+export function appRequiresMfa(app: AppAccessRow, policy: AuthPolicyRow | null): boolean {
+  return app.require_mfa === 1 || policy?.requirement === "mfa";
+}
+
+/**
+ * The posture conditions a bound policy puts on a sign-in, checked for every
+ * session that reaches the app - like the person's own policy at /login.
+ * Returns the denial reason, or null when the request clears them. An
+ * unreachable risk check passes: a broken integration must not be an outage
+ * (the same rule the login flow applies).
+ */
+export async function appPostureDenied(env: Env, policy: AuthPolicyRow | null, request: Request, userId: number): Promise<"device" | "risk" | null> {
+  if (!policy) return null;
+  if (policy.device_cert && !deviceCertVerified(request)) return "device";
+  if (policy.max_risk) {
+    const config = await getCfOne(env);
+    if (cfOneReady(config)) {
+      const user = await getUserById(env, userId);
+      const score = user ? await riskScoreFor(env, config!, user.upn) : null;
+      if (score && !riskAtMost(score.level, policy.max_risk)) return "risk";
+    }
+  }
+  return null;
 }
 
 /**

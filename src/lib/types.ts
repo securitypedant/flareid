@@ -131,6 +131,8 @@ export interface OAuthClientRow {
   require_mfa: number;
   /** 1 = users without access may ask for it from My account -> Access. */
   requestable: number;
+  /** Authentication policy required of sign-ins into this app; NULL = the person's own policy. */
+  policy_id: number | null;
 }
 
 export interface SamlServiceProviderRow {
@@ -171,6 +173,8 @@ export interface SamlServiceProviderRow {
   require_mfa: number;
   /** 1 = users without access may ask for it from My account -> Access. */
   requestable: number;
+  /** Authentication policy required of sign-ins into this app; NULL = the person's own policy. */
+  policy_id: number | null;
   created_at: string;
   updated_at: string;
 }
