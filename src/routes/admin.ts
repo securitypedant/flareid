@@ -23,6 +23,7 @@ import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "
 import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { listUserEmails, setUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
+import { getSmsConfig, saveSmsConfig, smsConfigured, SMS_PROVIDERS } from "../lib/sms.js";
 import { parseIdentifier } from "../lib/identifier.js";
 import {
   getDefaultPassword,
@@ -515,6 +516,7 @@ const INTEGRATION_PAGES = [
   { key: "federation", label: "Federation" },
   { key: "social", label: "Social sign-in" },
   { key: "email", label: "Email" },
+  { key: "sms", label: "SMS" },
   { key: "api-keys", label: "API keys" },
   { key: "cf-one", label: "Cloudflare One" },
   { key: "signals", label: "Signals" },
@@ -3425,6 +3427,84 @@ admin.post("/admin/email/test", async (c) => {
   return c.redirect(result.ok ? "/admin/integrations/email?test=sent" : `/admin/integrations/email?error=${encodeURIComponent(result.error)}`, 302);
 });
 
+// ---------- Integrations: SMS ----------
+//
+// The provider behind phone-number verification codes (account page -> add a
+// number). Four vendors on one seam in lib/sms.ts; secrets are sealed at rest.
+
+admin.get("/admin/integrations/sms", async (c) => {
+  const config = await getSmsConfig(c.env);
+  const ready = smsConfigured(config);
+  const secretField = (id: string, label: string, set: boolean, placeholder = "Saved - leave blank to keep it") =>
+    `<div><label for="${id}">${label}${set ? ' <span class="muted">(saved)</span>' : ""}</label><input type="password" id="${id}" name="${id}" value="" autocomplete="new-password" placeholder="${set ? placeholder : "Required"}" /></div>`;
+  return c.html(
+    layout(
+      c,
+      "SMS",
+      `
+      ${c.req.query("saved") ? successBanner("Saved.") : ""}
+      ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      ${cardSection(`
+        ${integrationIntro("Outbound SMS for phone verification codes: when someone adds a number to their account, a six-digit code is sent here. Pick the vendor you already have - the credentials are write-only and stored sealed.")}
+        <table style="margin-bottom:14px;"><tbody>
+          <tr><th style="width:180px;">Status</th><td>${ready ? `<span class="badge badge-active">Sending via ${SMS_PROVIDERS.find((p) => p.key === config.provider)?.label}</span>` : '<span class="badge badge-disabled">Off</span> &mdash; phone verification is unavailable until this is configured'}</td></tr>
+        </tbody></table>
+        <form method="POST" action="/admin/sms">
+          <label for="sms_provider">Provider</label>
+          <select id="sms_provider" name="provider">
+            <option value="">None (SMS off)</option>
+            ${SMS_PROVIDERS.map((p) => `<option value="${p.key}" ${config.provider === p.key ? "selected" : ""}>${p.label} &mdash; ${p.fields}</option>`).join("")}
+          </select>
+          <div class="field-row">
+            ${secretField("account_sid", "Twilio Account SID", Boolean(config.accountSid), "ACxxxx...")}
+            ${secretField("auth_token", "Twilio Auth Token", Boolean(config.authToken))}
+          </div>
+          <div class="field-row">
+            ${secretField("api_key", "Vonage API key", Boolean(config.apiKey))}
+            ${secretField("api_secret", "Vonage API secret", Boolean(config.apiSecret))}
+          </div>
+          <div class="field-row">
+            ${secretField("telnyx_key", "Telnyx API key", Boolean(config.telnyxKey))}
+            ${secretField("plivo_id", "Plivo Auth ID", Boolean(config.plivoId), "MAxxxx...")}
+          </div>
+          <div class="field-row">
+            ${secretField("plivo_token", "Plivo Auth Token", Boolean(config.plivoToken))}
+            <div>
+              <label for="sms_from">From number / sender</label>
+              <input type="text" id="sms_from" name="from" value="${escapeHtml(config.from)}" placeholder="+15551234567" />
+              <p class="muted" style="margin-top:-4px;">E.164 number (or messaging profile / sender id where your provider allows one).</p>
+            </div>
+          </div>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      `,
+      [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SMS" }]
+    )
+  );
+});
+
+admin.post("/admin/sms", async (c) => {
+  const body = await c.req.parseBody();
+  try {
+    await saveSmsConfig(c.env, {
+      provider: String(body.provider ?? ""),
+      accountSid: String(body.account_sid ?? ""),
+      authToken: String(body.auth_token ?? ""),
+      apiKey: String(body.api_key ?? ""),
+      apiSecret: String(body.api_secret ?? ""),
+      telnyxKey: String(body.telnyx_key ?? ""),
+      plivoId: String(body.plivo_id ?? ""),
+      plivoToken: String(body.plivo_token ?? ""),
+      from: String(body.from ?? ""),
+    });
+  } catch (e) {
+    return c.redirect(`/admin/integrations/sms?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, c.get("user"), "integrations.sms_updated", "settings", { provider: String(body.provider ?? "") || "none" }, c.req.raw);
+  return c.redirect("/admin/integrations/sms?saved=1", 302);
+});
+
 // ---------- Cloudflare One ----------
 
 const CFONE = "/admin/integrations/cf-one";
@@ -5380,6 +5460,7 @@ admin.get("/admin/security", async (c) => {
   const auditRetentionDays = await getAuditRetentionDays(c.env);
   const sessionPolicy = await getSessionPolicy(c.env);
   const breachedCheck = await isBreachedPasswordCheckEnabled(c.env);
+  const aliasSignin = (await getSetting(c.env, "alias_signin")) !== "false";
   const turnstile = await getTurnstileConfig(c.env);
   const turnstileActive = activeTurnstileSiteKey(turnstile) !== null;
   const radio = 'style="width:auto; display:inline; margin-right:6px;"';
@@ -5516,6 +5597,14 @@ admin.get("/admin/security", async (c) => {
         </form>
       `)}
       ${cardSection(`
+        <h2>Sign-in names</h2>
+        <p class="muted">Whether an account's listed email addresses and phone numbers work at the sign-in prompt, alongside its sign-in name (UPN, handle or phone). Off means aliases stay contact data: they still receive account mail and verification codes, they just can&rsquo;t authenticate. Only <em>verified</em> aliases ever sign in either way.</p>
+        <form method="POST" action="/admin/security/alias-signin">
+          <label style="font-weight:400;"><input type="checkbox" name="alias_signin" value="1" ${aliasSignin ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Allow sign-in by verified email / phone alias</label>
+          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+        </form>
+      `)}
+      ${cardSection(`
         <h2>Audit log retention</h2>
         <p class="muted">Entries older than this are deleted by the hourly cleanup, along with expired codes, tokens, sessions and remembered devices. ${AUDIT_RETENTION_MIN_DAYS}-${AUDIT_RETENTION_MAX_DAYS} days.</p>
         <form method="POST" action="/admin/security/audit-retention">
@@ -5529,6 +5618,13 @@ admin.get("/admin/security", async (c) => {
       [{ label: "Admin", href: "/admin" }, { label: "Security" }]
     )
   );
+});
+
+admin.post("/admin/security/alias-signin", async (c) => {
+  const body = await c.req.parseBody();
+  await setSetting(c.env, "alias_signin", String(body.alias_signin ?? "") === "1" ? "true" : "false");
+  await logAudit(c.env, c.get("user"), "security.alias_signin_updated", "settings", { enabled: String(body.alias_signin ?? "") === "1" }, c.req.raw);
+  return c.redirect("/admin/security?saved=1", 302);
 });
 
 admin.post("/admin/security/default-password", async (c) => {
@@ -7005,6 +7101,7 @@ function jitFields(idp: UpstreamIdpRow | null, groups: { id: number; name: strin
   return `
       <h3 style="margin-top:18px;">Accounts</h3>
       <label style="font-weight:400;"><input type="checkbox" name="jit" value="1" ${idp?.jit ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Just-in-time provisioning &mdash; create an account for an upstream identity nobody here has</label>
+      <label style="font-weight:400;"><input type="checkbox" name="allow_linking" value="1" ${idp ? (idp.allow_linking ? "checked" : "") : "checked"} style="width:auto; display:inline; margin-right:6px;" /> Account linking &mdash; let this provider claim an existing account when its verified claims match a sign-in name or email. Off means it only ever mints new accounts.</label>
       <label for="jit_domain">JIT domain <span class="muted">(optional - else the claim's email domain when managed, or the default)</span></label>
       <input type="text" id="jit_domain" name="jit_domain" value="${escapeHtml(idp?.jit_domain ?? "")}" placeholder="example.com" />
       ${idp ? `<p class="muted" style="margin:0 0 8px 0;">Claim-to-field rules for this provider's sign-ins are on <a href="/admin/flows/edit?channel=jit&owner=${idp.id}">Flows &rarr; Federation sign-in</a>.</p>` : ""}
@@ -7036,6 +7133,7 @@ function upstreamInputFrom(body: Record<string, unknown>, idp: UpstreamIdpRow | 
     jit: String(body.jit ?? "") === "1",
     jitDomain: String(body.jit_domain ?? ""),
     jitGroups,
+    allowLinking: String(body.allow_linking ?? "") === "1",
     enabled: String(body.enabled ?? "") === "1" || !idp,
     keepSecret: idp !== null && String(body.client_secret ?? "") === "",
     config: {

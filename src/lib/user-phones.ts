@@ -17,6 +17,7 @@ export interface UserPhone {
   phone: string;
   type: string;
   is_primary: number;
+  verified: number;
 }
 
 export interface UserPhoneInput {
@@ -33,7 +34,7 @@ export function normalizePhone(raw: string): string | null {
 
 export async function listUserPhones(env: Env, userId: number): Promise<UserPhone[]> {
   const { results } = await env.DB.prepare(
-    "SELECT id, user_id, phone, type, is_primary FROM user_phones WHERE user_id = ? ORDER BY is_primary DESC, id"
+    "SELECT id, user_id, phone, type, is_primary, verified FROM user_phones WHERE user_id = ? ORDER BY is_primary DESC, id"
   ).bind(userId).all<UserPhone>();
   return results;
 }
@@ -44,6 +45,19 @@ export async function getUserByAnyPhone(env: Env, number: string): Promise<UserR
   if (!phone) return null;
   return (
     (await env.DB.prepare("SELECT u.* FROM users u JOIN user_phones p ON p.user_id = u.id WHERE p.phone = ?").bind(phone).first<UserRow>()) ?? null
+  );
+}
+
+/**
+ * The sign-in side of getUserByAnyPhone: only verified numbers resolve an
+ * account. An unverified self-added number reserves its spelling but
+ * authenticates nothing.
+ */
+export async function getUserByVerifiedPhone(env: Env, number: string): Promise<UserRow | null> {
+  const phone = normalizePhone(number);
+  if (!phone) return null;
+  return (
+    (await env.DB.prepare("SELECT u.* FROM users u JOIN user_phones p ON p.user_id = u.id WHERE p.phone = ? AND p.verified = 1").bind(phone).first<UserRow>()) ?? null
   );
 }
 

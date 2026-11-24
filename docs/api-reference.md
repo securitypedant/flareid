@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.14.0.
+API version 4.15.0.
 
 ## Contents
 
@@ -25,6 +25,7 @@ API version 4.14.0.
 - [Cloudflare One](#cloudflare-one) - The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist.
 - [Signals](#signals) - Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters.
 - [Email](#email) - Outbound email settings and templates.
+- [SMS](#sms) - Outbound SMS provider settings for phone verification.
 - [API keys](#api-keys) - Bearer tokens for this API.
 - [Branding](#branding) - The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates.
 - [Security](#security) - Password, session, rate-limit and audit settings; authentication policies and factors.
@@ -3335,6 +3336,83 @@ Response `200`:
 
 Errors: `400`, `401`, `403`, `502` (`{ "error", "message" }`).
 
+## SMS
+
+Outbound SMS provider settings for phone verification.
+
+| Method | Path | Permission | Summary |
+|---|---|---|---|
+| `GET` | `/api/v1/sms` | `email:read` | Read the SMS provider settings |
+| `PUT` | `/api/v1/sms` | `email:write` | Set the SMS provider and credentials |
+
+### `GET /api/v1/sms`
+
+Read the SMS provider settings.
+
+Secret fields report only whether one is stored.
+
+Permission: `email:read`
+
+Response `200`:
+
+`SmsSettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | "" \| "twilio" \| "vonage" \| "telnyx" \| "plivo" | yes |  |
+| `configured` | boolean | yes | A provider plus all its required fields are set. |
+| `from` | string | yes |  |
+| `account_sid_set` | boolean | yes |  |
+| `auth_token_set` | boolean | yes |  |
+| `api_key_set` | boolean | yes |  |
+| `api_secret_set` | boolean | yes |  |
+| `telnyx_key_set` | boolean | yes |  |
+| `plivo_id_set` | boolean | yes |  |
+| `plivo_token_set` | boolean | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PUT /api/v1/sms`
+
+Set the SMS provider and credentials.
+
+Secret fields left empty keep the stored value. `provider: ""` switches SMS off.
+
+Permission: `email:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | "" \| "twilio" \| "vonage" \| "telnyx" \| "plivo" | yes |  |
+| `account_sid` | string | no |  |
+| `auth_token` | string | no |  |
+| `api_key` | string | no |  |
+| `api_secret` | string | no |  |
+| `telnyx_key` | string | no |  |
+| `plivo_id` | string | no |  |
+| `plivo_token` | string | no |  |
+| `from` | string | no |  |
+
+Response `200`:
+
+`SmsSettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | "" \| "twilio" \| "vonage" \| "telnyx" \| "plivo" | yes |  |
+| `configured` | boolean | yes | A provider plus all its required fields are set. |
+| `from` | string | yes |  |
+| `account_sid_set` | boolean | yes |  |
+| `auth_token_set` | boolean | yes |  |
+| `api_key_set` | boolean | yes |  |
+| `api_secret_set` | boolean | yes |  |
+| `telnyx_key_set` | boolean | yes |  |
+| `plivo_id_set` | boolean | yes |  |
+| `plivo_token_set` | boolean | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
 ## API keys
 
 Bearer tokens for this API.
@@ -3829,7 +3907,7 @@ Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 
 List the email templates.
 
-Keys: invitation, password_reset, email_otp. Text fields take {{placeholders}}; the layout is FlareID's own.
+Keys: invitation, password_reset, email_otp, alias_verify. Text fields take {{placeholders}}; the layout is FlareID's own.
 
 Permission: `branding:read`
 
@@ -3852,7 +3930,7 @@ Permission: `branding:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "invitation" \\| "password_reset" \\| "email_otp" |
+| `key` | path | yes | "invitation" \\| "password_reset" \\| "email_otp" \\| "alias_verify" |
 
 Request body:
 
@@ -3878,7 +3956,7 @@ Permission: `branding:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "invitation" \\| "password_reset" \\| "email_otp" |
+| `key` | path | yes | "invitation" \\| "password_reset" \\| "email_otp" \\| "alias_verify" |
 
 Response `200`:
 
@@ -3892,6 +3970,7 @@ Password, session, rate-limit and audit settings; authentication policies and fa
 
 | Method | Path | Permission | Summary |
 |---|---|---|---|
+| `PUT` | `/api/v1/security/alias-signin` | `security:write` | Switch sign-in by email/phone alias on or off |
 | `GET` | `/api/v1/security` | `security:read` | Read the security settings |
 | `PUT` | `/api/v1/security/password-policy` | `security:write` | Set the password policy |
 | `PUT` | `/api/v1/security/breached-passwords` | `security:write` | Switch the breached-password check on or off |
@@ -3915,6 +3994,38 @@ Password, session, rate-limit and audit settings; authentication policies and fa
 | `PATCH` | `/api/v1/security/security-questions/questions/{id}` | `security:write` | Enable or disable a security question |
 | `DELETE` | `/api/v1/security/security-questions/questions/{id}` | `security:write` | Delete a security question |
 
+### `PUT /api/v1/security/alias-signin`
+
+Switch sign-in by email/phone alias on or off.
+
+Off gives Okta-style semantics: verified aliases still receive account mail and verification codes but never authenticate at the sign-in prompt.
+
+Permission: `security:write`
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+
+Response `200`:
+
+`SecuritySettings`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `password_policy` | PasswordPolicy | yes |  |
+| `rate_limit` | object { max_attempts, window_minutes } | yes |  |
+| `session_limits` | object { max_hours, idle_minutes } | yes |  |
+| `audit_retention_days` | number | yes |  |
+| `new_user_password` | object { mode, default_password_set } | yes |  |
+| `require_mfa` | boolean | yes |  |
+| `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
+| `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
 ### `GET /api/v1/security`
 
 Read the security settings.
@@ -3935,6 +4046,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -3972,6 +4084,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4003,6 +4116,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4036,6 +4150,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4066,6 +4181,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4098,6 +4214,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4129,6 +4246,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4161,6 +4279,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -4215,6 +4334,7 @@ Response `200`:
 | `require_mfa` | boolean | yes |  |
 | `breached_password_check` | boolean | yes | New passwords found in Have I Been Pwned's breach corpus are refused. |
 | `turnstile` | TurnstileSettings | yes |  |
+| `alias_signin` | boolean | yes | Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only. |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

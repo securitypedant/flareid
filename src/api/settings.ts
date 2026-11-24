@@ -4,6 +4,7 @@ import { listRoles, rolePermissions } from "../lib/admin-roles.js";
 import { expand } from "../lib/permissions.js";
 import { FACTORS, factorEnrolmentCounts, isFactorEnabled, isFactorUsable, listPolicies, type FactorKey } from "../lib/auth-policy.js";
 import { getEmailSettings, isEmailAddress, isEmailConfigured, isEmailEnabled } from "../lib/email.js";
+import { getSmsConfig, saveSmsConfig, smsConfigured } from "../lib/sms.js";
 import { DEFAULT_TEMPLATES, getAccent, getTemplate, TEMPLATE_INFO, type TemplateKey } from "../lib/email-templates.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import {
@@ -22,6 +23,7 @@ import {
   isBreachedPasswordCheckEnabled,
   isHexColor,
   isMfaRequired,
+  setSetting,
 } from "../lib/settings.js";
 import { listSigningKeys } from "../lib/signing-keys.js";
 import { allLocales, isSupportedLocale, SUPPORTED_LOCALES } from "../lib/i18n.js";
@@ -108,6 +110,84 @@ defineRoute(
     const body = await readJson<{ from_address: string; from_name?: string }>(c);
     await saveEmailSettings(apiCtx(c), String(body.from_address ?? ""), String(body.from_name ?? ""));
     return c.json(await emailJson(c.env));
+  }
+);
+
+const SmsSchema = z
+  .object({
+    provider: z.enum(["", "twilio", "vonage", "telnyx", "plivo"]),
+    configured: z.boolean().openapi({ description: "A provider plus all its required fields are set." }),
+    from: z.string(),
+    account_sid_set: z.boolean(),
+    auth_token_set: z.boolean(),
+    api_key_set: z.boolean(),
+    api_secret_set: z.boolean(),
+    telnyx_key_set: z.boolean(),
+    plivo_id_set: z.boolean(),
+    plivo_token_set: z.boolean(),
+  })
+  .openapi("SmsSettings");
+
+async function smsJson(env: Env) {
+  const config = await getSmsConfig(env);
+  return {
+    provider: config.provider || "",
+    configured: smsConfigured(config),
+    from: config.from,
+    account_sid_set: Boolean(config.accountSid),
+    auth_token_set: Boolean(config.authToken),
+    api_key_set: Boolean(config.apiKey),
+    api_secret_set: Boolean(config.apiSecret),
+    telnyx_key_set: Boolean(config.telnyxKey),
+    plivo_id_set: Boolean(config.plivoId),
+    plivo_token_set: Boolean(config.plivoToken),
+  };
+}
+
+defineRoute(
+  { method: "get", path: "/api/v1/sms", tag: "SMS", permission: "email:read", summary: "Read the SMS provider settings", description: "Secret fields report only whether one is stored.", response: SmsSchema },
+  async (c) => c.json(await smsJson(c.env))
+);
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/sms",
+    tag: "SMS",
+    permission: "email:write",
+    summary: "Set the SMS provider and credentials",
+    description: "Secret fields left empty keep the stored value. `provider: \"\"` switches SMS off.",
+    body: z.object({
+      provider: z.enum(["", "twilio", "vonage", "telnyx", "plivo"]),
+      account_sid: z.string().optional(),
+      auth_token: z.string().optional(),
+      api_key: z.string().optional(),
+      api_secret: z.string().optional(),
+      telnyx_key: z.string().optional(),
+      plivo_id: z.string().optional(),
+      plivo_token: z.string().optional(),
+      from: z.string().optional(),
+    }),
+    response: SmsSchema,
+  },
+  async (c) => {
+    const body = await readJson<{ provider: string; account_sid?: string; auth_token?: string; api_key?: string; api_secret?: string; telnyx_key?: string; plivo_id?: string; plivo_token?: string; from?: string }>(c);
+    try {
+      await saveSmsConfig(c.env, {
+        provider: body.provider,
+        accountSid: body.account_sid,
+        authToken: body.auth_token,
+        apiKey: body.api_key,
+        apiSecret: body.api_secret,
+        telnyxKey: body.telnyx_key,
+        plivoId: body.plivo_id,
+        plivoToken: body.plivo_token,
+        from: body.from ?? (await getSmsConfig(c.env)).from,
+      });
+    } catch (e) {
+      return c.json(badRequest(e instanceof Error ? e.message : String(e)), 400);
+    }
+    return c.json(await smsJson(c.env));
   }
 );
 
@@ -490,11 +570,12 @@ const SecuritySchema = z
     require_mfa: z.boolean(),
     breached_password_check: z.boolean().openapi({ description: "New passwords found in Have I Been Pwned's breach corpus are refused." }),
     turnstile: TurnstileSchema,
+    alias_signin: z.boolean().openapi({ description: "Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only." }),
   })
   .openapi("SecuritySettings");
 
 async function securityJson(env: Env) {
-  const [policy, rate, session, retention, mode, defaultPassword, mfa, breached, turnstile] = await Promise.all([
+  const [policy, rate, session, retention, mode, defaultPassword, mfa, breached, turnstile, aliasSignin] = await Promise.all([
     getPasswordPolicy(env),
     getRateLimitPolicy(env),
     getSessionPolicy(env),
@@ -504,6 +585,7 @@ async function securityJson(env: Env) {
     isMfaRequired(env),
     isBreachedPasswordCheckEnabled(env),
     getTurnstileConfig(env),
+    getSetting(env, "alias_signin"),
   ]);
   return {
     password_policy: policy,
@@ -522,8 +604,27 @@ async function securityJson(env: Env) {
       secret_set: Boolean(turnstile.secret),
       secret_from_env: turnstile.secretFromEnv,
     },
+    alias_signin: aliasSignin !== "false",
   };
 }
+
+defineRoute(
+  {
+    method: "put",
+    path: "/api/v1/security/alias-signin",
+    tag: "Security",
+    permission: "security:write",
+    summary: "Switch sign-in by email/phone alias on or off",
+    description: "Off gives Okta-style semantics: verified aliases still receive account mail and verification codes but never authenticate at the sign-in prompt.",
+    body: z.object({ enabled: z.boolean() }),
+    response: SecuritySchema,
+  },
+  async (c) => {
+    const body = await readJson<{ enabled: boolean }>(c);
+    await setSetting(c.env, "alias_signin", body.enabled ? "true" : "false");
+    return c.json(await securityJson(c.env));
+  }
+);
 
 defineRoute(
   { method: "get", path: "/api/v1/security", tag: "Security", permission: "security:read", summary: "Read the security settings", response: SecuritySchema },

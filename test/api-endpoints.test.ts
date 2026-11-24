@@ -283,7 +283,7 @@ describe("email and branding", () => {
     expect((await call(apiKey, "POST", "/api/v1/email/test", { to: "ops@example.com" })).status).toBe(502);
 
     const templates = await call(apiKey, "GET", "/api/v1/branding/email-templates");
-    expect(templates.body.templates.map((t: { key: string }) => t.key)).toEqual(["invitation", "password_reset", "email_otp"]);
+    expect(templates.body.templates.map((t: { key: string }) => t.key)).toEqual(["invitation", "password_reset", "email_otp", "alias_verify"]);
     const put = await call(apiKey, "PUT", "/api/v1/branding/email-templates/invitation", { subject: "Join {{app_name}}", heading: "Hi {{name}}" });
     expect(put.body).toMatchObject({ subject: "Join {{app_name}}", customised: true });
     expect((await call(apiKey, "PUT", "/api/v1/branding/email-templates/invitation", { subject: " ", heading: "x" })).status).toBe(400);

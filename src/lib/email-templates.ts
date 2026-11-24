@@ -9,7 +9,7 @@ import { getSetting, setSetting } from "./settings.js";
  * never produce broken or unescaped HTML.
  */
 
-export type TemplateKey = "invitation" | "password_reset" | "email_otp";
+export type TemplateKey = "invitation" | "password_reset" | "email_otp" | "alias_verify";
 
 export interface EmailTemplate {
   subject: string;
@@ -24,6 +24,7 @@ export const TEMPLATE_INFO: Record<TemplateKey, { label: string; placeholders: s
   invitation: { label: "Invitation", placeholders: ["app_name", "name"], hasLink: true },
   password_reset: { label: "Password reset", placeholders: ["app_name", "name"], hasLink: true },
   email_otp: { label: "Sign-in code", placeholders: ["app_name", "name", "code", "minutes"], hasLink: false },
+  alias_verify: { label: "Address verification", placeholders: ["app_name", "name", "code", "minutes", "address"], hasLink: false },
 };
 
 export const DEFAULT_TEMPLATES: Record<TemplateKey, EmailTemplate> = {
@@ -47,6 +48,13 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, EmailTemplate> = {
     body: "Enter this code to finish signing in to {{app_name}}. It works once, for the next {{minutes}} minutes.",
     action: "",
     footer: "If you didn't try to sign in, change your password: someone else knows it.",
+  },
+  alias_verify: {
+    subject: "Your {{app_name}} verification code: {{code}}",
+    heading: "Verify {{address}}",
+    body: "Enter this code in {{app_name}} to add {{address}} to your account. It works once, for the next {{minutes}} minutes.",
+    action: "",
+    footer: "If you didn't ask for this, ignore this email: nothing is added to any account.",
   },
 };
 

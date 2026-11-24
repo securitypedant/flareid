@@ -4,6 +4,28 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.15.0] - 2026-11-24
+
+Identifier trust model (design: `docs/identifiers.md`). Three switches that
+decide how much external data may act as a credential.
+
+- **`verified` on `user_emails` / `user_phones`.** Only a row whose owner
+  proved the address or number is theirs can sign in or ground federated
+  adoption. Rows written by admins, SCIM or directory imports arrive attested;
+  self-service adds start unverified until a code comes back.
+- **Self-service verification on /account.** Users can add an email address
+  or phone number; a six-digit code is mailed (existing sender) or texted
+  (new SMS integration) to it, and entering it flips `verified=1`. Codes are
+  hashed in KV, expire in 10 minutes, and rate-limited per account.
+- **SMS providers** (Admin -> Integrations -> SMS): Twilio, Vonage, Telnyx,
+  and Plivo on one seam; credentials sealed at rest, blank keeps stored.
+- **Per-IdP `allow_linking`** (Federation / Social forms): off means the
+  provider's claims never claim an existing account - JIT mints a fresh
+  account or the sign-in is refused. Existing federated links still resolve.
+- **`alias_signin` setting** (Admin -> Security -> Sign-in names): off gives
+  Okta semantics - aliases stay delivery data (recovery mail still finds the
+  account) but never authenticate at the login prompt.
+
 ## [4.14.0] - 2026-11-22
 
 Multi-form sign-in identifiers (design: `docs/identifiers.md`). `users.upn`

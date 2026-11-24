@@ -15,8 +15,9 @@
 
 import type { Env } from "../env.js";
 import type { UserRow } from "./types.js";
-import { getUserByAnyEmail } from "./user-emails.js";
-import { getUserByAnyPhone } from "./user-phones.js";
+import { getSetting } from "./settings.js";
+import { getUserByVerifiedEmail } from "./user-emails.js";
+import { getUserByVerifiedPhone } from "./user-phones.js";
 
 export type IdentifierKind = "upn" | "handle" | "phone";
 
@@ -78,18 +79,33 @@ export interface IdentifierResolution {
 }
 
 /**
- * Login/recovery/LDAP resolution. '@' -> upn then any contact address;
- * '+' -> upn then any listed phone; bare -> exact upn (a handle owns its own
- * name) then the local-part candidates - exactly one, else no user.
+ * Login/recovery/LDAP resolution. '@' -> upn then any verified contact
+ * address; '+' -> upn then any verified listed phone; bare -> exact upn (a
+ * handle owns its own name) then the local-part candidates - exactly one,
+ * else no user.
+ *
+ * Two trust gates apply to the alias tables: an unverified row authenticates
+ * nothing, and the alias_signin setting ('false' = Okta semantics: aliases
+ * are delivery data, never credentials) turns alias resolution off entirely.
+ * deliveryOnly callers (recovery mail routing, admin lookups) skip the second
+ * gate - the verified gate always applies.
  */
-export async function resolveLoginIdentifier(env: Env, identifier: string): Promise<IdentifierResolution> {
+export async function resolveLoginIdentifier(env: Env, identifier: string, opts?: { deliveryOnly?: boolean }): Promise<IdentifierResolution> {
   const parsed = parseIdentifier(identifier);
   if (!parsed) return { user: null };
 
   const byUpn = await env.DB.prepare("SELECT * FROM users WHERE upn = ?").bind(parsed.normalized).first<UserRow>();
 
-  if (parsed.kind === "upn") return { user: byUpn ?? (await getUserByAnyEmail(env, parsed.normalized)) };
-  if (parsed.kind === "phone") return { user: byUpn ?? (await getUserByAnyPhone(env, parsed.normalized)) };
+  if (parsed.kind === "upn") {
+    if (byUpn) return { user: byUpn };
+    if (!opts?.deliveryOnly && (await getSetting(env, "alias_signin")) === "false") return { user: null };
+    return { user: await getUserByVerifiedEmail(env, parsed.normalized) };
+  }
+  if (parsed.kind === "phone") {
+    if (byUpn) return { user: byUpn };
+    if (!opts?.deliveryOnly && (await getSetting(env, "alias_signin")) === "false") return { user: null };
+    return { user: await getUserByVerifiedPhone(env, parsed.normalized) };
+  }
 
   if (byUpn) return { user: byUpn };
   const { results } = await env.DB.prepare("SELECT * FROM users WHERE username = ? LIMIT 2").bind(parsed.username).all<UserRow>();

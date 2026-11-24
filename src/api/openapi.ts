@@ -90,6 +90,7 @@ export const TAGS = [
   { name: "Cloudflare One", description: "The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watchlist." },
   { name: "Signals", description: "Shared Signals Framework: outbound CAEP/RISC streams and trusted inbound transmitters." },
   { name: "Email", description: "Outbound email settings and templates." },
+  { name: "SMS", description: "Outbound SMS provider settings for phone verification." },
   { name: "API keys", description: "Bearer tokens for this API." },
   { name: "Branding", description: "The default brand and per-domain brands: app name, logo, sign-in page colours, custom CSS, email accent; email templates." },
   { name: "Security", description: "Password, session, rate-limit and audit settings; authentication policies and factors." },

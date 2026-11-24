@@ -4,7 +4,8 @@ import { authPage, AUTH_MESSAGES, fieldMsg, fieldText, formErrors, loginAppearan
 import { html, t, tHtml, type Locale, type MessageKey } from "../lib/i18n.js";
 import type { LoginAppearance } from "../lib/settings.js";
 import { escapeHtml } from "../lib/html.js";
-import { getUserById, getUserByLoginIdentifier } from "../lib/db.js";
+import { getUserById } from "../lib/db.js";
+import { resolveLoginIdentifier } from "../lib/identifier.js";
 import { hashPassword } from "../lib/password.js";
 import { consumeAccountToken, peekAccountToken, revokeAccountTokens, type AccountTokenPurpose } from "../lib/account-tokens.js";
 import { sendPasswordReset } from "../lib/account-email.js";
@@ -108,7 +109,10 @@ recovery.post("/forgot-password", async (c) => {
       // The coarser /48 aggregate: an IPv6 holder rotating /64s inside one
       // allocation does not mint a fresh budget per prefix.
       if (ip.includes(":") && (await recordRateAttempt(c.env, `recovery:ip48:${rateLimitAddress48(ip)}`, RESETS_PER_IP_PER_HOUR * 4, 60))) return;
-      const user = identifier ? await getUserByLoginIdentifier(c.env, identifier) : null;
+      // deliveryOnly: a verified alias may find the account to mail even when
+      // alias sign-in is off - finding an account for a uniform-response mail
+      // is the delivery job, not authentication.
+      const user = identifier ? (await resolveLoginIdentifier(c.env, identifier, { deliveryOnly: true })).user : null;
       if (!user || user.status !== "active") return;
       if (await recordRateAttempt(c.env, `recovery:user:${user.id}`, RESETS_PER_ACCOUNT_PER_HOUR, 60)) {
         await logAudit(c.env, null, "user.password_reset_rate_limited", user.upn, { ip }, c.req.raw);

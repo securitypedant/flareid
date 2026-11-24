@@ -94,7 +94,9 @@ export async function selectUsers(env: Env, opts: { id?: number; username?: stri
  * name is a 404, never the wrong user.
  */
 async function userByUsername(c: ApiContext): Promise<UserRow | null> {
-  return (await resolveLoginIdentifier(c.env, param(c, "username"))).user;
+  // deliveryOnly: an admin-scoped lookup is not a credential prompt - it may
+  // find an account by a verified alias even when alias sign-in is off.
+  return (await resolveLoginIdentifier(c.env, param(c, "username"), { deliveryOnly: true })).user;
 }
 
 const noUser = (c: ApiContext) => notFound(c, `No user "${param(c, "username").toLowerCase()}".`);

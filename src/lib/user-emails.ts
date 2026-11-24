@@ -19,6 +19,7 @@ export interface UserEmail {
   email: string;
   type: string;
   is_primary: number;
+  verified: number;
 }
 
 export interface UserEmailInput {
@@ -29,7 +30,7 @@ export interface UserEmailInput {
 
 export async function listUserEmails(env: Env, userId: number): Promise<UserEmail[]> {
   const { results } = await env.DB.prepare(
-    "SELECT id, user_id, email, type, is_primary FROM user_emails WHERE user_id = ? ORDER BY is_primary DESC, id"
+    "SELECT id, user_id, email, type, is_primary, verified FROM user_emails WHERE user_id = ? ORDER BY is_primary DESC, id"
   ).bind(userId).all<UserEmail>();
   return results;
 }
@@ -39,7 +40,7 @@ export async function listUserEmailsFor(env: Env, userIds: number[]): Promise<Ma
   const map = new Map<number, UserEmail[]>();
   if (userIds.length === 0) return map;
   const { results } = await env.DB.prepare(
-    `SELECT id, user_id, email, type, is_primary FROM user_emails WHERE user_id IN (${userIds.map(() => "?").join(",")}) ORDER BY user_id, is_primary DESC, id`
+    `SELECT id, user_id, email, type, is_primary, verified FROM user_emails WHERE user_id IN (${userIds.map(() => "?").join(",")}) ORDER BY user_id, is_primary DESC, id`
   ).bind(...userIds).all<UserEmail>();
   for (const row of results) {
     const list = map.get(row.user_id) ?? [];
@@ -55,6 +56,21 @@ export async function getUserByAnyEmail(env: Env, address: string): Promise<User
   return (
     (await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>()) ??
     (await env.DB.prepare("SELECT u.* FROM users u JOIN user_emails e ON e.user_id = u.id WHERE e.email = ?").bind(email).first<UserRow>()) ??
+    null
+  );
+}
+
+/**
+ * The sign-in side of getUserByAnyEmail: only addresses proven to be the
+ * owner's resolve an account - users.email (the primary, attested by whoever
+ * wrote the account) and alias rows verified=1. An unverified self-added
+ * alias reserves its spelling but authenticates nothing.
+ */
+export async function getUserByVerifiedEmail(env: Env, address: string): Promise<UserRow | null> {
+  const email = address.trim().toLowerCase();
+  return (
+    (await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>()) ??
+    (await env.DB.prepare("SELECT u.* FROM users u JOIN user_emails e ON e.user_id = u.id WHERE e.email = ? AND e.verified = 1").bind(email).first<UserRow>()) ??
     null
   );
 }

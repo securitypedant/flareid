@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.14.0",
+    "version": "4.15.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -83,6 +83,10 @@
     {
       "name": "Email",
       "description": "Outbound email settings and templates."
+    },
+    {
+      "name": "SMS",
+      "description": "Outbound SMS provider settings for phone verification."
     },
     {
       "name": "API keys",
@@ -1062,6 +1066,61 @@
           "from_name"
         ]
       },
+      "SmsSettings": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "",
+              "twilio",
+              "vonage",
+              "telnyx",
+              "plivo"
+            ]
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "A provider plus all its required fields are set."
+          },
+          "from": {
+            "type": "string"
+          },
+          "account_sid_set": {
+            "type": "boolean"
+          },
+          "auth_token_set": {
+            "type": "boolean"
+          },
+          "api_key_set": {
+            "type": "boolean"
+          },
+          "api_secret_set": {
+            "type": "boolean"
+          },
+          "telnyx_key_set": {
+            "type": "boolean"
+          },
+          "plivo_id_set": {
+            "type": "boolean"
+          },
+          "plivo_token_set": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider",
+          "configured",
+          "from",
+          "account_sid_set",
+          "auth_token_set",
+          "api_key_set",
+          "api_secret_set",
+          "telnyx_key_set",
+          "plivo_id_set",
+          "plivo_token_set"
+        ]
+      },
       "Branding": {
         "type": "object",
         "properties": {
@@ -1420,6 +1479,10 @@
           },
           "turnstile": {
             "$ref": "#/components/schemas/TurnstileSettings"
+          },
+          "alias_signin": {
+            "type": "boolean",
+            "description": "Whether verified email/phone aliases authenticate at the sign-in prompt; off keeps them delivery data only."
           }
         },
         "required": [
@@ -1430,7 +1493,8 @@
           "new_user_password",
           "require_mfa",
           "breached_password_check",
-          "turnstile"
+          "turnstile",
+          "alias_signin"
         ]
       },
       "PasswordPolicy": {
@@ -9678,6 +9742,167 @@
         }
       }
     },
+    "/api/v1/sms": {
+      "get": {
+        "tags": [
+          "SMS"
+        ],
+        "summary": "Read the SMS provider settings",
+        "description": "Secret fields report only whether one is stored.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "email:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmsSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "SMS"
+        ],
+        "summary": "Set the SMS provider and credentials",
+        "description": "Secret fields left empty keep the stored value. `provider: \"\"` switches SMS off.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "email:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "twilio",
+                      "vonage",
+                      "telnyx",
+                      "plivo"
+                    ]
+                  },
+                  "account_sid": {
+                    "type": "string"
+                  },
+                  "auth_token": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "api_secret": {
+                    "type": "string"
+                  },
+                  "telnyx_key": {
+                    "type": "string"
+                  },
+                  "plivo_id": {
+                    "type": "string"
+                  },
+                  "plivo_token": {
+                    "type": "string"
+                  },
+                  "from": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmsSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/email/enabled": {
       "post": {
         "tags": [
@@ -10848,7 +11073,7 @@
           "Branding"
         ],
         "summary": "List the email templates",
-        "description": "Keys: invitation, password_reset, email_otp. Text fields take {{placeholders}}; the layout is FlareID's own.",
+        "description": "Keys: invitation, password_reset, email_otp, alias_verify. Text fields take {{placeholders}}; the layout is FlareID's own.",
         "security": [
           {
             "bearer": []
@@ -10968,7 +11193,8 @@
               "enum": [
                 "invitation",
                 "password_reset",
-                "email_otp"
+                "email_otp",
+                "alias_verify"
               ]
             },
             "required": true,
@@ -11108,7 +11334,8 @@
               "enum": [
                 "invitation",
                 "password_reset",
-                "email_otp"
+                "email_otp",
+                "alias_verify"
               ]
             },
             "required": true,
@@ -11193,6 +11420,81 @@
           },
           "404": {
             "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/security/alias-signin": {
+      "put": {
+        "tags": [
+          "Security"
+        ],
+        "summary": "Switch sign-in by email/phone alias on or off",
+        "description": "Off gives Okta-style semantics: verified aliases still receive account mail and verification codes but never authenticate at the sign-in prompt.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "security:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
             "content": {
               "application/json": {
                 "schema": {

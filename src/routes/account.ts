@@ -3,6 +3,9 @@ import { grants } from "../lib/permissions.js";
 import { enrolledFactors, FACTOR_SHORT_LABELS, hasSecondFactor, isFactorEnabled, isFactorUsable, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
+import { aliasKindFor, deleteAlias, listPendingAliases, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
+import { listUserEmails } from "../lib/user-emails.js";
+import { listUserPhones } from "../lib/user-phones.js";
 import {
   answersFromForm,
   checkAnswers,
@@ -130,6 +133,9 @@ const SAVED_MESSAGES: Record<string, string> = {
   photo: "Your photo has been updated.",
   "backup-codes-removed": "Your backup codes have been removed.",
   "backup-codes": "Your backup codes are saved.",
+  "alias-code": "A code is on its way - enter it below to verify.",
+  "alias-verified": "Verified. It can sign you in from now on.",
+  "alias-removed": "Removed.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -141,11 +147,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   "email-unavailable": "Email codes aren't available right now.",
   "no-factor": "Set up a sign-in method like an authenticator app or a passkey first - backup codes are a fallback, not a first factor.",
   password: "Incorrect password, please try again.",
+  "alias-code": "That code was not correct, or it has expired. Request a fresh one.",
 };
 
 function savedBanner(c: Context<{ Bindings: Env }>): string {
-  const error = ERROR_MESSAGES[c.req.query("error") ?? ""];
-  if (error) return `<p class="error">${escapeHtml(error)}</p>`;
+  const raw = c.req.query("error") ?? "";
+  const error = ERROR_MESSAGES[raw];
+  // Unknown keys render verbatim (escaped): action handlers pass curated,
+  // user-facing messages through the same parameter.
+  if (raw) return `<p class="error">${escapeHtml(error ?? (raw.length <= 300 ? raw : "Something went wrong."))}</p>`;
   const message = SAVED_MESSAGES[c.req.query("saved") ?? ""];
   return message ? successBanner(message) : "";
 }
@@ -170,7 +180,7 @@ async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttrib
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const [editable, mastered, photoV] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id)]);
+  const [editable, mastered, photoV, myEmails, myPhones, pendingAliases] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id), listUserEmails(c.env, user.id), listUserPhones(c.env, user.id), listPendingAliases(c.env, user.id)]);
   const photoMastered = mastered.includes("photo");
 
   return c.html(
@@ -235,6 +245,51 @@ account.get("/account", async (c) => {
       `)
           : ""
       }
+
+      ${cardSection(`
+        <h2>Email addresses &amp; phone numbers</h2>
+        <p class="muted">Verified entries can sign you in. Add one and we send a code to the address or number to prove it's yours.</p>
+        ${
+          myEmails.length + myPhones.length
+            ? `<table><thead><tr><th>Value</th><th>Kind</th><th>Status</th><th></th></tr></thead><tbody>
+          ${[
+            ...myEmails.map((e) => ({ kind: "email" as const, value: e.email, verified: e.verified, primary: e.is_primary })),
+            ...myPhones.map((p) => ({ kind: "phone" as const, value: p.phone, verified: p.verified, primary: p.is_primary })),
+          ]
+            .map(
+              (a) => `<tr>
+                <td>${escapeHtml(a.value)}</td>
+                <td>${a.kind === "email" ? "Email" : "Phone"}</td>
+                <td>${a.primary ? '<span class="badge">primary</span> ' : ""}${a.verified ? '<span class="badge badge-active">verified</span>' : '<span class="badge badge-disabled">unverified</span>'}</td>
+                <td style="text-align:right;">${
+                  a.primary
+                    ? ""
+                    : `<form method="POST" action="/account/aliases/delete" style="display:inline;" ${confirmAttrs(`Remove ${a.value} from your account?`)}><input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Remove</button></form>`
+                }</td>
+              </tr>`
+            )
+            .join("")}
+        </tbody></table>`
+            : '<p class="muted">No addresses or numbers on your account yet.</p>'
+        }
+        ${
+          pendingAliases.length
+            ? `<h3 style="margin-top:14px;">Enter your code</h3>
+          ${pendingAliases
+            .map(
+              (p) => `<form method="POST" action="/account/aliases/verify" style="margin-bottom:8px;">
+              <input type="hidden" name="kind" value="${p.kind}" /><input type="hidden" name="value" value="${escapeHtml(p.value)}" />
+              <div class="field-row" style="align-items:flex-end;"><div><label>Code sent to ${escapeHtml(p.value)}</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required style="max-width:140px;" /></div><button class="primary" type="submit">Verify</button></div>
+            </form>`
+            )
+            .join("")}`
+            : ""
+        }
+        <h3 style="margin-top:14px;">Add an address or number</h3>
+        <form method="POST" action="/account/aliases">
+          <div class="field-row" style="align-items:flex-end;"><div><label for="alias_identifier">Email address or phone number</label><input type="text" id="alias_identifier" name="identifier" placeholder="you@example.com or +15551234567" required /></div><button class="primary" type="submit">Send code</button></div>
+        </form>
+      `)}
       `,
       user.upn
     )
@@ -939,6 +994,48 @@ account.post("/account/profile", async (c) => {
     if (fresh) c.executionCtx.waitUntil(pushUser(c.env, fresh).catch((err) => console.error(JSON.stringify({ event: "scim_push_failed", error: String(err) }))));
   }
   return c.redirect("/account?saved=profile", 302);
+});
+
+// ---------- Self-service email/phone aliases ----------
+//
+// Adding claims an unverified row and sends a code to it; verifying flips
+// verified=1 (lib/alias-verify.ts). Unverified rows resolve nothing.
+
+account.post("/account/aliases", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const raw = String(body.identifier ?? "");
+  const kind = aliasKindFor(raw);
+  if (!kind) return c.redirect(`/account?error=${encodeURIComponent("Enter an email address, or a phone number in international format (+15551234567).")}`, 302);
+  const outcome = await startAliasVerification(c.env, user, kind, raw);
+  if (!outcome.ok) return c.redirect(`/account?error=${encodeURIComponent(outcome.error)}`, 302);
+  await logAudit(c.env, user, "user.alias_verification_sent", user.upn, { kind }, c.req.raw);
+  return c.redirect("/account?saved=alias-code", 302);
+});
+
+account.post("/account/aliases/verify", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const kind = body.kind === "phone" ? ("phone" as const) : ("email" as const);
+  const value = String(body.value ?? "");
+  const result = await verifyAliasCode(c.env, user, kind, value, String(body.code ?? ""));
+  if (result !== "ok") return c.redirect("/account?error=alias-code", 302);
+  await logAudit(c.env, user, "user.alias_verified", user.upn, { kind, value }, c.req.raw);
+  return c.redirect("/account?saved=alias-verified", 302);
+});
+
+account.post("/account/aliases/delete", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const kind = body.kind === "phone" ? ("phone" as const) : ("email" as const);
+  const value = String(body.value ?? "");
+  try {
+    await deleteAlias(c.env, user, kind, value);
+  } catch (e) {
+    return c.redirect(`/account?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+  await logAudit(c.env, user, "user.alias_removed", user.upn, { kind, value }, c.req.raw);
+  return c.redirect("/account?saved=alias-removed", 302);
 });
 
 /**

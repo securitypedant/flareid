@@ -7,7 +7,7 @@ import type { Env } from "../env.js";
 import { defaultSchemaId } from "./schemas.js";
 import { getUserByLoginIdentifier } from "./db.js";
 import { domainExists } from "./domains.js";
-import { getUserByAnyEmail } from "./user-emails.js";
+import { getUserByVerifiedEmail } from "./user-emails.js";
 import { randomToken } from "./tokens.js";
 import { sealMaybe, unsealMaybe } from "./sealed.js";
 import { appleClientSecret, socialProvider, type AppleSecretConfig } from "./social.js";
@@ -39,6 +39,8 @@ export interface UpstreamIdpRow {
   jit_domain: string | null;
   /** JSON array of group ids every JIT-provisioned account joins at creation. */
   jit_groups: string;
+  /** 0 = this provider's claims never claim an existing account: JIT-only, no adoption. */
+  allow_linking: number;
   created_at: string;
   updated_at: string;
 }
@@ -93,6 +95,8 @@ export interface UpstreamIdpInput {
   jitDomain: string;
   /** Group ids every JIT account joins; absent means none. */
   jitGroups?: number[];
+  /** false = verified-claim adoption off: the provider mints accounts, never links into them. */
+  allowLinking?: boolean;
 }
 
 /** The most groups one provider's JIT list may name. */
@@ -169,7 +173,7 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
           }
         : {}),
     };
-    return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, created_at: "", updated_at: "" };
+    return { id: existingId ?? 0, name, protocol: "oidc", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, allow_linking: input.allowLinking === false ? 0 : 1, created_at: "", updated_at: "" };
   }
 
   const cfg = input.config as Partial<SamlIdpConfig>;
@@ -184,14 +188,14 @@ export async function validateUpstreamIdp(env: Env, input: UpstreamIdpInput, exi
     ...(cfg.nameid_format?.trim() ? { nameid_format: cfg.nameid_format.trim() } : {}),
     ...(cfg.attr_map && Object.keys(cfg.attr_map).length ? { attr_map: cfg.attr_map } : {}),
   };
-  return { id: existingId ?? 0, name, protocol: "saml", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, created_at: "", updated_at: "" };
+  return { id: existingId ?? 0, name, protocol: "saml", enabled: 1, config: JSON.stringify(config), jit: input.jit ? 1 : 0, jit_domain: jitDomain || null, jit_groups: jitGroupsJson, allow_linking: input.allowLinking === false ? 0 : 1, created_at: "", updated_at: "" };
 }
 
 export async function createUpstreamIdp(env: Env, input: UpstreamIdpInput): Promise<UpstreamIdpRow> {
   const v = await validateUpstreamIdp(env, input);
   const t = now();
-  const { meta } = await env.DB.prepare("INSERT INTO upstream_idps (name, protocol, enabled, config, jit, jit_domain, jit_groups, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)")
-    .bind(v.name, v.protocol, v.config, v.jit, v.jit_domain, v.jit_groups, t, t)
+  const { meta } = await env.DB.prepare("INSERT INTO upstream_idps (name, protocol, enabled, config, jit, jit_domain, jit_groups, allow_linking, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(v.name, v.protocol, v.config, v.jit, v.jit_domain, v.jit_groups, v.allow_linking, t, t)
     .run();
   return (await getUpstreamIdp(env, Number(meta.last_row_id)))!;
 }
@@ -208,8 +212,8 @@ export async function updateUpstreamIdp(env: Env, id: number, input: UpstreamIdp
     if (next.apple) merged.apple = { ...next.apple, private_key: next.apple.private_key || prev.apple?.private_key || "" };
     v.config = JSON.stringify(merged);
   }
-  await env.DB.prepare("UPDATE upstream_idps SET name = ?, protocol = ?, enabled = ?, config = ?, jit = ?, jit_domain = ?, jit_groups = ?, updated_at = ? WHERE id = ?")
-    .bind(v.name, v.protocol, input.enabled ? 1 : 0, v.config, v.jit, v.jit_domain, v.jit_groups, now(), id)
+  await env.DB.prepare("UPDATE upstream_idps SET name = ?, protocol = ?, enabled = ?, config = ?, jit = ?, jit_domain = ?, jit_groups = ?, allow_linking = ?, updated_at = ? WHERE id = ?")
+    .bind(v.name, v.protocol, input.enabled ? 1 : 0, v.config, v.jit, v.jit_domain, v.jit_groups, v.allow_linking, now(), id)
     .run();
   return (await getUpstreamIdp(env, id))!;
 }
@@ -631,11 +635,15 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   // stranger's account.
   // Same verified bar for both claim fields: an IdP that calls its own claim
   // unverified can't use it to link into an existing account - whether it
-  // arrives as `email` or spelled like an @-form username.
-  let user = profile.username && profile.username.includes("@") && profile.emailVerified !== false
+  // arrives as `email` or spelled like an @-form username. allow_linking=0
+  // removes the whole path: this provider mints fresh accounts or fails, it
+  // never claims someone else's, no matter how trustworthy its claims look.
+  // Alias matches count only when verified - an address its holder never
+  // proved is not an adoption key.
+  let user = idp.allow_linking !== 0 && profile.username && profile.username.includes("@") && profile.emailVerified !== false
     ? await getUserByLoginIdentifier(env, profile.username)
     : null;
-  if (!user && profile.email && profile.emailVerified !== false) user = await getUserByAnyEmail(env, profile.email);
+  if (!user && idp.allow_linking !== 0 && profile.email && profile.emailVerified !== false) user = await getUserByVerifiedEmail(env, profile.email);
 
   if (user) {
     if (user.status !== "active") throw new NoLocalAccount(profile);

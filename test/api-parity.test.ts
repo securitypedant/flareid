@@ -46,6 +46,7 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/email/enabled": "POST /api/v1/email/enabled",
   "POST /admin/email": "PUT /api/v1/email",
   "POST /admin/email/test": "POST /api/v1/email/test",
+  "POST /admin/sms": "PUT /api/v1/sms",
   "POST /admin/integrations/cf-one": "PUT /api/v1/integrations/cloudflare-one",
   "POST /admin/integrations/cf-one/sync": "POST /api/v1/integrations/cloudflare-one/sync",
   "POST /admin/integrations/cf-one/watch": "PUT /api/v1/users/{username}/watch",
@@ -91,6 +92,7 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/security/apply-default-password": "POST /api/v1/security/new-user-password/apply-to-all",
   "POST /admin/security/password-policy": "PUT /api/v1/security/password-policy",
   "POST /admin/security/breached-passwords": "PUT /api/v1/security/breached-passwords",
+  "POST /admin/security/alias-signin": "PUT /api/v1/security/alias-signin",
   "POST /admin/security/turnstile": "PUT /api/v1/security/turnstile",
   "POST /admin/security/require-mfa": "PUT /api/v1/security/require-mfa",
   "POST /admin/security/rate-limit": "PUT /api/v1/security/rate-limit",
@@ -197,6 +199,9 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   "POST /account/mfa/backup-codes/regenerate": "credential self-management; admin reset-mfa covers recovery",
   "POST /account/mfa/backup-codes/generate": "codes are shown to their owner once; admin reset-mfa covers recovery",
   "POST /account/backup-codes/remove": "partial factor self-management; admin reset-mfa covers recovery",
+  "POST /account/aliases": "adds an unverified alias and sends a proof-of-ownership code to it",
+  "POST /account/aliases/verify": "code-entry ceremony proving ownership of the new alias",
+  "POST /account/aliases/delete": "self-service alias removal; admins use PATCH /api/v1/users/{username}",
 };
 
 /**
@@ -230,6 +235,7 @@ const CONSOLE_GET_TO_API: Record<string, string[]> = {
   "GET /admin/integrations/cf-one": ["GET /api/v1/integrations/cloudflare-one"],
   "GET /admin/integrations/signals": ["GET /api/v1/ssf/streams", "GET /api/v1/ssf/transmitters"],
   "GET /admin/integrations/email": ["GET /api/v1/email"],
+  "GET /admin/integrations/sms": ["GET /api/v1/sms"],
   "GET /admin/integrations/federation": ["GET /api/v1/federation/idps"],
   "GET /admin/integrations/federation/:id": ["GET /api/v1/federation/idps/{id}"],
   "GET /admin/integrations/social": ["GET /api/v1/social/providers", "GET /api/v1/federation/idps"],
