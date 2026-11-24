@@ -1,0 +1,25 @@
+{
+  "run": "run-4",
+  "ref": "f98ce6d",
+  "profile": "deep",
+  "records": [
+    { "id": "saml:require-mfa-not-enforced-on-fresh-login", "severity": "high", "status": "fixed", "file": "src/routes/login.ts" },
+    { "id": "cfapp:granting-group-can-be-admin-role", "severity": "medium", "status": "fixed", "file": "src/lib/cfone.ts" },
+    { "id": "api:access-request-decide-wrong-scope", "severity": "medium", "status": "fixed", "file": "src/api/access.ts" },
+    { "id": "saml:ispassive-enrol-gate-fallthrough", "severity": "medium", "status": "fixed", "file": "src/routes/saml.ts" },
+    { "id": "federation:email-verified-ignored-on-adoption", "severity": "medium", "status": "fixed", "file": "src/lib/federation.ts" },
+    { "id": "step-up:secret-fields-stashed-and-echoed", "severity": "medium", "status": "fixed", "file": "src/lib/step-up.ts" },
+    { "id": "access:group-swap-display", "severity": "low", "status": "fixed", "file": "src/lib/access.ts" },
+    { "id": "access:assign-missing-touch-guard", "severity": "low", "status": "fixed", "file": "src/lib/access.ts" },
+    { "id": "api:cfapp-enum-missing", "severity": "low", "status": "fixed", "file": "src/api/access.ts" },
+    { "id": "ssrf:outbound-follows-redirects", "severity": "low", "status": "fixed", "file": "src/lib/request-object.ts" },
+    { "id": "policy:dangling-policy-id", "severity": "low", "status": "fixed", "file": "src/lib/auth-policy.ts" },
+    { "id": "saml-inbound:conditions-scd-optional", "severity": "low", "status": "fixed", "file": "src/lib/federation.ts" },
+    { "id": "scim:repoint-keeps-bearer", "severity": "low", "status": "fixed", "file": "src/lib/scim-targets.ts" },
+    { "id": "account:password-reset-leaves-mfa", "severity": "low", "status": "fixed", "file": "src/routes/account.ts" },
+    { "id": "backup-codes:regen-not-atomic", "severity": "low", "status": "fixed", "file": "src/lib/backup-codes.ts" },
+    { "id": "step-up:budget-on-success", "severity": "low", "status": "fixed", "file": "src/routes/account.ts" },
+    { "id": "admin:malformed-referer-500", "severity": "low", "status": "fixed", "file": "src/routes/admin.ts" },
+    { "id": "index:content-length-nan", "severity": "low", "status": "fixed", "file": "src/index.ts", "carryover": "run-3 needs_validation" }
+  ]
+}

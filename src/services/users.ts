@@ -377,8 +377,12 @@ export async function resetUserPassword(ctx: ServiceCtx, id: number, chosen: str
     .run();
   // Same compromise response as the self-service change: sessions, tokens
   // and passkeys all go - a passkey minted while the account was exposed
-  // would otherwise keep authenticating without the new password.
+  // would otherwise keep authenticating without the new password. The rest of
+  // the MFA state goes with it: a hijacked fresh session can enrol its own
+  // authenticator and harvest the backup-code set, and none of that may
+  // survive a password reset either.
   await ctx.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(id).run();
+  await resetUserMfa(ctx, id);
   await revokeAllSessionsForUser(ctx.env, id);
   await revokeTokensForUser(ctx.env, id);
   await audit(ctx, "user.password_reset", user.upn, { chosen: Boolean(chosen) });

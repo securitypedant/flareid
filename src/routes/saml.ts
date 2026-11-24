@@ -1,6 +1,6 @@
 import { canSignIn } from "../lib/admin-roles.js";
 import { isConsumed, markConsumed } from "../lib/one-shot.js";
-import { secondFactorGate } from "../lib/auth-policy.js";
+import { isAdministrator, secondFactorGate } from "../lib/auth-policy.js";
 import { hasSecondStep, secondStepFactors } from "../lib/second-step.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
@@ -158,7 +158,7 @@ saml.get("/saml/idp-initiated", async (c) => {
     await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "posture_policy", idp_initiated: true }, c.req.raw);
     return renderAuthMessage(c, 403, appConfigError("This application's policy does not allow this sign-in."));
   }
-  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
+  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr, { admin: await isAdministrator(c.env, user.id) })) {
     if (!(await hasSecondStep(c.env, user))) {
       return renderAuthMessage(c, 403, appConfigError("This application requires a sign-in with a second factor, but your account has none enrolled."));
     }
@@ -280,7 +280,7 @@ saml.get("/saml/complete", async (c) => {
     const samlResponse = b64encode(await buildErrorResponse(c.env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
     return c.html(samlPostForm(c.get("appName"), flow.request.acsUrl, samlResponse, flow.request.relayState));
   }
-  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
+  if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr, { admin: await isAdministrator(c.env, user.id) })) {
     if (!(await hasSecondStep(c.env, user))) {
       await deleteLoginFlow(c.env, flowId);
       await logAudit(c.env, user, "saml.request_rejected", sp.entity_id, { reason: "mfa_required" }, c.req.raw);
@@ -456,16 +456,20 @@ async function continueSsoRequest(
       // Same rule as /authorize: the app demands a factor this session never
       // presented - park the request behind a second-step challenge, unless
       // IsPassive forbids the UI (then the SP gets NoPassive).
-      if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr)) {
+      if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(session.amr, { admin: await isAdministrator(c.env, user.id) })) {
         if (!request.isPassive && (await hasSecondStep(c.env, user))) return samlStepUp(c, pending, user);
         return postProtocolError(c, request, acsUrl, relayState, "NoPassive", "mfa_required");
       }
       // Same rule as /authorize: a password-only session minted before forced
-      // enrolment parks the request and goes through MFA setup first - but
-      // IsPassive forbids that UI, so it falls through to the NoPassive error.
-      if (gate === "enrol" && !request.isPassive) {
-        const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending, resumeFor: user.id });
-        return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
+      // enrolment parks the request and goes through MFA setup first. IsPassive
+      // forbids that UI, so the SP gets NoPassive rather than an assertion the
+      // policy said to withhold.
+      if (gate === "enrol") {
+        if (!request.isPassive) {
+          const resumeFlowId = await storeLoginFlow(c.env, { kind: "saml", request: pending, resumeFor: user.id });
+          return c.redirect(`/account/mfa/setup?resume=${resumeFlowId}`, 302);
+        }
+        return postProtocolError(c, request, acsUrl, relayState, "NoPassive", "enrol_required");
       }
       const issued = await issueSamlResponse(c.env, sp, pending, user, session.id, new Date(session.createdAt));
       if (!issued) return renderAuthMessage(c, 400, ALREADY_ANSWERED);

@@ -1,7 +1,8 @@
 import { z } from "@hono/zod-openapi";
 import { campaignItems, cancelAccessRequest, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns, requestAccess } from "../lib/access.js";
+import { hasScope } from "../lib/api-keys.js";
 import { apiCtx } from "../services/context.js";
-import { defineRoute, notFound, param, readJson } from "./openapi.js";
+import { defineRoute, forbidden, notFound, param, readJson } from "./openapi.js";
 import { IdParam } from "./schemas.js";
 import type { UserRow } from "../lib/types.js";
 
@@ -18,7 +19,7 @@ const RequestSchema = z
     user_id: z.number(),
     upn: z.string(),
     display_name: z.string(),
-    target_type: z.enum(["group", "oidc_app", "saml_app"]),
+    target_type: z.enum(["group", "oidc_app", "saml_app", "cfapp"]),
     target_id: z.number(),
     target_name: z.string(),
     reason: z.string(),
@@ -104,7 +105,14 @@ defineRoute(
   },
   async (c) => {
     const body = await readJson<{ decision: "approved" | "denied"; note?: string }>(c);
-    return c.json({ request: await decideAccessRequest(apiCtx(c), Number(param(c, "id")), body.decision, body.note ?? "") });
+    const req = await getAccessRequest(c.env, Number(param(c, "id")));
+    if (!req) return notFound(c, "That request doesn't exist any more.");
+    // An app-target approval writes the app's assignment, so it charges the
+    // app's own write area - same rule the console route applies.
+    const need = req.target_type === "oidc_app" ? "oidc:write" : req.target_type === "saml_app" ? "saml:write" : null;
+    const scopes = c.get("apiActor").scopes;
+    if (need && !hasScope(scopes, need) && !hasScope(scopes, "admin")) return forbidden(c, `Deciding this request needs "${need}".`);
+    return c.json({ request: await decideAccessRequest(apiCtx(c), req.id, body.decision, body.note ?? "") });
   }
 );
 
@@ -120,7 +128,7 @@ defineRoute(
     body: z.object({
       username: z.string(),
       group_id: z.number().int().optional(),
-      target_type: z.enum(["group", "oidc_app", "saml_app"]).optional(),
+      target_type: z.enum(["group", "oidc_app", "saml_app", "cfapp"]).optional(),
       target_id: z.number().int().optional(),
       reason: z.string().optional(),
     }),
@@ -129,7 +137,7 @@ defineRoute(
     response: z.object({ request: RequestSchema }),
   },
   async (c) => {
-    const body = await readJson<{ username: string; group_id?: number; target_type?: "group" | "oidc_app" | "saml_app"; target_id?: number; reason?: string }>(c);
+    const body = await readJson<{ username: string; group_id?: number; target_type?: "group" | "oidc_app" | "saml_app" | "cfapp"; target_id?: number; reason?: string }>(c);
     const user = await c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(String(body.username ?? "").toLowerCase()).first<UserRow>();
     if (!user) return notFound(c, `No user "${body.username}".`);
     // `group_id` stays accepted for older callers; the typed pair is the same ask.

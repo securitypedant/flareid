@@ -974,7 +974,7 @@ Request body:
 |---|---|---|---|
 | `username` | string | yes |  |
 | `group_id` | integer | no |  |
-| `target_type` | "group" \| "oidc_app" \| "saml_app" | no |  |
+| `target_type` | "group" \| "oidc_app" \| "saml_app" \| "cfapp" | no |  |
 | `target_id` | integer | no |  |
 | `reason` | string | no |  |
 

@@ -7,6 +7,7 @@
  * create-from-template - so a rule changed once holds everywhere.
  */
 import type { Env } from "../env.js";
+import { assertPolicyExists } from "../lib/auth-policy.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { nameIdFormatUri } from "../lib/saml/messages.js";
@@ -295,6 +296,7 @@ export function parseSpForm(body: Record<string, unknown>): SpFormValues | strin
 
 /** The SP INSERT shared by the console create form, the API and catalog apply. Returns the new row id. */
 export async function insertServiceProvider(env: Env, v: SpFormValues): Promise<number> {
+  await assertPolicyExists(env, v.policyId);
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
     `INSERT INTO saml_service_providers (entity_id, name, acs_urls, default_acs_url, nameid_format, attribute_map, attribute_definitions, sign_response, sign_assertion, want_authn_requests_signed, signing_certs, slo_url, encryption_cert, encrypt_assertions, logo_uri, assigned_groups, access_mode, assigned_users, require_mfa, requestable, policy_id, created_at, updated_at)

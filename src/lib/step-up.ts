@@ -74,6 +74,7 @@ export interface PendingAction {
 
 const PENDING_PREFIX = "stepup-pending:";
 const PENDING_MAX_BYTES = 64 * 1024;
+const SENSITIVE_FIELD = /password|secret|token|credential|api[_-]?key/i;
 
 /** Stashes a form POST for replay after step-up; null when it can't be replayed (a file upload, an oversized body, a KV failure). */
 export async function stashPendingAction(env: Env, sessionId: string, req: Request, back: string): Promise<string | null> {
@@ -85,6 +86,10 @@ export async function stashPendingAction(env: Env, sessionId: string, req: Reque
       if (typeof value !== "string") return null;
       bytes += name.length + value.length;
       if (bytes > PENDING_MAX_BYTES) return null;
+      // A credential field never goes into the stash: the secret would sit in
+      // KV plaintext and come back inside the resume page's hidden inputs.
+      // Refusing the replay means the admin retypes the form after step-up.
+      if (SENSITIVE_FIELD.test(name)) return null;
       fields.push([name, value]);
     }
     const id = crypto.randomUUID();

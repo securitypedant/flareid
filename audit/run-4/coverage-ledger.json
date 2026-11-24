@@ -1,0 +1,11 @@
+{
+  "run": "run-4",
+  "ref": "f98ce6d",
+  "units": [
+    { "unit": "auth-session-login", "files": ["src/routes/login.ts", "src/routes/account.ts", "src/lib/step-up.ts", "src/lib/second-step.ts", "src/lib/rate-limit.ts"], "hunters": 1 },
+    { "unit": "saml-idp", "files": ["src/routes/saml.ts", "src/lib/saml/**"], "hunters": 1 },
+    { "unit": "federation-social", "files": ["src/lib/federation.ts", "src/routes/social.ts", "src/lib/request-object.ts", "src/routes/registration.ts"], "hunters": 1 },
+    { "unit": "api-scope-boundaries", "files": ["src/api/**", "src/services/**", "src/lib/access.ts", "src/lib/scim-targets.ts"], "hunters": 1 },
+    { "unit": "cross-cut", "files": ["src/index.ts", "src/lib/cfone.ts", "src/lib/backup-codes.ts", "src/lib/auth-policy.ts", "src/routes/admin.ts"], "hunters": 1 }
+  ]
+}

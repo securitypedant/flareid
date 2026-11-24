@@ -148,7 +148,7 @@ const jwks = await fetch(`${BASE}/jwks.json`).then((r) => r.json());
 check("JWKS has an RSA signing key", Array.isArray(jwks.keys) && jwks.keys.some((k) => k.kty === "RSA"));
 
 const REDIRECT = `${BASE}/e2e-callback`;
-const client = await api("/clients", KEY, { method: "POST", body: { name: "e2e-app", redirect_uris: [REDIRECT], trusted: true } });
+const client = await api("/clients", KEY, { method: "POST", body: { name: "e2e-app", redirect_uris: [REDIRECT], trusted: true, access_mode: "everyone" } });
 check("POST /clients", client.status === 200 && !!client.json.client_id, JSON.stringify(client.json));
 
 const authz = await fetch(

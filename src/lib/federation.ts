@@ -322,6 +322,9 @@ export async function oidcExchange(env: Env, meta: OidcMetadata, cfg: OidcIdpCon
   const res = await fetch(meta.token_endpoint, {
     method: "POST",
     signal: AbortSignal.timeout(10_000),
+    // A 307/308 from a discovery-supplied endpoint must not forward the code
+    // and client_secret to a different origin.
+    redirect: "error",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
@@ -438,31 +441,40 @@ export function verifySamlResponse(cfg: SamlIdpConfig, responseB64: string, acsU
   const issuerEls = assertion.getElementsByTagNameNS("urn:oasis:names:tc:SAML:2.0:assertion", "Issuer");
   if (cfg.idp_entity_id && issuerEls[0]?.textContent?.trim() !== cfg.idp_entity_id) throw new FederationError("The assertion came from a different IdP.");
 
-  // Conditions: window and audience.
+  // Conditions: window and audience. A signed assertion without Conditions
+  // carries no expiry at all - it is replayable forever, so it is refused
+  // rather than accepted.
   const t = Date.now();
   const condEls = assertion.getElementsByTagNameNS("urn:oasis:names:tc:SAML:2.0:assertion", "Conditions");
-  if (condEls[0]) {
-    const cond = condEls[0] as XmlElement;
+  const cond = condEls[0] as XmlElement | undefined;
+  if (!cond) throw new FederationError("The assertion has no Conditions element.");
+  {
     const nb = cond.getAttribute("NotBefore");
     const noa = cond.getAttribute("NotOnOrAfter");
-    if (nb && t + CLOCK_SKEW_MS < Date.parse(nb)) throw new FederationError("The assertion is not valid yet.");
-    if (noa && t - CLOCK_SKEW_MS >= Date.parse(noa)) throw new FederationError("The assertion has expired.");
+    const nbT = nb ? Date.parse(nb) : null;
+    const noaT = noa ? Date.parse(noa) : null;
+    if (nb && (nbT === null || Number.isNaN(nbT) || t + CLOCK_SKEW_MS < nbT)) throw new FederationError("The assertion is not valid yet.");
+    if (noa && (noaT === null || Number.isNaN(noaT) || t - CLOCK_SKEW_MS >= noaT)) throw new FederationError("The assertion has expired.");
   }
   const audEls = assertion.getElementsByTagNameNS("urn:oasis:names:tc:SAML:2.0:assertion", "Audience");
   if (audEls.length > 0 && ![...Array(audEls.length)].some((_, i) => audEls[i]!.textContent?.trim() === spEntityId)) {
     throw new FederationError("The assertion is addressed to a different service provider.");
   }
 
-  // SubjectConfirmation: recipient and replay binding.
+  // SubjectConfirmation: recipient and replay binding. The bearer profile
+  // requires it - an assertion without one is not bound to this ACS or
+  // request and can be replayed anywhere.
   const scdEls = assertion.getElementsByTagNameNS("urn:oasis:names:tc:SAML:2.0:assertion", "SubjectConfirmationData");
   const scd = scdEls[0] as XmlElement | undefined;
-  if (scd) {
+  if (!scd) throw new FederationError("The assertion has no SubjectConfirmationData.");
+  {
     const recipient = scd.getAttribute("Recipient");
     if (recipient && recipient !== acsUrl) throw new FederationError("The assertion was issued for a different recipient.");
     const inResponseTo = scd.getAttribute("InResponseTo");
-    if (expectedRequestId && inResponseTo && inResponseTo !== expectedRequestId) throw new FederationError("The assertion answers a different request.");
+    if (expectedRequestId && inResponseTo !== expectedRequestId) throw new FederationError("The assertion answers a different request.");
     const noa = scd.getAttribute("NotOnOrAfter");
-    if (noa && t - CLOCK_SKEW_MS >= Date.parse(noa)) throw new FederationError("The assertion has expired.");
+    const noaT = noa ? Date.parse(noa) : null;
+    if (noa && (noaT === null || Number.isNaN(noaT) || t - CLOCK_SKEW_MS >= noaT)) throw new FederationError("The assertion has expired.");
   }
 
   const nameIdEls = assertion.getElementsByTagNameNS("urn:oasis:names:tc:SAML:2.0:assertion", "NameID");
@@ -504,6 +516,8 @@ export interface FederatedProfile {
   givenName: string;
   familyName: string;
   displayName: string;
+  /** The IdP's email_verified claim, when it asserts one - false means the address must not be trusted for account matching. */
+  emailVerified?: boolean;
   /** Scalar user columns the IdP's JIT mappings produced (job_title, department...). */
   cols?: Record<string, string>;
   /** custom.* attributes the JIT mappings produced. */
@@ -529,6 +543,7 @@ export function profileFromClaims(claims: Record<string, unknown>, subject: stri
   const display = first(mapped, CLAIM_NAMES.display);
   const given = first(mapped, CLAIM_NAMES.given) || display.split(/\s+/)[0] || username.split("@")[0] || "User";
   const family = first(mapped, CLAIM_NAMES.family) || display.split(/\s+/).slice(1).join(" ");
+  const ev = claims["email_verified"];
   return {
     subject,
     email: email.toLowerCase(),
@@ -536,6 +551,7 @@ export function profileFromClaims(claims: Record<string, unknown>, subject: stri
     givenName: given,
     familyName: family,
     displayName: display || `${given} ${family}`.trim(),
+    emailVerified: ev === undefined ? undefined : ev === true || ev === "true",
   };
 }
 
@@ -608,9 +624,12 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   }
 
   // No link yet: adopt by identity, in order - a UPN already here, then any
-  // contact address. An ambiguous or absent match falls through to JIT.
+  // contact address. An ambiguous or absent match falls through to JIT. An
+  // address the IdP explicitly calls unverified is never an adoption key -
+  // a claim the user could set themselves would link their login to a
+  // stranger's account.
   let user = profile.username && profile.username.includes("@") ? await getUserByLoginIdentifier(env, profile.username) : null;
-  if (!user && profile.email) user = await getUserByAnyEmail(env, profile.email);
+  if (!user && profile.email && profile.emailVerified !== false) user = await getUserByAnyEmail(env, profile.email);
 
   if (user) {
     if (user.status !== "active") throw new NoLocalAccount(profile);

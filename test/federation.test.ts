@@ -9,6 +9,7 @@ import { accessFor } from "../src/lib/admin-roles.js";
 import { createSession } from "../src/lib/sessions.js";
 import { sealLoginFlow } from "../src/lib/authorize-state.js";
 import { b64encode } from "../src/lib/saml/xml.js";
+import { inflateAuthnRequest } from "../src/lib/saml/authn-request.js";
 import { unsealMaybe } from "../src/lib/sealed.js";
 
 beforeEach(resetDatabase);
@@ -369,13 +370,16 @@ describe("the sign-in round trip", () => {
     const idpId = res.body.id as number;
     const flowId = await sealLoginFlow(env, { kind: "direct", next: "/account" });
     const start = await SELF.fetch(`${BASE}/login/federated/${idpId}?flow=${encodeURIComponent(flowId)}`, { redirect: "manual" });
-    const relay = new URL(start.headers.get("Location")!).searchParams.get("RelayState")!;
+    const dest = new URL(start.headers.get("Location")!);
+    const relay = dest.searchParams.get("RelayState")!;
     const acsUrl = `${BASE}/federation/saml/acs/${idpId}`;
     const entityId = `https://idp.test/federation/saml/${idpId}`;
     // The ACS URL and entity id depend on the id; rebuild the response for
-    // them. No InResponseTo: the request id rides inside the DEFLATEd
-    // AuthnRequest and IdP-initiated responses are accepted.
-    const responseB64 = samlResponseWithDests(acsUrl, entityId);
+    // them. The request id rides inside the DEFLATEd AuthnRequest - inflate it
+    // so the assertion's InResponseTo names it (SP-initiated responses must).
+    const inflated = await inflateAuthnRequest(dest.searchParams.get("SAMLRequest")!);
+    const requestId = /ID="([^"]+)"/.exec(inflated)![1]!;
+    const responseB64 = samlResponseWithDests(acsUrl, entityId, requestId);
     const post = await SELF.fetch(`${BASE}/federation/saml/acs/${idpId}`, {
       redirect: "manual",
       method: "POST",
@@ -496,14 +500,14 @@ describe("the sign-in round trip", () => {
 });
 
 /** Same as samlResponse but parameterising ACS/entity/request-id for the e2e test. */
-function samlResponseWithDests(acsUrl: string, entityId: string): string {
+function samlResponseWithDests(acsUrl: string, entityId: string, inResponseTo?: string): string {
   const assertionId = "_a2";
   const attrs = `<saml:Attribute Name="email"><saml:AttributeValue>ada@horizon.test</saml:AttributeValue></saml:Attribute>`;
   const assertion =
     `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${assertionId}" Version="2.0" IssueInstant="${new Date().toISOString()}">` +
     `<saml:Issuer>https://upstream-idp.test/e</saml:Issuer>` +
     `<saml:Subject><saml:NameID>ada@horizon.test</saml:NameID>` +
-    `<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:bearer"><saml:SubjectConfirmationData Recipient="${acsUrl}" NotOnOrAfter="${new Date(Date.now() + 300_000).toISOString()}"/></saml:SubjectConfirmation></saml:Subject>` +
+    `<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:bearer"><saml:SubjectConfirmationData Recipient="${acsUrl}"${inResponseTo ? ` InResponseTo="${inResponseTo}"` : ""} NotOnOrAfter="${new Date(Date.now() + 300_000).toISOString()}"/></saml:SubjectConfirmation></saml:Subject>` +
     `<saml:Conditions NotBefore="${new Date(Date.now() - 60_000).toISOString()}" NotOnOrAfter="${new Date(Date.now() + 300_000).toISOString()}"><saml:AudienceRestriction><saml:Audience>${entityId}</saml:Audience></saml:AudienceRestriction></saml:Conditions>` +
     `<saml:AuthnStatement AuthnInstant="${new Date().toISOString()}"/>` +
     `<saml:AttributeStatement>${attrs}</saml:AttributeStatement>` +

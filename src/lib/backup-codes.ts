@@ -16,13 +16,15 @@ function normalizeCode(code: string): string {
 
 /** Generates a fresh set of backup codes, discarding any previous ones. Returns the plaintext codes (shown once). */
 export async function generateBackupCodes(env: Env, userId: number): Promise<string[]> {
-  await env.DB.prepare("DELETE FROM mfa_backup_codes WHERE user_id = ?").bind(userId).run();
-
   const codes = Array.from({ length: CODE_COUNT }, generateCode);
   const now = new Date().toISOString();
 
-  await env.DB.batch(
-    await Promise.all(
+  // Delete + inserts in one batch: D1 applies it atomically, so a concurrent
+  // regenerate can't interleave two sets and a failed insert can't leave the
+  // account with no codes at all.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM mfa_backup_codes WHERE user_id = ?").bind(userId),
+    ...(await Promise.all(
       codes.map(async (code) =>
         env.DB.prepare("INSERT INTO mfa_backup_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)").bind(
           userId,
@@ -30,8 +32,8 @@ export async function generateBackupCodes(env: Env, userId: number): Promise<str
           now
         )
       )
-    )
-  );
+    )),
+  ]);
 
   return codes;
 }

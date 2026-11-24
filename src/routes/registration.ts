@@ -4,6 +4,7 @@ import { isValidPostLogoutUri } from "../lib/oidc.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { deleteClient, ID_TOKEN_ALGS, isIdTokenAlg, validFrontchannelUri } from "../services/clients.js";
+import { isLocalAddress } from "../lib/scim-targets.js";
 
 /**
  * Dynamic client registration (RFC 7591 create, RFC 7592 read/update/delete).
@@ -99,6 +100,22 @@ function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok:
   for (const [u, name] of httpsFields) {
     if (u !== undefined && u !== "" && !validFrontchannelUri(u)) return { ok: false, message: `${name} must be an https URL.` };
   }
+  // The fields this service fetches itself (keys, sector doc, request
+  // objects) must never name a local address - they are an SSRF surface, not
+  // just a link the browser follows.
+  const localHost = (u: string) => {
+    try {
+      return isLocalAddress(new URL(u).hostname);
+    } catch {
+      return false;
+    }
+  };
+  for (const [u, name] of [
+    [body.jwks_uri, "jwks_uri"],
+    [body.sector_identifier_uri, "sector_identifier_uri"],
+  ] as const) {
+    if (u && localHost(u)) return { ok: false, message: `${name} must not point at a local address.` };
+  }
   if (body.post_logout_redirect_uris !== undefined) {
     const bad = body.post_logout_redirect_uris.find((u) => !isValidPostLogoutUri(u));
     if (bad) return { ok: false, message: `post_logout_redirect_uri "${bad}" must be https (or http on a loopback host).` };
@@ -133,6 +150,8 @@ function validate(body: ClientMetadata, isUpdate: boolean): { ok: true } | { ok:
     }
     const bad = body.request_uris.find((u) => !validFrontchannelUri(u));
     if (bad) return { ok: false, message: `request_uri "${bad}" must be an https URL.` };
+    const local = body.request_uris.find((u) => localHost(u));
+    if (local) return { ok: false, message: `request_uri "${local}" must not point at a local address.` };
   }
   // OIDC Registration 2: a pairwise client without a sector_identifier_uri
   // derives its sector from the redirect_uris, which then must all sit on one
@@ -167,7 +186,7 @@ const MAX_SECTOR_DOC_CHARS = 65_536;
  */
 async function validateSectorDocument(sectorUri: string | null | undefined, redirectUris: string[]): Promise<{ ok: true } | { ok: false; message: string }> {
   if (!sectorUri) return { ok: true };
-  const res = await fetch(sectorUri, { signal: AbortSignal.timeout(5000), headers: { accept: "application/json" } }).catch(() => null);
+  const res = await fetch(sectorUri, { signal: AbortSignal.timeout(5000), redirect: "error", headers: { accept: "application/json" } }).catch(() => null);
   if (!res || !res.ok) return { ok: false, message: `sector_identifier_uri could not be fetched (${res ? `HTTP ${res.status}` : "network error"}).` };
   const text = await res.text();
   if (text.length > MAX_SECTOR_DOC_CHARS) return { ok: false, message: "sector_identifier_uri document is too large." };

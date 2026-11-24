@@ -2,7 +2,7 @@ import type { Env } from "../env.js";
 import { sealMaybe } from "./sealed.js";
 
 /** A literal host (IP or name) on an address the provisioning Bearer must never be sent to. */
-function isLocalAddress(host: string): boolean {
+export function isLocalAddress(host: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   // IPv6 literals contain ":" (hostnames cannot): loopback, unspecified,
   // link-local, unique-local, and IPv4-mapped forms.
@@ -223,17 +223,23 @@ export async function createScimTarget(env: Env, raw: ScimTargetInput): Promise<
 
 /**
  * Partial update: fields not supplied keep their values, and an empty `secret`
- * keeps the stored credential. Clearing the endpoint drops the credential with
- * it. Renaming is allowed - the name is display-only, every link is by id.
+ * keeps the stored credential - unless the endpoint changes too: repointing
+ * always needs the secret re-entered so a metadata write can't redirect a
+ * Bearer its caller can't see. Clearing the endpoint drops the credential
+ * with it. Renaming is allowed - the name is display-only, every link is by id.
  */
 export async function updateScimTarget(env: Env, id: number, raw: Partial<ScimTargetInput>): Promise<ScimTarget | null> {
   const current = await getScimTarget(env, id);
   if (!current) return null;
   const endpoint = raw.endpoint ?? current.endpoint;
+  // Repointing the endpoint drops the credential with it - otherwise a writer
+  // who can never read the sealed secret could aim the existing Bearer at a
+  // host of their choosing. Supplying a fresh secret with the move is fine.
+  const repointing = raw.endpoint !== undefined && raw.endpoint !== current.endpoint;
   const merged: ScimTargetInput = normalize({
     name: raw.name ?? current.name,
     endpoint,
-    secret: endpoint === "" ? "" : raw.secret !== undefined && raw.secret !== "" ? raw.secret : current.secret,
+    secret: endpoint === "" || repointing ? (raw.secret !== undefined && raw.secret !== "" ? raw.secret : "") : raw.secret !== undefined && raw.secret !== "" ? raw.secret : current.secret,
     scope: raw.scope ?? current.scope,
     paceMs: raw.paceMs ?? current.paceMs,
     membersPerRequest: raw.membersPerRequest ?? current.membersPerRequest,

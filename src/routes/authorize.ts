@@ -1,6 +1,6 @@
 import { canSignIn } from "../lib/admin-roles.js";
 import { claimGroupsFromParameter } from "../lib/oidc.js";
-import { secondFactorGate } from "../lib/auth-policy.js";
+import { isAdministrator, secondFactorGate } from "../lib/auth-policy.js";
 import { secondStepFactors } from "../lib/second-step.js";
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.js";
@@ -81,7 +81,7 @@ export async function finishOidcAuthorize(
     await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client!.name, { client_id: client!.client_id, reason: `${postureDenied}_required` });
     return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "This application's policy does not allow this sign-in.") };
   }
-  if (client && appRequiresMfa(client, policy) && !amrSatisfiesMfa(amr)) {
+  if (client && appRequiresMfa(client, policy) && !amrSatisfiesMfa(amr, { admin: await isAdministrator(env, userId) })) {
     await logAudit(env, { id: userId, upn: String(userId) }, "oauth.app_denied", client.name, { client_id: client.client_id, reason: "mfa_required" });
     return { redirectTo: authorizeErrorRedirect(env.ISSUER_URL, req.redirectUri, "access_denied", req.state, "This application requires a sign-in with a second factor.") };
   }
@@ -303,7 +303,7 @@ async function authorizeEndpoint(c: Context<{ Bindings: Env }>, params: URLSearc
       if (await appPostureDenied(c.env, policy, c.req.raw, user.id)) {
         return fail("access_denied", "This application's policy does not allow this sign-in.");
       }
-      if (appRequiresMfa(client, policy) && !amrSatisfiesMfa(session.amr)) {
+      if (appRequiresMfa(client, policy) && !amrSatisfiesMfa(session.amr, { admin: await isAdministrator(c.env, user.id) })) {
         // The app demands a factor this session never presented. With no
         // factor enrolled there is nothing to step up with; otherwise park
         // the request behind a fresh second-step challenge - completing it

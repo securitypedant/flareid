@@ -8,6 +8,7 @@ import {
   type JWTVerifyResult,
 } from "jose";
 import type { Env } from "../env.js";
+import { isLocalAddress } from "./scim-targets.js";
 import type { OAuthClientRow } from "./types.js";
 
 /**
@@ -59,6 +60,11 @@ export function clientKeyResolver(client: Pick<OAuthClientRow, "jwks" | "jwks_ur
     // the map's size bounds the SSRF reach an anonymous request can give the
     // worker.
     if (remoteJwks.size >= MAX_REMOTE_JWKS) remoteJwks.clear();
+    try {
+      if (isLocalAddress(new URL(client.jwks_uri).hostname)) return null;
+    } catch {
+      return null;
+    }
     let set = remoteJwks.get(client.jwks_uri);
     if (!set) {
       set = createRemoteJWKSet(new URL(client.jwks_uri), { timeoutDuration: 10_000 });
@@ -77,11 +83,14 @@ async function fetchRequestUri(client: OAuthClientRow, uri: string): Promise<{ o
     return fail("invalid_request_uri", "request_uri is not a valid URL.");
   }
   if (parsed.protocol !== "https:") return fail("invalid_request_uri", "request_uri must be an https URL.");
+  if (isLocalAddress(parsed.hostname)) return fail("invalid_request_uri", "request_uri must not point at a local address.");
 
   const registered = client.request_uris ? (JSON.parse(client.request_uris) as string[]) : [];
   if (!registered.includes(uri)) return fail("invalid_request_uri", "request_uri is not in the client's registered request_uris.");
 
-  const res = await fetch(uri, { signal: AbortSignal.timeout(REQUEST_URI_TIMEOUT_MS), headers: { accept: "application/jwt" } }).catch(() => null);
+  // redirect:"error": a registered https URL that redirects elsewhere would
+  // otherwise fetch wherever it is pointed - a blind SSRF primitive.
+  const res = await fetch(uri, { signal: AbortSignal.timeout(REQUEST_URI_TIMEOUT_MS), redirect: "error", headers: { accept: "application/jwt" } }).catch(() => null);
   if (!res || !res.ok) return fail("invalid_request_uri", `request_uri could not be fetched (${res ? `HTTP ${res.status}` : "network error"}).`);
   const body = (await res.text()).trim();
   if (!body || body.length > MAX_REQUEST_OBJECT_CHARS) return fail("invalid_request_uri", "request_uri did not serve a request object.");

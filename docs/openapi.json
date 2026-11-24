@@ -523,7 +523,8 @@
             "enum": [
               "group",
               "oidc_app",
-              "saml_app"
+              "saml_app",
+              "cfapp"
             ]
           },
           "target_id": {
@@ -5735,7 +5736,8 @@
                     "enum": [
                       "group",
                       "oidc_app",
-                      "saml_app"
+                      "saml_app",
+                      "cfapp"
                     ]
                   },
                   "target_id": {

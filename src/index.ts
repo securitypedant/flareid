@@ -51,8 +51,9 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 app.use("*", async (c, next) => {
   const declared = Number(c.req.header("content-length") ?? -1);
   if (declared > MAX_BODY_BYTES) return c.text("Request body too large.", 413);
-  if (declared === -1 && c.req.raw.body) {
-    // No declared length (chunked): buffer up to the cap here, then hand
+  if (!(declared >= 0) && c.req.raw.body) {
+    // No usable declared length (absent, malformed, or negative): buffer up
+    // to the cap here, then hand
     // handlers a replayable body. Without this the same ceiling that stops
     // oversized Content-Length uploads wouldn't apply at all - the isolate
     // would buffer an unbounded stream.

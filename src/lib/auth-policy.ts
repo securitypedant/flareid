@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { ServiceError } from "../services/context.js";
 import { getUserGroupNames } from "./db.js";
 import { isEmailConfigured } from "./email.js";
 import { getSetting, setSetting } from "./settings.js";
@@ -231,4 +232,16 @@ export async function secondFactorGate(env: Env, user: SecondFactorUser, amr: st
   // A session that answered security questions is enough for everyone but an administrator.
   if (amr.includes("mfa") && !admin) return "ok";
   return (await hasSecondFactor(env, user, { admin })) ? "login" : "enrol";
+}
+
+/**
+ * A policy id written to an app must name a real policy: a stale or typo'd id
+ * would leave every posture check reading "no policy", indistinguishable from
+ * a cleared binding. 0/null clears; anything else must exist.
+ */
+export async function assertPolicyExists(env: Env, id: number | null | undefined): Promise<void> {
+  if (!id) return;
+  if (!(await env.DB.prepare("SELECT 1 FROM auth_policies WHERE id = ?").bind(id).first())) {
+    throw new ServiceError(400, `Authentication policy ${id} does not exist.`);
+  }
 }

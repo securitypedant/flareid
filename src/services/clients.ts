@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { assertPolicyExists } from "../lib/auth-policy.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { OAuthClientRow } from "../lib/types.js";
 import { audit, ServiceError, type ServiceCtx } from "./context.js";
@@ -71,7 +72,10 @@ export async function updateClient(ctx: ServiceCtx, id: number, s: ClientSetting
   if (s.assignedUsers !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET assigned_users = ? WHERE id = ?").bind(s.assignedUsers, id).run();
   if (s.requireMfa !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(s.requireMfa, id).run();
   if (s.requestable !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(s.requestable, id).run();
-  if (s.policyId !== undefined) await ctx.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(s.policyId, id).run();
+  if (s.policyId !== undefined) {
+    await assertPolicyExists(ctx.env, s.policyId);
+    await ctx.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(s.policyId, id).run();
+  }
   await audit(ctx, "oidc_client.updated", s.name);
 }
 

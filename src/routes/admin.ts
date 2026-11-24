@@ -1,5 +1,5 @@
 import { accountScope, EMAIL_OTP_MINUTES, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
-import { recordRateAttempt } from "../lib/rate-limit.js";
+import { clearRateKey, rateKeyOverLimit, recordRateAttempt } from "../lib/rate-limit.js";
 import { verifyPassword } from "../lib/password.js";
 import { claimTotpCounter, matchTotpCounter } from "../lib/totp.js";
 import { hasUnusedBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
@@ -10,7 +10,7 @@ import { PASSKEY_LOGIN_SCRIPT } from "../lib/passkey-scripts.js";
 import { accessFor, adminRoleGroupIds, adminRoleGroupNames, groupRoleWriteMap, groupRolesMap, listRoles, rolePermissions, SUPER_ROLE, visibleSections, type Access, type RoleRow } from "../lib/admin-roles.js";
 import { adminPolicies, adminsWithoutMfaPolicy } from "../lib/admin-mfa.js";
 import { AREAS, grants, isPermission, SELF_PERMISSIONS } from "../lib/permissions.js";
-import { anySecondFactorSql, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasBackupCodesSql, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type AuthPolicyRow, type FactorKey } from "../lib/auth-policy.js";
+import { anySecondFactorSql, assertPolicyExists, enrolledFactors, FACTOR_SHORT_LABELS, FACTORS, factorEnrolmentCounts, hasBackupCodesSql, hasPasskeySql, isAdministrator, isFactorEnabled, listPolicies, type AuthPolicyRow, type FactorKey } from "../lib/auth-policy.js";
 import { getKbaSettings, KBA_MAX_QUESTION, KBA_MAX_REQUIRED, listSecurityQuestions } from "../lib/security-questions.js";
 import { readPerformance, readPerformanceSeries, readSpanStats, readEventCounts } from "../lib/metrics.js";
 import { Hono, type Context, type Next } from "hono";
@@ -36,7 +36,7 @@ import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructi
 import { createUpstreamIdp, deleteUpstreamIdp, FederationError, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { SOCIAL_PROVIDERS, socialIssuer, socialMeta, socialProvider, type SocialProvider } from "../lib/social.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
-import { ACCESS_APPS_SYNC_HOURS, accessAppsSyncHours, accessJwtFor, cfOneReady, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
+import { ACCESS_APPS_SYNC_HOURS, accessAppHref, accessAppsSyncHours, accessJwtFor, cfOneReady, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -230,7 +230,12 @@ admin.use("/admin/*", async (c, next) => {
   // Back to the page the form was on - and keep the POST itself stashed, so a
   // successful step-up replays it instead of making the admin retype the form.
   const ref = c.req.header("Referer");
-  const back = ref && new URL(ref).origin === new URL(c.req.url).origin ? new URL(ref).pathname + new URL(ref).search : "/admin";
+  let back = "/admin";
+  try {
+    if (ref && new URL(ref).origin === new URL(c.req.url).origin) back = new URL(ref).pathname + new URL(ref).search;
+  } catch {
+    // A malformed Referer just means there is no page to go back to.
+  }
   const pending = await stashPendingAction(c.env, c.get("sessionId"), c.req.raw, back);
   const dest = pending ? `/admin/reauth/resume?id=${pending}&to=${encodeURIComponent(back)}` : back;
   return c.redirect(`/admin/reauth?next=${encodeURIComponent(dest)}&back=${encodeURIComponent(back)}`, 303);
@@ -318,9 +323,17 @@ admin.get("/admin/reauth/resume", async (c) => {
   );
 });
 
+const stepUpKey = (userId: number) => `admin:stepup:${userId}`;
+
+/** Read-only budget check: the attempt is charged by chargeStepUp when the proof actually fails, so good step-ups don't burn the budget. */
 async function stepUpAttemptsExceeded(c: { env: Env; get: (k: "user") => UserRow }): Promise<boolean> {
   const policy = await getRateLimitPolicy(c.env);
-  return recordRateAttempt(c.env, `admin:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
+  return rateKeyOverLimit(c.env, stepUpKey(c.get("user").id), policy.maxAttempts, policy.windowMinutes);
+}
+
+async function chargeStepUp(c: { env: Env; get: (k: "user") => UserRow }): Promise<void> {
+  const policy = await getRateLimitPolicy(c.env);
+  await recordRateAttempt(c.env, stepUpKey(c.get("user").id), policy.maxAttempts, policy.windowMinutes);
 }
 
 admin.post("/admin/reauth", async (c) => {
@@ -328,10 +341,14 @@ admin.post("/admin/reauth", async (c) => {
   const body = await c.req.parseBody();
   const next = safeNext(String(body.next ?? ""));
   const fail = async (msg: string) => {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "admin.step_up_failed", user.upn, undefined, c.req.raw);
     return c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&error=${encodeURIComponent(msg)}`, 302);
   };
-  if (await stepUpAttemptsExceeded(c)) return fail("Too many attempts. Please wait a few minutes.");
+  if (await stepUpAttemptsExceeded(c)) {
+    await logAudit(c.env, user, "admin.step_up_failed", user.upn, { reason: "rate_limited" }, c.req.raw);
+    return c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&error=${encodeURIComponent("Too many attempts. Please wait a few minutes.")}`, 302);
+  }
   if (!(await verifyPassword(String(body.password ?? "").slice(0, 1024), user))) return fail("That password is not right.");
   if (user.mfa_enabled) {
     const code = String(body.code ?? "").slice(0, 12);
@@ -347,6 +364,7 @@ admin.post("/admin/reauth", async (c) => {
     if (verdict !== "ok") return fail(verdict === "wrong" ? "That code is not right." : "That code has expired or was already used. Send yourself a new one.");
   }
   await markSteppedUp(c.env, c.get("sessionId"));
+  await clearRateKey(c.env, stepUpKey(user.id));
   await logAudit(c.env, user, "admin.step_up", user.upn, { method: user.mfa_enabled ? "password+totp" : emailStep ? "password+email_otp" : "password" }, c.req.raw);
   return c.redirect(next, 302);
 });
@@ -384,10 +402,12 @@ admin.post("/admin/reauth/passkey", async (c) => {
   }
   const proved = response && !(await stepUpAttemptsExceeded(c)) ? await finishAuthentication(c.env, String(body.attempt ?? ""), response as never) : null;
   if (proved !== user.id) {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "admin.step_up_failed", user.upn, { method: "passkey" }, c.req.raw);
     return c.redirect(`/admin/reauth?next=${encodeURIComponent(next)}&error=${encodeURIComponent("That passkey could not confirm it's you.")}`, 302);
   }
   await markSteppedUp(c.env, c.get("sessionId"));
+  await clearRateKey(c.env, stepUpKey(user.id));
   await logAudit(c.env, user, "admin.step_up", user.upn, { method: "passkey" }, c.req.raw);
   return c.redirect(next, 302);
 });
@@ -2669,7 +2689,7 @@ admin.get("/admin/access", async (c) => {
                           r.target_type === "group"
                             ? `<a href="/admin/groups/${r.target_id}">${escapeHtml(r.target_name)}</a>${roleGroups.has(r.target_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}`
                             : r.target_type === "cfapp"
-                            ? `<a href="/admin/integrations/cf-one">${escapeHtml(r.target_name)}</a><br/><span class="badge">Access app</span>`
+                            ? `<a href="/admin/integrations/cf-one">${escapeHtml(r.target_name)}</a><br/><span class="badge">Access app</span>${r.cf_granting_group_name ? ` <span class="muted" style="font-size:12px;">&rarr; ${escapeHtml(r.cf_granting_group_name)}</span>` : ""}${r.cf_granting_group_id != null && roleGroups.has(r.cf_granting_group_id) ? ` <span class="badge badge-pending">Admin access</span>` : ""}`
                             : `<a href="${r.target_type === "oidc_app" ? `/admin/clients/${r.target_id}` : `/admin/saml/${r.target_id}`}">${escapeHtml(r.target_name)}</a><br/><span class="badge">${r.target_type === "oidc_app" ? "OIDC" : "SAML"} app</span>`
                         }</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
@@ -3377,7 +3397,8 @@ admin.get(CFONE, async (c) => {
   const watched = await watchlist(c.env);
   const accessApps = await listAccessApps(c.env);
   const appsSyncHours = await accessAppsSyncHours(c.env);
-  const grantableGroups = (await c.env.DB.prepare("SELECT id, name FROM groups WHERE (rule IS NULL OR rule = '') AND (system IS NULL OR system = '') ORDER BY name").all<{ id: number; name: string }>()).results;
+  const roleGroupSet = await adminRoleGroupIds(c.env);
+  const grantableGroups = (await c.env.DB.prepare("SELECT id, name FROM groups WHERE (rule IS NULL OR rule = '') AND (system IS NULL OR system = '') ORDER BY name").all<{ id: number; name: string }>()).results.filter((g) => !roleGroupSet.has(g.id));
   const statusByKey = new Map(status.map((s) => [s.key, s]));
   const ready = cfOneReady(config);
 
@@ -3454,7 +3475,7 @@ admin.get(CFONE, async (c) => {
                       .map((a) => {
                         const hints = grantHints(a);
                         return `<tr>
-                          <td>${escapeHtml(a.name)}${a.type ? ` <span class="badge">${escapeHtml(a.type)}</span>` : ""}${a.hostname ? `<br/><a class="muted" style="font-size:12px;" href="https://${escapeHtml(a.hostname)}" target="_blank" rel="noopener">${escapeHtml(a.hostname)}</a>` : ""}
+                          <td>${escapeHtml(a.name)}${a.type ? ` <span class="badge">${escapeHtml(a.type)}</span>` : ""}${a.hostname ? `<br/><a class="muted" style="font-size:12px;" href="${escapeHtml(accessAppHref(a))}" target="_blank" rel="noopener">${escapeHtml(a.hostname)}</a>` : ""}
                             ${hints.length ? `<br/><span class="muted" style="font-size:12px;">Policies name: ${hints.map(escapeHtml).join(", ")}</span>` : ""}</td>
                           <td>
                             <select form="cfapp-${a.id}" name="granting_group_id" style="margin:0; min-width:170px;">
@@ -4600,8 +4621,10 @@ admin.post("/admin/clients/:id/policies", async (c) => {
   const client = await c.env.DB.prepare("SELECT name FROM oauth_clients WHERE id = ?").bind(id).first<{ name: string }>();
   if (!client) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody();
+  const policyId = Number(body.policy_id) > 0 ? Number(body.policy_id) : null;
+  await assertPolicyExists(c.env, policyId);
   await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ?, policy_id = ? WHERE id = ?")
-    .bind(body.require_mfa ? 1 : 0, Number(body.policy_id) > 0 ? Number(body.policy_id) : null, id)
+    .bind(body.require_mfa ? 1 : 0, policyId, id)
     .run();
   await logAudit(c.env, c.get("user"), "oidc_client.updated", client.name, { fields: "policies" }, c.req.raw);
   return c.redirect(`/admin/clients/${id}?tab=policies&saved=1`, 302);
@@ -4895,8 +4918,10 @@ admin.post("/admin/saml/:id/policies", async (c) => {
   const sp = await c.env.DB.prepare("SELECT name, entity_id FROM saml_service_providers WHERE id = ?").bind(id).first<{ name: string; entity_id: string }>();
   if (!sp) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
   const body = await c.req.parseBody();
+  const policyId = Number(body.policy_id) > 0 ? Number(body.policy_id) : null;
+  await assertPolicyExists(c.env, policyId);
   await c.env.DB.prepare("UPDATE saml_service_providers SET require_mfa = ?, policy_id = ?, updated_at = ? WHERE id = ?")
-    .bind(body.require_mfa ? 1 : 0, Number(body.policy_id) > 0 ? Number(body.policy_id) : null, new Date().toISOString(), id)
+    .bind(body.require_mfa ? 1 : 0, policyId, new Date().toISOString(), id)
     .run();
   await logAudit(c.env, c.get("user"), "saml_sp.updated", sp.name, { entity_id: sp.entity_id, fields: "policies" }, c.req.raw);
   return c.redirect(`/admin/saml/${id}?tab=policies&saved=1`, 302);

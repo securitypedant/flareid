@@ -35,7 +35,7 @@ import {
 import { clearSessionCookies, createSession, getSession, getSessionUserId, revokeSession } from "../lib/sessions.js";
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { issueSamlResponse } from "./saml.js";
-import { appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa, getSpById } from "../lib/saml/service-providers.js";
+import { amrSatisfiesMfa, appAccessAllowed, appPolicy, appPostureDenied, appRequiresMfa, getSpById } from "../lib/saml/service-providers.js";
 import { buildErrorResponse } from "../lib/saml/messages.js";
 import { b64encode } from "../lib/saml/xml.js";
 import { samlPostForm } from "../lib/saml/post-form.js";
@@ -244,8 +244,17 @@ export async function completeLoginFlow(
       const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
       return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
     }
-    if (await appPostureDenied(env, await appPolicy(env, sp.policy_id), request, fullUser.id)) {
+    const spPolicy = await appPolicy(env, sp.policy_id);
+    if (await appPostureDenied(env, spPolicy, request, fullUser.id)) {
       await logAudit(env, fullUser, "saml.request_rejected", sp.entity_id, { reason: "posture_policy" }, request);
+      const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
+      return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
+    }
+    // The app demands a factor this sign-in never presented - reachable when
+    // the user has no method enrolled, so the pending-MFA step could not run.
+    // Withhold the assertion; the SP gets RequestDenied like every denial here.
+    if (appRequiresMfa(sp, spPolicy) && !amrSatisfiesMfa(amr, { admin: await isAdministrator(env, fullUser.id) })) {
+      await logAudit(env, fullUser, "saml.request_rejected", sp.entity_id, { reason: "mfa_required" }, request);
       const samlResponse = b64encode(await buildErrorResponse(env, { acsUrl: flow.request.acsUrl, requestId: flow.request.requestId, statusDetail: "RequestDenied" }));
       return { outcome: { type: "saml-post", acsUrl: flow.request.acsUrl, samlResponse, relayState: flow.request.relayState }, setCookies };
     }

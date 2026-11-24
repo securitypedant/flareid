@@ -204,9 +204,11 @@ export function appAccessAllowed(app: AppAccessRow, userGroupIds: readonly numbe
   return parseAssignedGroupIds(app.assigned_groups).some((id) => userGroupIds.includes(id));
 }
 
-/** Whether the session's amr satisfies an app's require_mfa flag. 'mfa' covers a verified second factor, 'ext' a federated sign-in. */
-export function amrSatisfiesMfa(amr: readonly string[]): boolean {
-  return amr.some((a) => a === "mfa" || a === "ext");
+/** Whether the session's amr satisfies an app's require_mfa flag. 'mfa' covers a verified second factor, 'ext' a federated sign-in. An administrator's KBA-answered sign-in does not count - the same bar their own policy sets (secondFactorGate). */
+export function amrSatisfiesMfa(amr: readonly string[], opts: { admin?: boolean } = {}): boolean {
+  if (amr.includes("hwk") || amr.includes("ext")) return true;
+  if (amr.includes("mfa")) return !(opts.admin === true && amr.includes("kba"));
+  return false;
 }
 
 /** The authentication policy an app names, if any. */

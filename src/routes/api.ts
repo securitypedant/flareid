@@ -18,6 +18,7 @@ import { auditActor, bootstrapTokenValid } from "../lib/api-auth.js";
 import { createApiKey, hasScope, isApiScope, type ApiScope } from "../lib/api-keys.js";
 import { importDirectory, type DirectoryBundle } from "../lib/directory-import.js";
 import { isEmailConfigured, recipientFor } from "../lib/email.js";
+import { assertPolicyExists } from "../lib/auth-policy.js";
 import { CLAIM_GROUPS, isValidPostLogoutUri } from "../lib/oidc.js";
 import { apiCtx } from "../services/context.js";
 import { applyScimScope } from "../services/scim-sync.js";
@@ -667,7 +668,11 @@ defineRoute({
     if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE id = ?").bind(body.access_mode, existing.id).run();
     if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, existing.id).run();
     if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, existing.id).run();
-    if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, existing.id).run();
+    if (body.policy_id !== undefined) {
+      const pid = Number(body.policy_id) > 0 ? Number(body.policy_id) : null;
+      await assertPolicyExists(c.env, pid);
+      await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE id = ?").bind(pid, existing.id).run();
+    }
     await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.updated", name, { client_id: clientId }, c.req.raw);
     const alg = (await c.env.DB.prepare("SELECT id_token_signed_response_alg AS alg FROM oauth_clients WHERE id = ?").bind(existing.id).first<{ alg: string }>())?.alg;
     return c.json({ ok: true, created: false, id: existing.id, client_id: clientId, redirect_uris: redirectUris, id_token_signed_response_alg: isIdTokenAlg(alg) ? alg : "RS256", assigned_groups: parseAssignedGroupIds(assigned === undefined ? existing.assigned_groups : assigned) });
@@ -689,7 +694,11 @@ defineRoute({
   if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET access_mode = ? WHERE client_id = ?").bind(body.access_mode, clientId).run();
   if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET require_mfa = ? WHERE client_id = ?").bind(body.require_mfa ? 1 : 0, clientId).run();
   if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET requestable = ? WHERE client_id = ?").bind(body.requestable ? 1 : 0, clientId).run();
-  if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE client_id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, clientId).run();
+  if (body.policy_id !== undefined) {
+    const pid = Number(body.policy_id) > 0 ? Number(body.policy_id) : null;
+    await assertPolicyExists(c.env, pid);
+    await c.env.DB.prepare("UPDATE oauth_clients SET policy_id = ? WHERE client_id = ?").bind(pid, clientId).run();
+  }
   await logAudit(c.env, auditActor(c.get("apiActor")), "oidc_client.created", name, { client_id: clientId }, c.req.raw);
 
   return c.json({
@@ -1349,7 +1358,11 @@ defineRoute({
     if (body.access_mode !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET access_mode = ? WHERE id = ?").bind(body.access_mode, id).run();
     if (body.require_mfa !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET require_mfa = ? WHERE id = ?").bind(body.require_mfa ? 1 : 0, id).run();
     if (body.requestable !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET requestable = ? WHERE id = ?").bind(body.requestable ? 1 : 0, id).run();
-    if (body.policy_id !== undefined) await c.env.DB.prepare("UPDATE saml_service_providers SET policy_id = ? WHERE id = ?").bind(Number(body.policy_id) > 0 ? Number(body.policy_id) : null, id).run();
+    if (body.policy_id !== undefined) {
+      const pid = Number(body.policy_id) > 0 ? Number(body.policy_id) : null;
+      await assertPolicyExists(c.env, pid);
+      await c.env.DB.prepare("UPDATE saml_service_providers SET policy_id = ? WHERE id = ?").bind(pid, id).run();
+    }
   };
   const now = new Date().toISOString();
   const values = [

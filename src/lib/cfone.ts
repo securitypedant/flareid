@@ -2,6 +2,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import type { Env } from "../env.js";
 import { ServiceError } from "../services/context.js";
 import { getSetting, setSetting } from "./settings.js";
+import { adminRoleGroupIds } from "./admin-roles.js";
 import { resolveGroupMemberUserIds } from "./groups.js";
 import type { GroupRow } from "./types.js";
 import { timed, recordEvent } from "./metrics.js";
@@ -672,6 +673,9 @@ export async function configureAccessApp(env: Env, appId: number, grantingGroupI
     if (!g) throw new ServiceError(400, "That group does not exist.");
     if (g.rule) throw new ServiceError(400, `"${g.name}" fills itself by rule - a granting group has to be static.`);
     if (g.system) throw new ServiceError(400, `"${g.name}" is maintained by the system; it can't grant an app.`);
+    // A role-linked group turns "approve this app request" into "grant an
+    // admin role" - the same reason managers can't be named on it.
+    if ((await adminRoleGroupIds(env)).has(grantingGroupId)) throw new ServiceError(400, `"${g.name}" confers an admin role; it can't be a granting group.`);
   }
   // Requestable needs a group to join: asking for it on an unmapped app is an
   // error, while unmapping an app quietly drops the flag (it can't work

@@ -86,6 +86,11 @@ export async function rateKeyOverLimit(env: Env, key: string, max: number, windo
   return row.count > max;
 }
 
+/** Drops a fixed-window key - the "successful sign-in clears the lockout" half of record/clear. */
+export async function clearRateKey(env: Env, key: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM rate_limits WHERE key = ?").bind(key).run();
+}
+
 export function getClientIp(request: Request): string {
   // Only the address Cloudflare's edge sets. X-Forwarded-For is client-supplied
   // and would let a caller pick its own rate-limit bucket off the edge.

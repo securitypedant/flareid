@@ -1,6 +1,8 @@
 import type { Env } from "../env.js";
 import { addGroupMembers, removeGroupMember } from "../services/groups.js";
 import { audit, ServiceError, type ServiceCtx } from "../services/context.js";
+import { assertMayTouchUser } from "../services/guards.js";
+import { adminRoleGroupIds } from "./admin-roles.js";
 import { appAccessAllowed, parseAssignedUserIds } from "./saml/service-providers.js";
 import { getUserGroupIds } from "./db.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "./types.js";
@@ -49,15 +51,22 @@ export interface AccessRequestRow {
   updated_at: string;
 }
 
-export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; target_name: string; cf_granting_group_id: number | null };
+export type AccessRequestView = AccessRequestRow & {
+  upn: string;
+  display_name: string;
+  target_name: string;
+  cf_granting_group_id: number | null;
+  cf_granting_group_name: string | null;
+};
 
 /** Resolves a request's target name whichever table it lives in. */
 const TARGET_NAME_JOINS = `LEFT JOIN groups g ON r.target_type = 'group' AND g.id = r.target_id
   LEFT JOIN oauth_clients oc ON r.target_type = 'oidc_app' AND oc.id = r.target_id
   LEFT JOIN saml_service_providers sp ON r.target_type = 'saml_app' AND sp.id = r.target_id
-  LEFT JOIN cf_access_apps ca ON r.target_type = 'cfapp' AND ca.id = r.target_id`;
+  LEFT JOIN cf_access_apps ca ON r.target_type = 'cfapp' AND ca.id = r.target_id
+  LEFT JOIN groups gg ON r.target_type = 'cfapp' AND gg.id = ca.granting_group_id`;
 const TARGET_NAME = "COALESCE(g.name, oc.name, sp.name, ca.name) AS target_name";
-const TARGET_EXTRA = ", ca.granting_group_id AS cf_granting_group_id";
+const TARGET_EXTRA = ", ca.granting_group_id AS cf_granting_group_id, gg.name AS cf_granting_group_name";
 
 /**
  * Requestable static groups `userId` could still ask for: not already a
@@ -213,6 +222,7 @@ export async function requestAccess(ctx: ServiceCtx, target: AccessTarget, reaso
     const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(app.granting_group_id).first<GroupRow>();
     if (!group) throw new ServiceError(400, `"${app.name}" grants a group that no longer exists - ask an administrator to remap it.`);
     if (group.rule || group.system) throw new ServiceError(400, `"${app.name}" grants a group that cannot take manual members.`);
+    if ((await adminRoleGroupIds(ctx.env)).has(group.id)) throw new ServiceError(400, `"${app.name}" grants a group that confers an admin role - ask an administrator to remap it.`);
     if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(group.id, userId).first()) {
       throw new ServiceError(409, `You already have access to "${app.name}".`);
     }
@@ -297,6 +307,9 @@ async function targetName(env: Env, req: Pick<AccessRequestRow, "target_type" | 
 
 /** An approved app request assigns the person directly - the same grant an admin would make on the app's page. */
 async function assignUserToApp(ctx: ServiceCtx, req: AccessRequestView): Promise<void> {
+  // Same account protection the group path gets from addGroupMembers: writing
+  // to an admin-role holder's account below Super Admin is not allowed.
+  await assertMayTouchUser(ctx, req.user_id);
   const table = req.target_type === "oidc_app" ? "oauth_clients" : "saml_service_providers";
   const app = await ctx.env.DB.prepare(`SELECT id, name, assigned_users FROM ${table} WHERE id = ?`).bind(req.target_id).first<{ id: number; name: string; assigned_users: string | null }>();
   if (!app) throw new ServiceError(404, "That application doesn't exist any more.");

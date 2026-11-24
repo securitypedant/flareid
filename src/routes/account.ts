@@ -39,7 +39,7 @@ import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
 import { logAudit } from "../lib/audit.js";
-import { getRateLimitPolicy, recordRateAttempt } from "../lib/rate-limit.js";
+import { getRateLimitPolicy, rateKeyOverLimit, recordRateAttempt } from "../lib/rate-limit.js";
 import { countRemainingBackupCodes, deleteBackupCodes, generateBackupCodes, hasUnusedBackupCodes, verifyAndConsumeBackupCode } from "../lib/backup-codes.js";
 import { createSession, listActiveSessionsForUser, revokeAllSessionsForUser, revokeSession, revokeTokensForUser } from "../lib/sessions.js";
 import { emitAndDrain, SSF_EVENTS } from "../lib/ssf.js";
@@ -1106,7 +1106,13 @@ account.post("/account/apps/:clientDbId/revoke", async (c) => {
  */
 async function stepUpBudgetExceeded(c: Context<{ Bindings: Env }>): Promise<boolean> {
   const policy = await getRateLimitPolicy(c.env);
-  return recordRateAttempt(c.env, `account:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
+  return rateKeyOverLimit(c.env, `account:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
+}
+
+/** Charges the budget - only a failed proof costs anything, so legitimate step-ups never lock themselves out. */
+async function chargeStepUp(c: Context<{ Bindings: Env }>): Promise<void> {
+  const policy = await getRateLimitPolicy(c.env);
+  await recordRateAttempt(c.env, `account:stepup:${c.get("user").id}`, policy.maxAttempts, policy.windowMinutes);
 }
 
 /**
@@ -1119,7 +1125,9 @@ async function stepUpBudgetExceeded(c: Context<{ Bindings: Env }>): Promise<bool
 async function passkeyStepUp(c: Context<{ Bindings: Env }>, password: string): Promise<"fresh" | "password" | "denied" | "budget"> {
   if (await isFreshlyAuthenticated(c.env, c.get("sessionId"))) return "fresh";
   if (await stepUpBudgetExceeded(c)) return "budget";
-  return password.length > 0 && (await verifyPassword(password.slice(0, 1024), c.get("user"))) ? "password" : "denied";
+  if (password.length > 0 && (await verifyPassword(password.slice(0, 1024), c.get("user")))) return "password";
+  await chargeStepUp(c);
+  return "denied";
 }
 
 /** A current TOTP (claimed, so it cannot be replayed) or an unused backup code. */
@@ -1194,6 +1202,7 @@ account.post("/account/passkeys/:id/remove", async (c) => {
     if (!password) return back(""); // the row form has no field for it - ask on the confirm page
     if (await stepUpBudgetExceeded(c)) return back("Too many attempts. Please wait a few minutes.");
     if (!(await verifyPassword(password.slice(0, 1024), user))) {
+      await chargeStepUp(c);
       await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "passkey_remove" }, c.req.raw);
       return back("That password is not right.");
     }
@@ -1212,6 +1221,7 @@ account.post("/account/password", async (c) => {
   const confirmPassword = String(body.confirm_password ?? "");
 
   if (!(await verifyPassword(currentPassword, user))) {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "password_change" }, c.req.raw);
     return c.html(errorRedirectPage(c, "Current password is incorrect."));
   }
@@ -1243,7 +1253,14 @@ account.post("/account/password", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").bind(new Date().toISOString(), user.id),
     c.env.DB.prepare("DELETE FROM webauthn_credentials WHERE user_id = ?").bind(user.id),
+    // Factor state goes too: a hijacked fresh session can have planted an
+    // authenticator or harvested the backup-code set - none of it may
+    // outlive the reset.
+    c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, email_otp_enabled = 0, security_questions_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id),
+    c.env.DB.prepare("DELETE FROM user_security_answers WHERE user_id = ?").bind(user.id),
   ]);
+  await deleteBackupCodes(c.env, user.id);
+  await deleteTrustedDevicesForUser(c.env, user.id);
   await revokeTokensForUser(c.env, user.id);
   const rotated = await createSession(c.env, user.id, amr, c.req.raw);
 
@@ -1546,6 +1563,7 @@ account.post("/account/mfa/email/disable", async (c) => {
   if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many#email-codes", 302);
   const result = await verifyEmailOtp(c.env, accountScope(c.get("sessionId")), user.id, "disable", String((await c.req.parseBody()).code ?? ""));
   if (result !== "ok") {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "email_otp_disable", reason: result }, c.req.raw);
     return c.redirect(`/account/security?${result === "wrong" ? "email_code=disable&" : ""}error=email-code#email-codes`, 302);
   }
@@ -1587,6 +1605,7 @@ account.post("/account/mfa/questions", async (c) => {
   if (changing) {
     if (await stepUpBudgetExceeded(c)) return c.redirect(kbaReturn(body, "kba_error=kba-too-many"), 302);
     if (!(await verifyPassword(String(body.current_password ?? "").slice(0, 1024), user))) {
+      await chargeStepUp(c);
       await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_change" }, c.req.raw);
       return c.redirect(kbaReturn(body, "kba_error=kba-password"), 302);
     }
@@ -1635,6 +1654,7 @@ account.post("/account/mfa/questions/remove", async (c) => {
   if (!user.security_questions_enabled) return c.redirect("/account/security", 302);
   if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?kba_error=kba-too-many#security-questions", 302);
   if (!(await verifyPassword(String((await c.req.parseBody()).current_password ?? "").slice(0, 1024), user))) {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "security_questions_remove" }, c.req.raw);
     return c.redirect("/account/security?kba_error=kba-password#security-questions", 302);
   }
@@ -1692,6 +1712,7 @@ account.post("/account/mfa/backup-codes/regenerate", async (c) => {
   if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many", 302);
   const factor = await secondFactorOk(c, String((await c.req.parseBody()).code ?? ""));
   if (!factor) {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "backup_codes_regenerate" }, c.req.raw);
     return c.redirect("/account/security?error=mfa-code", 302);
   }
@@ -1759,6 +1780,7 @@ account.post("/account/mfa/disable", async (c) => {
   const factor = await secondFactorOk(c, code);
   const backupOk = factor === "backup_code";
   if (!factor) {
+    await chargeStepUp(c);
     await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "mfa_disable" }, c.req.raw);
     return c.redirect("/account/security?error=mfa-code", 302);
   }

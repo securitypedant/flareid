@@ -4,6 +4,41 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.13.1] - 2026-11-21
+
+Security release: run-4 audit remediation (1 high, 5 medium, 12 low - all
+fixed; see `audit/run-4/`).
+
+- **High.** An SP (or bound policy) requiring MFA was not enforced on a fresh
+  password login - the SAML branch of the login flow minted the assertion
+  before the MFA check ran, so a user with no enrolled factor got in on
+  `amr=["pwd"]`. The app now gets a signed `RequestDenied`, matching the OIDC
+  path.
+- **Medium.** Access-app granting groups can no longer be admin-role groups;
+  API approval of an app access request now charges the app's own write scope
+  (`oidc:write`/`saml:write`, was `groups:write`); `IsPassive` requests at the
+  enrolment gate answer `NoPassive` instead of falling through to an
+  assertion; federated account adoption by email now requires a verified
+  upstream claim; the step-up pending-action stash refuses forms carrying
+  credential fields.
+- **Low.** Access requests snapshot the granting group at request time;
+  `assignUserToApp` enforces the touch guard; `cfapp` joins the API's
+  `target_type` enum; outbound federation/registration fetches no longer
+  follow redirects (a 307/308 could re-POST the code and client secret);
+  `policy_id` writes validate the policy exists; inbound federated assertions
+  require `Conditions`/`SubjectConfirmationData` and reject unparseable
+  timestamps; repointing a SCIM target drops the stored Bearer; self and
+  admin password resets clear the account's MFA material (compromise
+  response); backup-code regeneration is atomic; the step-up attempt budget
+  charges failures only; malformed `Referer` headers no longer 500 the
+  step-up middleware; a malformed `Content-Length` can no longer skip the
+  request-body cap.
+- **KBA bar.** Security questions satisfy a per-app `require_mfa` for regular
+  users but not for administrators - the same bar their sign-in policy sets.
+- **Docs.** `docs/identifiers.md` - agreed design for multi-form sign-in
+  identifiers (UPN / handle / phone); `docs/manual-test-script.md` - manual
+  checks for what automation can't reach.
+
 ## [4.13.0] - 2026-11-23
 
 Cloudflare Access applications join the launchpad and self-service access
