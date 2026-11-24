@@ -2,7 +2,7 @@ import { errorResponse } from "./lib/html.js";
 import { CATALOG_ICONS } from "./lib/catalog-icons.generated.js";
 import { refreshSpMetadata } from "./lib/saml/sp-metadata.js";
 import { continueScimSync, drainScimDeprovisionQueue } from "./lib/scim-client.js";
-import { getCfOne, sweepWatchlist, syncAccessApps, syncLists } from "./lib/cfone.js";
+import { accessAppsSyncDue, getCfOne, sweepWatchlist, syncAccessApps, syncLists } from "./lib/cfone.js";
 import { snapshotToR2 } from "./lib/backup.js";
 import { drainSsfOutbox } from "./lib/ssf.js";
 import { handleLdapConnection } from "./ldap/index.js";
@@ -216,10 +216,14 @@ export default {
           const config = await getCfOne(env);
           if (!config?.apiToken) return { swept, synced: 0, failed: 0, apps: 0 };
           const r = await syncLists(env, config);
-          const apps = await syncAccessApps(env, config).then((a) => a.synced, (err) => {
-            console.error(JSON.stringify({ event: "cfone_access_apps_failed", error: String(err) }));
-            return -1;
-          });
+          // The Access-app mirror refreshes on its configured cadence; a
+          // failed pull keeps the last good snapshot.
+          const apps = !(await accessAppsSyncDue(env))
+            ? 0
+            : await syncAccessApps(env, config).then((a) => a.synced, (err) => {
+                console.error(JSON.stringify({ event: "cfone_access_apps_failed", error: String(err) }));
+                return -1;
+              });
           return { swept, synced: r.synced.length, failed: Object.keys(r.failed).length, apps };
         })
         .then(

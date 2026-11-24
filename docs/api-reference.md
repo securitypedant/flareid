@@ -2838,6 +2838,7 @@ Response `200`:
 | `lists` | string[] | yes | The list syncs that run (see /sync for per-group syncs). |
 | `list_status` | object[] | yes |  |
 | `watchlist` | object[] | yes |  |
+| `apps_sync_hours` | number | yes | How often the scheduled pull refreshes the Access-app mirror (1, 2, 6, 12 or 24 hours). |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
@@ -2858,6 +2859,7 @@ Request body:
 | `team` | string | no |  |
 | `access_aud` | string | no |  |
 | `lists` | "watchlist" \| "deprovisioned" \| "managed-domains" \| "auth-fail-ips"[] | no |  |
+| `apps_sync_hours` | number | no | Access-app pull cadence: 1, 2, 6, 12 or 24 hours. |
 
 Response `200`:
 
@@ -2873,6 +2875,7 @@ Response `200`:
 | `lists` | string[] | yes | The list syncs that run (see /sync for per-group syncs). |
 | `list_status` | object[] | yes |  |
 | `watchlist` | object[] | yes |  |
+| `apps_sync_hours` | number | yes | How often the scheduled pull refreshes the Access-app mirror (1, 2, 6, 12 or 24 hours). |
 
 Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 

@@ -522,6 +522,22 @@ export async function listAccessApps(env: Env): Promise<CfAccessAppRow[]> {
   return (await env.DB.prepare("SELECT * FROM cf_access_apps ORDER BY name").all<CfAccessAppRow>()).results;
 }
 
+/** How often the scheduled pull refreshes the Access-app mirror (hours). */
+export const ACCESS_APPS_SYNC_HOURS = [1, 2, 6, 12, 24] as const;
+const ACCESS_APPS_SYNC_DEFAULT = 6;
+
+export async function accessAppsSyncHours(env: Env): Promise<number> {
+  const h = Number(await getSetting(env, "cfone.apps_sync_hours"));
+  return (ACCESS_APPS_SYNC_HOURS as readonly number[]).includes(h) ? h : ACCESS_APPS_SYNC_DEFAULT;
+}
+
+/** True when the mirror is empty or older than the configured cadence. */
+export async function accessAppsSyncDue(env: Env): Promise<boolean> {
+  const last = Date.parse((await getSetting(env, "cfone.apps_synced_at")) ?? "");
+  if (!last) return true;
+  return Date.now() - last >= (await accessAppsSyncHours(env)) * 3600_000;
+}
+
 export function grantHints(row: Pick<CfAccessAppRow, "grant_hint">): string[] {
   try {
     return (JSON.parse(row.grant_hint || "[]") as unknown[]).map(String);
@@ -636,6 +652,9 @@ export async function syncAccessApps(env: Env, config: CfOneConfig): Promise<{ s
       env.DB.prepare("DELETE FROM cf_access_apps WHERE id = ?").bind(r.id),
     ]),
   ]);
+  // Stamps the cadence check; a failed pull never reaches this, so a broken
+  // token retires to hourly retries rather than locking the mirror out.
+  await setSetting(env, "cfone.apps_synced_at", t);
   return { synced: apps.length, removed: gone.length };
 }
 

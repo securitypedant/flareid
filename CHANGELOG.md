@@ -11,6 +11,7 @@ requests, pulled read-only from the connected Zero Trust account.
 
 - **Access applications on the Cloudflare One page.** A new card pulls the
   account's Access apps (apps, plus their Allow policies for grant hints) on
+  a configurable cadence - every 1, 2, 6, 12 or 24 hours, default 6 - or on
   demand. Each app maps to the static group whose membership grants it; the
   page suggests a group when the app's policies already name one by IdP group
   claim or reusable Access group. FlareID only ever writes group membership -

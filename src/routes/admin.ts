@@ -36,7 +36,7 @@ import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructi
 import { createUpstreamIdp, deleteUpstreamIdp, FederationError, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { SOCIAL_PROVIDERS, socialIssuer, socialMeta, socialProvider, type SocialProvider } from "../lib/social.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
-import { accessJwtFor, cfOneReady, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
+import { ACCESS_APPS_SYNC_HOURS, accessAppsSyncHours, accessJwtFor, cfOneReady, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -3376,6 +3376,7 @@ admin.get(CFONE, async (c) => {
   const status = await listSyncStatus(c.env);
   const watched = await watchlist(c.env);
   const accessApps = await listAccessApps(c.env);
+  const appsSyncHours = await accessAppsSyncHours(c.env);
   const grantableGroups = (await c.env.DB.prepare("SELECT id, name FROM groups WHERE (rule IS NULL OR rule = '') AND (system IS NULL OR system = '') ORDER BY name").all<{ id: number; name: string }>()).results;
   const statusByKey = new Map(status.map((s) => [s.key, s]));
   const ready = cfOneReady(config);
@@ -3443,7 +3444,7 @@ admin.get(CFONE, async (c) => {
       `)}
       ${cardSection(`
         <h2>Access applications</h2>
-        <p class="muted">Cloudflare Access applications pulled read-only from this account. Map each app to the static group whose membership grants it: Access policies that Include that group then decide reachability, members see the app on their Applications page, and an approved access request is just a group-join. FlareID never writes Access config - changes made in Zero Trust land here on the next sync (hourly, or on demand).</p>
+        <p class="muted">Cloudflare Access applications pulled read-only from this account. Map each app to the static group whose membership grants it: Access policies that Include that group then decide reachability, members see the app on their Applications page, and an approved access request is just a group-join. FlareID never writes Access config - changes made in Zero Trust land here on the next sync (on your cadence, or on demand).</p>
         ${
           ready
             ? `${accessApps.length
@@ -3473,10 +3474,18 @@ admin.get(CFONE, async (c) => {
                       .join("")}</tbody>
                   </table>`
                 : `<p class="muted">Nothing synced yet - pull this account's Access applications to map them here.</p>`}
-              <form method="POST" action="${CFONE}/apps/sync" style="margin-top:12px;">
-                <button class="secondary" type="submit">Sync applications now</button>
-                ${accessApps.some((a) => a.synced_at) ? `<span class="muted" style="margin-left:10px; font-size:12px;">Last synced ${ts(accessApps.map((a) => a.synced_at).sort().pop() ?? "")}</span>` : ""}
-              </form>`
+              <div class="row" style="justify-content:flex-start; gap:16px; margin-top:12px; flex-wrap:wrap;">
+                <form method="POST" action="${CFONE}/apps/sync" style="margin:0;">
+                  <button class="secondary" type="submit">Sync applications now</button>
+                </form>
+                <form method="POST" action="${CFONE}/apps/schedule" style="margin:0; display:flex; align-items:center; gap:8px;">
+                  <label for="apps_sync_hours" class="muted" style="margin:0; font-size:12px;">Refresh every</label>
+                  <select id="apps_sync_hours" name="apps_sync_hours" data-autosubmit style="margin:0; width:auto;">
+                    ${ACCESS_APPS_SYNC_HOURS.map((h) => `<option value="${h}" ${h === appsSyncHours ? "selected" : ""}>${h} hour${h === 1 ? "" : "s"}</option>`).join("")}
+                  </select>
+                </form>
+                ${accessApps.some((a) => a.synced_at) ? `<span class="muted" style="font-size:12px;">Last synced ${ts(accessApps.map((a) => a.synced_at).sort().pop() ?? "")}</span>` : ""}
+              </div>`
             : `<p class="muted">Set the account ID and API token above first - there is nothing to pull with.</p>`
         }
       `)}
@@ -3575,6 +3584,17 @@ admin.post(`${CFONE}/apps/sync`, async (c) => {
   } catch (e) {
     return c.redirect(`${CFONE}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
   }
+});
+
+admin.post(`${CFONE}/apps/schedule`, async (c) => {
+  const body = await c.req.parseBody();
+  const hours = Number(body.apps_sync_hours);
+  if (!(ACCESS_APPS_SYNC_HOURS as readonly number[]).includes(hours)) {
+    return c.redirect(`${CFONE}?error=${encodeURIComponent("Pick a refresh interval from the list.")}`, 302);
+  }
+  await setSetting(c.env, "cfone.apps_sync_hours", String(hours));
+  await audit(consoleCtx(c), "cfone.access_apps_schedule", "cloudflare-one", { hours });
+  return c.redirect(`${CFONE}?saved=1`, 302);
 });
 
 admin.post(`${CFONE}/apps/:id`, async (c) => {

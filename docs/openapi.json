@@ -2141,6 +2141,10 @@
                 "expires_at"
               ]
             }
+          },
+          "apps_sync_hours": {
+            "type": "number",
+            "description": "How often the scheduled pull refreshes the Access-app mirror (1, 2, 6, 12 or 24 hours)."
           }
         },
         "required": [
@@ -2151,7 +2155,8 @@
           "api_token_set",
           "lists",
           "list_status",
-          "watchlist"
+          "watchlist",
+          "apps_sync_hours"
         ]
       },
       "CloudflareAccessApp": {
@@ -14886,6 +14891,10 @@
                         "auth-fail-ips"
                       ]
                     }
+                  },
+                  "apps_sync_hours": {
+                    "type": "number",
+                    "description": "Access-app pull cadence: 1, 2, 6, 12 or 24 hours."
                   }
                 },
                 "required": [

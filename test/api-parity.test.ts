@@ -51,6 +51,7 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/integrations/cf-one/watch": "PUT /api/v1/users/{username}/watch",
   "POST /admin/integrations/cf-one/watch/:uid/remove": "DELETE /api/v1/users/{username}/watch",
   "POST /admin/integrations/cf-one/apps/sync": "POST /api/v1/integrations/cloudflare-one/access-apps/sync",
+  "POST /admin/integrations/cf-one/apps/schedule": "PUT /api/v1/integrations/cloudflare-one",
   "POST /admin/integrations/cf-one/apps/:id": "PATCH /api/v1/integrations/cloudflare-one/access-apps/{id}",
   "POST /admin/integrations/signals/streams": "POST /api/v1/ssf/streams",
   "POST /admin/integrations/signals/streams/:id/toggle": "PATCH /api/v1/ssf/streams/{id}",

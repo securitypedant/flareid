@@ -333,3 +333,48 @@ describe("disconnect and stale mirrors", () => {
     expect(await ask.text()).toContain("add yourself on its Manage page");
   });
 });
+
+describe("sync cadence", () => {
+  it("gates the scheduled pull on the configured interval", async () => {
+    const { accessAppsSyncDue, accessAppsSyncHours } = await import("../src/lib/cfone.js");
+    const { setSetting } = await import("../src/lib/settings.js");
+    const { apiKey } = await bootstrapInstance();
+
+    // Never synced -> due immediately; default cadence is 6h.
+    expect(await accessAppsSyncHours(env)).toBe(6);
+    expect(await accessAppsSyncDue(env)).toBe(true);
+
+    // Fresh stamp -> not due at 6h; is due when the interval shrinks.
+    await setSetting(env, "cfone.apps_synced_at", new Date().toISOString());
+    expect(await accessAppsSyncDue(env)).toBe(false);
+    await setSetting(env, "cfone.apps_synced_at", new Date(Date.now() - 2 * 3600_000).toISOString());
+    expect(await accessAppsSyncDue(env)).toBe(false);
+    await setSetting(env, "cfone.apps_synced_at", new Date(Date.now() - 7 * 3600_000).toISOString());
+    expect(await accessAppsSyncDue(env)).toBe(true);
+
+    // Setting a 1h cadence makes a 2h-old stamp due again.
+    await setSetting(env, "cfone.apps_sync_hours", "1");
+    await setSetting(env, "cfone.apps_synced_at", new Date(Date.now() - 2 * 3600_000).toISOString());
+    expect(await accessAppsSyncHours(env)).toBe(1);
+    expect(await accessAppsSyncDue(env)).toBe(true);
+    void apiKey;
+  });
+
+  it("reads and validates apps_sync_hours on the integration API", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const put = await apiCall("/api/v1/integrations/cloudflare-one", {
+      token: apiKey,
+      method: "PUT",
+      body: { account_id: "acct-1", api_token: "tok-1", apps_sync_hours: 12 },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.apps_sync_hours).toBe(12);
+
+    const bad = await apiCall("/api/v1/integrations/cloudflare-one", {
+      token: apiKey,
+      method: "PUT",
+      body: { account_id: "acct-1", apps_sync_hours: 5 },
+    });
+    expect(bad.status).toBe(400);
+  });
+});

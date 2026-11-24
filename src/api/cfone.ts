@@ -1,9 +1,10 @@
 import { z } from "@hono/zod-openapi";
 import { apiCtx, ServiceError } from "../services/context.js";
 import { assertMayTouchUser } from "../services/guards.js";
-import { configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchlist } from "../lib/cfone.js";
+import { ACCESS_APPS_SYNC_HOURS, accessAppsSyncHours, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchlist } from "../lib/cfone.js";
 import { logAudit } from "../lib/audit.js";
 import { auditActor } from "../lib/api-auth.js";
+import { setSetting } from "../lib/settings.js";
 import { defineRoute, notFound, param, readJson, type ApiContext } from "./openapi.js";
 import type { UserRow } from "../lib/types.js";
 
@@ -23,6 +24,7 @@ const CfOneSchema = z
     lists: z.array(z.string()).openapi({ description: "The list syncs that run (see /sync for per-group syncs)." }),
     list_status: z.array(z.object({ key: z.string(), cf_list_id: z.string(), kind: z.string(), item_count: z.number(), synced_at: z.string().nullable() })),
     watchlist: z.array(z.object({ user_id: z.number(), upn: z.string(), reason: z.string(), source: z.string(), flagged_at: z.string(), expires_at: z.string().nullable() })),
+    apps_sync_hours: z.number().openapi({ description: "How often the scheduled pull refreshes the Access-app mirror (1, 2, 6, 12 or 24 hours)." }),
   })
   .openapi("CloudflareOne");
 
@@ -37,6 +39,7 @@ async function cfOneJson(env: ApiContext["env"]) {
     lists: [...(await enabledListSyncs(env))],
     list_status: await listSyncStatus(env),
     watchlist: await watchlist(env),
+    apps_sync_hours: await accessAppsSyncHours(env),
   };
 }
 
@@ -60,11 +63,12 @@ defineRoute(
       team: z.string().optional(),
       access_aud: z.string().optional(),
       lists: z.array(z.enum(LIST_SYNCS.map((l) => l.key) as [string, ...string[]])).optional(),
+      apps_sync_hours: z.number().optional().openapi({ description: "Access-app pull cadence: 1, 2, 6, 12 or 24 hours." }),
     }),
     response: CfOneSchema,
   },
   async (c) => {
-    const body = await readJson<{ account_id?: string; api_token?: string; team?: string; access_aud?: string; lists?: string[] }>(c);
+    const body = await readJson<{ account_id?: string; api_token?: string; team?: string; access_aud?: string; lists?: string[]; apps_sync_hours?: number }>(c);
     const current = await getCfOne(c.env);
     await saveCfOne(c.env, {
       accountId: String(body.account_id ?? "").trim(),
@@ -73,6 +77,10 @@ defineRoute(
       accessAud: String(body.access_aud ?? "").trim(),
     });
     if (body.lists) await setEnabledListSyncs(c.env, body.lists);
+    if (body.apps_sync_hours !== undefined) {
+      if (!(ACCESS_APPS_SYNC_HOURS as readonly number[]).includes(body.apps_sync_hours)) throw new ServiceError(400, `apps_sync_hours must be one of ${ACCESS_APPS_SYNC_HOURS.join(", ")}.`);
+      await setSetting(c.env, "cfone.apps_sync_hours", String(body.apps_sync_hours));
+    }
     await logAudit(c.env, auditActor(c.get("apiActor")), "cfone.configured", current?.accountId ?? "cloudflare-one", undefined, c.req.raw);
     return c.json(await cfOneJson(c.env));
   }
