@@ -25,12 +25,18 @@ now optional - a domainless deployment is just a directory of handle accounts.
 - Create/update callers take `identifier` for any form; `username`+`domain`
   remains the UPN shorthand. The console user forms get an identifier-type
   picker (UPN+domain / handle / phone).
-- Federated JIT mints the upstream identifier verbatim for @-form names -
-  including unmanaged domains, so `simonsmith01@gmail.com` (social) coexists
-  with `simonsmith01@company.com` (native). Bare upstream handles mint
+- Federated JIT mints the upstream identifier verbatim for @-form names in
+  *unmanaged* domains, so `simonsmith01@gmail.com` (social) coexists with
+  `simonsmith01@company.com` (native). A managed domain is the directory's own
+  namespace: minting inside it is granted by the provider's configured JIT
+  domain, not by a claim - otherwise a federated assertion could mint names
+  that satisfy `@corp.com` group rules. Bare upstream handles mint
   `{handle}-{idp-slug}` (`simon-github` vs `simon-gitlab`); the suffix is a
   name, never parsed back - provenance lives in `federated_identities`. The
   collision pattern context gains `{idp}`.
+- Account adoption by an @-form upstream `preferred_username`/NameID now
+  carries the same verified-email bar as adoption by `email` - a claim the
+  IdP itself marks unverified can't link into an existing account.
 - Caveat: a handle/phone account with no contact address can't receive
   invitations, reset links or email codes (the UI says so; email-OTP is never
   offered).

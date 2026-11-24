@@ -139,4 +139,27 @@ describe("federated minting", () => {
     expect(user.upn).toBe("simon-github");
     expect(user.username).toBe("simon-github");
   });
+
+  it("refuses to mint inside a managed domain the provider isn't granted", async () => {
+    await bootstrapInstance(); // example.com is managed; the IdP's jit_domain is ""
+    const idp = await createUpstreamIdp(env, { ...IDP });
+    await expect(resolveFederatedUser(env, idp, { ...profile, username: "exec@example.com" })).rejects.toThrow(/managed domain/);
+  });
+
+  it("mints inside a managed domain when the IdP is granted it (jit_domain)", async () => {
+    await bootstrapInstance();
+    const idp = await createUpstreamIdp(env, { ...IDP, jitDomain: "example.com" });
+    const user = await resolveFederatedUser(env, idp, { ...profile, username: "exec@example.com" });
+    expect(user.upn).toBe("exec@example.com");
+  });
+
+  it("won't adopt an account named by an @-form claim the IdP calls unverified", async () => {
+    const { apiKey } = await bootstrapInstance();
+    await seedUser(apiKey, { username: "ada" }); // ada@example.com
+    const idp = await createUpstreamIdp(env, { ...IDP });
+    // The claim names the managed-domain account but is explicitly unverified:
+    // no adoption, and the managed-domain mint refusal stops the fallback too.
+    await expect(resolveFederatedUser(env, idp, { ...profile, subject: "sub-ada", username: "ada@example.com", emailVerified: false })).rejects.toThrow();
+    expect(await env.DB.prepare("SELECT 1 FROM federated_identities WHERE subject = 'sub-ada'").first()).toBeNull();
+  });
 });

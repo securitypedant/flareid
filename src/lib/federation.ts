@@ -14,7 +14,7 @@ import { appleClientSecret, socialProvider, type AppleSecretConfig } from "./soc
 import { claimOnce } from "./one-shot.js";
 import type { UserRow } from "./types.js";
 import { effectiveMappings, getCollisionPolicy, JIT_COLUMN_TARGETS, resolveIdentifierCollision, resolveUsernameCollision } from "./mappings.js";
-import { parseIdentifier } from "./identifier.js";
+import { parseIdentifier, type ParsedIdentifier } from "./identifier.js";
 import { evalExpression, parseExpression, scalar, strOf } from "./expr.js";
 
 /**
@@ -629,7 +629,12 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   // address the IdP explicitly calls unverified is never an adoption key -
   // a claim the user could set themselves would link their login to a
   // stranger's account.
-  let user = profile.username && profile.username.includes("@") ? await getUserByLoginIdentifier(env, profile.username) : null;
+  // Same verified bar for both claim fields: an IdP that calls its own claim
+  // unverified can't use it to link into an existing account - whether it
+  // arrives as `email` or spelled like an @-form username.
+  let user = profile.username && profile.username.includes("@") && profile.emailVerified !== false
+    ? await getUserByLoginIdentifier(env, profile.username)
+    : null;
   if (!user && profile.email && profile.emailVerified !== false) user = await getUserByAnyEmail(env, profile.email);
 
   if (user) {
@@ -654,8 +659,23 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
   const handlePart = profile.username && !profile.username.includes("@")
     ? profile.username.toLowerCase().replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "")
     : "";
-  const mint = profileIdent?.kind === "upn" ? profileIdent
-    : handlePart ? parseIdentifier(`${handlePart}-${idpSlug}`) : null;
+  let mint: ParsedIdentifier | null;
+  if (profileIdent?.kind === "upn") {
+    // Verbatim minting is for open namespace only. A managed domain is the
+    // directory's own namespace - minting inside it is granted by the IdP's
+    // configured jit_domain, never by a claim, or an upstream could mint
+    // names that satisfy "@corp.com" group rules it has no business in.
+    const assertedDomain = profileIdent.normalized.split("@")[1]!;
+    if (!(await domainExists(env, assertedDomain))) {
+      mint = profileIdent;
+    } else if (idp.jit_domain && assertedDomain === idp.jit_domain.toLowerCase()) {
+      mint = profileIdent;
+    } else {
+      throw new FederationError(`JIT can't mint "${profileIdent.normalized}" - ${assertedDomain} is a managed domain this provider isn't granted (set it as the provider's JIT domain, or link the account first).`);
+    }
+  } else {
+    mint = handlePart ? parseIdentifier(`${handlePart}-${idpSlug}`) : null;
+  }
   if (mint) {
     const resolved = await resolveIdentifierCollision(env, mint, { idp: idpSlug, email: profile.email }, policy);
     if (!resolved) throw new FederationError("JIT provisioning can't create the account: its sign-in name collides with an existing user.");
