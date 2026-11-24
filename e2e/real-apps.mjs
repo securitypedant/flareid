@@ -78,7 +78,7 @@ async function client(name, redirectUris) {
   const secret = `lab-${cryptoRandom()}`;
   const j = await api("/clients", key, {
     method: "POST",
-    body: { name, client_id: cid, client_secret: secret, redirect_uris: redirectUris, trusted: true },
+    body: { name, client_id: cid, client_secret: secret, redirect_uris: redirectUris, trusted: true, access_mode: "everyone" },
   });
   return j.client_id ? { id: cid, secret } : { id: cid, secret };
 }
