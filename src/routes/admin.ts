@@ -3455,28 +3455,33 @@ admin.get("/admin/integrations/sms", async (c) => {
             <option value="">None (SMS off)</option>
             ${SMS_PROVIDERS.map((p) => `<option value="${p.key}" ${config.provider === p.key ? "selected" : ""}>${p.label} &mdash; ${p.fields}</option>`).join("")}
           </select>
-          <div class="field-row">
-            ${secretField("account_sid", "Twilio Account SID", Boolean(config.accountSid), "ACxxxx...")}
-            ${secretField("auth_token", "Twilio Auth Token", Boolean(config.authToken))}
-          </div>
-          <div class="field-row">
-            ${secretField("api_key", "Vonage API key", Boolean(config.apiKey))}
-            ${secretField("api_secret", "Vonage API secret", Boolean(config.apiSecret))}
-          </div>
-          <div class="field-row">
-            ${secretField("telnyx_key", "Telnyx API key", Boolean(config.telnyxKey))}
-            ${secretField("plivo_id", "Plivo Auth ID", Boolean(config.plivoId), "MAxxxx...")}
-          </div>
-          <div class="field-row">
-            ${secretField("plivo_token", "Plivo Auth Token", Boolean(config.plivoToken))}
-            <div>
-              <label for="sms_from">From number / sender</label>
-              <input type="text" id="sms_from" name="from" value="${escapeHtml(config.from)}" placeholder="+15551234567" />
-              <p class="muted" style="margin-top:-4px;">E.164 number (or messaging profile / sender id where your provider allows one).</p>
+          <div id="sms-fields">
+            <div class="field-row" data-providers="twilio">
+              ${secretField("account_sid", "Twilio Account SID", Boolean(config.accountSid), "ACxxxx...")}
+              ${secretField("auth_token", "Twilio Auth Token", Boolean(config.authToken))}
+            </div>
+            <div class="field-row" data-providers="vonage">
+              ${secretField("api_key", "Vonage API key", Boolean(config.apiKey))}
+              ${secretField("api_secret", "Vonage API secret", Boolean(config.apiSecret))}
+            </div>
+            <div class="field-row" data-providers="telnyx">
+              ${secretField("telnyx_key", "Telnyx API key", Boolean(config.telnyxKey))}
+            </div>
+            <div class="field-row" data-providers="plivo">
+              ${secretField("plivo_id", "Plivo Auth ID", Boolean(config.plivoId), "MAxxxx...")}
+              ${secretField("plivo_token", "Plivo Auth Token", Boolean(config.plivoToken))}
+            </div>
+            <div class="field-row" data-providers="twilio vonage telnyx plivo">
+              <div>
+                <label for="sms_from">From number / sender</label>
+                <input type="text" id="sms_from" name="from" value="${escapeHtml(config.from)}" placeholder="+15551234567" />
+                <p class="muted" style="margin-top:-4px;">E.164 number (or messaging profile / sender id where your provider allows one).</p>
+              </div>
             </div>
           </div>
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
         </form>
+        ${scriptTag(`(function(){var s=document.getElementById('sms_provider');if(!s)return;function t(){var v=s.value;document.querySelectorAll('#sms-fields [data-providers]').forEach(function(r){r.style.display=v&&r.getAttribute('data-providers').split(' ').indexOf(v)>=0?'':'none';});}s.addEventListener('change',t);t();})();`)}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SMS" }]
