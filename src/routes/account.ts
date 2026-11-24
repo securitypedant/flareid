@@ -34,6 +34,7 @@ import { attributeInput, getSchemaAttributes, parseCustomAttributes, ruleAttribu
 import { getMasteredFields, masteringKeyFor } from "../lib/scim-mapping.js";
 import { isScimConfigured, pushUser } from "../lib/scim-client.js";
 import type { OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
+import { accessAppHref, type CfAccessAppRow } from "../lib/cfone.js";
 import { verifyPassword, hashPassword } from "../lib/password.js";
 import { getPasswordPolicy } from "../lib/settings.js";
 import { newPasswordError } from "../lib/breached-passwords.js";
@@ -242,15 +243,17 @@ account.get("/account", async (c) => {
 
 account.get("/account/applications", async (c) => {
   const user = c.get("user");
-  const [clients, sps] = await Promise.all([
+  const [clients, sps, cfApps] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM oauth_clients ORDER BY name").all<OAuthClientRow>(),
     c.env.DB.prepare("SELECT * FROM saml_service_providers ORDER BY name").all<SamlServiceProviderRow>(),
+    c.env.DB.prepare("SELECT * FROM cf_access_apps WHERE granting_group_id IS NOT NULL ORDER BY name").all<CfAccessAppRow>(),
   ]);
   // Memberships are only worth fetching when at least one app is restricted.
   const myGroupIds =
-    clients.results.some((cl) => cl.access_mode !== "everyone") || sps.results.some((sp) => sp.access_mode !== "everyone")
+    clients.results.some((cl) => cl.access_mode !== "everyone") || sps.results.some((sp) => sp.access_mode !== "everyone") || cfApps.results.length
       ? await getUserGroupIds(c.env, user.id)
       : [];
+  const myGroupSet = new Set(myGroupIds);
 
   // The launchpad: every app this person may sign in to - unrestricted apps,
   // plus assigned apps whose groups intersect theirs. Each card is the app's
@@ -269,6 +272,11 @@ account.get("/account/applications", async (c) => {
     ...sps.results
       .filter((sp) => appAccessAllowed(sp, myGroupIds, user.id))
       .map((sp) => ({ name: sp.name, logo: sp.logo_uri, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
+    // Access-fronted apps aren't federated here - the card links straight at
+    // the protected hostname, which Access guards itself.
+    ...cfApps.results
+      .filter((a) => a.granting_group_id !== null && myGroupSet.has(a.granting_group_id))
+      .map((a) => ({ name: a.name, logo: "", href: accessAppHref(a), kind: "Access" })),
   ];
   // External client logos need their exact URLs admitted to img-src for this
   // response - security-headers reads the marker (same as the sign-in page).
@@ -343,7 +351,7 @@ account.get("/account/access", async (c) => {
                    ${myRequests
                      .map(
                        (r) => `<tr>
-                         <td>${escapeHtml(r.target_name)} <span class="badge">${r.target_type === "group" ? "Group" : r.target_type === "oidc_app" ? "OIDC app" : "SAML app"}</span>${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
+                         <td>${escapeHtml(r.target_name)} <span class="badge">${r.target_type === "group" ? "Group" : r.target_type === "oidc_app" ? "OIDC app" : r.target_type === "saml_app" ? "SAML app" : "Access app"}</span>${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
                          <td class="muted">${ts(r.created_at)}</td>
                          <td><span class="badge ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
                            r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
@@ -1002,7 +1010,10 @@ account.get("/account/access/targets", async (c) => {
       id: `${a.target_type}:${a.id}`,
       label: a.name,
       badges: [{ label: a.protocol, title: `${a.protocol} application` }],
-      desc: "Application - approved requests add you to its assigned people",
+      desc:
+        a.target_type === "cfapp"
+          ? "Cloudflare Access application - an approved request joins you to the group that grants it"
+          : "Application - approved requests add you to its assigned people",
     })),
   ]);
 });
@@ -1010,7 +1021,7 @@ account.get("/account/access/targets", async (c) => {
 account.post("/account/access/request", async (c) => {
   const body = await c.req.parseBody();
   try {
-    const m = String(body.target ?? "").match(/^(group|oidc_app|saml_app):(\d+)$/);
+    const m = String(body.target ?? "").match(/^(group|oidc_app|saml_app|cfapp):(\d+)$/);
     if (!m) throw new ServiceError(400, "Pick a group or app to ask for.");
     await requestAccess(consoleCtx(c), { type: m[1] as AccessTargetType, id: Number(m[2]) }, String(body.reason ?? ""));
   } catch (e) {

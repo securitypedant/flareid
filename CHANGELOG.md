@@ -4,6 +4,28 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.13.0] - 2026-11-23
+
+Cloudflare Access applications join the launchpad and self-service access
+requests, pulled read-only from the connected Zero Trust account.
+
+- **Access applications on the Cloudflare One page.** A new card pulls the
+  account's Access apps (apps, plus their Allow policies for grant hints) on
+  demand. Each app maps to the static group whose membership grants it; the
+  page suggests a group when the app's policies already name one by IdP group
+  claim or reusable Access group. FlareID only ever writes group membership -
+  Access keeps owning enforcement, so no drift and no write-scoped token is
+  needed for this flow.
+- **Launchpad.** Members of an app's granting group see it on their
+  Applications page, linked straight to the protected hostname.
+- **Requests.** Requestable Access apps appear in the My account picker as a
+  new `cfapp` target; approving simply joins the person to the granting group
+  (the same write as any group approval - role-group and touch guards apply).
+  Apps that vanish upstream drop out on the next sync along with their pending
+  asks, as do apps whose granting group is deleted.
+- **API.** `GET`/`PATCH` `/api/v1/integrations/cloudflare-one/access-apps[/{id}]`
+  list and map synced apps; `POST .../access-apps/sync` pulls on demand.
+
 ## [4.12.0] - 2026-11-24
 
 Backup codes become an emergency fallback issued after a real factor, rather

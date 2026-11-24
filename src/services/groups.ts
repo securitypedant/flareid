@@ -174,6 +174,8 @@ export async function deleteGroup(ctx: ServiceCtx, id: number): Promise<GroupRow
   await ctx.env.DB.batch([
     ...(await scimDeprovisionStatements(ctx.env, "group", group.id, group.name)),
     ctx.env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'group' AND target_id = ?").bind(id),
+    // Pending asks for Access apps this group granted can never be approved now.
+    ctx.env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'cfapp' AND target_id IN (SELECT id FROM cf_access_apps WHERE granting_group_id = ?)").bind(id),
     ctx.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
   ]);
   await afterResponse(ctx, async (later) => {

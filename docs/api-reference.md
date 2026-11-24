@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.11.0.
+API version 4.13.0.
 
 ## Contents
 
@@ -2814,6 +2814,9 @@ The Cloudflare One (Zero Trust) connection, gateway-list sync and the risk watch
 | `POST` | `/api/v1/integrations/cloudflare-one/sync` | `cfone:write` | Run the list sync now |
 | `PUT` | `/api/v1/users/{username}/watch` | `cfone:write` | Flag a user on the risk watchlist |
 | `DELETE` | `/api/v1/users/{username}/watch` | `cfone:write` | Clear a user from the risk watchlist |
+| `GET` | `/api/v1/integrations/cloudflare-one/access-apps` | `cfone:read` | List synced Cloudflare Access applications |
+| `POST` | `/api/v1/integrations/cloudflare-one/access-apps/sync` | `cfone:write` | Pull Access applications from Cloudflare now |
+| `PATCH` | `/api/v1/integrations/cloudflare-one/access-apps/{id}` | `cfone:write` | Map an Access app to its granting group |
 
 ### `GET /api/v1/integrations/cloudflare-one`
 
@@ -2935,6 +2938,76 @@ Response `200`:
 |---|---|---|---|
 | `ok` | true | yes |  |
 | `watched` | false | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `GET /api/v1/integrations/cloudflare-one/access-apps`
+
+List synced Cloudflare Access applications.
+
+Read-only mirror of the account's Access apps and their granting-group mapping. Sync fills the list; PATCH maps an app to the group whose membership grants it.
+
+Permission: `cfone:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `access_apps` | CloudflareAccessApp[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/integrations/cloudflare-one/access-apps/sync`
+
+Pull Access applications from Cloudflare now.
+
+Upserts the mirror from GET /access/apps plus each app's policies; granting mappings and requestable flags survive. Apps that vanished upstream are removed along with their pending requests.
+
+Permission: `cfone:write`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `synced` | number | yes |  |
+| `removed` | number | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `PATCH /api/v1/integrations/cloudflare-one/access-apps/{id}`
+
+Map an Access app to its granting group.
+
+The granting group must be static and non-system - approving a request is a manual membership write. `requestable` needs a granting group; clearing the group drops requestable.
+
+Permission: `cfone:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | Numeric id. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `granting_group_id` | number \| null | no | Null unmaps the app (and drops requestable). |
+| `requestable` | boolean | no |  |
+
+Response `200`:
+
+`CloudflareAccessApp`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | number | yes |  |
+| `cf_app_id` | string | yes | The application's UUID in the Cloudflare account. |
+| `name` | string | yes |  |
+| `type` | string | yes | The Access application type: self_hosted, saas, ssh, bookmark, ... |
+| `hostname` | string | yes | Launch target - the app's first self-hosted domain (or domain). |
+| `granting_group_id` | number \| null | yes | Static group whose membership grants this app; Access policies should Include it. |
+| `grant_hint` | string[] | yes | FlareID group names the app's Allow policies selected at last sync. |
+| `requestable` | boolean | yes |  |
+| `synced_at` | string | yes |  |
 
 Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
 

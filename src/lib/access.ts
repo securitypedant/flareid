@@ -31,8 +31,8 @@ const now = () => new Date().toISOString();
 // Access requests
 // ---------------------------------------------------------------------------
 
-/** What a request can ask for: a static group, or either kind of application. */
-export type AccessTargetType = "group" | "oidc_app" | "saml_app";
+/** What a request can ask for: a static group, or any kind of application (a Cloudflare Access app grants membership of its mapped group). */
+export type AccessTargetType = "group" | "oidc_app" | "saml_app" | "cfapp";
 export type AccessTarget = { type: AccessTargetType; id: number };
 
 export interface AccessRequestRow {
@@ -49,13 +49,15 @@ export interface AccessRequestRow {
   updated_at: string;
 }
 
-export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; target_name: string };
+export type AccessRequestView = AccessRequestRow & { upn: string; display_name: string; target_name: string; cf_granting_group_id: number | null };
 
 /** Resolves a request's target name whichever table it lives in. */
 const TARGET_NAME_JOINS = `LEFT JOIN groups g ON r.target_type = 'group' AND g.id = r.target_id
   LEFT JOIN oauth_clients oc ON r.target_type = 'oidc_app' AND oc.id = r.target_id
-  LEFT JOIN saml_service_providers sp ON r.target_type = 'saml_app' AND sp.id = r.target_id`;
-const TARGET_NAME = "COALESCE(g.name, oc.name, sp.name) AS target_name";
+  LEFT JOIN saml_service_providers sp ON r.target_type = 'saml_app' AND sp.id = r.target_id
+  LEFT JOIN cf_access_apps ca ON r.target_type = 'cfapp' AND ca.id = r.target_id`;
+const TARGET_NAME = "COALESCE(g.name, oc.name, sp.name, ca.name) AS target_name";
+const TARGET_EXTRA = ", ca.granting_group_id AS cf_granting_group_id";
 
 /**
  * Requestable static groups `userId` could still ask for: not already a
@@ -81,7 +83,7 @@ export async function requestableGroups(env: Env, userId: number, search = "", l
 export async function myAccessRequests(env: Env, userId: number): Promise<AccessRequestView[]> {
   return (
     await env.DB.prepare(
-      `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} FROM access_requests r
+      `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME}${TARGET_EXTRA} FROM access_requests r
         JOIN users u ON u.id = r.user_id ${TARGET_NAME_JOINS}
         WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 50`
     )
@@ -91,15 +93,17 @@ export async function myAccessRequests(env: Env, userId: number): Promise<Access
 }
 
 export interface RequestableApp {
-  target_type: "oidc_app" | "saml_app";
+  target_type: "oidc_app" | "saml_app" | "cfapp";
   id: number;
   name: string;
-  protocol: "OIDC" | "SAML";
+  protocol: "OIDC" | "SAML" | "Access";
 }
 
 /**
  * Restricted apps marked requestable that `userId` cannot already reach and
- * has no pending ask for - the app half of the self-service list.
+ * has no pending ask for - the app half of the self-service list. Cloudflare
+ * Access apps join in too: "can reach" there means membership of the app's
+ * granting group.
  */
 export async function requestableApps(env: Env, userId: number, groupIds: number[], search = ""): Promise<RequestableApp[]> {
   const { results } = await env.DB.prepare(
@@ -108,17 +112,29 @@ export async function requestableApps(env: Env, userId: number, groupIds: number
   ).all<{ target_type: "oidc_app" | "saml_app"; id: number; name: string; access_mode: string; assigned_groups: string | null; assigned_users: string | null }>();
   const needle = search.trim().toLowerCase();
   const { results: pending } = await env.DB.prepare(
-    "SELECT target_type, target_id FROM access_requests WHERE user_id = ? AND status = 'pending' AND target_type IN ('oidc_app','saml_app')"
+    "SELECT target_type, target_id FROM access_requests WHERE user_id = ? AND status = 'pending' AND target_type IN ('oidc_app','saml_app','cfapp')"
   )
     .bind(userId)
     .all<{ target_type: string; target_id: number }>();
   const pendingSet = new Set(pending.map((r) => `${r.target_type}:${r.target_id}`));
-  return results
+  const apps = results
     .filter((a) => a.access_mode !== "everyone")
     .filter((a) => !appAccessAllowed(a, groupIds, userId))
     .filter((a) => !pendingSet.has(`${a.target_type}:${a.id}`))
     .filter((a) => !needle || a.name.toLowerCase().includes(needle))
-    .map((a) => ({ target_type: a.target_type, id: a.id, name: a.name, protocol: a.target_type === "oidc_app" ? "OIDC" : "SAML" }));
+    .map((a) => ({ target_type: a.target_type, id: a.id, name: a.name, protocol: a.target_type === "oidc_app" ? ("OIDC" as const) : ("SAML" as const) }));
+  const myGroups = new Set(groupIds);
+  const { results: cfApps } = await env.DB.prepare(
+    "SELECT id, name, granting_group_id FROM cf_access_apps WHERE requestable = 1 AND granting_group_id IS NOT NULL"
+  ).all<{ id: number; name: string; granting_group_id: number }>();
+  return [
+    ...apps,
+    ...cfApps
+      .filter((a) => !myGroups.has(a.granting_group_id))
+      .filter((a) => !pendingSet.has(`cfapp:${a.id}`))
+      .filter((a) => !needle || a.name.toLowerCase().includes(needle))
+      .map((a) => ({ target_type: "cfapp" as const, id: a.id, name: a.name, protocol: "Access" as const })),
+  ];
 }
 
 export interface AccessRequestQuery {
@@ -142,7 +158,7 @@ export async function listAccessRequests(env: Env, q: AccessRequestQuery = {}): 
   const needle = q.search?.trim().toLowerCase();
   if (needle) {
     const like = `%${needle.replace(/[%_]/g, (m) => `\\${m}`)}%`;
-    conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(COALESCE(g.name, oc.name, sp.name)) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
+    conditions.push("(lower(u.upn) LIKE ? ESCAPE '\\' OR lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(COALESCE(g.name, oc.name, sp.name, ca.name)) LIKE ? ESCAPE '\\' OR lower(r.reason) LIKE ? ESCAPE '\\')");
     params.push(like, like, like, like);
   }
   if (q.groupId) {
@@ -155,14 +171,14 @@ export async function listAccessRequests(env: Env, q: AccessRequestQuery = {}): 
   const offset = Math.max(q.offset ?? 0, 0);
   const [count, rows] = await env.DB.batch([
     env.DB.prepare(`SELECT COUNT(*) AS n ${from}`).bind(...params),
-    env.DB.prepare(`SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} ${from} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).bind(...params, limit, offset),
+    env.DB.prepare(`SELECT r.*, u.upn, u.display_name, ${TARGET_NAME}${TARGET_EXTRA} ${from} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).bind(...params, limit, offset),
   ]);
   return { total: Number((count?.results[0] as { n: number } | undefined)?.n ?? 0), rows: (rows?.results ?? []) as AccessRequestView[] };
 }
 
 export async function getAccessRequest(env: Env, id: number): Promise<AccessRequestView | null> {
   return env.DB.prepare(
-    `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME} FROM access_requests r
+    `SELECT r.*, u.upn, u.display_name, ${TARGET_NAME}${TARGET_EXTRA} FROM access_requests r
       JOIN users u ON u.id = r.user_id ${TARGET_NAME_JOINS} WHERE r.id = ?`
   )
     .bind(id)
@@ -189,6 +205,18 @@ export async function requestAccess(ctx: ServiceCtx, target: AccessTarget, reaso
       throw new ServiceError(400, `You manage "${group.name}" - add yourself on its Manage page instead of requesting.`);
     }
     name = group.name;
+  } else if (target.type === "cfapp") {
+    const app = await ctx.env.DB.prepare("SELECT * FROM cf_access_apps WHERE id = ?").bind(target.id).first<{ name: string; requestable: number; granting_group_id: number | null }>();
+    if (!app) throw new ServiceError(404, "That application does not exist.");
+    if (!app.requestable) throw new ServiceError(400, `"${app.name}" is not open to requests.`);
+    if (!app.granting_group_id) throw new ServiceError(400, `"${app.name}" has no granting group mapped yet - ask an administrator to set one on the Cloudflare One page.`);
+    const group = await ctx.env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(app.granting_group_id).first<GroupRow>();
+    if (!group) throw new ServiceError(400, `"${app.name}" grants a group that no longer exists - ask an administrator to remap it.`);
+    if (group.rule || group.system) throw new ServiceError(400, `"${app.name}" grants a group that cannot take manual members.`);
+    if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(group.id, userId).first()) {
+      throw new ServiceError(409, `You already have access to "${app.name}".`);
+    }
+    name = app.name;
   } else {
     const app =
       target.type === "oidc_app"
@@ -235,6 +263,7 @@ export async function decideAccessRequest(ctx: ServiceCtx, requestId: number, de
   // (an admin role group) the request must stay pending, not read "approved".
   if (decision === "approved") {
     if (req.target_type === "group") await addGroupMembers(ctx, req.target_id, [req.user_id]);
+    else if (req.target_type === "cfapp") await grantAccessAppMembership(ctx, req);
     else await assignUserToApp(ctx, req);
   }
   const t = now();
@@ -245,9 +274,18 @@ export async function decideAccessRequest(ctx: ServiceCtx, requestId: number, de
   return (await getAccessRequest(ctx.env, requestId))!;
 }
 
+/** An approved Access-app request joins the person to the app's granting group - Access enforces it from there. */
+async function grantAccessAppMembership(ctx: ServiceCtx, req: AccessRequestView): Promise<void> {
+  if (!req.cf_granting_group_id) throw new ServiceError(400, "That Access application has no granting group mapped - set one on Integrations > Cloudflare One first.");
+  if (!(await ctx.env.DB.prepare("SELECT 1 FROM groups WHERE id = ?").bind(req.cf_granting_group_id).first())) {
+    throw new ServiceError(400, "That Access application's granting group no longer exists - remap it on Integrations > Cloudflare One.");
+  }
+  await addGroupMembers(ctx, req.cf_granting_group_id, [req.user_id]);
+}
+
 /** The name an access request points at, whichever table it lives in. */
 async function targetName(env: Env, req: Pick<AccessRequestRow, "target_type" | "target_id">): Promise<string | undefined> {
-  const table = req.target_type === "group" ? "groups" : req.target_type === "oidc_app" ? "oauth_clients" : "saml_service_providers";
+  const table = req.target_type === "group" ? "groups" : req.target_type === "oidc_app" ? "oauth_clients" : req.target_type === "saml_app" ? "saml_service_providers" : "cf_access_apps";
   const row = await env.DB.prepare(`SELECT name FROM ${table} WHERE id = ?`).bind(req.target_id).first<{ name: string }>();
   return row?.name;
 }

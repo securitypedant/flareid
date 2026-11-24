@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.11.0",
+    "version": "4.13.0",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -2152,6 +2152,60 @@
           "lists",
           "list_status",
           "watchlist"
+        ]
+      },
+      "CloudflareAccessApp": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "cf_app_id": {
+            "type": "string",
+            "description": "The application's UUID in the Cloudflare account."
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "The Access application type: self_hosted, saas, ssh, bookmark, ..."
+          },
+          "hostname": {
+            "type": "string",
+            "description": "Launch target - the app's first self-hosted domain (or domain)."
+          },
+          "granting_group_id": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Static group whose membership grants this app; Access policies should Include it."
+          },
+          "grant_hint": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "FlareID group names the app's Allow policies selected at last sync."
+          },
+          "requestable": {
+            "type": "boolean"
+          },
+          "synced_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "cf_app_id",
+          "name",
+          "type",
+          "hostname",
+          "granting_group_id",
+          "grant_hint",
+          "requestable",
+          "synced_at"
         ]
       },
       "SsfStream": {
@@ -15129,6 +15183,244 @@
                     "ok",
                     "watched"
                   ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/cloudflare-one/access-apps": {
+      "get": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "List synced Cloudflare Access applications",
+        "description": "Read-only mirror of the account's Access apps and their granting-group mapping. Sync fills the list; PATCH maps an app to the group whose membership grants it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access_apps": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CloudflareAccessApp"
+                      }
+                    }
+                  },
+                  "required": [
+                    "access_apps"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/cloudflare-one/access-apps/sync": {
+      "post": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Pull Access applications from Cloudflare now",
+        "description": "Upserts the mirror from GET /access/apps plus each app's policies; granting mappings and requestable flags survive. Apps that vanished upstream are removed along with their pending requests.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "synced": {
+                      "type": "number"
+                    },
+                    "removed": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "synced",
+                    "removed"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/cloudflare-one/access-apps/{id}": {
+      "patch": {
+        "tags": [
+          "Cloudflare One"
+        ],
+        "summary": "Map an Access app to its granting group",
+        "description": "The granting group must be static and non-system - approving a request is a manual membership write. `requestable` needs a granting group; clearing the group drops requestable.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "cfone:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Numeric id."
+            },
+            "required": true,
+            "description": "Numeric id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "granting_group_id": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Null unmaps the app (and drops requestable)."
+                  },
+                  "requestable": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudflareAccessApp"
                 }
               }
             }

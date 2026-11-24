@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import type { Env } from "../env.js";
+import { ServiceError } from "../services/context.js";
 import { getSetting, setSetting } from "./settings.js";
 import { resolveGroupMemberUserIds } from "./groups.js";
 import type { GroupRow } from "./types.js";
@@ -479,4 +480,183 @@ export async function syncLists(env: Env, config: CfOneConfig): Promise<{ synced
 export async function listSyncStatus(env: Env): Promise<CfListRow[]> {
   const { results } = await env.DB.prepare("SELECT * FROM cf_lists ORDER BY key").all<CfListRow>();
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Access applications (pull)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cloudflare Access applications, read-only pulled from the account. Access is
+ * the authority for reachability - FlareID never writes app or policy config.
+ * Each mirrored row maps the app to the static group whose membership grants
+ * it: Access policies Include the group claim FlareID mints, so an approved
+ * request is just a membership write and Access enforces from there.
+ */
+
+export interface CfAccessAppRow {
+  id: number;
+  cf_app_id: string;
+  name: string;
+  type: string;
+  hostname: string;
+  granting_group_id: number | null;
+  /** JSON array: FlareID group names found in the app's Allow policies at last sync. */
+  grant_hint: string;
+  requestable: number;
+  synced_at: string;
+  updated_at: string;
+}
+
+export async function listAccessApps(env: Env): Promise<CfAccessAppRow[]> {
+  return (await env.DB.prepare("SELECT * FROM cf_access_apps ORDER BY name").all<CfAccessAppRow>()).results;
+}
+
+export function grantHints(row: Pick<CfAccessAppRow, "grant_hint">): string[] {
+  try {
+    return (JSON.parse(row.grant_hint || "[]") as unknown[]).map(String);
+  } catch {
+    return [];
+  }
+}
+
+interface CfAccessApp {
+  id: string;
+  name?: string;
+  type?: string;
+  domain?: string;
+  self_hosted_domains?: string[];
+}
+
+/** A policy/group selector rule: only the shapes that name a group claim matter. */
+interface CfSelector {
+  oidc?: { group_id?: string };
+  saml?: { attribute_value?: string };
+  group?: { id?: string };
+}
+
+interface CfPolicy {
+  decision?: string;
+  include?: CfSelector[];
+}
+
+/** Group-claim values a rule set names directly (IdP group selectors). */
+function selectorClaims(rules: CfSelector[] | undefined, out: Set<string>): void {
+  for (const r of rules ?? []) {
+    if (r.oidc?.group_id) out.add(r.oidc.group_id);
+    if (r.saml?.attribute_value) out.add(r.saml.attribute_value);
+  }
+}
+
+/** Reusable Access groups can themselves name group claims (and nest); one fetch each, seen-guarded. */
+async function accessGroupClaims(env: Env, config: CfOneConfig, groupId: string, seen: Set<string>, out: Set<string>): Promise<void> {
+  if (seen.has(groupId)) return;
+  seen.add(groupId);
+  const body = await cfApi(env, config, `/accounts/${config.accountId}/access/groups/${groupId}`);
+  for (const r of ((body.result as { include?: CfSelector[] } | undefined)?.include ?? [])) {
+    if (r.group?.id) await accessGroupClaims(env, config, r.group.id, seen, out);
+    else selectorClaims([r], out);
+  }
+}
+
+/**
+ * Pulls the account's Access applications and upserts the mirror: name, type,
+ * launch hostname, and a grant hint (the FlareID group names each app's Allow
+ * policies select on, via IdP group claims or reusable Access groups).
+ * granting_group_id/requestable survive re-syncs; apps that vanished upstream
+ * are dropped along with their pending requests.
+ */
+export async function syncAccessApps(env: Env, config: CfOneConfig): Promise<{ synced: number; removed: number }> {
+  const apps: CfAccessApp[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const body = await cfApi(env, config, `/accounts/${config.accountId}/access/apps?per_page=50&page=${page}`);
+    const page_ = (body.result as CfAccessApp[] | undefined) ?? [];
+    apps.push(...page_);
+    if (page_.length < 50) break;
+  }
+
+  // A hint is only worth keeping when it names a real FlareID group - that's
+  // the claim Access would match at request time anyway.
+  const nameByLower = new Map(
+    (await env.DB.prepare("SELECT name FROM groups").all<{ name: string }>()).results.map((g) => [g.name.toLowerCase(), g.name])
+  );
+
+  // Per-app policies are a second call each; run them together. One app's
+  // policy fetch failing only costs that app its hint - never sinks the sync.
+  const hintsByCfId = new Map<string, string[]>();
+  await Promise.all(
+    apps.map(async (app) => {
+      const candidates = new Set<string>();
+      const seen = new Set<string>();
+      try {
+        const body = await cfApi(env, config, `/accounts/${config.accountId}/access/apps/${app.id}/policies`);
+        for (const p of (body.result as CfPolicy[] | undefined) ?? []) {
+          if (p.decision !== "allow") continue;
+          for (const r of p.include ?? []) {
+            if (r.group?.id) await accessGroupClaims(env, config, r.group.id, seen, candidates);
+            else selectorClaims([r], candidates);
+          }
+        }
+      } catch {
+        /* no hint for this app */
+      }
+      hintsByCfId.set(
+        app.id,
+        [...new Set([...candidates].map((h) => nameByLower.get(h.toLowerCase())).filter((n): n is string => Boolean(n)))]
+      );
+    })
+  );
+
+  const t = new Date().toISOString();
+  const existing = await listAccessApps(env);
+  const liveIds = new Set(apps.map((a) => a.id));
+  const gone = existing.filter((r) => !liveIds.has(r.cf_app_id));
+  await env.DB.batch([
+    ...apps.map((a) =>
+      env.DB.prepare(
+        `INSERT INTO cf_access_apps (cf_app_id, name, type, hostname, grant_hint, synced_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(cf_app_id) DO UPDATE SET name = excluded.name, type = excluded.type, hostname = excluded.hostname, grant_hint = excluded.grant_hint, synced_at = excluded.synced_at, updated_at = excluded.updated_at`
+      ).bind(a.id, a.name ?? "", a.type ?? "", a.self_hosted_domains?.[0] ?? a.domain ?? "", JSON.stringify(hintsByCfId.get(a.id) ?? []), t, t)
+    ),
+    ...gone.flatMap((r) => [
+      env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'cfapp' AND target_id = ?").bind(r.id),
+      env.DB.prepare("DELETE FROM cf_access_apps WHERE id = ?").bind(r.id),
+    ]),
+  ]);
+  return { synced: apps.length, removed: gone.length };
+}
+
+/**
+ * Sets the granting group and requestability for a synced Access app. The
+ * granting group must be a static, non-system group - approving a request is a
+ * manual membership write, which only those can take. Requestable needs a
+ * granting group; clearing the group drops requestable too.
+ */
+export async function configureAccessApp(env: Env, appId: number, grantingGroupId: number | null, requestable: boolean): Promise<CfAccessAppRow> {
+  const app = await env.DB.prepare("SELECT * FROM cf_access_apps WHERE id = ?").bind(appId).first<CfAccessAppRow>();
+  if (!app) throw new ServiceError(404, "That Access application is not synced - run a sync first.");
+  if (grantingGroupId !== null) {
+    const g = await env.DB.prepare("SELECT * FROM groups WHERE id = ?").bind(grantingGroupId).first<GroupRow>();
+    if (!g) throw new ServiceError(400, "That group does not exist.");
+    if (g.rule) throw new ServiceError(400, `"${g.name}" fills itself by rule - a granting group has to be static.`);
+    if (g.system) throw new ServiceError(400, `"${g.name}" is maintained by the system; it can't grant an app.`);
+  }
+  // Requestable needs a group to join: asking for it on an unmapped app is an
+  // error, while unmapping an app quietly drops the flag (it can't work
+  // without a group anyway).
+  if (requestable && grantingGroupId === null && app.granting_group_id === null) {
+    throw new ServiceError(400, "Pick the group that grants this app before making it requestable.");
+  }
+  const wants = requestable && grantingGroupId !== null;
+  await env.DB.prepare("UPDATE cf_access_apps SET granting_group_id = ?, requestable = ?, updated_at = ? WHERE id = ?")
+    .bind(grantingGroupId, wants ? 1 : 0, new Date().toISOString(), appId)
+    .run();
+  return (await env.DB.prepare("SELECT * FROM cf_access_apps WHERE id = ?").bind(appId).first<CfAccessAppRow>())!;
+}
+
+/** The launch target for a synced app - Access serves HTTPS on its domains. */
+export function accessAppHref(row: Pick<CfAccessAppRow, "hostname">): string {
+  const h = row.hostname.trim();
+  if (!h) return "";
+  return /^https?:\/\//i.test(h) ? h : `https://${h}`;
 }

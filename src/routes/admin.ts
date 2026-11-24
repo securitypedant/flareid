@@ -36,7 +36,7 @@ import { catalogValuePlaceholders, getCatalogEntry, listCatalog, renderInstructi
 import { createUpstreamIdp, deleteUpstreamIdp, FederationError, getUpstreamIdp, idpConfig, listUpstreamIdps, oidcCallbackUrl, samlAcsUrl, samlSpEntityId, updateUpstreamIdp, upstreamJitGroups, type OidcIdpConfig, type UpstreamIdpInput, type UpstreamIdpRow } from "../lib/federation.js";
 import { SOCIAL_PROVIDERS, socialIssuer, socialMeta, socialProvider, type SocialProvider } from "../lib/social.js";
 import { campaignItems, closeCampaign, createCampaign, decideAccessRequest, decideCertItem, getAccessRequest, getCampaign, listAccessRequests, listCampaigns } from "../lib/access.js";
-import { accessJwtFor, cfOneReady, enabledListSyncs, flagUser, getCfOne, LIST_SYNCS, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
+import { accessJwtFor, cfOneReady, configureAccessApp, enabledListSyncs, flagUser, getCfOne, grantHints, LIST_SYNCS, listAccessApps, listSyncStatus, riskScoreFor, saveCfOne, setEnabledListSyncs, sweepWatchlist, syncAccessApps, syncLists, unflagUser, watchedUser, watchlist } from "../lib/cfone.js";
 import { drainSsfOutbox } from "../lib/ssf.js";
 import { getRateLimitPolicy } from "../lib/rate-limit.js";
 import { activeTurnstileSiteKey, getNewUserPasswordMode, getTurnstileConfig, isBreachedPasswordCheckEnabled, isMfaRequired } from "../lib/settings.js";
@@ -2668,6 +2668,8 @@ admin.get("/admin/access", async (c) => {
                         <td>${
                           r.target_type === "group"
                             ? `<a href="/admin/groups/${r.target_id}">${escapeHtml(r.target_name)}</a>${roleGroups.has(r.target_id) ? `<br/><span class="badge badge-pending">Admin access</span>` : ""}`
+                            : r.target_type === "cfapp"
+                            ? `<a href="/admin/integrations/cf-one">${escapeHtml(r.target_name)}</a><br/><span class="badge">Access app</span>`
                             : `<a href="${r.target_type === "oidc_app" ? `/admin/clients/${r.target_id}` : `/admin/saml/${r.target_id}`}">${escapeHtml(r.target_name)}</a><br/><span class="badge">${r.target_type === "oidc_app" ? "OIDC" : "SAML"} app</span>`
                         }</td>
                         <td class="muted">${escapeHtml(r.reason || "—")}</td>
@@ -2679,7 +2681,7 @@ admin.get("/admin/access", async (c) => {
                               ? ""
                               : r.user_id === c.get("user").id
                               ? `<span class="muted" style="font-size:12px;">Your request - another approver must decide it.</span>`
-                              : r.target_type === "group" && roleGroups.has(r.target_id) && !privileged
+                              : ((r.target_type === "group" && roleGroups.has(r.target_id)) || (r.target_type === "cfapp" && r.cf_granting_group_id != null && roleGroups.has(r.cf_granting_group_id))) && !privileged
                               ? `<span class="muted" style="font-size:12px;">Needs a Super Admin</span>`
                               : `<form method="POST" action="/admin/access/requests/${r.id}" style="display:flex; gap:6px; align-items:center; margin:0;">
                                   <input type="text" name="note" placeholder="Note (optional)" style="width:130px; margin:0;" />
@@ -2826,7 +2828,9 @@ admin.post("/admin/access/requests/:id", async (c) => {
     // Approving an app request writes the app's assignees, so it asks for the
     // app's own write permission rather than the groups one this page runs on.
     const req = await getAccessRequest(c.env, Number(c.req.param("id")));
-    if (req && req.target_type !== "group") {
+    // cfapp grants a group membership like a group request does; only the two
+    // protocol app kinds need their own write permission here.
+    if (req && req.target_type !== "group" && req.target_type !== "cfapp") {
       const access = c.get("access");
       const perm = req.target_type === "oidc_app" ? "oidc:write" : "saml:write";
       if (!access?.isSuper && !grants(access?.perms ?? [], perm)) throw new ServiceError(403, `Deciding this request needs ${perm}.`);
@@ -3371,6 +3375,8 @@ admin.get(CFONE, async (c) => {
   const enabled = await enabledListSyncs(c.env);
   const status = await listSyncStatus(c.env);
   const watched = await watchlist(c.env);
+  const accessApps = await listAccessApps(c.env);
+  const grantableGroups = (await c.env.DB.prepare("SELECT id, name FROM groups WHERE (rule IS NULL OR rule = '') AND (system IS NULL OR system = '') ORDER BY name").all<{ id: number; name: string }>()).results;
   const statusByKey = new Map(status.map((s) => [s.key, s]));
   const ready = cfOneReady(config);
 
@@ -3381,6 +3387,7 @@ admin.get(CFONE, async (c) => {
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${c.req.query("synced") ? successBanner(`Sync ran: ${escapeHtml(c.req.query("synced")!)} list${c.req.query("synced") === "1" ? "" : "s"} updated${c.req.query("failed") ? `, ${escapeHtml(c.req.query("failed")!)} failed - see below` : ""}.`) : ""}
+      ${c.req.query("apps_synced") ? successBanner(`Access applications synced: ${escapeHtml(c.req.query("apps_synced")!)} pulled${Number(c.req.query("apps_removed")) ? `, ${escapeHtml(c.req.query("apps_removed")!)} removed` : ""}.`) : ""}
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error") ?? "")}</p>` : ""}
       ${cardSection(`
         ${integrationIntro("Connects this directory to Cloudflare One (Zero Trust). The API token needs <strong>Zero Trust: Edit</strong> on the account. Once the team name and an Access application's AUD are set, the admin console only answers requests that arrive through that Access application.")}
@@ -3432,6 +3439,45 @@ admin.get(CFONE, async (c) => {
         </form>
         ${status.filter((s) => s.key.startsWith("group:")).length ? `<p class="muted">Group lists synced: ${status.filter((s) => s.key.startsWith("group:")).map((s) => `<code>${escapeHtml(s.cf_list_id)}</code> (${s.item_count})`).join(" ")}</p>` : ""}`
             : `<p class="muted">Set the account ID and API token above first - without the token there is nothing to push with.</p>`
+        }
+      `)}
+      ${cardSection(`
+        <h2>Access applications</h2>
+        <p class="muted">Cloudflare Access applications pulled read-only from this account. Map each app to the static group whose membership grants it: Access policies that Include that group then decide reachability, members see the app on their Applications page, and an approved access request is just a group-join. FlareID never writes Access config - changes made in Zero Trust land here on the next sync.</p>
+        ${
+          ready
+            ? `${accessApps.length
+                ? `<table>
+                    <thead><tr><th>Application</th><th>Granted by</th><th>Requestable</th><th></th></tr></thead>
+                    <tbody>${accessApps
+                      .map((a) => {
+                        const hints = grantHints(a);
+                        return `<tr>
+                          <td>${escapeHtml(a.name)}${a.type ? ` <span class="badge">${escapeHtml(a.type)}</span>` : ""}${a.hostname ? `<br/><a class="muted" style="font-size:12px;" href="https://${escapeHtml(a.hostname)}" target="_blank" rel="noopener">${escapeHtml(a.hostname)}</a>` : ""}
+                            ${hints.length ? `<br/><span class="muted" style="font-size:12px;">Policies name: ${hints.map(escapeHtml).join(", ")}</span>` : ""}</td>
+                          <td>
+                            <select form="cfapp-${a.id}" name="granting_group_id" style="margin:0; min-width:170px;">
+                              <option value="">- not mapped -</option>
+                              ${grantableGroups.map((g) => `<option value="${g.id}" ${a.granting_group_id === g.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`).join("")}
+                            </select>
+                          </td>
+                          <td>
+                            <label class="switch" title="People can ask for this app from My account">
+                              <input form="cfapp-${a.id}" type="checkbox" name="requestable" value="1" ${a.requestable ? "checked" : ""} />
+                              <span class="track"></span>
+                            </label>
+                          </td>
+                          <td><form id="cfapp-${a.id}" method="POST" action="${CFONE}/apps/${a.id}" style="margin:0;"><button class="secondary" type="submit" style="margin:0;">Save</button></form></td>
+                        </tr>`;
+                      })
+                      .join("")}</tbody>
+                  </table>`
+                : `<p class="muted">Nothing synced yet - pull this account's Access applications to map them here.</p>`}
+              <form method="POST" action="${CFONE}/apps/sync" style="margin-top:12px;">
+                <button class="secondary" type="submit">Sync applications now</button>
+                ${accessApps.some((a) => a.synced_at) ? `<span class="muted" style="margin-left:10px; font-size:12px;">Last synced ${ts(accessApps.map((a) => a.synced_at).sort().pop() ?? "")}</span>` : ""}
+              </form>`
+            : `<p class="muted">Set the account ID and API token above first - there is nothing to pull with.</p>`
         }
       `)}
       ${cardSection(`
@@ -3516,6 +3562,30 @@ admin.post(`${CFONE}/watch/:uid/remove`, async (c) => {
   await unflagUser(c.env, userId);
   const upn = (await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(userId).first<{ upn: string }>())?.upn ?? `#${userId}`;
   await audit(consoleCtx(c), "cfone.user_unflagged", upn);
+  return c.redirect(`${CFONE}?saved=1`, 302);
+});
+
+admin.post(`${CFONE}/apps/sync`, async (c) => {
+  const config = await getCfOne(c.env);
+  if (!config?.apiToken) return c.redirect(`${CFONE}?error=${encodeURIComponent("Set the account ID and API token first.")}`, 302);
+  try {
+    const result = await syncAccessApps(c.env, config);
+    await audit(consoleCtx(c), "cfone.access_apps_synced", "cloudflare-one", { synced: result.synced, removed: result.removed });
+    return c.redirect(`${CFONE}?apps_synced=${result.synced}&apps_removed=${result.removed}`, 302);
+  } catch (e) {
+    return c.redirect(`${CFONE}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
+});
+
+admin.post(`${CFONE}/apps/:id`, async (c) => {
+  const body = await c.req.parseBody();
+  const gid = Number(body.granting_group_id ?? 0) || null;
+  try {
+    const app = await configureAccessApp(c.env, Number(c.req.param("id")), gid, body.requestable === "1");
+    await audit(consoleCtx(c), "cfone.access_app_configured", app.name, { granting_group_id: gid, requestable: app.requestable });
+  } catch (e) {
+    return c.redirect(`${CFONE}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
+  }
   return c.redirect(`${CFONE}?saved=1`, 302);
 });
 
