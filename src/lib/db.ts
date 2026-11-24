@@ -1,7 +1,7 @@
 import type { Env } from "../env.js";
 import type { OAuthClientRow, UserRow } from "./types.js";
 import { dynamicGroupIdsForUser, dynamicGroupNamesForUser } from "./groups.js";
-import { getUserByAnyEmail } from "./user-emails.js";
+import { resolveLoginIdentifier } from "./identifier.js";
 
 export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
   return env.DB.prepare("SELECT * FROM users WHERE upn = ?")
@@ -11,19 +11,12 @@ export function getUserByUpn(env: Env, upn: string): Promise<UserRow | null> {
 }
 
 /**
- * Looks a user up by login identifier - either their full UPN, or just the
- * username part (unique across every domain, so this is unambiguous).
+ * Looks a user up by login identifier: a full UPN, a bare handle, an E.164
+ * phone, or a listed email/phone alias (identifier.ts). An ambiguous bare
+ * name resolves to no user - indistinguishable from an unknown one.
  */
 export async function getUserByLoginIdentifier(env: Env, identifier: string): Promise<UserRow | null> {
-  const normalized = identifier.trim().toLowerCase();
-  // A UPN is also an address; any listed contact address names the account
-  // too, so sign-in and recovery work with an alias.
-  if (normalized.includes("@")) return (await getUserByUpn(env, normalized)) ?? getUserByAnyEmail(env, normalized);
-
-  return env.DB.prepare("SELECT * FROM users WHERE username = ?")
-    .bind(normalized)
-    .first<UserRow>()
-    .then((row) => row ?? null);
+  return (await resolveLoginIdentifier(env, identifier)).user;
 }
 
 export function getUserById(env: Env, id: number): Promise<UserRow | null> {

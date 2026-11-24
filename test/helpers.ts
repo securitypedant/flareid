@@ -24,9 +24,21 @@ export async function resetDatabase(): Promise<void> {
   // keys point backwards along it - group_members references users, which is
   // created first. Dropping forwards removes a parent while a child still
   // references it and fails with "no such table: main.users", which is a
-  // confusing way to be told about a foreign key.
-  for (const table of [...results].reverse()) {
-    await env.DB.prepare(`DROP TABLE IF EXISTS "${table.name}"`).run();
+  // confusing way to be told about a foreign key. Users got rebuilt late
+  // (0058) so creation order alone no longer puts it first; drops that hit a
+  // foreign key are retried on the next pass, when their children are gone.
+  let remaining = [...results].reverse().map((t) => t.name);
+  for (let pass = 0; pass < 5 && remaining.length; pass++) {
+    const failed: string[] = [];
+    for (const name of remaining) {
+      try {
+        await env.DB.prepare(`DROP TABLE IF EXISTS "${name}"`).run();
+      } catch {
+        failed.push(name);
+      }
+    }
+    if (failed.length === remaining.length) throw new Error(`resetDatabase: cannot drop ${failed.join(", ")}`);
+    remaining = failed;
   }
 
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

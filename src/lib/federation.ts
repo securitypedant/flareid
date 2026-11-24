@@ -13,7 +13,8 @@ import { sealMaybe, unsealMaybe } from "./sealed.js";
 import { appleClientSecret, socialProvider, type AppleSecretConfig } from "./social.js";
 import { claimOnce } from "./one-shot.js";
 import type { UserRow } from "./types.js";
-import { effectiveMappings, getCollisionPolicy, JIT_COLUMN_TARGETS, resolveUsernameCollision } from "./mappings.js";
+import { effectiveMappings, getCollisionPolicy, JIT_COLUMN_TARGETS, resolveIdentifierCollision, resolveUsernameCollision } from "./mappings.js";
+import { parseIdentifier } from "./identifier.js";
 import { evalExpression, parseExpression, scalar, strOf } from "./expr.js";
 
 /**
@@ -639,22 +640,39 @@ export async function resolveFederatedUser(env: Env, idp: UpstreamIdpRow, profil
 
   if (!idp.jit) throw new NoLocalAccount(profile);
 
-  // JIT: username from the profile, domain from its email when managed, else
-  // the IdP's configured domain, else the first domain.
-  const local = (profile.username.split("@")[0] || profile.email.split("@")[0] || randomToken(8)).toLowerCase();
-  const emailDomain = profile.email.includes("@") ? profile.email.split("@")[1]! : "";
-  let domain = idp.jit_domain || "";
-  if (!domain && emailDomain && (await domainExists(env, emailDomain))) domain = emailDomain;
-  if (!domain) domain = (await env.DB.prepare("SELECT domain FROM domains ORDER BY is_default DESC, domain LIMIT 1").first<{ domain: string }>())?.domain ?? "";
-  if (!domain || !(await domainExists(env, domain))) throw new FederationError("JIT provisioning has no managed domain to create the account under.");
-
-  // A taken sign-in name follows the collision policy: append a counter,
-  // evaluate a pattern expression, or refuse outright.
+  // JIT mints the upstream identifier verbatim: an @-form profile name is the
+  // account's UPN (the domain does not have to be managed - the name is what
+  // the IdP calls this user, not an address we serve); a bare handle mints
+  // `{handle}-{idp-slug}` so GitHub's simon and GitLab's simon stay distinct
+  // and self-describing. No usable profile name falls back to a UPN under a
+  // managed domain as before.
+  const idpSlug = idp.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `idp${idp.id}`;
   const policy = await getCollisionPolicy(env);
-  const baseLocal = local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "") || `u${randomToken(6)}`;
-  const candidate = await resolveUsernameCollision(env, baseLocal, { domain, email: profile.email }, policy);
-  if (!candidate) throw new FederationError("JIT provisioning can't create the account: its sign-in name collides with an existing user.");
-  const upn = `${candidate}@${domain}`;
+  let upn: string;
+  let candidate: string;
+  const profileIdent = profile.username ? parseIdentifier(profile.username) : null;
+  const handlePart = profile.username && !profile.username.includes("@")
+    ? profile.username.toLowerCase().replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "")
+    : "";
+  const mint = profileIdent?.kind === "upn" ? profileIdent
+    : handlePart ? parseIdentifier(`${handlePart}-${idpSlug}`) : null;
+  if (mint) {
+    const resolved = await resolveIdentifierCollision(env, mint, { idp: idpSlug, email: profile.email }, policy);
+    if (!resolved) throw new FederationError("JIT provisioning can't create the account: its sign-in name collides with an existing user.");
+    upn = resolved;
+    candidate = parseIdentifier(resolved)!.username;
+  } else {
+    const local = (profile.username.split("@")[0] || profile.email.split("@")[0] || randomToken(8)).toLowerCase();
+    const emailDomain = profile.email.includes("@") ? profile.email.split("@")[1]! : "";
+    let domain = idp.jit_domain || "";
+    if (!domain && emailDomain && (await domainExists(env, emailDomain))) domain = emailDomain;
+    if (!domain) domain = (await env.DB.prepare("SELECT domain FROM domains ORDER BY is_default DESC, domain LIMIT 1").first<{ domain: string }>())?.domain ?? "";
+    if (!domain || !(await domainExists(env, domain))) throw new FederationError("JIT provisioning has no managed domain to create the account under.");
+    const baseLocal = local.replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "") || `u${randomToken(6)}`;
+    candidate = await resolveUsernameCollision(env, baseLocal, { domain, email: profile.email }, policy) as string;
+    if (!candidate) throw new FederationError("JIT provisioning can't create the account: its sign-in name collides with an existing user.");
+    upn = `${candidate}@${domain}`;
+  }
   // The sign-in name shares a namespace with contact addresses: spelled like
   // another account's user_emails alias or users.email, the same string
   // resolves to two accounts (SSF prefers the upn holder, email lookups the

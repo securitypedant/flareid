@@ -4,7 +4,7 @@ Generated from the route definitions by `npm run docs:api`; do not edit by hand.
 The same document is served by every deployment at `GET /api/v1/openapi.json` (no token needed), and is in [openapi.json](openapi.json).
 See [api.md](api.md) for authentication, permissions and worked examples.
 
-API version 4.13.0.
+API version 4.13.1.
 
 ## Contents
 
@@ -148,8 +148,9 @@ Request body:
 | `attributes` | map of string | no | Schema attribute values by name. On PATCH, merged into the current values. |
 | `groups` | string[] | no | Static groups, by name. On PATCH, the complete set. |
 | `status` | "active" \| "disabled" | no |  |
-| `username` | string | yes |  |
+| `username` | string | no |  |
 | `domain` | string | no | Defaults to the default domain. |
+| `identifier` | string | no | The sign-in name verbatim - a user@domain UPN, a bare handle, or +E.164 phone. Wins over username+domain. |
 | `password` | string | no |  |
 
 Response `201`:
@@ -251,6 +252,7 @@ Request body:
 |---|---|---|---|
 | `username` | string | no |  |
 | `domain` | string | no |  |
+| `identifier` | string | no |  |
 | `given_name` | string | no |  |
 | `family_name` | string | no |  |
 | `email` | string \| null | no | Where email for the account goes, when not the UPN; null or empty clears it. |
@@ -2291,7 +2293,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 List the fields mastered by inbound provisioning.
 
-Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key> for a custom attribute.
+Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, phones, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key> for a custom attribute.
 
 Permission: `scim:read`
 
@@ -2307,7 +2309,7 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Replace the mastered field list.
 
-The whole set, empty to unmaster everything. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key>.
+The whole set, empty to unmaster everything. Valid fields: upn, emails, phones, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key>.
 
 Permission: `scim:write`
 

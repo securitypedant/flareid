@@ -15,6 +15,8 @@ import { newPasswordError } from "../lib/breached-passwords.js";
 import { removePasskey } from "../lib/passkeys.js";
 import { deleteTrustedDevicesForUser } from "../lib/trusted-devices.js";
 import { assertEmailsUsable, setUserEmails, UserEmailError, type UserEmailInput } from "../lib/user-emails.js";
+import { assertPhonesUsable, setUserPhones, UserPhoneError, type UserPhoneInput } from "../lib/user-phones.js";
+import { parseIdentifier, USERNAME_PATTERN } from "../lib/identifier.js";
 import type { UserRow } from "../lib/types.js";
 import { afterResponse, audit, ServiceError, type ServiceCtx } from "./context.js";
 import { assertMayAssignGroups, assertMayTouchUser, assertNoAdminRoleGrant } from "./guards.js";
@@ -35,15 +37,54 @@ async function staticOnly(env: Env, groupIds: number[]): Promise<number[]> {
   return groupIds.filter((gid) => staticIds.has(gid));
 }
 
-// The local part of every UPN: the same pattern the SCIM server and the directory
-// import apply, so all three writers admit the same identities.
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+// The identifier grammar (UPN / handle / phone) lives in lib/identifier.ts;
+// USERNAME_PATTERN stays for the username+domain UPN shorthand every caller
+// still speaks.
+const TAKEN = (name: string) => `Sign-in name "${name}" is already taken by another account.`;
 
-const TAKEN = (username: string) => `Username "${username}" is already taken by another account (usernames must be unique across every domain).`;
+/**
+ * Resolves the caller's naming inputs to the canonical upn + username. An
+ * explicit `identifier` wins; otherwise username+domain is the UPN shorthand
+ * (username alone - no domain - is the bare-name/handle form, which is also
+ * how a zero-domain deployment names accounts). UPN-shaped names require a
+ * managed domain; handles and phones need none.
+ */
+async function resolveNewIdentifier(env: Env, input: { identifier?: string; username: string; domain: string }): Promise<{ upn: string; username: string }> {
+  const explicit = input.identifier?.trim();
+  if (explicit) {
+    const parsed = parseIdentifier(explicit);
+    if (!parsed) throw new ServiceError(400, `"${explicit}" is not a valid sign-in name (a user@domain UPN, a bare name, or an +E.164 phone).`);
+    if (parsed.kind === "upn") {
+      const domain = parsed.normalized.split("@")[1]!;
+      if (!(await domainExists(env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
+    }
+    return { upn: parsed.normalized, username: parsed.username };
+  }
+  const username = input.username.trim().toLowerCase();
+  const domain = input.domain.trim().toLowerCase();
+  if (!domain) {
+    // No domain given: the field is the identifier itself - a handle, or a
+    // phone in +E.164 form.
+    const parsed = parseIdentifier(username);
+    if (!parsed) throw new ServiceError(400, `"${username}" is not a valid sign-in name.`);
+    if (parsed.kind === "upn") {
+      const d = parsed.normalized.split("@")[1]!;
+      if (!(await domainExists(env, d))) throw new ServiceError(400, `No domain "${d}".`);
+    }
+    return { upn: parsed.normalized, username: parsed.username };
+  }
+  if (!username) throw new ServiceError(400, "username, domain, and first name are required");
+  if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
+  // The UPN is where recovery mail goes: its domain must be one the IdP manages.
+  if (!(await domainExists(env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
+  return { upn: `${username}@${domain}`, username };
+}
 
 export interface NewUser {
   username: string;
   domain: string;
+  /** The sign-in name verbatim - a UPN, a bare handle, or +E.164. Wins over username+domain. */
+  identifier?: string;
   givenName: string;
   familyName: string;
   /** 0/undefined = the default user schema. */
@@ -58,6 +99,8 @@ export interface NewUser {
   email?: string;
   /** The full address list (work/home/aliases); `email` alone becomes a single work primary. */
   emails?: UserEmailInput[];
+  /** Listed phone numbers (sign-in aliases); +E.164 each. */
+  phones?: UserPhoneInput[];
 }
 
 /** `emails` wins when both are sent; `email` alone is a single work primary. */
@@ -72,15 +115,10 @@ function emailInputs(input: { email?: string | null; emails?: UserEmailInput[] }
  * the console activates them from their page once they are ready.
  */
 export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id: number; upn: string; password: string; chosen: boolean }> {
-  const username = input.username.trim().toLowerCase();
-  const domain = input.domain.trim().toLowerCase();
   const givenName = input.givenName.trim();
   const familyName = input.familyName.trim();
-  if (!username || !domain || !givenName) throw new ServiceError(400, "username, domain, and first name are required");
-  if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
-  // The UPN is where recovery mail goes: its domain must be one the IdP manages.
-  if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
-  const upn = `${username}@${domain}`;
+  if (!givenName) throw new ServiceError(400, "username, domain, and first name are required");
+  const { upn, username } = await resolveNewIdentifier(ctx.env, input);
   const displayName = `${givenName} ${familyName}`.trim();
   const schemaId = Number(input.schemaId) || (await defaultSchemaId(ctx.env, "user"));
   const schemaAttrs = schemaId ? await getSchemaAttributes(ctx.env, schemaId) : [];
@@ -89,9 +127,20 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const groupIds = await staticOnly(ctx.env, input.groupIds);
   await assertMayAssignGroups(ctx, groupIds);
 
-  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE username = ? OR upn = ?").bind(username, upn).first()) throw new ServiceError(409, TAKEN(username));
-  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ?").bind(upn).first()) throw new ServiceError(409, TAKEN(username));
+  // The canonical name alone is unique now: two users may share a local part,
+  // but never an identifier. The name must also not collide with the contact
+  // namespaces that resolve sign-in (an email alias or listed phone spelled
+  // the same would name two accounts).
+  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE upn = ?").bind(upn).first()) throw new ServiceError(409, TAKEN(upn));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ?").bind(upn).first()) throw new ServiceError(409, TAKEN(upn));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_phones WHERE phone = ?").bind(upn).first()) throw new ServiceError(409, TAKEN(upn));
   const emails = emailInputs(input);
+  try {
+    await assertPhonesUsable(ctx.env, null, input.phones ?? []);
+  } catch (e) {
+    if (e instanceof UserPhoneError) throw new ServiceError(400, e.message);
+    throw e;
+  }
   try {
     await assertEmailsUsable(ctx.env, null, emails);
   } catch (e) {
@@ -174,6 +223,7 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
   const userId = Number(result.meta.last_row_id);
   // The address table is the record: it writes users.email itself.
   await setUserEmails(ctx.env, userId, emails);
+  if (input.phones?.length) await setUserPhones(ctx.env, userId, input.phones);
   if (groupIds.length > 0) {
     await ctx.env.DB.batch(groupIds.map((gid) => ctx.env.DB.prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)").bind(gid, userId)));
   }
@@ -189,6 +239,8 @@ export async function createUser(ctx: ServiceCtx, input: NewUser): Promise<{ id:
 export interface UserProfile {
   username: string;
   domain: string;
+  /** The sign-in name verbatim - a UPN, a bare handle, or +E.164. Wins over username+domain. */
+  identifier?: string;
   givenName: string;
   familyName: string;
   schemaId?: number;
@@ -200,6 +252,8 @@ export interface UserProfile {
   email?: string | null;
   /** The complete replacement address list; takes precedence over `email`. */
   emails?: UserEmailInput[];
+  /** The complete replacement phone list (+E.164 each); undefined leaves it alone. */
+  phones?: UserPhoneInput[];
 }
 
 /** Replaces a user's identity, attributes (conformed to the schema) and static groups. Status is setUserStatus's. */
@@ -211,18 +265,15 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   // sent (or left off a read-only form), the existing value survives. The API
   // layer rejects mastered fields outright.
   const mastered = new Set(await getMasteredFields(ctx.env));
-  let username = input.username.trim().toLowerCase();
-  let domain = input.domain.trim().toLowerCase();
+  let username: string;
   let upn: string;
   if (mastered.has("upn")) {
     username = existing.username;
-    domain = existing.upn.slice(existing.upn.lastIndexOf("@") + 1);
     upn = existing.upn;
   } else {
-    if (!username || !domain) throw new ServiceError(400, "username and domain are required");
-    if (!USERNAME_PATTERN.test(username)) throw new ServiceError(400, `"${username}" is not a valid username.`);
-    if (!(await domainExists(ctx.env, domain))) throw new ServiceError(400, `No domain "${domain}".`);
-    upn = `${username}@${domain}`;
+    const resolved = await resolveNewIdentifier(ctx.env, input);
+    username = resolved.username;
+    upn = resolved.upn;
   }
   const givenName = mastered.has("given_name") ? existing.given_name : input.givenName.trim();
   const familyName = mastered.has("family_name") ? existing.family_name : input.familyName.trim();
@@ -245,8 +296,9 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
   let managerExternalId = (columns.manager_external_id as string | null) ?? null;
   if (managerExternalId && managerExternalId === existing.external_id) managerExternalId = null; // can't manage yourself
 
-  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE (username = ? OR upn = ?) AND id != ?").bind(username, upn, id).first()) throw new ServiceError(409, TAKEN(username));
-  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ? AND user_id != ?").bind(upn, id).first()) throw new ServiceError(409, TAKEN(username));
+  if (await ctx.env.DB.prepare("SELECT id FROM users WHERE upn = ? AND id != ?").bind(upn, id).first()) throw new ServiceError(409, TAKEN(upn));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ? AND user_id != ?").bind(upn, id).first()) throw new ServiceError(409, TAKEN(upn));
+  if (await ctx.env.DB.prepare("SELECT 1 FROM user_phones WHERE phone = ? AND user_id != ?").bind(upn, id).first()) throw new ServiceError(409, TAKEN(upn));
 
   let email = existing.email;
   let emails: UserEmailInput[] | undefined;
@@ -319,6 +371,10 @@ export async function updateUserProfile(ctx: ServiceCtx, id: number, input: User
 
   // The address table is the record; undefined leaves it untouched.
   if (emails !== undefined) await setUserEmails(ctx.env, id, emails);
+  if (input.phones !== undefined) {
+    await assertPhonesUsable(ctx.env, id, input.phones);
+    await setUserPhones(ctx.env, id, input.phones);
+  }
 
   const { results: previous } = await ctx.env.DB.prepare("SELECT group_id FROM group_members WHERE user_id = ?").bind(id).all<{ group_id: number }>();
   await ctx.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id).run();

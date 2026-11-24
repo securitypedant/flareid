@@ -4,7 +4,8 @@ import { breachCount, breachMessage } from "./breached-passwords.js";
 import { revokeAccountTokens } from "./account-tokens.js";
 import type { Env } from "../env.js";
 import { hashPassword, type PasswordHash } from "./password.js";
-import { ensureDomain, getDefaultDomain, isValidDomain } from "./domains.js";
+import { ensureDomain, getDefaultDomain, isValidDomain, domainExists } from "./domains.js";
+import { parseIdentifier, type ParsedIdentifier } from "./identifier.js";
 import { resolveNewAccountPassword } from "./settings.js";
 import { SUPER_ADMINS_GROUP } from "./middleware.js";
 import { adminRoleGroupIds, adminRoleGroupNames, grantsAdminRoleGroup } from "./admin-roles.js";
@@ -84,7 +85,11 @@ export interface DirectoryGroup {
 }
 
 export interface DirectoryUser {
+  /** The local part (with `domain` it forms the UPN), or a full sign-in name
+   * when `identifier` is set - a bare handle or +E.164 phone also works. */
   username: string;
+  /** The sign-in name verbatim (UPN / handle / phone); wins over username+domain. */
+  identifier?: string;
   display_name?: string;
   given_name?: string;
   family_name?: string;
@@ -172,14 +177,20 @@ export function validateBundle(bundle: DirectoryBundle): { users: DirectoryUser[
   const seen = new Set<string>();
   for (const user of users) {
     const username = cleanString(user.username).toLowerCase();
-    if (!username) throw new ImportValidationError("Every user needs a username.");
-    if (!USERNAME_PATTERN.test(username)) {
+    const identifier = cleanString(user.identifier);
+    if (!username && !identifier) throw new ImportValidationError("Every user needs a username or identifier.");
+    if (identifier) {
+      if (!parseIdentifier(identifier)) {
+        throw new ImportValidationError(`Invalid identifier "${identifier}" - expected a user@domain UPN, a bare handle, or an +E.164 phone number.`);
+      }
+    } else if (!USERNAME_PATTERN.test(username) && !parseIdentifier(username)) {
       throw new ImportValidationError(
-        `Invalid username "${username}". Usernames are the local part of a UPN: lowercase letters, digits, dot, underscore and hyphen, starting with a letter or digit.`
+        `Invalid username "${username}". Usernames are the local part of a UPN (or, without a domain, a handle / +E.164 phone): lowercase letters, digits, dot, underscore and hyphen, starting with a letter or digit.`
       );
     }
-    if (seen.has(username)) throw new ImportValidationError(`Duplicate username "${username}" in the same bundle.`);
-    seen.add(username);
+    const key = identifier || username;
+    if (seen.has(key)) throw new ImportValidationError(`Duplicate user "${key}" in the same bundle.`);
+    seen.add(key);
 
     if (user.email !== undefined && user.email !== "" && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(String(user.email))) {
       throw new ImportValidationError(`User "${username}" has an invalid email "${user.email}".`);
@@ -276,8 +287,8 @@ async function groupIdsForUser(env: Env, userId: number): Promise<number[]> {
   return results.map((r) => r.id);
 }
 
-async function groupIdsOfUsernames(env: Env, usernames: string[]): Promise<Set<number>> {
-  const { results } = await env.DB.prepare("SELECT id FROM users WHERE username IN (SELECT value FROM json_each(?))").bind(JSON.stringify(usernames)).all<{ id: number }>();
+async function groupIdsOfIdentifiers(env: Env, identifiers: string[]): Promise<Set<number>> {
+  const { results } = await env.DB.prepare("SELECT id FROM users WHERE upn IN (SELECT value FROM json_each(?))").bind(JSON.stringify(identifiers)).all<{ id: number }>();
   const out = new Set<number>();
   for (const r of results) for (const g of await groupIdsForUser(env, r.id)) out.add(g);
   return out;
@@ -295,33 +306,50 @@ async function affectedGroupIds(env: Env, before: Set<number>, userIds: number[]
 
 export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: ImportOptions = {}): Promise<ImportResult> {
   const { users, groups } = validateBundle(bundle);
+
+  const mode = bundle.mode ?? "merge";
+  const domain = (cleanString(bundle.domain) || (await getDefaultDomain(env))).toLowerCase();
+  if (cleanString(bundle.domain) && !isValidDomain(domain)) {
+    throw new ImportValidationError(`"${domain}" is not a valid DNS domain name.`);
+  }
+  // The identifier every user entry resolves to: `identifier` verbatim, else
+  // username + the bundle domain - or the bare username on a zero-domain
+  // deployment, which is the handle form. Users are keyed on it everywhere
+  // below - idempotency, admin protection, manager refs - not on username.
+  const identifierFor = (user: DirectoryUser): { parsed: ParsedIdentifier | null; raw: string } => {
+    const uname = cleanString(user.username).toLowerCase();
+    // A username that is already a full form (@ / +) is the identifier; only a
+    // bare local part gets the bundle domain appended.
+    const raw = cleanString(user.identifier) || (/[@+]/.test(uname) ? uname : domain ? `${uname}@${domain}` : uname);
+    return { parsed: parseIdentifier(raw), raw };
+  };
+  const identifierKey = (user: DirectoryUser): string => (identifierFor(user).parsed?.normalized ?? identifierFor(user).raw.toLowerCase());
+  const identifierKeys = users.map(identifierKey).filter(Boolean);
+
   // Groups the bundle's existing people are in now, so a SCIM push after the
   // import can update them even if this import takes someone out.
-  const groupsBefore = users.length <= SCIM_TARGETED_LIMIT && (await isScimConfigured(env)) ? await groupIdsOfUsernames(env, users.map((u) => cleanString(u.username).toLowerCase())) : new Set<number>();
+  const groupsBefore = identifierKeys.length <= SCIM_TARGETED_LIMIT && (await isScimConfigured(env)) ? await groupIdsOfIdentifiers(env, identifierKeys) : new Set<number>();
 
   if (!opts.allowPrivileged) {
     const ROLE_GROUP_NAMES = await adminRoleGroupNames(env);
     const { results: adminRows } = await env.DB.prepare(
-      `SELECT u.username FROM users u
+      `SELECT u.upn FROM users u
        JOIN group_members gm ON gm.user_id = u.id
        JOIN groups g ON g.id = gm.group_id WHERE g.name IN (SELECT value FROM json_each(?))`
     )
       .bind(JSON.stringify(ROLE_GROUP_NAMES))
-      .all<{ username: string }>();
-    const adminUsernames = new Set(adminRows.map((r) => r.username));
+      .all<{ upn: string }>();
+    const adminUpns = new Set(adminRows.map((r) => r.upn));
     // Dynamic role members have no group_members row; resolve them by rule.
     const dynRules = await dynamicAdminRules(env);
-    if (dynRules.length) {
-      const bundleNames = users.map((u) => cleanString(u.username).toLowerCase()).filter(Boolean);
-      if (bundleNames.length) {
-        const { results: existing } = await env.DB.prepare("SELECT * FROM users WHERE username IN (SELECT value FROM json_each(?))")
-          .bind(JSON.stringify(bundleNames))
-          .all<UserRow>();
-        for (const u of existing) if (dynRules.some((r) => userMatchesRule(u, r))) adminUsernames.add(u.username);
-      }
+    if (dynRules.length && identifierKeys.length) {
+      const { results: existing } = await env.DB.prepare("SELECT * FROM users WHERE upn IN (SELECT value FROM json_each(?))")
+        .bind(JSON.stringify(identifierKeys))
+        .all<UserRow>();
+      for (const u of existing) if (dynRules.some((r) => userMatchesRule(u, r))) adminUpns.add(u.upn);
     }
     for (const user of users) {
-      const username = cleanString(user.username).toLowerCase();
+      const username = cleanString(user.username).toLowerCase() || identifierKey(user);
       if (user.super_admin) {
         throw new ImportValidationError(`User "${username}" sets super_admin, which requires an admin-scoped token.`);
       }
@@ -329,16 +357,10 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
       if (roleGroup) {
         throw new ImportValidationError(`User "${username}" lists "${roleGroup}", an admin role, which requires an admin-scoped token.`);
       }
-      if (adminUsernames.has(username)) {
+      if (adminUpns.has(identifierKey(user))) {
         throw new ImportValidationError(`User "${username}" holds an admin role; overwriting them requires an admin-scoped token.`);
       }
     }
-  }
-
-  const mode = bundle.mode ?? "merge";
-  const domain = (cleanString(bundle.domain) || (await getDefaultDomain(env))).toLowerCase();
-  if (cleanString(bundle.domain) && !isValidDomain(domain)) {
-    throw new ImportValidationError(`"${domain}" is not a valid DNS domain name.`);
   }
 
   const result: ImportResult = {
@@ -351,7 +373,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     errors: [],
   };
 
-  await ensureDomain(env, domain);
+  if (domain) await ensureDomain(env, domain);
   const removed = mode === "replace" ? await replaceExistingDirectory(env) : { users: [], groups: [] };
   const touchedUserIds: number[] = [];
 
@@ -450,7 +472,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   // Sequential rather than batched, and each row in its own try: one bad row
   // (a UPN that collides with an account under a different username, say)
   // should be reported, not abort the other ninety-nine.
-  const externalIdByUsername = new Map<string, string>();
+  const externalIdByUpn = new Map<string, string>();
 
   // One hash per distinct password in this import. A bundle typically gives
   // dozens of people the same default password, and scrypt costs ~100 ms of
@@ -466,7 +488,22 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   const breached = await breachedImportPasswords(env, users, passwordPolicy);
   for (const user of users) {
     const username = cleanString(user.username).toLowerCase();
-    const upn = `${username}@${domain}`;
+    const ident = identifierFor(user);
+    if (!ident.parsed) {
+      result.errors.push({ username: username || ident.raw, message: `"${ident.raw}" is not a valid sign-in name (a user@domain UPN, a bare handle, or an +E.164 phone).` });
+      result.users.skipped++;
+      continue;
+    }
+    if (ident.parsed.kind === "upn") {
+      const identDomain = ident.parsed.normalized.split("@")[1]!;
+      if (!(await domainExists(env, identDomain))) {
+        result.errors.push({ username: username || ident.raw, message: `No domain "${identDomain}".` });
+        result.users.skipped++;
+        continue;
+      }
+    }
+    const upn = ident.parsed.normalized;
+    const identUsername = ident.parsed.username;
     // An explicit password meets the same policy as every other way of setting one.
     if (typeof user.password === "string" && user.password !== "") {
       const weak = validatePassword(user.password, passwordPolicy) ?? breached.get(user.password) ?? null;
@@ -477,18 +514,19 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
     }
 
     try {
-      const existing = await env.DB.prepare("SELECT id, external_id, status, upn FROM users WHERE username = ?")
-        .bind(username)
+      const existing = await env.DB.prepare("SELECT id, external_id, status, upn FROM users WHERE upn = ?")
+        .bind(upn)
         .first<{ id: number; external_id: string; status: string; upn: string }>();
 
-      // The UPN shares a namespace with contact addresses: spelled like
-      // another account's user_emails alias or users.email, the same string
-      // resolves to two accounts (SSF prefers the upn holder, email lookups
-      // the alias owner). SCIM POST /Users applies the same check.
+      // The UPN shares a namespace with contact addresses and listed phones:
+      // spelled like another account's user_emails alias, users.email, or
+      // user_phones row, the same string resolves to two accounts (SSF prefers
+      // the upn holder, alias lookups the owner). SCIM POST /Users applies the
+      // same check.
       const nsClash = await env.DB.prepare(
-        "SELECT 1 FROM user_emails WHERE email = ? AND user_id != ? UNION SELECT 1 FROM users WHERE email = ? AND id != ?"
+        "SELECT 1 FROM user_emails WHERE email = ? AND user_id != ? UNION SELECT 1 FROM users WHERE email = ? AND id != ? UNION SELECT 1 FROM user_phones WHERE phone = ? AND user_id != ?"
       )
-        .bind(upn, existing?.id ?? -1, upn, existing?.id ?? -1)
+        .bind(upn, existing?.id ?? -1, upn, existing?.id ?? -1, upn, existing?.id ?? -1)
         .first();
       if (nsClash) {
         result.errors.push({ username, message: `The sign-in name ${upn} collides with another account's email address.` });
@@ -531,7 +569,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
           // An attribute update can move the user into a dynamic admin-role
           // group; that grant is reserved to admin-scoped tokens.
           const after = {
-            ...existingRow, upn, display_name: displayName, given_name: givenName, family_name: familyName,
+            ...existingRow, upn, username: identUsername, display_name: displayName, given_name: givenName, family_name: familyName,
             ...vals, status: user.status ?? "disabled", custom_attributes: JSON.stringify(mergedCustom),
           } as UserRow;
           const granted = await grantsAdminRoleGroup(env, existingRow, after);
@@ -543,13 +581,14 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         }
         if (existing.upn !== upn) await revokeAccountTokens(env, existing.id);
         await env.DB.prepare(
-          `UPDATE users SET upn = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?,
+          `UPDATE users SET upn = ?, username = ?, display_name = ?, given_name = ?, family_name = ?, job_title = ?, department = ?,
              employee_number = ?, hire_date = ?, employment_status = ?, employment_type = ?, location = ?,
              status = ?, is_admin = ?, schema_id = ?, custom_attributes = ?, updated_at = ?
            WHERE id = ?`
         )
           .bind(
             upn,
+            identUsername,
             displayName,
             givenName,
             familyName,
@@ -594,7 +633,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
 
         userId = existing.id;
         touchedUserIds.push(userId);
-        externalIdByUsername.set(username, existing.external_id);
+        externalIdByUpn.set(upn, existing.external_id);
         result.users.updated++;
       } else {
         const supplied = typeof user.password === "string" && user.password !== "" ? user.password : null;
@@ -610,7 +649,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         if (!opts.allowPrivileged) {
           // A new account can be born matching a dynamic admin-role rule.
           const after = {
-            upn, username, display_name: displayName, given_name: givenName, family_name: familyName,
+            upn, username: identUsername, display_name: displayName, given_name: givenName, family_name: familyName,
             ...vals, status: user.status ?? "disabled", manager_external_id: null, custom_attributes: JSON.stringify(attrCustom),
           } as UserRow;
           const granted = await grantsAdminRoleGroup(env, null, after);
@@ -630,7 +669,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         )
           .bind(
             upn,
-            username,
+            identUsername,
             displayName,
             givenName,
             familyName,
@@ -657,7 +696,7 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         if (!inserted) throw new Error("insert returned no row");
         userId = inserted.id;
         touchedUserIds.push(userId);
-        externalIdByUsername.set(username, externalId);
+        externalIdByUpn.set(upn, externalId);
         if (generated) result.generated_passwords[upn] = password;
         result.users.created++;
       }
@@ -723,19 +762,30 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
   for (const user of users) {
     const manager = cleanString(user.manager);
     if (!manager) continue;
-    const username = cleanString(user.username).toLowerCase();
-    // Only rows this import actually wrote: the write keys on username, so
-    // without this a row the grant check skipped would get its manager set
-    // anyway.
-    if (!externalIdByUsername.has(username)) continue;
+    const upn = identifierFor(user).parsed?.normalized;
+    const username = cleanString(user.username).toLowerCase() || upn || cleanString(user.identifier);
+    // Only rows this import actually wrote: the write keys on the sign-in
+    // name, so without this a row the grant check skipped would get its
+    // manager set anyway.
+    if (!upn || !externalIdByUpn.has(upn)) continue;
 
     try {
-      let managerExternalId = externalIdByUsername.get(manager.toLowerCase());
+      const managerKey = manager.toLowerCase();
+      let managerExternalId = externalIdByUpn.get(managerKey);
       if (!managerExternalId) {
-        const row = await env.DB.prepare("SELECT external_id FROM users WHERE username = ?")
-          .bind(manager.toLowerCase())
-          .first<{ external_id: string }>();
-        managerExternalId = row?.external_id;
+        // A manager is named by their sign-in name: an exact upn (incl. a
+        // handle or phone) wins first; else a bare local part - which has to
+        // be unique, or the reference is ambiguous and reported, not guessed.
+        const exact = await env.DB.prepare("SELECT external_id FROM users WHERE upn = ?").bind(managerKey).first<{ external_id: string }>();
+        if (exact) managerExternalId = exact.external_id;
+        else {
+          const { results: mgrRows } = await env.DB.prepare("SELECT external_id FROM users WHERE username = ? LIMIT 2").bind(managerKey).all<{ external_id: string }>();
+          if (mgrRows.length === 1) managerExternalId = mgrRows[0]!.external_id;
+          else if (mgrRows.length > 1) {
+            result.errors.push({ username, message: `Manager "${manager}" is ambiguous - use their full sign-in name.` });
+            continue;
+          }
+        }
       }
       if (!managerExternalId) {
         result.errors.push({ username, message: `Unknown manager "${manager}" - left unset.` });
@@ -746,15 +796,15 @@ export async function importDirectory(env: Env, bundle: DirectoryBundle, opts: I
         // attribute change the per-user grant check exists to refuse - and it
         // runs after that check. Re-check the post-write image before the
         // UPDATE, like the first pass does for every other column.
-        const row = await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
+        const row = await env.DB.prepare("SELECT * FROM users WHERE upn = ?").bind(upn).first<UserRow>();
         const granted = row ? await grantsAdminRoleGroup(env, row, { ...row, manager_external_id: managerExternalId }) : null;
         if (granted) {
           result.errors.push({ username, message: `Giving "${username}" that manager puts them in ${granted}, an admin role group, which requires an admin-scoped token.` });
           continue;
         }
       }
-      await env.DB.prepare("UPDATE users SET manager_external_id = ? WHERE username = ?")
-        .bind(managerExternalId, username)
+      await env.DB.prepare("UPDATE users SET manager_external_id = ? WHERE upn = ?")
+        .bind(managerExternalId, upn)
         .run();
       result.managers_resolved++;
     } catch (err) {

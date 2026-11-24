@@ -1,6 +1,6 @@
 import type { Env } from "../env.js";
 import { issueAccountToken } from "./account-tokens.js";
-import { recipientFor, sendEmail, type SendResult } from "./email.js";
+import { recipientFor, routableRecipient, sendEmail, type SendResult } from "./email.js";
 import { buildEmail } from "./email-templates.js";
 import { brandFor } from "./brands.js";
 import type { UserRow } from "./types.js";
@@ -13,13 +13,17 @@ import type { UserRow } from "./types.js";
  * header a request arrived with, so a forged Host cannot redirect a reset link.
  */
 export async function sendInvitation(env: Env, user: UserRow): Promise<SendResult> {
+  const to = routableRecipient(user);
+  if (!to) return { ok: false, error: "The account has no reachable email address." };
   const token = await issueAccountToken(env, user.id, "invite");
   const brand = await brandFor(env, { upn: user.upn });
-  return sendEmail(env, { to: recipientFor(user), ...(await buildEmail(env, "invitation", brand, { name: user.display_name || user.username }, `${env.ISSUER_URL}/invite/${token}`)) });
+  return sendEmail(env, { to, ...(await buildEmail(env, "invitation", brand, { name: user.display_name || user.username }, `${env.ISSUER_URL}/invite/${token}`)) });
 }
 
 export async function sendPasswordReset(env: Env, user: UserRow): Promise<SendResult> {
+  const to = routableRecipient(user);
+  if (!to) return { ok: false, error: "The account has no reachable email address." };
   const token = await issueAccountToken(env, user.id, "reset");
   const brand = await brandFor(env, { upn: user.upn });
-  return sendEmail(env, { to: recipientFor(user), ...(await buildEmail(env, "password_reset", brand, { name: user.display_name || user.username }, `${env.ISSUER_URL}/reset-password/${token}`)) });
+  return sendEmail(env, { to, ...(await buildEmail(env, "password_reset", brand, { name: user.display_name || user.username }, `${env.ISSUER_URL}/reset-password/${token}`)) });
 }

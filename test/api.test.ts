@@ -334,7 +334,7 @@ describe("directory import", () => {
     const { apiKey } = await bootstrapInstance();
     const { status, body } = await apiCall("/api/v1/directory/import", {
       token: apiKey,
-      body: { version: 1, users: [{ username: "ada@example.com" }] },
+      body: { version: 1, users: [{ username: "ada@@example.com" }] },
     });
 
     expect(status).toBe(400);
@@ -352,7 +352,7 @@ describe("directory import", () => {
     });
 
     expect(status).toBe(400);
-    expect(body.message).toMatch(/Duplicate username/);
+    expect(body.message).toMatch(/Duplicate user/);
   });
 
   it("rejects an unsupported bundle version", async () => {

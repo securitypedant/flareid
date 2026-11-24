@@ -1,6 +1,6 @@
 import type { Env } from "../env.js";
 import { isFactorUsable } from "./auth-policy.js";
-import { recipientFor, sendEmail } from "./email.js";
+import { routableRecipient, sendEmail } from "./email.js";
 import { brandFor } from "./brands.js";
 import { buildEmail } from "./email-templates.js";
 import { recordRateAttempt } from "./rate-limit.js";
@@ -40,8 +40,11 @@ export function emailOtpAvailable(env: Env): Promise<boolean> {
 }
 
 /** Whether this user signs in with email codes right now. */
-export async function userHasEmailOtp(env: Env, user: { email_otp_enabled: number }): Promise<boolean> {
-  return Boolean(user.email_otp_enabled) && (await emailOtpAvailable(env));
+export async function userHasEmailOtp(env: Env, user: { email_otp_enabled: number; email?: string | null; upn?: string }): Promise<boolean> {
+  if (!user.email_otp_enabled) return false;
+  // A handle or phone sign-in name can't receive mail - only a contact address can.
+  if (!routableRecipient({ upn: user.upn ?? "", email: user.email ?? null })) return false;
+  return emailOtpAvailable(env);
 }
 
 export const loginScope = (mfaId: string) => `login:${mfaId}`;
@@ -83,7 +86,8 @@ export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpo
   const code = randomCode();
   const record: StoredCode = { hash: await hashCode(scope, code), userId: user.id, purpose, attempts: 0, expiresAt: Date.now() + EMAIL_OTP_MINUTES * 60_000 };
   await env.SESSIONS_KV.put(kvKey(scope), JSON.stringify(record), { expirationTtl: EMAIL_OTP_MINUTES * 60 });
-  const to = recipientFor(user);
+  const to = routableRecipient(user);
+  if (!to) return { ok: false, reason: "send_failed", error: "The account has no reachable email address." };
   const result = await sendEmail(env, {
     to,
     // In the person's brand (their UPN's domain), like every email to them.

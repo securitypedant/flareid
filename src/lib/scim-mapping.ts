@@ -296,7 +296,7 @@ export async function correlateUser(env: Env, input: CorrelationInput): Promise<
  * it, while `custom.<key>` masters a custom attribute.
  */
 export const MASTERING_FIELDS = [
-  "upn", "emails", "given_name", "family_name", "display_name", "job_title",
+  "upn", "emails", "phones", "given_name", "family_name", "display_name", "job_title",
   "department", "employee_number", "hire_date", "employment_status",
   "employment_type", "location", "manager", "photo",
 ] as const;
@@ -334,10 +334,11 @@ export function masteringKeyFor(attr: Pick<SchemaAttributeRow, "name">): string 
  * rather than preserved. `attributes` keys are checked against their
  * mastering key, the named body fields against theirs.
  */
-export function masteredFieldsInBody(mastered: Set<string>, body: { username?: unknown; domain?: unknown; given_name?: unknown; family_name?: unknown; display_name?: unknown; email?: unknown; emails?: unknown; attributes?: Record<string, unknown> }): string[] {
+export function masteredFieldsInBody(mastered: Set<string>, body: { username?: unknown; domain?: unknown; identifier?: unknown; given_name?: unknown; family_name?: unknown; display_name?: unknown; email?: unknown; emails?: unknown; phones?: unknown; attributes?: Record<string, unknown> }): string[] {
   const out: string[] = [];
-  if (mastered.has("upn") && (body.username !== undefined || body.domain !== undefined)) out.push("upn");
+  if (mastered.has("upn") && (body.username !== undefined || body.domain !== undefined || body.identifier !== undefined)) out.push("upn");
   if (mastered.has("emails") && (body.emails !== undefined || body.email !== undefined)) out.push("emails");
+  if (mastered.has("phones") && body.phones !== undefined) out.push("phones");
   for (const f of ["given_name", "family_name", "display_name"] as const) {
     if (mastered.has(f) && body[f] !== undefined) out.push(f);
   }

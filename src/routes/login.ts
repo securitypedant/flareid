@@ -15,6 +15,7 @@ import { brandFor, domainFromHint, type Brand } from "../lib/brands.js";
 import { accessFor } from "../lib/admin-roles.js";
 import { grants } from "../lib/permissions.js";
 import { getClientByClientId, getUserById, getUserByLoginIdentifier, getUserGroupIds } from "../lib/db.js";
+import { resolveLoginIdentifier } from "../lib/identifier.js";
 import { turnstileRefused } from "../lib/turnstile.js";
 import { hashPassword, storedHashFormat, upgradePasswordHashIfNeeded, verifyPassword, type StoredPassword } from "../lib/password.js";
 import { timed } from "../lib/metrics.js";
@@ -292,7 +293,8 @@ login.post("/login", async (c) => {
   // "admin", " admin" and "admin@x" would each get their own failure budget.
   // Recording before verifying keeps the increment and the limit decision
   // atomic - a burst can never see a stale under-limit count.
-  const user = await getUserByLoginIdentifier(c.env, upn);
+  const resolution = await resolveLoginIdentifier(c.env, upn);
+  const user = resolution.user;
   const rateKey = loginRateKey(upn, user);
 
   if (await recordLoginAttempt(c.env, rateKey, ip)) {
@@ -317,7 +319,10 @@ login.post("/login", async (c) => {
   }
 
   if (!valid || !user) {
-    await logAudit(c.env, null, "login.failed", user ? user.upn : upn.trim().toLowerCase(), { ip }, c.req.raw);
+    // An ambiguous bare name resolves to no user - the audit reason lets an
+    // admin see a real user failing because their local part collides, while
+    // the sign-in form shows the same generic failure as a wrong password.
+    await logAudit(c.env, null, "login.failed", user ? user.upn : upn.trim().toLowerCase(), { ip, ...(resolution.ambiguous ? { reason: "ambiguous_identifier" } : {}) }, c.req.raw);
     // A burst of failed sign-ins against one account lands it on the risk
     // watchlist for 24h; the flag feeds SCIM group sync and CF One lists.
     // Counted in rate_limits, not audit_log - the audit scan grew with the

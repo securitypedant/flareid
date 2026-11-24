@@ -4,6 +4,37 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.14.0] - 2026-11-22
+
+Multi-form sign-in identifiers (design: `docs/identifiers.md`). `users.upn`
+stays the single unique canonical name, but its grammar widens to three forms:
+a `user@domain` UPN, a bare handle (`simon`), and a +E.164 phone. Domains are
+now optional - a domainless deployment is just a directory of handle accounts.
+
+- `users.username` is no longer unique (schema rebuild, migration 0058) - the
+  same local part can exist under several domains (`simon@d1.com` and
+  `simon@d2.com`). It becomes a display short-name and a resolution candidate.
+- Resolution: an exact identifier match always wins (a handle owns its bare
+  name); a bare local part resolves only when it names exactly one account.
+  Ambiguity resolves to *no user* - the same generic failure as a wrong
+  password, with `reason: "ambiguous_identifier"` in the admin-visible audit
+  event. LDAP `uid=` binds follow the same rules.
+- New `user_phones` table: phone aliases that also resolve the account at
+  sign-in (`+E.164` required). Editable per user in the console, the API
+  (`phones`), CSV import, and SCIM `phoneNumbers`.
+- Create/update callers take `identifier` for any form; `username`+`domain`
+  remains the UPN shorthand. The console user forms get an identifier-type
+  picker (UPN+domain / handle / phone).
+- Federated JIT mints the upstream identifier verbatim for @-form names -
+  including unmanaged domains, so `simonsmith01@gmail.com` (social) coexists
+  with `simonsmith01@company.com` (native). Bare upstream handles mint
+  `{handle}-{idp-slug}` (`simon-github` vs `simon-gitlab`); the suffix is a
+  name, never parsed back - provenance lives in `federated_identities`. The
+  collision pattern context gains `{idp}`.
+- Caveat: a handle/phone account with no contact address can't receive
+  invitations, reset links or email codes (the UI says so; email-OTP is never
+  offered).
+
 ## [4.13.1] - 2026-11-21
 
 Security release: run-4 audit remediation (1 high, 5 medium, 12 low - all

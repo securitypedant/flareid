@@ -8,6 +8,8 @@ import { getUserByExternalId } from "../lib/db.js";
 import { listDomains, getDefaultDomain } from "../lib/domains.js";
 import { isEmailAddress } from "../lib/email.js";
 import { listUserEmails, setUserEmails, getUserByAnyEmail, assertEmailsUsable, UserEmailError, type UserEmailInput } from "../lib/user-emails.js";
+import { listUserPhones, normalizePhone, setUserPhones, UserPhoneError, type UserPhoneInput } from "../lib/user-phones.js";
+import { parseIdentifier } from "../lib/identifier.js";
 import { applyInboundPhoto, deleteUserPhoto } from "../lib/photos.js";
 import { parseRule, resolveGroupMemberUserIds, resolveManyGroupMemberUserIds, userMatchesRule } from "../lib/groups.js";
 import { WATCHLIST_GROUP_NAME } from "../lib/cfone.js";
@@ -158,6 +160,12 @@ const SCHEMA_ATTRS: Record<string, unknown[]> = {
         { name: "type", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
         { name: "primary", type: "boolean", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
       ] },
+    { name: "phoneNumbers", type: "complex", multiValued: true, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none",
+      subAttributes: [
+        { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "type", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+        { name: "primary", type: "boolean", multiValued: false, required: false, caseExact: false, mutability: "readWrite", returned: "default", uniqueness: "none" },
+      ] },
     { name: "groups", type: "complex", multiValued: true, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none",
       subAttributes: [
         { name: "value", type: "string", multiValued: false, required: false, caseExact: false, mutability: "readOnly", returned: "default", uniqueness: "none" },
@@ -206,6 +214,7 @@ async function userResource(env: Env, u: UserRow) {
     .bind(u.id)
     .all<{ id: number; name: string }>();
   const emails = await listUserEmails(env, u.id);
+  const phones = await listUserPhones(env, u.id);
   return {
     schemas: [USER, ENTERPRISE],
     id: u.external_id,
@@ -218,6 +227,7 @@ async function userResource(env: Env, u: UserRow) {
     emails: emails.length > 0
       ? emails.map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 }))
       : [{ value: u.email || u.upn, primary: true, type: "work" }],
+    ...(phones.length > 0 ? { phoneNumbers: phones.map((p) => ({ value: p.phone, type: p.type, primary: p.is_primary === 1 })) } : {}),
     groups: groups.map((g) => ({ value: String(g.id), display: g.name, $ref: `${base(env)}/Groups/${g.id}` })),
     [ENTERPRISE]: {
       department: u.department || undefined,
@@ -327,6 +337,7 @@ interface ScimUserBody {
   title?: string;
   active?: boolean;
   emails?: { value?: string; primary?: boolean; type?: string }[];
+  phoneNumbers?: { value?: string; primary?: boolean; type?: string }[];
   photos?: { value?: string; primary?: boolean; type?: string }[];
   [ENTERPRISE]?: { department?: string; employeeNumber?: string; manager?: { value?: string } | string };
   [key: string]: unknown;
@@ -340,7 +351,7 @@ interface ScimUserBody {
  * onto the current resource for PATCH, where `partial` keeps an expression
  * yielding nothing from clearing the field.
  */
-async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown; partial?: boolean }): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined; custom: Record<string, string | null> | undefined; userName: string | undefined; photo: string | null | undefined }> {
+async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown; partial?: boolean }): Promise<{ cols: Record<string, string | null>; emails: UserEmailInput[] | undefined; phones: UserPhoneInput[] | undefined; custom: Record<string, string | null> | undefined; userName: string | undefined; photo: string | null | undefined }> {
   const cols: Record<string, string | null> = {};
   if (body.externalId !== undefined) cols.source_id = String(body.externalId) || null;
   if (body.name?.givenName !== undefined) cols.given_name = String(body.name.givenName);
@@ -366,6 +377,13 @@ async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown;
         .filter((e) => e && typeof e.value === "string" && e.value.trim())
         .map((e) => ({ value: String(e.value), type: e.type ?? "work", primary: e.primary === true }))
     : undefined;
+  // phoneNumbers[] lands in user_phones the same way emails land in
+  // user_emails; each value must normalize to +E.164.
+  let phones: UserPhoneInput[] | undefined = body.phoneNumbers
+    ? body.phoneNumbers
+        .filter((p) => p && typeof p.value === "string" && p.value.trim())
+        .map((p) => ({ value: String(p.value), type: p.type ?? "work", primary: p.primary === true }))
+    : undefined;
   let custom: Record<string, string | null> | undefined;
   let userName: string | undefined;
   try {
@@ -381,6 +399,9 @@ async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown;
   for (const e of emails ?? []) {
     if (!isEmailAddress(e.value.trim())) throw new ScimError(400, `"${e.value}" is not a valid email address.`, "invalidValue");
   }
+  for (const p of phones ?? []) {
+    if (!normalizePhone(p.value)) throw new ScimError(400, `"${p.value}" is not a valid +E.164 phone number.`, "invalidValue");
+  }
   // photos[] comes along for the side write in applyColumns: the primary (or
   // first) value, an empty list clearing the stored photo.
   let photo: string | null | undefined;
@@ -388,7 +409,7 @@ async function columnsFrom(env: Env, body: ScimUserBody, opts?: { doc?: unknown;
     const list = body.photos.filter((p) => p && typeof p.value === "string" && p.value.trim());
     photo = list.length ? String((list.find((p) => p.primary) ?? list[0])!.value) : null;
   }
-  return { cols, emails, custom, userName, photo };
+  return { cols, emails, phones, custom, userName, photo };
 }
 
 /**
@@ -408,7 +429,7 @@ function mergedCustomAttributes(currentJson: string | null | undefined, custom: 
   return JSON.stringify(attrs);
 }
 
-async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined, photo?: string | null) {
+async function applyColumns(env: Env, userId: number, cols: Record<string, string | null>, emails: UserEmailInput[] | undefined, phones?: UserPhoneInput[] | undefined, photo?: string | null) {
   const keys = Object.keys(cols);
   if (keys.length > 0) {
     await env.DB.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
@@ -421,6 +442,14 @@ async function applyColumns(env: Env, userId: number, cols: Record<string, strin
       emailsChanged = await setUserEmails(env, userId, emails);
     } catch (err) {
       if (err instanceof UserEmailError) throw new ScimError(409, err.message, "uniqueness");
+      throw err;
+    }
+  }
+  if (phones !== undefined) {
+    try {
+      await setUserPhones(env, userId, phones);
+    } catch (err) {
+      if (err instanceof UserPhoneError) throw new ScimError(409, err.message, "uniqueness");
       throw err;
     }
   }
@@ -440,13 +469,16 @@ async function applyColumns(env: Env, userId: number, cols: Record<string, strin
 
 scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => {
   const body = await c.req.json<ScimUserBody>();
-  const { cols, emails, custom, userName: mappedName, photo } = await columnsFrom(c.env, body);
+  const { cols, emails, phones, custom, userName: mappedName, photo } = await columnsFrom(c.env, body);
   const userName = String(mappedName ?? body.userName ?? "").trim().toLowerCase();
   if (!userName) throw new ScimError(400, "userName is required.", "invalidSyntax");
-  const [local, domainPart] = userName.includes("@") ? userName.split("@") : [userName, await getDefaultDomain(c.env)];
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(local!)) throw new ScimError(400, `"${local}" is not a valid username.`, "invalidValue");
-  if (!(await listDomains(c.env)).some((d) => d.domain === domainPart)) throw new ScimError(400, `The domain "${domainPart}" is not configured in FlareID.`, "invalidValue");
-  const upn = `${local}@${domainPart}`;
+  // Any sign-in name is a valid SCIM userName: a user@domain UPN (the domain
+  // does not have to be managed - inbound names mint verbatim, like JIT), a
+  // bare handle, or a +E.164 phone.
+  const ident = parseIdentifier(userName);
+  if (!ident) throw new ScimError(400, `"${userName}" is not a valid userName (a UPN, a handle, or a +E.164 phone).`, "invalidValue");
+  const upn = ident.normalized;
+  const local = ident.username;
   // Correlation: the configured keys can adopt an existing account instead of
   // conflicting - a rehired person, a feed re-pointed at this IdP. The first
   // configured key with a match decides; several matches on one key is a 409.
@@ -457,7 +489,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
       const merged = mergedCustomAttributes(matched.user.custom_attributes, custom);
       if (merged !== undefined) cols.custom_attributes = merged;
       await assertNoAdminRoleGrant(c, matched.user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-      await applyColumns(c.env, matched.user.id, cols, emails, photo);
+      await applyColumns(c.env, matched.user.id, cols, emails, phones, photo);
       await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_correlated", matched.user.upn, { key: matched.key }, c.req.raw);
       const fresh = (await getUserByExternalId(c.env, matched.user.external_id))!;
       downstream(c, () => pushUserAndRules(c.env, matched.user, fresh), "update", fresh.upn);
@@ -467,8 +499,9 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
     if (e instanceof ScimMappingError) throw new ScimError(409, e.message, "uniqueness");
     throw e;
   }
-  if (await c.env.DB.prepare("SELECT 1 FROM users WHERE upn = ? OR username = ?").bind(upn, local).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
+  if (await c.env.DB.prepare("SELECT 1 FROM users WHERE upn = ?").bind(upn).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
   if (await c.env.DB.prepare("SELECT 1 FROM user_emails WHERE email = ?").bind(upn).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
+  if (await c.env.DB.prepare("SELECT 1 FROM user_phones WHERE phone = ?").bind(upn).first()) throw new ScimError(409, "A user with that userName already exists.", "uniqueness");
 
   const now = new Date().toISOString();
   const externalId = crypto.randomUUID();
@@ -505,7 +538,7 @@ scimServer.post("/scim/v2/Users", requireScope("directory:write"), async (c) => 
   )
     .bind(upn, local, local, externalId, await defaultSchemaId(c.env, "user"), now, now)
     .first<{ id: number }>();
-  await applyColumns(c.env, inserted!.id, cols, emails, photo);
+  await applyColumns(c.env, inserted!.id, cols, emails, phones, photo);
   const user = (await getUserByExternalId(c.env, externalId))!;
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_created", upn, undefined, c.req.raw);
   downstream(c, () => pushUserAndRules(c.env, null, user), "create", upn);
@@ -533,11 +566,11 @@ async function assertNoAdminRoleGrant(c: Context<{ Bindings: Env }>, user: UserR
 scimServer.put("/scim/v2/Users/:id", requireScope("directory:write"), async (c) => {
   const user = await guardedUser(c);
   const body = await c.req.json<ScimUserBody>();
-  const { cols, emails, custom, photo } = await columnsFrom(c.env, body);
+  const { cols, emails, phones, custom, photo } = await columnsFrom(c.env, body);
   const merged = mergedCustomAttributes(user.custom_attributes, custom);
   if (merged !== undefined) cols.custom_attributes = merged;
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails, photo);
+  await applyColumns(c.env, user.id, cols, emails, phones, photo);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_replaced", user.upn, undefined, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);
@@ -563,6 +596,9 @@ function patchToBody(ops: { op?: string; path?: string; value?: unknown }[]): Sc
     } else if (path.startsWith("emails")) {
       const v = op.value;
       body.emails = Array.isArray(v) ? v : [{ value: typeof v === "object" && v ? (v as { value?: string }).value : v, primary: true }];
+    } else if (path.startsWith("phoneNumbers")) {
+      const v = op.value;
+      body.phoneNumbers = Array.isArray(v) ? v : [{ value: typeof v === "object" && v ? (v as { value?: string }).value : v, primary: true }];
     } else {
       body[path] = path === "active" && typeof op.value === "string" ? op.value.toLowerCase() === "true" : op.value;
     }
@@ -579,11 +615,11 @@ scimServer.patch("/scim/v2/Users/:id", requireScope("directory:write"), async (c
   // can combine the changed attribute with untouched ones. `partial` keeps an
   // expression that yields nothing from clearing its field.
   const doc = mergeScimBody(await userResource(c.env, user), patchBody);
-  const { cols, emails, custom, photo } = await columnsFrom(c.env, patchBody, { doc, partial: true });
+  const { cols, emails, phones, custom, photo } = await columnsFrom(c.env, patchBody, { doc, partial: true });
   const merged = mergedCustomAttributes(user.custom_attributes, custom);
   if (merged !== undefined) cols.custom_attributes = merged;
   await assertNoAdminRoleGrant(c, user, { ...cols, ...(emails ? { email: emails.find((e) => e.primary)?.value ?? emails[0]?.value ?? null } : {}) });
-  await applyColumns(c.env, user.id, cols, emails, photo);
+  await applyColumns(c.env, user.id, cols, emails, phones, photo);
   await logAudit(c.env, auditActor(c.get("apiActor")), "scim.user_patched", user.upn, { ops: body.Operations.length }, c.req.raw);
   const fresh = (await getUserByExternalId(c.env, user.external_id))!;
   downstream(c, () => pushUserAndRules(c.env, user, fresh), "update", fresh.upn);

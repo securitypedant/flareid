@@ -142,17 +142,18 @@ describe("collision policy", () => {
   const profile = { subject: "sub", email: "x@else.test", username: "ada", givenName: "A", familyName: "B", displayName: "A B" };
   const oidcInput = () => ({ name: "U", protocol: "oidc" as const, config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test" });
 
+  // A bare upstream handle mints {handle}-{idp-slug}: "ada" via idp "U" -> "ada-u".
   it("increments a taken sign-in name by default", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await seedUserViaApi(apiKey, "ada");
+    await seedUserViaApi(apiKey, "ada-u", { identifier: "ada-u" });
     const idp = await createUpstreamIdp(env, oidcInput());
     const user = await resolveFederatedUser(env, idp, { ...profile, email: "other@else.test" });
-    expect(user.username).toBe("ada2");
+    expect(user.upn).toBe("ada-u2");
   });
 
   it("fails the sign-in when the policy says fail", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await seedUserViaApi(apiKey, "ada");
+    await seedUserViaApi(apiKey, "ada-u", { identifier: "ada-u" });
     await setCollisionPolicy(env, { username: "fail" });
     const idp = await createUpstreamIdp(env, oidcInput());
     await expect(resolveFederatedUser(env, idp, { ...profile, email: "other@else.test" })).rejects.toBeInstanceOf(FederationError);
@@ -160,12 +161,12 @@ describe("collision policy", () => {
 
   it("evaluates a pattern expression until the name is free", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await seedUserViaApi(apiKey, "ada");
-    await seedUserViaApi(apiKey, "ada-x2");
+    await seedUserViaApi(apiKey, "ada-u", { identifier: "ada-u" });
+    await seedUserViaApi(apiKey, "ada-u-x2", { identifier: "ada-u-x2" });
     await setCollisionPolicy(env, { username: "pattern", username_pattern: 'local + "-x" + n' });
     const idp = await createUpstreamIdp(env, oidcInput());
     const user = await resolveFederatedUser(env, idp, { ...profile, email: "other@else.test" });
-    expect(user.username).toBe("ada-x3");
+    expect(user.upn).toBe("ada-u-x3");
   });
 
   it("refuses a colliding claimed email when the policy says fail", async () => {

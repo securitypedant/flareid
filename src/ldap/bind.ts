@@ -124,9 +124,10 @@ export async function ldapBind(ctx: BindCtx, name: string, password: Uint8Array)
   if (!(await isSetupCompleted(env))) return { ok: false, reason: "setup_incomplete" };
 
   const identifier = resolved.username;
-  const user = resolved.upnForm
-    ? await getUserByLoginIdentifier(env, identifier)
-    : ((await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(identifier.toLowerCase()).first<UserRow>()) ?? null);
+  // Both DN shapes resolve through the identifier rules: uid=simon hits a
+  // handle's exact upn or a unique local part (an ambiguous local part fails
+  // like any bad credential), uid=simon@d1.com the UPN/alias paths.
+  const user = await getUserByLoginIdentifier(env, identifier);
 
   // Shared lockout with web sign-in: LDAP must not double an attacker's budget.
   const rateKey = loginRateKey(identifier, user);

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FlareID provisioning API",
-    "version": "4.13.0",
+    "version": "4.13.1",
     "description": "Everything the admin console does, without a browser. JSON in, JSON out; every mutation is audited against the token that made it. Each operation's `x-permission` names the permission it needs (see Permissions in docs/api.md): `<area>:read` or `<area>:write`, where write implies read, and `*` (an `admin` key) grants everything. The original scopes (`directory:read`, `directory:write`, `clients:write`, `settings:write`, `admin`) are shorthand for sets of permissions and keep working.",
     "license": {
       "name": "Apache-2.0",
@@ -2623,13 +2623,16 @@
                     "type": "string",
                     "description": "Defaults to the default domain."
                   },
+                  "identifier": {
+                    "type": "string",
+                    "description": "The sign-in name verbatim - a user@domain UPN, a bare handle, or +E.164 phone. Wins over username+domain."
+                  },
                   "password": {
                     "type": "string"
                   }
                 },
                 "required": [
-                  "given_name",
-                  "username"
+                  "given_name"
                 ]
               }
             }
@@ -2934,6 +2937,9 @@
                     "type": "string"
                   },
                   "domain": {
+                    "type": "string"
+                  },
+                  "identifier": {
                     "type": "string"
                   },
                   "given_name": {
@@ -19020,7 +19026,7 @@
           "SCIM"
         ],
         "summary": "List the fields mastered by inbound provisioning",
-        "description": "Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key> for a custom attribute.",
+        "description": "Mastered fields belong to the upstream provisioner: inbound SCIM writes change them, the console shows them read-only, and the admin API rejects them. Valid fields: upn, emails, phones, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key> for a custom attribute.",
         "security": [
           {
             "bearer": []
@@ -19086,7 +19092,7 @@
           "SCIM"
         ],
         "summary": "Replace the mastered field list",
-        "description": "The whole set, empty to unmaster everything. Valid fields: upn, emails, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key>.",
+        "description": "The whole set, empty to unmaster everything. Valid fields: upn, emails, phones, given_name, family_name, display_name, job_title, department, employee_number, hire_date, employment_status, employment_type, location, manager, photo, or custom.<key>.",
         "security": [
           {
             "bearer": []

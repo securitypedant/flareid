@@ -22,6 +22,8 @@ import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
 import { listUserEmails, setUserEmails } from "../lib/user-emails.js";
+import { listUserPhones } from "../lib/user-phones.js";
+import { parseIdentifier } from "../lib/identifier.js";
 import {
   getDefaultPassword,
   getPasswordPolicy,
@@ -594,6 +596,26 @@ const DOCS_NAV_LINK = `<a href="/docs" class="nav-docs" target="_blank" rel="noo
 function splitUpn(upn: string): { username: string; domain: string } {
   const at = upn.lastIndexOf("@");
   return at === -1 ? { username: upn, domain: "" } : { username: upn.slice(0, at), domain: upn.slice(at + 1) };
+}
+
+// The sign-in name's shape on the user forms: a UPN needs the domain picker's
+// value appended; a handle or a phone is the whole identifier by itself.
+const IDENT_TYPE_SCRIPT = `(function(){var s=document.getElementById('identifier_type');if(!s)return;function t(){var w=document.getElementById('domain-wrap');if(w)w.style.display=s.value==='upn'?'':'none';var i=document.getElementById('username');if(i)i.placeholder=s.value==='upn'?'username':(s.value==='phone'?'+15551234567':'handle');}s.addEventListener('change',t);t();})();`;
+
+function identifierTypeSelect(kind: "upn" | "handle" | "phone", disabled = false) {
+  const opts: [string, string][] = [
+    ["upn", "UPN (name@domain)"],
+    ["handle", "Handle (no domain)"],
+    ["phone", "Phone (+E.164)"],
+  ];
+  return `<select name="identifier_type" id="identifier_type" ${disabled ? "disabled" : ""} style="margin-bottom:0;">${opts.map(([v, l]) => `<option value="${v}" ${v === kind ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+}
+
+/** Posted sign-in-name fields -> the identifier createUser/updateUserProfile stores. */
+function postedIdentifier(body: Record<string, unknown>, fallbackKind: string): string {
+  const kind = String(body.identifier_type ?? fallbackKind);
+  const name = String(body.username ?? "").trim();
+  return kind === "upn" ? `${name}@${String(body.domain ?? "").trim()}` : name;
 }
 
 function employmentStatusSelect(current: string, name = "employment_status") {
@@ -1476,11 +1498,13 @@ admin.get("/admin/users/new", async (c) => {
               <input type="text" id="family_name" name="family_name" required />
             </div>
           </div>
-          <label for="username">UPN</label>
+          <label for="username">Sign-in name</label>
           <div class="field-row">
+            <div style="flex:1;">${identifierTypeSelect("upn")}</div>
             <input type="text" id="username" name="username" placeholder="username" required style="flex:2;" />
-            <div style="flex:1;">${await domainSelect(c.env, "domain", domains[0]?.domain)}</div>
+            <div style="flex:1;" id="domain-wrap">${await domainSelect(c.env, "domain", domains[0]?.domain)}</div>
           </div>
+          ${scriptTag(IDENT_TYPE_SCRIPT)}
           <div class="card-head" style="margin-top:8px;">
             <h2>Attributes</h2>
             <div class="inline-field">
@@ -1517,6 +1541,7 @@ admin.post("/admin/users", async (c) => {
   const created = await createUser(consoleCtx(c), {
     username: String(body.username ?? ""),
     domain: String(body.domain ?? ""),
+    identifier: postedIdentifier(body, "upn"),
     givenName: String(body.given_name ?? ""),
     familyName: String(body.family_name ?? ""),
     schemaId,
@@ -1607,6 +1632,7 @@ admin.get("/admin/users/:id", async (c) => {
   // material (hashes, salts, TOTP secrets).
   const { password_hash: _ph, password_salt: _ps, password_iterations: _pi, totp_secret: _ts, totp_last_counter: _tc, scim_id: _si, ...publicRow } = user;
   const userEmails = await listUserEmails(c.env, id);
+  const userPhones = await listUserPhones(c.env, id);
   const { results: scimLinks } = await c.env.DB.prepare(
     "SELECT t.name AS target, l.scim_id FROM scim_user_links l JOIN scim_targets t ON t.id = l.target_id WHERE l.user_id = ? ORDER BY t.name"
   ).bind(id).all<{ target: string; scim_id: string }>();
@@ -1654,11 +1680,13 @@ admin.get("/admin/users/:id", async (c) => {
               <input type="text" id="family_name" name="family_name" value="${escapeHtml(user.family_name)}" ${mastered.has("family_name") ? "disabled" : ""} />
             </div>
           </div>
-          <label for="username">UPN${mastered.has("upn") ? masteredNote : ""}</label>
+          <label for="username">Sign-in name${mastered.has("upn") ? masteredNote : ""}</label>
           <div class="field-row">
+            <div style="flex:1; min-width:0;">${identifierTypeSelect(parseIdentifier(user.upn)?.kind ?? "upn", mastered.has("upn"))}</div>
             <input type="text" id="username" name="username" value="${escapeHtml(username)}" required style="flex:2; min-width:0;" ${mastered.has("upn") ? "disabled" : ""} />
-            <div style="flex:1; min-width:0;">${await domainSelect(c.env, "domain", domain, mastered.has("upn"))}</div>
+            <div style="flex:1; min-width:0;" id="domain-wrap">${await domainSelect(c.env, "domain", domain, mastered.has("upn"))}</div>
           </div>
+          ${scriptTag(IDENT_TYPE_SCRIPT)}
           <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${ts(user.created_at)}</p>
           <h3 style="margin-top:14px;">Email addresses${mastered.has("emails") ? masteredNote : ""}</h3>
           <p class="muted" style="margin-top:-4px;">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
@@ -1673,6 +1701,9 @@ admin.get("/admin/users/:id", async (c) => {
           <button type="button" class="secondary" data-append-template="email-row-template" data-append-to="email-rows">+ Add address</button>
           <datalist id="email-type-options"><option value="work"></option><option value="home"></option><option value="other"></option></datalist>`
           }
+          <h3 style="margin-top:14px;">Phone numbers${mastered.has("phones") ? masteredNote : ""}</h3>
+          <p class="muted" style="margin-top:-4px;">+E.164 numbers that also resolve this account at sign-in. One per line.</p>
+          <textarea name="phones" rows="2" placeholder="+15551234567" ${mastered.has("phones") ? "disabled" : ""}>${escapeHtml(userPhones.map((p) => p.phone).join("\n"))}</textarea>
         `)}
 
         ${cardSection(`
@@ -1886,18 +1917,26 @@ admin.post("/admin/users/:id", async (c) => {
   const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
   const addrs = list(body.email_addr), types = list(body.email_type), primaries = list(body.email_primary);
   const emails = addrs.map((value, i) => ({ value, type: types[i] ?? "work", primary: primaries[i] === "1" })).filter((e) => e.value.trim() !== "");
+  // Disabled (mastered) inputs post nothing; fall back to what's stored so a
+  // mastered sign-in name survives a save untouched.
+  const cur = await c.env.DB.prepare("SELECT upn, username FROM users WHERE id = ?").bind(id).first<{ upn: string; username: string }>();
+  const curParts = cur ? splitUpn(cur.upn) : { username: "", domain: "" };
+  const curKind = cur ? (parseIdentifier(cur.upn)?.kind ?? "upn") : "upn";
+  const phones = body.phones !== undefined ? String(body.phones).split(/\r?\n/).map((v) => ({ value: v.trim() })).filter((p) => p.value) : undefined;
   // The form carries every value of the chosen schema (same-named values were
   // carried into it), so this is a full replace - PATCH /api/v1/users merges
   // into the current values and calls the same function.
   await updateUserProfile(consoleCtx(c), id, {
-    username: String(body.username ?? ""),
-    domain: String(body.domain ?? ""),
+    username: body.username !== undefined ? String(body.username) : curParts.username,
+    domain: body.domain !== undefined ? String(body.domain) : curParts.domain,
+    identifier: postedIdentifier({ ...body, username: body.username ?? curParts.username, domain: body.domain ?? curParts.domain }, curKind),
     givenName: String(body.given_name ?? ""),
     familyName: String(body.family_name ?? ""),
     schemaId: Number(body.schema_id) || undefined,
     attributes: Object.fromEntries(Object.entries(body).filter(([k]) => k.startsWith("attr_")).map(([k, v]) => [k.slice(5), String(v ?? "")])),
     groupIds: postedGroupIds,
     emails,
+    phones,
   });
   return c.redirect(`/admin/users/${id}?saved=1`, 302);
 });

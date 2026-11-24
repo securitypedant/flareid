@@ -13,6 +13,8 @@ import { auditActor } from "../lib/api-auth.js";
 import { logAudit } from "../lib/audit.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { listUserEmailsFor, type UserEmailInput } from "../lib/user-emails.js";
+import { type UserPhoneInput } from "../lib/user-phones.js";
+import { parseIdentifier, resolveLoginIdentifier } from "../lib/identifier.js";
 import { apiCtx, ServiceError } from "../services/context.js";
 import {
   connectedApps,
@@ -26,7 +28,7 @@ import {
   setUserStatus,
   updateUserProfile,
 } from "../services/users.js";
-import { defineRoute, notFound, param, readJson, readOptionalJson, type ApiContext } from "./openapi.js";
+import { badRequest, defineRoute, notFound, param, readJson, readOptionalJson, type ApiContext } from "./openapi.js";
 import { StringMap, UserSchema } from "./schemas.js";
 
 /**
@@ -40,9 +42,10 @@ import { StringMap, UserSchema } from "./schemas.js";
  * password_salt and totp_secret live in this table and must never leave it),
  * their groups - dynamic ones resolved against the same page - and attributes.
  */
-export async function selectUsers(env: Env, opts: { username?: string; q?: string; limit: number; offset: number }) {
+export async function selectUsers(env: Env, opts: { id?: number; username?: string; q?: string; limit: number; offset: number }) {
   const conds: string[] = [];
-  const binds: string[] = [];
+  const binds: (string | number)[] = [];
+  if (opts.id !== undefined) { conds.push("u.id = ?"); binds.push(opts.id); }
   if (opts.username !== undefined) { conds.push("u.username = ?"); binds.push(opts.username); }
   if (opts.q) {
     conds.push("(lower(u.display_name) LIKE ? ESCAPE '\\' OR lower(u.upn) LIKE ? ESCAPE '\\' OR u.username LIKE ? ESCAPE '\\' OR lower(u.email) LIKE ? ESCAPE '\\')");
@@ -84,8 +87,14 @@ export async function selectUsers(env: Env, opts: { username?: string; q?: strin
   }));
 }
 
+/**
+ * The {username} path parameter takes any sign-in name: an exact upn (a UPN,
+ * a handle, or a phone) wins, else a bare local part only when it names
+ * exactly one account - the login resolver's own rule, so an ambiguous bare
+ * name is a 404, never the wrong user.
+ */
 async function userByUsername(c: ApiContext): Promise<UserRow | null> {
-  return c.env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(param(c, "username").toLowerCase()).first<UserRow>();
+  return (await resolveLoginIdentifier(c.env, param(c, "username"))).user;
 }
 
 const noUser = (c: ApiContext) => notFound(c, `No user "${param(c, "username").toLowerCase()}".`);
@@ -151,19 +160,21 @@ defineRoute(
     summary: "Create a user",
     description:
       "New accounts are inactive unless `status` is `active`. Without `password`, the new-account password setting applies and the generated password is returned once. Giving someone an admin role group needs `*`.",
-    body: z.object({ ...UserWrite, username: z.string(), domain: z.string().optional().openapi({ description: "Defaults to the default domain." }), given_name: z.string(), password: z.string().optional() }),
+    body: z.object({ ...UserWrite, username: z.string().optional(), domain: z.string().optional().openapi({ description: "Defaults to the default domain." }), identifier: z.string().optional().openapi({ description: "The sign-in name verbatim - a user@domain UPN, a bare handle, or +E.164 phone. Wins over username+domain." }), given_name: z.string(), password: z.string().optional() }),
     status: 201,
     errors: [409],
     response: z.object({ ok: z.literal(true), upn: z.string(), username: z.string(), password: z.string().optional() }),
   },
   async (c) => {
-    const body = await readJson<{ username: string; domain?: string; given_name: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; password?: string; status?: "active" | "disabled" }>(c);
+    const body = await readJson<{ username?: string; domain?: string; identifier?: string; given_name: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; phones?: UserPhoneInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; password?: string; status?: "active" | "disabled" }>(c);
+    if (!body.identifier && !body.username) return c.json(badRequest("Give `identifier` (any sign-in name) or `username` (+`domain` for a UPN)."), 400);
     const schemaId = await schemaIdFor(c.env, body);
     await assertAttributesInSchema(c.env, schemaId, body.attributes);
     await assertNoMasteredFields(c.env, body);
     const created = await createUser(apiCtx(c), {
-      username: body.username,
+      username: body.username ?? "",
       domain: body.domain ?? (await getDefaultDomain(c.env)),
+      identifier: body.identifier,
       givenName: body.given_name,
       familyName: body.family_name ?? "",
       schemaId,
@@ -173,17 +184,20 @@ defineRoute(
       status: body.status,
       email: body.email ?? undefined,
       emails: body.emails,
+      phones: body.phones,
     });
     // Returned once, and only when generated - a caller that chose one has it.
-    return c.json({ ok: true, upn: created.upn, username: created.upn.split("@")[0], ...(created.chosen ? {} : { password: created.password }) }, 201);
+    return c.json({ ok: true, upn: created.upn, username: parseIdentifier(created.upn)?.username ?? created.upn, ...(created.chosen ? {} : { password: created.password }) }, 201);
   }
 );
 
 defineRoute(
   { method: "get", path: "/api/v1/users/{username}", tag: "Users", permission: "users:read", summary: "Get a user", errors: [404], response: UserSchema },
   async (c) => {
-    const [user] = await selectUsers(c.env, { username: param(c, "username").toLowerCase(), limit: 1, offset: 0 });
-    return user ? c.json(user) : noUser(c);
+    const found = await userByUsername(c);
+    if (!found) return noUser(c);
+    const [user] = await selectUsers(c.env, { id: found.id, limit: 1, offset: 0 });
+    return c.json(user);
   }
 );
 
@@ -196,17 +210,16 @@ defineRoute(
     summary: "Update a user",
     description:
       "Fields not supplied keep their values. Moving to another schema keeps attributes with the same name and clears the rest. `status: disabled` signs them out everywhere and ends their tokens. An administrator's account needs `*`.",
-    body: z.object({ username: z.string().optional(), domain: z.string().optional(), ...UserWrite }),
+    body: z.object({ username: z.string().optional(), domain: z.string().optional(), identifier: z.string().optional(), ...UserWrite }),
     errors: [404, 409],
     response: UserSchema,
   },
   async (c) => {
     const user = await userByUsername(c);
     if (!user) return noUser(c);
-    const body = await readJson<{ username?: string; domain?: string; given_name?: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; status?: "active" | "disabled" }>(c);
+    const body = await readJson<{ username?: string; domain?: string; identifier?: string; given_name?: string; family_name?: string; email?: string | null; emails?: UserEmailInput[]; phones?: UserPhoneInput[]; schema_id?: number; schema?: string; attributes?: Record<string, string>; groups?: string[]; status?: "active" | "disabled" }>(c);
     const ctx = apiCtx(c);
     const { status, ...profileFields } = body;
-    let username = user.username;
     if (Object.values(profileFields).some((v) => v !== undefined)) {
       // A full desired state for the shared update: the current values, with
       // what was supplied laid over them.
@@ -216,9 +229,10 @@ defineRoute(
       await assertNoMasteredFields(c.env, body);
       const current = Object.fromEntries((await getSchemaAttributes(c.env, Number(schemaId))).map((a) => [a.name, userAttributeValue(user, a)]));
       const { results: memberships } = await c.env.DB.prepare("SELECT gm.group_id FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = ? AND g.rule = ''").bind(user.id).all<{ group_id: number }>();
-      const saved = await updateUserProfile(ctx, user.id, {
+      await updateUserProfile(ctx, user.id, {
         username: body.username ?? user.username,
-        domain: body.domain ?? user.upn.slice(at + 1),
+        domain: body.domain ?? (at >= 0 ? user.upn.slice(at + 1) : ""),
+        identifier: body.identifier,
         givenName: body.given_name ?? user.given_name,
         familyName: body.family_name ?? user.family_name,
         schemaId,
@@ -226,11 +240,11 @@ defineRoute(
         groupIds: body.groups !== undefined ? await staticGroupIds(c.env, body.groups) : memberships.map((m) => m.group_id),
         email: body.email,
         emails: body.emails,
+        phones: body.phones,
       });
-      username = saved.upn.slice(0, saved.upn.lastIndexOf("@"));
     }
     if (status !== undefined && status !== user.status) await setUserStatus(ctx, user.id, status);
-    const [updated] = await selectUsers(c.env, { username, limit: 1, offset: 0 });
+    const [updated] = await selectUsers(c.env, { id: user.id, limit: 1, offset: 0 });
     return c.json(updated);
   }
 );

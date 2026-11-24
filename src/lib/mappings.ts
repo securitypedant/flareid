@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import type { ParsedIdentifier } from "./identifier.js";
 import { evalExpression, parseExpression, scalar, strOf, ExprError } from "./expr.js";
 import { getManagerEmail, getUserGroupNames } from "./db.js";
 import { parseCustomAttributes } from "./schemas.js";
@@ -290,6 +291,42 @@ export async function setCollisionPolicy(env: Env, input: { username?: string; u
   const policy: CollisionPolicy = { username, username_pattern: pattern || DEFAULT_COLLISION.username_pattern, email };
   await setSetting(env, COLLISION_SETTING, JSON.stringify(policy));
   return policy;
+}
+
+/**
+ * Next free sign-in identifier for a colliding name under the configured
+ * policy. Unlike the local-part version below, collisions check users.upn
+ * (the real unique namespace) and the counter/pattern applies to the local
+ * part of a UPN or to a whole handle - `simon@d1.com` taken mints
+ * `simon2@d1.com`, `simon-github` taken mints `simon-github2`. The pattern
+ * context adds {idp} so an expression can carry provenance. Phones collide
+ * or not: no variant of a phone number is minted.
+ */
+export async function resolveIdentifierCollision(
+  env: Env,
+  ident: ParsedIdentifier,
+  ctx: { idp?: string; email: string },
+  policy?: CollisionPolicy
+): Promise<string | null> {
+  const p = policy ?? (await getCollisionPolicy(env));
+  const taken = async (candidate: string) => Boolean(await env.DB.prepare("SELECT 1 FROM users WHERE upn = ?").bind(candidate).first());
+  if (!(await taken(ident.normalized))) return ident.normalized;
+  if (ident.kind === "phone" || p.username === "fail") return null;
+  const local = ident.username;
+  const domain = ident.kind === "upn" ? ident.normalized.slice(local.length + 1) : "";
+  for (let n = 2; n <= 200; n++) {
+    let candidate: string;
+    if (p.username === "pattern") {
+      const v = evalExpression(parseExpression(p.username_pattern), { local, n, domain, email: ctx.email, idp: ctx.idp ?? "" });
+      candidate = strOf(scalar(v)).toLowerCase().replace(/[^a-z0-9._-]/g, "").replace(/^[^a-z0-9]+/, "");
+      if (!candidate) continue;
+      if (domain) candidate = `${candidate}@${domain}`;
+    } else {
+      candidate = domain ? `${local}${n}@${domain}` : `${local}${n}`;
+    }
+    if (!(await taken(candidate))) return candidate;
+  }
+  return null;
 }
 
 /** Next free username for a colliding `local` under the configured policy. */

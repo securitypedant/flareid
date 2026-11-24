@@ -51,6 +51,16 @@ export function recipientFor(user: Pick<UserRow, "upn" | "email">): string {
   return user.email || user.upn;
 }
 
+/**
+ * The address mail actually goes to, or null when the account can't receive
+ * any - a handle or +E.164 UPN is a name, not an address, and only counts
+ * when the account also lists a contact email.
+ */
+export function routableRecipient(user: Pick<UserRow, "upn" | "email">): string | null {
+  if (user.email) return user.email;
+  return user.upn.includes("@") ? user.upn : null;
+}
+
 export interface OutboundEmail {
   to: string;
   subject: string;

@@ -70,8 +70,9 @@ export async function assertEmailsUsable(env: Env, userId: number | null, emails
     const owner = await env.DB.prepare("SELECT user_id FROM user_emails WHERE email = ?").bind(addr).first<{ user_id: number }>();
     if (owner && owner.user_id !== userId) throw new UserEmailError(`"${addr}" already belongs to another account.`);
     // The two identifier namespaces must not overlap: an alias spelled like
-    // someone else's sign-in name would make resolvers ambiguous.
-    const clash = await env.DB.prepare("SELECT id FROM users WHERE (upn = ? OR username = ? OR email = ?) AND id != ?").bind(addr, addr, addr, userId ?? -1).first<{ id: number }>();
+    // someone else's sign-in name would make resolvers ambiguous. (username
+    // holds no '@', so the clause would be dead weight.)
+    const clash = await env.DB.prepare("SELECT id FROM users WHERE (upn = ? OR email = ?) AND id != ?").bind(addr, addr, userId ?? -1).first<{ id: number }>();
     if (clash) throw new UserEmailError(`"${addr}" already belongs to another account.`);
   }
 }

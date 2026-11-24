@@ -157,7 +157,9 @@ describe("resolveFederatedUser", () => {
   it("JIT-provisions an account under the configured domain and links it", async () => {
     await bootstrapInstance({ domain: "horizon.test" });
     const idp = await createUpstreamIdp(env, { name: "U", protocol: "oidc", config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test" });
-    const user = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" });
+    // The profile's @-form name mints verbatim - the managed-domain rewrite
+    // only applies when the upstream gives no usable identifier at all.
+    const user = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person@horizon.test" });
     expect(user.upn).toBe("new.person@horizon.test");
     expect(user.display_name).toBe("Ada K");
     const email = await env.DB.prepare("SELECT email FROM user_emails WHERE user_id = ?").bind(user.id).first<{ email: string }>();
@@ -165,7 +167,7 @@ describe("resolveFederatedUser", () => {
     const link = await env.DB.prepare("SELECT 1 FROM federated_identities WHERE idp_id = ? AND user_id = ?").bind(idp.id, user.id).first();
     expect(link).toBeTruthy();
     // Second sign-in hits the link directly.
-    const again = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" });
+    const again = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person@horizon.test" });
     expect(again.id).toBe(user.id);
   });
 
@@ -183,16 +185,15 @@ describe("resolveFederatedUser", () => {
     expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = 'nobody'").first()).toBeNull();
   });
 
-  it("refuses a JIT account whose sign-in name collides with another account's alias", async () => {
+  it("mints a suffixed variant when the federated handle name is taken", async () => {
     const { apiKey } = await bootstrapInstance({ domain: "horizon.test" });
-    await apiCall("/api/v1/users", { token: apiKey, body: { username: "ada", given_name: "Ada", password: "user-password-123", status: "active" } });
-    const adaId = (await env.DB.prepare("SELECT id FROM users WHERE username = 'ada'").first<{ id: number }>())!.id;
-    // ada's alias is exactly the upn JIT would compose for the new account.
-    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, created_at) VALUES (?, 'new.person@horizon.test', 'work', 0, ?)").bind(adaId, new Date().toISOString()).run();
+    // A bare upstream handle mints {handle}-{idp-slug}; "U" -> "u". Something
+    // already owns that name, so the collision policy appends a counter.
+    await apiCall("/api/v1/users", { token: apiKey, body: { identifier: "new.person-u", given_name: "Ada", password: "user-password-123", status: "active" } });
 
     const idp = await createUpstreamIdp(env, { name: "U", protocol: "oidc", config: { issuer: "https://i.test", client_id: "c", client_secret: "s" }, jit: true, jitDomain: "horizon.test" });
-    await expect(resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" })).rejects.toBeInstanceOf(FederationError);
-    expect(await env.DB.prepare("SELECT 1 FROM users WHERE username = 'new.person'").first()).toBeNull();
+    const user = await resolveFederatedUser(env, idp, { ...profile, email: "new.person@else.test", username: "new.person" });
+    expect(user.upn).toBe("new.person-u2");
   });
 });
 
@@ -217,7 +218,7 @@ describe("JIT group assignment", () => {
     const gid2 = await group("Everyone Else");
     const idp = await createUpstreamIdp(env, oidcInput([gid, gid2]));
     const user = await resolveFederatedUser(env, idp, jitProfile);
-    expect(user.username).toBe("new.person");
+    expect(user.upn).toBe("new.person-u");
     expect(await memberGroupIds(user.id)).toEqual([gid, gid2]);
   });
 
@@ -486,7 +487,7 @@ describe("the sign-in round trip", () => {
     expect(cb.status).toBe(302);
     expect(cb.headers.get("Set-Cookie")).toContain("__Host-flareid_session=");
     // The account exists, is linked, and is in the configured group.
-    const user = await env.DB.prepare("SELECT id FROM users WHERE upn = 'rookie@horizon.test'").first<{ id: number }>();
+    const user = await env.DB.prepare("SELECT id FROM users WHERE upn = 'rookie@else.test'").first<{ id: number }>();
     expect(user).toBeTruthy();
     expect(await env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(gid, user!.id).first()).toBeTruthy();
     expect(await env.DB.prepare("SELECT 1 FROM federated_identities WHERE idp_id = ? AND user_id = ?").bind(idpId, user!.id).first()).toBeTruthy();

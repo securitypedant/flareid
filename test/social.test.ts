@@ -177,7 +177,7 @@ describe("the OAuth2 adapter", () => {
     spy.mockRestore();
     expect(cb.status).toBe(302);
     expect(cb.headers.get("Set-Cookie")).toContain("__Host-flareid_session=");
-    const user = await env.DB.prepare("SELECT id, email FROM users WHERE username = 'rookie-gh'").first<{ id: number; email: string }>();
+    const user = await env.DB.prepare("SELECT id, email FROM users WHERE upn = 'rookie-gh-github'").first<{ id: number; email: string }>();
     expect(user).toBeTruthy();
     expect(user!.email).toBe("rookie@horizon.test");
   });
