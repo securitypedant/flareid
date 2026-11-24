@@ -25,12 +25,12 @@ You can also sync any group's members to a list: turn it on from the group's pag
 
 ## Access applications
 
-FlareID can pull your account's Cloudflare Access applications (read-only — it never writes Access configuration). Select **Sync applications now** to mirror them, then map each app to the static group whose membership grants it:
+FlareID can pull your account's Cloudflare Access applications (read-only — it never writes Access configuration). FlareID refreshes the mirror hourly (or on demand with **Sync applications now**). Map each app to the static group whose membership grants it:
 
 - **Launchpad**: members of the granting group see the app on their **Applications** page, linked to its protected hostname.
 - **Self-service**: switch **Requestable** on and people can ask for the app from **My account → Access**. An approved request simply adds them to the granting group — Access's own policies do the enforcement, so an Access policy should *Include* that group (or a reusable Access group containing it).
 
-When a synced app's Allow policies already select a FlareID group — by IdP group claim (`groups`) or via a reusable Access group — the page names it as a suggestion under **Policies name**. Apps removed from the account drop out on the next sync, along with their pending requests.
+When a synced app's Allow policies already select a FlareID group — by IdP group claim (`groups`) or via a reusable Access group — the page names it as a suggestion under **Policies name**. Apps removed from the account drop out on the next sync, along with their pending requests - as does the whole mirror if the connection is re-pointed or disconnected.
 
 This pairs naturally with [Cloudflare Access](cloudflare-access.md): FlareID stays the authority for who people are and which groups they belong to, and Access stays the authority for what they can reach.
 

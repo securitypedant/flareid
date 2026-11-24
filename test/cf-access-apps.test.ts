@@ -70,7 +70,7 @@ function stubAccessApps() {
       return Response.json({
         success: true,
         result: [
-          { id: "p1", decision: "allow", include: [{ oidc: { group_id: "Salesforce users", identity_provider_id: "idp-1" } }, { emails: ["vip@example.test"] }] },
+          { id: "p1", decision: "allow", include: [{ oidc: { group_id: "Salesforce users", identity_provider_id: "idp-1" } }, { saml: { attribute_name: "department", attribute_value: "Denied group", identity_provider_id: "idp-1" } }, { emails: ["vip@example.test"] }] },
           { id: "p2", decision: "deny", include: [{ oidc: { group_id: "Denied group" } }] },
         ],
       });
@@ -278,5 +278,58 @@ describe("Access apps API", () => {
     expect(patch.status).toBe(200);
     expect(patch.body.granting_group_id).toBe(groupId);
     expect(patch.body.requestable).toBe(true);
+  });
+});
+
+describe("disconnect and stale mirrors", () => {
+  it("re-pointing or disconnecting drops the mirror and its pending requests", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const groupId = await makeGroup(apiKey, "Salesforce users");
+    const uid = await seedUser(apiKey, "pat");
+    await configure(apiKey);
+    stubAccessApps();
+    const config = (await getCfOne(env))!;
+    await syncAccessApps(env, config);
+    const sf = (await listAccessApps(env)).find((a) => a.name === "Salesforce")!;
+    await configureAccessApp(env, sf.id, groupId, true);
+
+    const cookie = await sessionFor(uid);
+    await SELF.fetch(`${BASE}/account/access/request`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie },
+      body: new URLSearchParams({ target: `cfapp:${sf.id}` }).toString(),
+      redirect: "manual",
+    });
+
+    // Pointing at a different account clears the mirror; so does disconnecting.
+    const res = await apiCall("/api/v1/integrations/cloudflare-one", {
+      token: apiKey,
+      method: "PUT",
+      body: { account_id: "acct-2", api_token: "tok-2" },
+    });
+    expect(res.status).toBe(200);
+    expect(await listAccessApps(env)).toEqual([]);
+    expect(await env.DB.prepare("SELECT 1 FROM access_requests WHERE target_type = 'cfapp'").first()).toBeNull();
+  });
+
+  it("a manager of the granting group adds themselves instead of requesting", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const groupId = await makeGroup(apiKey, "Salesforce users");
+    const uid = await seedUser(apiKey, "pat");
+    await env.DB.prepare("INSERT INTO group_managers (group_id, user_id, created_at) VALUES (?, ?, ?)").bind(groupId, uid, new Date().toISOString()).run();
+    await configure(apiKey);
+    stubAccessApps();
+    const config = (await getCfOne(env))!;
+    await syncAccessApps(env, config);
+    const sf = (await listAccessApps(env)).find((a) => a.name === "Salesforce")!;
+    await configureAccessApp(env, sf.id, groupId, true);
+
+    const cookie = await sessionFor(uid);
+    const ask = await SELF.fetch(`${BASE}/account/access/request`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie },
+      body: new URLSearchParams({ target: `cfapp:${sf.id}` }).toString(),
+    });
+    expect(await ask.text()).toContain("add yourself on its Manage page");
   });
 });

@@ -3443,7 +3443,7 @@ admin.get(CFONE, async (c) => {
       `)}
       ${cardSection(`
         <h2>Access applications</h2>
-        <p class="muted">Cloudflare Access applications pulled read-only from this account. Map each app to the static group whose membership grants it: Access policies that Include that group then decide reachability, members see the app on their Applications page, and an approved access request is just a group-join. FlareID never writes Access config - changes made in Zero Trust land here on the next sync.</p>
+        <p class="muted">Cloudflare Access applications pulled read-only from this account. Map each app to the static group whose membership grants it: Access policies that Include that group then decide reachability, members see the app on their Applications page, and an approved access request is just a group-join. FlareID never writes Access config - changes made in Zero Trust land here on the next sync (hourly, or on demand).</p>
         ${
           ready
             ? `${accessApps.length

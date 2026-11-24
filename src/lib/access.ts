@@ -216,6 +216,11 @@ export async function requestAccess(ctx: ServiceCtx, target: AccessTarget, reaso
     if (await ctx.env.DB.prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?").bind(group.id, userId).first()) {
       throw new ServiceError(409, `You already have access to "${app.name}".`);
     }
+    // A manager of the granting group doesn't wait on their own queue (same
+    // rule as a direct group request).
+    if (await ctx.env.DB.prepare("SELECT 1 FROM group_managers WHERE group_id = ? AND user_id = ?").bind(group.id, userId).first()) {
+      throw new ServiceError(400, `You manage "${group.name}" - add yourself on its Manage page instead of requesting.`);
+    }
     name = app.name;
   } else {
     const app =

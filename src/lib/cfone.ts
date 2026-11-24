@@ -67,6 +67,16 @@ export async function getCfOne(env: Env): Promise<CfOneConfig | null> {
 
 export async function saveCfOne(env: Env, input: { accountId: string; apiToken?: string; team: string; accessAud: string }): Promise<void> {
   const now = new Date().toISOString();
+  // A different account (or none) means the Access-app mirror belongs to the
+  // old one: drop it and any pending asks rather than leave stale cards and
+  // requestable apps pointing at an account we no longer talk to.
+  const previous = (await getSetting(env, "cfone.account_id"))?.trim() ?? "";
+  if (input.accountId !== previous) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM access_requests WHERE target_type = 'cfapp'"),
+      env.DB.prepare("DELETE FROM cf_access_apps"),
+    ]);
+  }
   const pairs: [string, string][] = [
     ["cfone.account_id", input.accountId],
     ["cfone.team", input.team],
@@ -531,7 +541,7 @@ interface CfAccessApp {
 /** A policy/group selector rule: only the shapes that name a group claim matter. */
 interface CfSelector {
   oidc?: { group_id?: string };
-  saml?: { attribute_value?: string };
+  saml?: { attribute_name?: string; attribute_value?: string };
   group?: { id?: string };
 }
 
@@ -544,7 +554,10 @@ interface CfPolicy {
 function selectorClaims(rules: CfSelector[] | undefined, out: Set<string>): void {
   for (const r of rules ?? []) {
     if (r.oidc?.group_id) out.add(r.oidc.group_id);
-    if (r.saml?.attribute_value) out.add(r.saml.attribute_value);
+    // A SAML attribute only counts when the attribute itself is groupish -
+    // matching any attribute_value invites false hints (a "department" that
+    // shares a name with a group).
+    if (r.saml?.attribute_value && /group|memberof/i.test(r.saml.attribute_name ?? "")) out.add(r.saml.attribute_value);
   }
 }
 
