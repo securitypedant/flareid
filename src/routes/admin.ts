@@ -17,7 +17,7 @@ import { Hono, type Context, type Next } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { adminHelp } from "../docs/help.js";
-import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, codeBlock, confirmAttrs, copyButton, iconButton, iconLink, rowActions, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, codeBlock, confirmAttrs, copyButton, formButton, iconButton, iconLink, rowActions, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -2553,7 +2553,7 @@ async function groupManagersPanel(env: Env, group: GroupRow): Promise<string> {
     <form method="POST" action="/admin/groups/${group.id}/managers" style="margin-top:12px;">
       <label>Add managers</label>
       ${remoteMultiSelect("manager_ids", "/admin/users/lookup", [], "Search people...")}
-      <div class="row" style="justify-content:flex-start;"><button class="secondary" type="submit">Add managers</button></div>
+      <div class="form-actions end"><button class="secondary" type="submit">Add managers</button></div>
     </form>
   `);
 }
@@ -3390,7 +3390,7 @@ admin.get("/admin/integrations/email", async (c) => {
             </div>
           </div>
           <p class="muted" style="margin-top:-4px;">The address must be on a domain onboarded to Cloudflare Email Sending (<code>wrangler email sending enable yourdomain.com</code>).</p>
-          <div class="row" style="justify-content:flex-start; gap:10px;">
+          <div class="form-actions end">
             <button class="primary" type="submit">Save</button>
             ${ready ? '<button class="secondary" type="submit" formaction="/admin/email/test">Send a test email to me</button>' : ""}
           </div>
@@ -3475,7 +3475,7 @@ admin.get("/admin/integrations/sms", async (c) => {
               </div>
             </div>
           </div>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
         ${scriptTag(`(function(){var s=document.getElementById('sms_provider');if(!s)return;function t(){var v=s.value;document.querySelectorAll('#sms-fields [data-providers]').forEach(function(r){r.style.display=v&&r.getAttribute('data-providers').split(' ').indexOf(v)>=0?'':'none';});}s.addEventListener('change',t);t();})();`)}
       `)}
@@ -3574,7 +3574,7 @@ admin.get(CFONE, async (c) => {
               </label>`
             ).join("")}
           </div>
-          <div class="row" style="justify-content:flex-start; gap:10px;">
+          <div class="form-actions end">
             <button class="primary" type="submit">Save</button>
             <button class="secondary" type="submit" formaction="${CFONE}/sync">Sync now</button>
           </div>
@@ -4125,7 +4125,7 @@ admin.get("/admin/integrations/scim", async (c) => {
             </tbody>
           </table>
           <template id="mapping-row-template">${scimMappingRowHtml()}</template>
-          <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+          <div class="form-actions end">
             <button type="button" class="secondary" data-append-template="mapping-row-template" data-append-to="mapping-rows">+ Add mapping</button>
             <button class="primary" type="submit">Save mappings</button>
           </div>
@@ -4137,7 +4137,7 @@ admin.get("/admin/integrations/scim", async (c) => {
         <form method="POST" action="/admin/scim/correlation">
           <label for="correlation_keys">Match keys, in order <span class="muted">(${CORRELATION_KEYS.join(", ")})</span></label>
           <input type="text" id="correlation_keys" name="correlation_keys" value="${escapeHtml(correlationKeys.join(", "))}" placeholder="emails, employee_number" />
-          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -4146,7 +4146,7 @@ admin.get("/admin/integrations/scim", async (c) => {
         <form method="POST" action="/admin/scim/mastering">
           <label for="mastered_fields">Mastered fields <span class="muted">(${MASTERING_FIELDS.join(", ")}, or custom.&lt;key&gt;)</span></label>
           <input type="text" id="mastered_fields" name="mastered_fields" value="${escapeHtml(masteredFields.join(", "))}" placeholder="job_title, department, manager" />
-          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -4225,35 +4225,32 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
       `
       ${c.req.query("saved") ? successBanner("Saved.") : ""}
       ${c.req.query("error") ? `<p class="error">${escapeHtml(c.req.query("error")!)}</p>` : ""}
+      <form method="POST" action="/admin/scim/targets/${target.id}">
       ${cardSection(`
         <div class="row between" style="margin:0 0 14px 0; align-items:flex-start;">
-          <p class="muted" style="margin:0;">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.${app ? ` Linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""} Pushed attributes follow <a href="/admin/flows/edit?channel=scim-out&owner=${target.id}">this target's mappings</a>.</p>
+          <h2 style="margin:0;">Connection</h2>
           <span class="badge ${target.enabled ? "badge-active" : "badge-disabled"}">${target.enabled ? "Enabled" : "Disabled"}</span>
         </div>
-        <form method="POST" action="/admin/scim/targets/${target.id}">
-          <label for="name">Name</label>
-          <input type="text" id="name" name="name" required value="${escapeHtml(target.name)}" />
-          <div class="field-row">
-            <div>
-              <label for="endpoint">SCIM endpoint (base URL)</label>
-              <input type="text" id="endpoint" name="endpoint" value="${escapeHtml(target.endpoint)}" placeholder="https://api.cloudflare.com/client/v4/accounts/&lt;account_id&gt;/access/scim" />
-            </div>
-            <div>
-              <label for="secret">SCIM secret</label>
-              <input type="password" id="secret" name="secret" value="" autocomplete="new-password" placeholder="${target.secret ? "Saved - leave blank to keep it" : "Bearer token from the target"}" />
-              <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving.</p>
-            </div>
+        <p class="muted">${pushedUsers} user${pushedUsers === 1 ? "" : "s"} and ${pushedGroups} group${pushedGroups === 1 ? "" : "s"} pushed${queued ? `; ${queued} deletion${queued === 1 ? "" : "s"} queued` : ""}.${app ? ` Linked to <a href="${appEditUrl(app.type, app.id)}">${escapeHtml(app.name)}</a>.` : ""} Pushed attributes follow <a href="/admin/flows/edit?channel=scim-out&owner=${target.id}">this target's mappings</a>.</p>
+        <div class="field-row">
+          <div>
+            <label for="name">Name</label>
+            <input type="text" id="name" name="name" required value="${escapeHtml(target.name)}" />
           </div>
-          <label style="font-weight:400;"><input type="checkbox" name="enabled" value="1" ${target.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled</label>
-          <div class="form-actions end">${cancelLink("/admin/integrations/scim")}<button class="primary" type="submit">Save</button></div>
-        </form>
-        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          <form method="POST" action="/admin/scim/targets/${target.id}/delete" ${confirmAttrs(
-            `Deleting "${target.name}" stops pushing to it and forgets which users and groups were pushed. The objects already created on the SCIM server are left there.`,
-            { title: `Delete the SCIM target "${target.name}"?`, action: "Delete target", danger: true }
-          )}>
-            <button class="danger" type="submit">Delete target</button>
-          </form>
+          <div>
+            <label for="endpoint">SCIM endpoint (base URL)</label>
+            <input type="text" id="endpoint" name="endpoint" value="${escapeHtml(target.endpoint)}" placeholder="https://api.cloudflare.com/client/v4/accounts/&lt;account_id&gt;/access/scim" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="secret">SCIM secret</label>
+            <input type="password" id="secret" name="secret" value="" autocomplete="new-password" placeholder="${target.secret ? "Saved - leave blank to keep it" : "Bearer token from the target"}" />
+            <p class="muted" style="margin-top:-10px;">Write-only: it is never shown again after saving.</p>
+          </div>
+          <div style="display:flex; align-items:center;">
+            <label style="font-weight:400; margin:0;"><input type="checkbox" name="enabled" value="1" ${target.enabled ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Enabled</label>
+          </div>
         </div>
       `)}
 
@@ -4261,38 +4258,47 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
         ${cardSection(`
           <h2>Sync scope</h2>
           <p class="muted">Push everyone, or only members of specific groups. Users and groups outside scope are removed from the SCIM server if they had previously been synced.</p>
-          <form method="POST" action="/admin/scim/targets/${target.id}/scope">
-            <label><input type="radio" name="mode" value="all" ${target.scope.mode === "all" ? "checked" : ""} data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
-            <label><input type="radio" name="mode" value="selected" ${target.scope.mode === "selected" ? "checked" : ""} data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
-            <div id="scim-scope-groups" style="display:${target.scope.mode === "selected" ? "block" : "none"}; margin-top:8px;">
-              ${multiSelect("group_ids", scopeGroups.map((g) => ({ id: g.id, label: g.name })), new Set(target.scope.groupIds), "Search groups...")}
-            </div>
-            <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save scope</button></div>
-          </form>
+          <label style="font-weight:400;"><input type="radio" name="mode" value="all" ${target.scope.mode === "all" ? "checked" : ""} data-hide="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> All groups</label>
+          <label style="font-weight:400;"><input type="radio" name="mode" value="selected" ${target.scope.mode === "selected" ? "checked" : ""} data-show="scim-scope-groups" style="width:auto; display:inline; margin-right:6px;" /> Specific groups only</label>
+          <div id="scim-scope-groups" style="display:${target.scope.mode === "selected" ? "block" : "none"}; margin-top:8px;">
+            ${multiSelect("group_ids", scopeGroups.map((g) => ({ id: g.id, label: g.name })), new Set(target.scope.groupIds), "Search groups...")}
+          </div>
         `)}
         ${cardSection(`
           <h2>Sync tuning</h2>
           <p class="muted">How hard to push against this SCIM server. Receivers backed by a single object (Cloudflare Access's endpoint is) reject large bodies and dense requests - lower both if syncs come back with errors.</p>
-          <form method="POST" action="/admin/scim/targets/${target.id}/tuning">
-            <div class="field-row">
-              <div>
-                <label for="pace_ms">Pause between requests (ms)</label>
-                <input type="number" id="pace_ms" name="pace_ms" min="0" max="10000" step="50" value="${target.paceMs}" />
-              </div>
-              <div>
-                <label for="members_per_request">Members per group request</label>
-                <input type="number" id="members_per_request" name="members_per_request" min="1" max="500" value="${target.membersPerRequest}" />
-              </div>
+          <div class="field-row">
+            <div>
+              <label for="pace_ms">Pause between requests (ms)</label>
+              <input type="number" id="pace_ms" name="pace_ms" min="0" max="10000" step="50" value="${target.paceMs}" />
             </div>
-            <label for="sync_batch">Users per sync batch</label>
-            <input type="number" id="sync_batch" name="sync_batch" min="10" max="500" value="${target.syncBatchSize}" style="max-width:220px;" />
-            <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save tuning</button></div>
-          </form>
+            <div>
+              <label for="members_per_request">Members per group request</label>
+              <input type="number" id="members_per_request" name="members_per_request" min="1" max="500" value="${target.membersPerRequest}" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div>
+              <label for="sync_batch">Users per sync batch</label>
+              <input type="number" id="sync_batch" name="sync_batch" min="10" max="500" value="${target.syncBatchSize}" />
+            </div>
+            <div></div>
+          </div>
         `)}
-        ${cardSection(`
+      </div>
+      <div class="form-actions" style="margin:0 0 18px;">
+        ${formButton("Delete", `/admin/scim/targets/${target.id}/delete`, {
+          variant: "danger",
+          confirm: confirmAttrs(`Deleting "${target.name}" stops pushing to it and forgets which users and groups were pushed. The objects already created on the SCIM server are left there.`, { title: `Delete the SCIM target "${target.name}"?`, action: "Delete", danger: true }),
+        })}
+        ${cancelLink("/admin/integrations/scim")}<button class="primary" type="submit">Save</button>
+      </div>
+      </form>
+
+              ${cardSection(`
           <h2>Test &amp; sync</h2>
           <p class="muted">Test the connection, then push every in-scope user and group. New and changed users and groups are pushed automatically from then on.</p>
-          <div class="row" style="justify-content:flex-start; gap:10px;">
+          <div class="form-actions end" style="margin-top:0;">
             <button class="secondary" type="button" data-scim="test" data-scim-target="${target.id}" ${target.enabled ? "" : "disabled"}>Test connection</button>
             <button class="primary" type="button" data-scim="sync" data-scim-target="${target.id}" ${target.enabled ? "" : "disabled"}>Sync all now</button>
           </div>
@@ -4300,7 +4306,6 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
           <h3 style="margin-top:18px;">Sync log</h3>
           ${codeBlock((await scimLogTail(c.env)) || "No syncs yet.", { id: "scim-log" })}
         `)}
-      </div>
 
       ${scriptTag(SCIM_SCRIPT)}
       `,
@@ -4691,20 +4696,12 @@ admin.get("/admin/clients/:id", async (c) => {
         <input type="text" id="name" name="name" value="${escapeHtml(client.name)}" required />
         <p class="muted">Type: <strong>${client.client_type === "public" ? "Public (no secret, PKCE required)" : "Confidential"}</strong></p>
         ${clientSettingsFields(client, groups, assignedUsers, { includeAccess: false })}
-        <div class="form-actions end">${cancelLink(base)}<button class="primary" type="submit">Save</button></div>
-      </form>
-      <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-        ${
-          client.client_type === "public"
-            ? ""
-            : `<form method="POST" action="${base}/rotate-secret">
-          <button class="secondary" type="submit">Rotate secret</button>
-        </form>`
-        }
-        <form method="POST" action="${base}/delete" ${confirmAttrs(`Anything still using this client_id will stop working immediately.`, { title: `Delete the OIDC client "${client.name}"?`, action: "Delete client", danger: true })}>
-          <button class="danger" type="submit">Delete client</button>
-        </form>
-      </div>`);
+        <div class="form-actions end">
+          ${formButton("Delete", `${base}/delete`, { variant: "danger", confirm: confirmAttrs(`Anything still using this client_id will stop working immediately.`, { title: `Delete the OIDC client "${client.name}"?`, action: "Delete client", danger: true }) })}
+          ${client.client_type === "public" ? "" : formButton("Rotate secret", `${base}/rotate-secret`)}
+          ${cancelLink(base)}<button class="primary" type="submit">Save</button>
+        </div>
+      </form>`);
   }
 
   return c.html(
@@ -4815,7 +4812,7 @@ function samlIdpBlock(env: Env) {
 }
 
 /** Every cert-shaped thing in a pasted textarea: PEM blocks, or a single bare base64 blob. */
-function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[], opts: { includeAccess?: boolean } = {}): string {
+function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, groups: Pick<GroupRow, "id" | "name">[], assignedUsers: { id: number; label: string }[], opts: { includeAccess?: boolean; extraActions?: string } = {}): string {
   // Shown back in the write shape (name_format), not the stored one.
   const defsJson = (v.attributeDefinitions ?? []).map((d) => ({ name: d.name, field: d.field, ...(d.nameFormat ? { name_format: d.nameFormat } : {}) }));
   return `
@@ -4878,7 +4875,7 @@ function spForm(v: Partial<SpFormValues>, action: string, submitLabel: string, g
       </select>
       <p class="muted" style="margin:-8px 0 14px;">SAML V2.0 Subject Identifier Attributes Profile. Set automatically when the SP's metadata asks for one.</p>
       ${opts.includeAccess === false ? "" : appAccessFields({ accessMode: v.accessMode, groups, assignedGroups: v.assignedGroups ?? [], assignedUsers, requireMfa: !!v.requireMfa, requestable: !!v.requestable })}
-      <div class="form-actions end">${cancelLink("/admin/apps")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+      <div class="form-actions end">${opts.extraActions ?? ""}${cancelLink("/admin/apps")}<button class="primary" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
 }
 
@@ -4994,13 +4991,8 @@ admin.get("/admin/saml/:id", async (c) => {
           "Save",
           groups,
           assignedUsers,
-          { includeAccess: false }
+          { includeAccess: false, extraActions: formButton("Delete", `${base}/delete`, { variant: "danger", confirm: confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true }) }) }
         )}
-        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          <form method="POST" action="${base}/delete" ${confirmAttrs(`Users will no longer be able to sign in to this service provider.`, { title: `Delete "${sp.name}"?`, action: "Delete", danger: true })}>
-            <button class="danger" type="submit">Delete service provider</button>
-          </form>
-        </div>
       `)}`;
   }
 
@@ -5478,7 +5470,7 @@ admin.get("/admin/security", async (c) => {
         <form method="POST" action="/admin/security/default-password">
           <input type="password" name="default_password" value="" autocomplete="new-password" placeholder="${defaultPassword ? "Saved - leave blank to keep it" : "Choose a default password"}" ${defaultPassword ? "" : "required"} />
           <p class="muted" style="margin-top:-6px;">Write-only: it is never shown again after saving. Blank keeps the stored one.</p>
-          <div class="row" style="justify-content:flex-start; gap:10px;">
+          <div class="form-actions end">
             <button class="primary" type="submit">Save</button>
             <button class="danger" type="submit" name="apply" value="1" formaction="/admin/security/apply-default-password"
               ${confirmAttrs("Every account's password is reset to the default shown above. Anyone mid-session stays signed in, but their old password stops working.", { title: "Reset every account's password?", action: "Reset all passwords", danger: true })}>Apply default password to all accounts</button>
@@ -5491,7 +5483,7 @@ admin.get("/admin/security", async (c) => {
         <form method="POST" action="/admin/security/new-user-password-mode">
           <label><input type="radio" name="mode" value="default" ${newUserPasswordMode === "default" ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Use the default password</label>
           <label><input type="radio" name="mode" value="random" ${newUserPasswordMode === "random" ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Randomly generate one</label>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5506,7 +5498,7 @@ admin.get("/admin/security", async (c) => {
             <div><label><input type="checkbox" name="requireNumber" value="1" ${policy.requireNumber ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require number</label></div>
             <div><label><input type="checkbox" name="requireSymbol" value="1" ${policy.requireSymbol ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Require symbol</label></div>
           </div>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save policy</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save policy</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5515,7 +5507,7 @@ admin.get("/admin/security", async (c) => {
           Only the first 5 characters of the password's SHA-1 hash leave ${escapeHtml(c.get("appName"))}; the password itself never does. If the service can't be reached within 3 seconds, the password is allowed.</p>
         <form method="POST" action="/admin/security/breached-passwords">
           <label><input type="checkbox" name="enabled" value="1" ${breachedCheck ? "checked" : ""} ${radio} /> Reject passwords found in data breaches</label>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5541,7 +5533,7 @@ admin.get("/admin/security", async (c) => {
               }
             </div>
           </div>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5575,7 +5567,7 @@ admin.get("/admin/security", async (c) => {
             </div>
           </div>
           <p class="muted" style="margin-top:-4px;">Maximum: ${SESSION_MAX_HOURS_RANGE.min}&ndash;${SESSION_MAX_HOURS_RANGE.max} hours from sign-in. Inactivity: 0 for no limit, otherwise at least ${SESSION_IDLE_MINUTES_RANGE.min} minutes. Tokens already issued to apps keep their own lifetimes.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5592,7 +5584,7 @@ admin.get("/admin/security", async (c) => {
               <input type="number" id="windowMinutes" name="windowMinutes" min="1" max="1440" value="${rateLimit.windowMinutes}" />
             </div>
           </div>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5600,7 +5592,7 @@ admin.get("/admin/security", async (c) => {
         <p class="muted">Whether an account's listed email addresses and phone numbers work at the sign-in prompt, alongside its sign-in name (UPN, handle or phone). Off means aliases stay contact data: they still receive account mail and verification codes, they just can&rsquo;t authenticate. Only <em>verified</em> aliases ever sign in either way.</p>
         <form method="POST" action="/admin/security/alias-signin">
           <label style="font-weight:400;"><input type="checkbox" name="alias_signin" value="1" ${aliasSignin ? "checked" : ""} style="width:auto; display:inline; margin-right:6px;" /> Allow sign-in by verified email / phone alias</label>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5609,7 +5601,7 @@ admin.get("/admin/security", async (c) => {
         <form method="POST" action="/admin/security/audit-retention">
           <label for="audit_retention_days">Keep audit entries for (days)</label>
           <input type="number" id="audit_retention_days" name="days" min="${AUDIT_RETENTION_MIN_DAYS}" max="${AUDIT_RETENTION_MAX_DAYS}" value="${auditRetentionDays}" style="max-width:160px;" />
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       </div>
@@ -5664,7 +5656,7 @@ function logoCard(action: string, current: string | null, own: boolean, fallback
     <form method="POST" action="${escapeHtml(action)}" enctype="multipart/form-data">
       <label for="logo">Upload a new logo</label>
       <input type="file" id="logo" name="logo" accept="image/png,image/jpeg" required />
-      <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Upload</button></div>
+      <div class="form-actions end"><button class="primary" type="submit">Upload</button></div>
     </form>
     ${
       own
@@ -5715,7 +5707,7 @@ admin.get("/admin/branding", async (c) => {
           <label for="login_subtitle">Sign-in page message</label>
           <input type="text" id="login_subtitle" name="login_subtitle" value="${escapeHtml(brand.subtitle)}" maxlength="${SUBTITLE_MAX}" placeholder="Use your company account to continue." />
           <p class="muted" style="margin-top:-8px;">Shown under the logo on the sign-in page. Leave empty for no message.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${logoCard("/admin/branding/logo", brand.logoUrl, Boolean(brand.logoUrl), "FlareID's own mark is shown.")}
@@ -5735,7 +5727,7 @@ admin.get("/admin/branding", async (c) => {
           </div>
           <label style="margin-top:24px;">Preview</label>
           <div style="height:60px; border-radius:10px; margin-bottom:20px; background: linear-gradient(45deg, ${escapeHtml(brand.gradient.from)}, ${escapeHtml(brand.gradient.to)});"></div>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5746,7 +5738,7 @@ admin.get("/admin/branding", async (c) => {
           <label for="cursor_characters" style="margin-top:12px;">Characters</label>
           <input type="text" id="cursor_characters" name="characters" value="${escapeHtml(cursorTrail.characters)}" maxlength="${CURSOR_TRAIL_MAX_CHARACTERS}" placeholder="Leave empty for the default symbols, e.g. { } &lt; /&gt; &#955;" />
           <p class="muted" style="margin-top:-8px;">Shown one character at a time, in order &mdash; enter your company name and it spells itself out. Spaces are skipped. Empty uses a random mix of code symbols.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5760,7 +5752,7 @@ admin.get("/admin/branding", async (c) => {
               .join("")}
           </select>
           <p class="muted" style="margin-top:-8px;">Translations live in <code>locales/</code> in the repository; see <a href="https://github.com/securitypedant/flareid/blob/main/docs/i18n.md">docs/i18n.md</a> to add one.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5783,7 +5775,7 @@ admin.get("/admin/branding", async (c) => {
             <option value="Australia/Sydney"></option>
           </datalist>
           <p class="muted" style="margin-top:-8px;">An IANA zone name (e.g. <code>Europe/London</code>), <code>UTC</code>, or empty for the browser default. The zone name shows next to times when pinned.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -5797,7 +5789,7 @@ admin.get("/admin/branding", async (c) => {
         ${CUSTOM_CSS_HELP}
         <form method="POST" action="/admin/branding/custom-css">
           ${cssTextarea(css)}
-          <div class="row" style="justify-content:flex-start; gap:8px;"><button class="primary" type="submit">Save</button>${previewLink("default", "Preview")}</div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button>${previewLink("default", "Preview")}</div>
         </form>
       `)}
       `,
@@ -5929,7 +5921,7 @@ admin.get("/admin/branding/brands", async (c) => {
           <label for="brand_name">Name</label>
           <input type="text" id="brand_name" name="name" required maxlength="${BRAND_NAME_MAX}" placeholder="Acme" style="max-width:320px;" />
           <p class="muted" style="margin-top:-8px;">For you; people see the brand's app name. You choose its domains, logo and colours next.</p>
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Create brand</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Create brand</button></div>
         </form>
       `)}
       `,
@@ -6011,7 +6003,7 @@ admin.get("/admin/branding/brands/:id", async (c) => {
           <div style="margin-top:18px;">
           ${cssTextarea(cssRow?.custom_css ?? "", "Empty uses the default brand's custom CSS")}
           </div>
-          <div class="row" style="justify-content:flex-start; gap:8px;"><button class="primary" type="submit">Save</button>${previewLink(row.id, "Preview")}</div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button>${previewLink(row.id, "Preview")}</div>
         </form>
       `)}
       <div>
@@ -6185,7 +6177,7 @@ admin.get("/admin/branding/email-templates", async (c) => {
           <ul class="muted" style="margin:0 0 16px; padding-left:18px;">
             ${info.placeholders.map((p) => `<li><code>{{${escapeHtml(p)}}}</code> ${escapeHtml(PLACEHOLDER_HELP[p] ?? "")}</li>`).join("")}
           </ul>
-          <div class="row" style="justify-content:flex-start; gap:8px;">
+          <div class="form-actions end">
             <button class="primary" type="submit">Save</button>
             <button class="secondary" type="submit" formmethod="get" formaction="/admin/branding/email-templates">Preview</button>
           </div>
@@ -6915,17 +6907,34 @@ admin.post("/admin/scim/targets/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const target = await getScimTarget(c.env, id);
   if (!target) return consoleError(c, "That item doesn't exist any more - it may have been deleted.", 404);
-  const body = await c.req.parseBody();
-  const endpoint = String(body.endpoint ?? "").trim();
+  // One form: connection, scope and tuning (older clients may post only the connection).
+  const body = await c.req.parseBody({ all: true });
+  const one = (v: unknown) => String((Array.isArray(v) ? v[0] : v) ?? "");
+  const endpoint = one(body.endpoint).trim();
   // The field renders write-only: blank keeps the stored secret, and clearing
   // the endpoint removes the credential with it.
-  const secret = endpoint === "" ? "" : String(body.secret ?? "").trim();
+  const secret = endpoint === "" ? "" : one(body.secret).trim();
+  const hasTuning = body.pace_ms !== undefined;
+  const int = (v: unknown) => {
+    const n = Number(one(v));
+    return Number.isInteger(n) ? n : NaN;
+  };
+  const tuning = { paceMs: int(body.pace_ms), membersPerRequest: int(body.members_per_request), syncBatchSize: int(body.sync_batch) };
+  if (hasTuning && (!(tuning.paceMs >= 0 && tuning.paceMs <= 10_000) || !(tuning.membersPerRequest >= 1 && tuning.membersPerRequest <= 500) || !(tuning.syncBatchSize >= 10 && tuning.syncBatchSize <= 500))) {
+    return c.redirect(`${scimTargetUrl(id)}?error=${encodeURIComponent("Tuning values out of range.")}`, 302);
+  }
   try {
-    await updateScimTarget(c.env, id, { name: String(body.name ?? ""), endpoint, secret, enabled: body.enabled === "1" });
+    await updateScimTarget(c.env, id, { name: one(body.name), endpoint, secret, enabled: one(body.enabled) === "1", ...(hasTuning ? tuning : {}) });
   } catch (e) {
     return c.redirect(`${scimTargetUrl(id)}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`, 302);
   }
-  await logAudit(c.env, c.get("user"), "settings.scim_target_changed", target.name, undefined, c.req.raw);
+  await logAudit(c.env, c.get("user"), "settings.scim_target_changed", target.name, hasTuning ? { ...tuning } : undefined, c.req.raw);
+  if (body.mode !== undefined) {
+    const scope = scimScopeFrom(body);
+    const same = scope.mode === target.scope.mode && JSON.stringify([...scope.groupIds].sort()) === JSON.stringify([...target.scope.groupIds].sort());
+    // Re-evaluating everything already pushed is costly: only when the scope really changed (services/scim-sync.ts).
+    if (!same) await applyScimScope(consoleCtx(c), id, scope, (p) => c.executionCtx.waitUntil(p));
+  }
   return c.redirect(scimTargetUrl(id, "?saved=1"), 302);
 });
 
@@ -7037,7 +7046,8 @@ function upstreamFormFields(
   protocol: "oidc" | "saml",
   groups: { id: number; name: string }[],
   roleGrants: Map<number, { roles: string[]; writable: boolean }>,
-  error?: string
+  error?: string,
+  extraActions = ""
 ): string {
   const cfg = idp ? idpConfig(idp) : ({} as Record<string, string>);
   const v = (k: string) => escapeHtml((cfg as Record<string, string>)[k] ?? "");
@@ -7093,6 +7103,7 @@ function upstreamFormFields(
       }
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
       <div class="form-actions" style="margin-top:16px;">
+        ${extraActions}
         <button class="primary" type="submit">${idp ? "Save" : "Create provider"}</button>
         ${cancelLink("/admin/integrations/federation", "Cancel")}
       </div>
@@ -7260,15 +7271,17 @@ admin.get("/admin/integrations/federation/:id", async (c) => {
         </div>
         <h3 style="margin-top:0;">Give the provider</h3>
         ${registration}
-        ${upstreamFormFields(idp, idp.protocol, groups, await groupRoleWriteMap(c.env))}
-        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:8px;">
-          <form method="POST" action="/admin/federation/idps/${idp.id}/delete" ${confirmAttrs(
-            `Deleting "${idp.name}" removes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`,
-            { title: `Delete the provider "${idp.name}"?`, action: "Delete provider", danger: true }
-          )}>
-            <button class="danger" type="submit">Delete provider</button>
-          </form>
-        </div>
+        ${upstreamFormFields(
+          idp,
+          idp.protocol,
+          groups,
+          await groupRoleWriteMap(c.env),
+          undefined,
+          formButton("Delete", `/admin/federation/idps/${idp.id}/delete`, {
+            variant: "danger",
+            confirm: confirmAttrs(`Deleting "${idp.name}" removes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`, { title: `Delete the provider "${idp.name}"?`, action: "Delete provider", danger: true }),
+          })
+        )}
       `)}
       ${cardSection(`
         <h2>Linked identities</h2>
@@ -7444,22 +7457,18 @@ admin.get("/admin/integrations/social/:key", async (c) => {
               : ""
           }
           <div class="form-actions" style="margin-top:16px;">
+            ${
+              idp
+                ? formButton("Delete", `/admin/social/${p.key}/delete`, {
+                    variant: "danger",
+                    confirm: confirmAttrs(`Removing ${p.name} deletes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`, { title: `Remove ${p.name}?`, action: "Remove provider", danger: true }),
+                  })
+                : ""
+            }
             <button class="primary" type="submit">${idp ? "Save" : "Set up " + escapeHtml(p.name)}</button>
             ${cancelLink("/admin/integrations/social", "Cancel")}
           </div>
         </form>
-        ${
-          idp
-            ? `<div class="row" style="justify-content:flex-start; gap:10px; margin-top:14px;">
-                <form method="POST" action="/admin/social/${p.key}/delete" ${confirmAttrs(
-                  `Removing ${p.name} deletes its sign-in button and forgets ${linked} linked ${linked === 1 ? "account" : "accounts"} - the accounts themselves are kept.`,
-                  { title: `Remove ${p.name}?`, action: "Remove provider", danger: true }
-                )}>
-                  <button class="danger" type="submit">Remove ${escapeHtml(p.name)}</button>
-                </form>
-              </div>`
-            : ""
-        }
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, integrationCrumb("social"), { label: p.name }]
@@ -7914,10 +7923,10 @@ admin.get("/admin/ldap/:slug", async (c) => {
           <tr><td class="muted">Last used</td><td>${app.last_used_at ? ts(app.last_used_at) : "never"}</td></tr>
           <tr><td class="muted">Audit</td><td><a href="/admin/log?search=${encodeURIComponent(app.slug)}&category=ldap">ldap.* events for this app</a></td></tr>
         </tbody></table>
-        <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
-          ${revoked || !app.secret_enc ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/reveal"><button type="submit">Reveal secret</button></form>`}
-          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/rotate" onsubmit="return confirm('Rotate the secret? The current one stops working immediately.')"><button type="submit">Rotate secret</button></form>`}
-          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/revoke" onsubmit="return confirm('Revoke ${escapeHtml(app.name)}? Binds and searches stop immediately. This cannot be undone.')"><button class="danger" type="submit">Revoke app</button></form>`}
+        <div class="form-actions end">
+          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/revoke" ${confirmAttrs(`Binds and searches stop immediately. This cannot be undone.`, { title: `Revoke ${app.name}?`, action: "Revoke", danger: true })}><button class="danger" type="submit">Revoke</button></form>`}
+          ${revoked ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/rotate" ${confirmAttrs("The current secret stops working immediately.", { title: "Rotate the secret?", action: "Rotate" })}><button class="secondary" type="submit">Rotate secret</button></form>`}
+          ${revoked || !app.secret_enc ? "" : `<form method="POST" action="/admin/ldap/${escapeHtml(app.slug)}/reveal"><button class="secondary" type="submit">Reveal secret</button></form>`}
         </div>
       `)}
       ${revoked ? "" : cardSection(`<h2>Policy</h2>${ldapAppForm({ name: app.name, userGroups: new Set(userGroups ?? []), exposedGroups: new Set(exposedGroups ?? []), mfaMode: app.mfa_mode, includeDisabled: Boolean(app.include_disabled) }, groups, `/admin/ldap/${app.slug}`, "Save policy", true)}`)}
@@ -8118,7 +8127,7 @@ admin.get("/admin/flows", async (c) => {
           </div>
           <label for="collision_pattern">Username pattern <span class="muted">(expression over <code>local</code>, <code>n</code>, <code>domain</code>, <code>email</code> &mdash; retried with n = 2, 3, 4&hellip; until free)</span></label>
           <input type="text" id="collision_pattern" name="collision_pattern" value="${escapeHtml(policy.username_pattern)}" placeholder='local + n' style="font-family:monospace;" />
-          <div class="row" style="justify-content:flex-start; margin-top:10px;"><button class="primary" type="submit">Save</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save</button></div>
         </form>
       `)}
       ${cardSection(`
@@ -8161,10 +8170,10 @@ admin.get("/admin/flows/edit", async (c) => {
             </tbody>
           </table>
           <template id="mapping-row-template">${flowRowHtml()}</template>
-          <div class="row" style="justify-content:flex-start; gap:10px; margin-top:10px;">
+          <div class="form-actions end">
             <button type="button" class="secondary" data-append-template="mapping-row-template" data-append-to="mapping-rows">+ Add mapping</button>
             <button class="primary" type="submit">Save mappings</button>
-            <a href="/admin/flows">Cancel</a>
+            <a class="cancel" href="/admin/flows">Cancel</a>
           </div>
         </form>
       `)}

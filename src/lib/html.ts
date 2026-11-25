@@ -631,8 +631,13 @@ const STYLES = `
   .fi-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px 20px; }
 
   /* Form footers: a primary action and a way back out of every form. */
-  .form-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-  .form-actions.end { justify-content: flex-end; }
+  /* Every form's actions: one right-aligned row, destructive first, then Cancel, then the primary action - whatever the markup order. */
+  .form-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+  .form-actions > .danger, .form-actions > form { order: 1; }
+  .form-actions > .secondary, .form-actions > a:not(.cancel) { order: 2; }
+  .form-actions > .cancel { order: 3; }
+  .form-actions > .primary { order: 4; }
+  .form-actions > form { margin: 0; display: inline-flex; }
   .form-actions .cancel { color: var(--fi-muted); font-size: 0.875rem; font-weight: 550; }
   .form-actions .cancel:hover { color: var(--fi-ink); text-decoration: underline; }
 
@@ -1034,6 +1039,15 @@ export function confirmAttrs(
 /** The way out of a form. Every form should have one. */
 export function cancelLink(href: string, label = "Cancel"): string {
   return `<a class="cancel" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+}
+
+/**
+ * A second submit button inside a form that posts somewhere else (Delete,
+ * Rotate secret), so a form's every action shares its one action row. It
+ * skips the form's validation; `confirm` is the confirmAttrs() string.
+ */
+export function formButton(label: string, formaction: string, opts: { variant?: "danger" | "secondary"; confirm?: string } = {}): string {
+  return `<button class="${opts.variant ?? "secondary"}" type="submit" formaction="${escapeHtml(formaction)}" formnovalidate${opts.confirm ? ` ${opts.confirm}` : ""}>${escapeHtml(label)}</button>`;
 }
 
 /** Submit + cancel, laid out consistently at the foot of a form. */

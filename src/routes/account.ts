@@ -250,7 +250,7 @@ account.get("/account", async (c) => {
           <div class="form-grid">
             ${editable.map((a) => `<div><label for="attr_${escapeHtml(a.name)}">${escapeHtml(a.label)}</label>${attributeInput(a, userAttributeValue(user, a))}</div>`).join("")}
           </div>
-          <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="primary" type="submit">Save my details</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Save my details</button></div>
         </form>
       `)
           : ""
@@ -421,7 +421,7 @@ account.get("/account/access", async (c) => {
                  ${remoteMultiSelect("target", "/account/access/targets", [], "Search groups and apps you can ask for...", true)}
                  <label for="access_reason">Reason (optional)</label>
                  <input type="text" id="access_reason" name="reason" maxlength="500" placeholder="Why you need it" />
-                 <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Request access</button></div>
+                 <div class="form-actions end"><button class="primary" type="submit">Request access</button></div>
                </form>`
             : ""
         }
@@ -549,7 +549,7 @@ account.get("/account/groups/:id", async (c) => {
         <form method="POST" action="/account/groups/${group.id}/members" style="margin-top:14px;">
           <label>Add people</label>
           ${remoteMultiSelect("user_ids", `/account/groups/${group.id}/people`, [], "Search people...")}
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Add to group</button></div>
+          <div class="form-actions end"><button class="primary" type="submit">Add to group</button></div>
         </form>
       `)}
       `,
@@ -1833,10 +1833,10 @@ function backupCodesPage(codes: string[], continueTo: string | { to: string; res
     <div style="background:var(--fi-surface-2); border:1px solid var(--fi-line); border-radius:10px; padding:14px 16px; font-family:monospace; font-size:1rem; line-height:1.8;">
       ${codes.map(escapeHtml).join("<br/>")}
     </div>
-    <div class="row" style="justify-content:flex-start; margin-top:12px;">
+    <div class="form-actions end">
       <a href="${downloadHref}" download="backup-codes.txt"><button class="secondary" type="button">Download backup-codes.txt</button></a>
+      ${continueEl}
     </div>
-    <div class="row" style="margin-top:16px;">${continueEl}</div>
   `);
 }
 
