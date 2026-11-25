@@ -4,6 +4,30 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.15.1] - 2026-11-24
+
+Fixes and polish on the 4.15.0 identifier-trust release.
+
+- **Alias code entry now sits in the alias's own row.** Each unverified
+  email or phone on /account has its own code field, Verify, Resend and
+  Remove, so several can be verified independently. The old "Enter your
+  code" list came from `KV.list()`, which is eventually consistent and often
+  missed a code written just before the redirect.
+- **The /account profile card follows the user's schema.** A schema with no
+  attributes (Basic) fell through to the hardcoded HR field list. An
+  assigned schema now renders exactly its attributes; schema-less users see
+  only HR fields that hold values.
+- **Copy buttons on read-only data.** A shared `codeBlock()` pins a Copy
+  button to the raw user record, SCIM and CSV import logs, the email
+  plain-text preview and integration snippets. It copies the block's live
+  text.
+- **Integrations -> SMS shows only the selected provider's fields.**
+- **Alias card layout:** inputs and their buttons share one 38px line
+  (`.inline-action`), stacking on narrow screens. The empty-state line and
+  the duplicate heading are gone.
+- The alias verification email resolves its brand from the UPN, like every
+  other email.
+
 ## [4.15.0] - 2026-11-24
 
 Identifier trust model (design: `docs/identifiers.md`). Three switches that
