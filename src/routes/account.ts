@@ -4,6 +4,7 @@ import { enrolledFactors, FACTOR_SHORT_LABELS, hasSecondFactor, isFactorEnabled,
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
 import { aliasKindFor, deleteAlias, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
+import { signInHistory } from "../lib/signin-history.js";
 import { listUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
 import {
@@ -625,6 +626,7 @@ account.get("/account/security", async (c) => {
   const sessions = await listActiveSessionsForUser(c.env, user.id);
   const devices = await listTrustedDevices(c.env, user.id);
   const passkeys = await listPasskeys(c.env, user.id);
+  const signIns = await signInHistory(c.env, user);
   const isAdmin = c.get("access").isAdmin;
   // Only factors that work right now: one switched off is not offered here at all.
   const enrolled = enrolledFactors({ ...user, has_passkey: passkeys.length > 0, has_backup_codes: remainingBackupCodes > 0 });
@@ -763,6 +765,31 @@ account.get("/account/security", async (c) => {
               .join("")}
           </tbody>
         </table>
+      `)}
+
+      ${cardSection(`
+        <h2>Sign-in history</h2>
+        <p class="muted">Your recent sign-in attempts, successful and failed. Attempts you don't recognise? Change your password and sign out your other sessions.</p>
+        ${
+          signIns.length
+            ? `<table>
+          <thead><tr><th>When</th><th>Result</th><th>Method</th><th>IP</th><th>Device</th></tr></thead>
+          <tbody>
+            ${signIns
+              .map(
+                (e) => `<tr>
+                  <td>${ts(e.at)}</td>
+                  <td><span class="badge badge-status ${e.ok ? "badge-active" : "badge-disabled"}">${e.ok ? "Success" : "Failed"}</span>${e.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(e.reason)}</span>` : ""}</td>
+                  <td>${escapeHtml(e.method || "-")}</td>
+                  <td class="muted">${escapeHtml(e.ip ?? "unknown")}</td>
+                  <td class="muted">${escapeHtml(e.device || "-")}</td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>`
+            : '<p class="muted">No sign-ins recorded yet.</p>'
+        }
       `)}
 
       <div class="two-col">
