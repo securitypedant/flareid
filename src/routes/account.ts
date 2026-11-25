@@ -284,8 +284,7 @@ account.get("/account", async (c) => {
             .map(
               (p) => `<form method="POST" action="/account/aliases/verify" style="margin-bottom:10px;">
               <input type="hidden" name="kind" value="${p.kind}" /><input type="hidden" name="value" value="${escapeHtml(p.value)}" />
-              <label>Code sent to ${escapeHtml(p.value)}</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required style="max-width:220px;" />
-              <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Verify</button></div>
+              <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;"><div style="flex:1; min-width:180px;"><label>Code sent to ${escapeHtml(p.value)}</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></div><button class="primary" type="submit">Verify</button></div>
             </form>`
             )
             .join("")}`
@@ -293,9 +292,7 @@ account.get("/account", async (c) => {
         }
         <h3 style="margin-top:14px;">Add an address or number</h3>
         <form method="POST" action="/account/aliases">
-          <label for="alias_identifier">Email address or phone number</label>
-          <input type="text" id="alias_identifier" name="identifier" placeholder="you@example.com or +15551234567" required />
-          <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Send code</button></div>
+          <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;"><div style="flex:1; min-width:240px;"><label for="alias_identifier">Email address or phone number</label><input type="text" id="alias_identifier" name="identifier" placeholder="you@example.com or +15551234567" required /></div><button class="primary" type="submit">Send code</button></div>
         </form>
       `)}
       `,
