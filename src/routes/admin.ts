@@ -1686,8 +1686,12 @@ admin.get("/admin/users/:id", async (c) => {
           </div>
           ${scriptTag(IDENT_TYPE_SCRIPT)}
           <p class="muted" style="margin:0;">External ID <code>${escapeHtml(user.external_id)}</code> &middot; Created ${ts(user.created_at)}</p>
-          <h3 style="margin-top:14px;">Email addresses${mastered.has("emails") ? masteredNote : ""}</h3>
-          <p class="muted" style="margin-top:-4px;">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
+        `)}
+
+        <div class="two-col">
+        ${cardSection(`
+          <h2>Email addresses${mastered.has("emails") ? masteredNote : ""}</h2>
+          <p class="muted">Every address on the account; people can sign in and recover with any of them. The primary is where invitations and reset links go - and what the <code>email</code> claim reports.</p>
           <div class="email-row muted" style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
             <span>Address</span><span>Type</span><span>Primary</span><span></span>
           </div>
@@ -1699,10 +1703,15 @@ admin.get("/admin/users/:id", async (c) => {
           <button type="button" class="secondary" data-append-template="email-row-template" data-append-to="email-rows">+ Add address</button>
           <datalist id="email-type-options"><option value="work"></option><option value="home"></option><option value="other"></option></datalist>`
           }
-          <h3 style="margin-top:14px;">Phone numbers${mastered.has("phones") ? masteredNote : ""}</h3>
-          <p class="muted" style="margin-top:-4px;">+E.164 numbers that also resolve this account at sign-in. One per line.</p>
-          <textarea name="phones" rows="2" placeholder="+15551234567" ${mastered.has("phones") ? "disabled" : ""}>${escapeHtml(userPhones.map((p) => p.phone).join("\n"))}</textarea>
         `)}
+        ${cardSection(`
+          <h2>Phone numbers${mastered.has("phones") ? masteredNote : ""}</h2>
+          <p class="muted">+E.164 numbers that also resolve this account at sign-in. One per line.</p>
+          <textarea name="phones" rows="4" placeholder="+15551234567" ${mastered.has("phones") ? "disabled" : ""}>${escapeHtml(userPhones.map((p) => p.phone).join("\n"))}</textarea>
+        `)}
+        </div>
+
+        <div class="two-col">
 
         ${cardSection(`
           <div class="card-head">
@@ -1744,8 +1753,17 @@ admin.get("/admin/users/:id", async (c) => {
               : '<p class="muted">None.</p>'
           }
         `)}
+        </div>
 
-        <div class="form-actions end" style="margin-bottom:18px;">
+        <div class="form-actions end" style="margin:0 0 18px;">
+          ${
+            isSelf
+              ? ""
+              : formButton("Delete", `/admin/users/${id}/delete`, {
+                  variant: "danger",
+                  confirm: confirmAttrs(`Deleting ${user.display_name} cannot be undone. Their sessions, tokens and group memberships are removed with them. To keep the account but stop sign-ins, switch it to Inactive instead.`, { title: "Delete this user?", action: "Delete user", danger: true }),
+                })
+          }
           ${cancelLink(`/admin/users/${id}`)}
           <button class="primary" type="submit">Save</button>
         </div>
@@ -1848,7 +1866,7 @@ admin.get("/admin/users/:id", async (c) => {
                   ${apps
                     .map(
                       (app) =>
-                        `<tr><td>${escapeHtml(app.name)}</td><td><form method="POST" action="/admin/users/${id}/apps/${app.id}/revoke" ${confirmAttrs(`${user.display_name} will need to sign in to ${app.name} again.`, { title: `Revoke access to ${app.name}?`, action: "Revoke access", danger: true })}>${iconButton("logOut", "Revoke access", { danger: true })}</form></td></tr>`
+                        `<tr><td>${escapeHtml(app.name)}</td><td><div class="row-actions"><form method="POST" action="/admin/users/${id}/apps/${app.id}/revoke" ${confirmAttrs(`${user.display_name} will need to sign in to ${app.name} again.`, { title: `Revoke access to ${app.name}?`, action: "Revoke access", danger: true })}>${iconButton("logOut", "Revoke access", { danger: true })}</form></div></td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -1858,22 +1876,12 @@ admin.get("/admin/users/:id", async (c) => {
       `)}
       </div>
 
-      ${
-        isSelf
-          ? ""
-          : cardSection(`
-        <h2>Delete user</h2>
-        <p class="muted">Removes the account, its group memberships, and any tokens issued for it. To keep the account but stop sign-ins, switch it to Inactive instead.</p>
-        <form method="POST" action="/admin/users/${id}/delete" ${confirmAttrs(`Deleting ${user.display_name} cannot be undone. Their sessions, tokens and group memberships are removed with them.`, { title: "Delete this user?", action: "Delete user", danger: true })}>
-          <button class="danger" type="submit">Delete ${escapeHtml(user.display_name)}</button>
-        </form>
-      `)
-      }
-
       ${cardSection(`
-        <h2>Raw record</h2>
-        <p class="muted">The user object exactly as the API and provisioning syncs see it - credential material (hashes, salts, TOTP secrets) excluded.</p>
-        ${codeBlock(rawUserJson, { style: "max-height:420px; overflow:auto;" })}
+        <details>
+          <summary><h2 style="display:inline; margin:0;">Raw record</h2></summary>
+          <p class="muted" style="margin-top:10px;">The user object exactly as the API and provisioning syncs see it - credential material (hashes, salts, TOTP secrets) excluded.</p>
+          ${codeBlock(rawUserJson, { style: "max-height:420px; overflow:auto;" })}
+        </details>
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name }],

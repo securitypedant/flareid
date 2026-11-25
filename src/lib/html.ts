@@ -283,7 +283,10 @@ const STYLES = `
   @media (max-width: 760px) { .form-grid { grid-template-columns: 1fr; } }
 
   /* Labelled setting rows (user Security card) */
-  .sec-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--fi-line-soft); flex-wrap: wrap; }
+  .sec-row { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid var(--fi-line-soft); }
+  .sec-row > div:first-child { flex: 1; min-width: 0; }
+  .sec-row > form, .sec-row > div:last-child:not(:first-child) { flex-shrink: 0; }
+  @media (max-width: 760px) { .sec-row { flex-direction: column; align-items: stretch; gap: 10px; } .sec-row > form { justify-content: flex-end; } }
   .sec-row:first-of-type { border-top: none; padding-top: 4px; }
   .sec-row h3 { margin: 0 0 2px 0; }
   .sec-row p { margin: 0; }
@@ -322,7 +325,7 @@ const STYLES = `
 
   /* ------------------------------------------------------------- forms */
   label { display: block; font-size: 0.8125rem; font-weight: 600; margin-bottom: 5px; color: var(--fi-ink); }
-  input[type=text], input[type=search], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea {
+  input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], input[type=password], input[type=number], input[type=date], select, textarea {
     width: 100%; padding: 9px 12px; border: 1px solid var(--fi-line-strong); border-radius: 8px; font-size: 0.875rem;
     box-sizing: border-box; margin-bottom: 16px; font-family: inherit; color: var(--fi-ink); background: var(--fi-surface);
     transition: border-color 0.12s, box-shadow 0.12s;
@@ -332,7 +335,7 @@ const STYLES = `
     outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18);
   }
   /* One height for every single-line control, so date pickers and selects line up with text inputs in a grid. */
-  input[type=text], input[type=search], input[type=email], input[type=password], input[type=number], input[type=date], select { height: 38px; }
+  input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], input[type=password], input[type=number], input[type=date], select { height: 38px; }
   input[type=date] { padding-right: 8px; }
   input[type=date]::-webkit-calendar-picker-indicator {
     cursor: pointer; padding: 5px; margin-left: 6px; border-radius: 6px; opacity: 0.5;
