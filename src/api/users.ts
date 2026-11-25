@@ -10,6 +10,7 @@ import { listActiveSessionsForUser } from "../lib/sessions.js";
 import { listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
 import { deleteUserPhoto, getUserPhoto, MAX_PHOTO_BYTES, setUserPhoto, sniffImageType } from "../lib/photos.js";
 import { auditActor } from "../lib/api-auth.js";
+import { getReport, listOpenReports, resolveReport } from "../lib/account-reports.js";
 import { logAudit } from "../lib/audit.js";
 import type { GroupRow, UserRow } from "../lib/types.js";
 import { listUserEmailsFor, type UserEmailInput } from "../lib/user-emails.js";
@@ -497,5 +498,56 @@ defineRoute(
     await deleteUserPhoto(c.env, user.id);
     await logAudit(c.env, auditActor(c.get("apiActor")), "user.photo_removed", user.upn, undefined, c.req.raw);
     return c.json({ ok: true });
+  }
+);
+
+// ---------- "This wasn't me" reports (account-reports.ts) ----------
+
+const AccountReportSchema = z
+  .object({
+    id: z.number(),
+    username: z.string(),
+    display_name: z.string(),
+    kind: z.enum(["session", "device"]).openapi({ description: "What the person reported: a signed-in session or a remembered device. It was revoked when reported." }),
+    ip: z.string().nullable(),
+    user_agent: z.string().nullable(),
+    reported_at: z.string(),
+  })
+  .openapi("AccountReport");
+
+defineRoute(
+  {
+    method: "get",
+    path: "/api/v1/account-reports",
+    tag: "Users",
+    permission: "users:read",
+    summary: "List open account reports",
+    description: "Sessions and remembered devices people flagged as not theirs on their Security page, still waiting for an administrator to review.",
+    response: z.object({ reports: z.array(AccountReportSchema) }),
+  },
+  async (c) =>
+    c.json({
+      reports: (await listOpenReports(c.env, 500)).map((r) => ({ id: r.id, username: r.upn, display_name: r.display_name, kind: r.kind, ip: r.ip, user_agent: r.user_agent, reported_at: r.created_at })),
+    })
+);
+
+defineRoute(
+  {
+    method: "post",
+    path: "/api/v1/account-reports/{id}/resolve",
+    tag: "Users",
+    permission: "users:write",
+    summary: "Mark an account report reviewed",
+    params: z.object({ id: z.string() }),
+    errors: [404],
+    response: z.object({ ok: z.literal(true) }),
+  },
+  async (c) => {
+    const report = await getReport(c.env, Number(param(c, "id")));
+    // API keys aren't people: resolved_by stays empty, the audit row names the key.
+    if (!report || !(await resolveReport(c.env, report.id, null))) return notFound(c, "No open report with that id.");
+    const target = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(report.user_id).first<{ upn: string }>();
+    await logAudit(c.env, auditActor(c.get("apiActor")), "user.report_resolved", target?.upn, { kind: report.kind }, c.req.raw);
+    return c.json({ ok: true as const });
   }
 );

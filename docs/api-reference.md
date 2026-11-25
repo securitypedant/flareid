@@ -126,6 +126,8 @@ People in the directory.
 | `GET` | `/api/v1/users/{username}/photo` | `users:read` | Get the profile photo |
 | `PUT` | `/api/v1/users/{username}/photo` | `users:write` | Set the profile photo |
 | `DELETE` | `/api/v1/users/{username}/photo` | `users:write` | Remove the profile photo |
+| `GET` | `/api/v1/account-reports` | `users:read` | List open account reports |
+| `POST` | `/api/v1/account-reports/{id}/resolve` | `users:write` | Mark an account report reviewed |
 | `POST` | `/api/v1/users/{username}/invite` | `users:write` | Email an invitation or a password reset link |
 
 ### `POST /api/v1/users`
@@ -594,6 +596,40 @@ Permission: `users:write`
 Response `200`:
 
 `Ok`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ok` | true | yes |  |
+
+Errors: `400`, `401`, `403`, `404` (`{ "error", "message" }`).
+
+### `GET /api/v1/account-reports`
+
+List open account reports.
+
+Sessions and remembered devices people flagged as not theirs on their Security page, still waiting for an administrator to review.
+
+Permission: `users:read`
+
+Response `200`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reports` | AccountReport[] | yes |  |
+
+Errors: `400`, `401`, `403` (`{ "error", "message" }`).
+
+### `POST /api/v1/account-reports/{id}/resolve`
+
+Mark an account report reviewed.
+
+Permission: `users:write`
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `id` | path | yes | string |
+
+Response `200`:
 
 | Field | Type | Required | Description |
 |---|---|---|---|

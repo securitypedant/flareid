@@ -114,6 +114,7 @@ import {
 import { addGroupManagers, assertRuleAllowed, bulkAddMembers, bulkSetRequestable, createGroup, deleteGroup, freezeGroup, groupMembers, removeGroupManager, removeGroupMember, updateGroup } from "../services/groups.js";
 import { groupManagers } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
+import { describeReport, getReport, openReportsFor, resolveReport } from "../lib/account-reports.js";
 import { avatarUrl } from "../lib/photos.js";
 import { deleteClient, getClientById, ID_TOKEN_ALGS, isIdTokenAlg, rotateClientSecret, updateClient, validFrontchannelUri } from "../services/clients.js";
 import { applyCatalogEntry, insertClient, insertServiceProvider, parseSpForm, readClientSettings, type SpFormValues } from "../services/apps.js";
@@ -1580,6 +1581,16 @@ admin.post("/admin/users", async (c) => {
   );
 });
 
+admin.post("/admin/users/:id/reports/:rid/resolve", async (c) => {
+  const id = Number(c.req.param("id"));
+  const report = await getReport(c.env, Number(c.req.param("rid")));
+  if (report && report.user_id === id && (await resolveReport(c.env, report.id, c.get("user").id))) {
+    const target = await c.env.DB.prepare("SELECT upn FROM users WHERE id = ?").bind(id).first<{ upn: string }>();
+    await logAudit(c.env, c.get("user"), "user.report_resolved", target?.upn, { kind: report.kind }, c.req.raw);
+  }
+  return c.redirect(`/admin/users/${id}?saved=1`, 302);
+});
+
 admin.get("/admin/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
@@ -1593,6 +1604,7 @@ admin.get("/admin/users/:id", async (c) => {
   const memberGroupIds = new Set(memberships.map((m) => m.group_id));
   const sessions = await listActiveSessionsForUser(c.env, id);
   const apps = await connectedApps(c.env, id);
+  const reports = await openReportsFor(c.env, id);
   const { username, domain } = splitUpn(user.upn);
   const isSelf = id === c.get("user").id;
   // What Reset MFA clears (passkeys are removed one by one, below).
@@ -1665,6 +1677,14 @@ admin.get("/admin/users/:id", async (c) => {
       ${c.req.query("sent") === "invite" ? successBanner(`Invitation sent to ${recipientFor(user)}.`) : ""}
       ${c.req.query("sent") === "reset" ? successBanner(`Password reset link sent to ${recipientFor(user)}.`) : ""}
       ${c.req.query("send_error") ? `<p class="error">The email could not be sent: ${escapeHtml(c.req.query("send_error") ?? "")}</p>` : ""}
+      ${reports
+        .map(
+          (r) => `<div class="notice-warn" style="display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:14px;">
+          <div><strong>${escapeHtml(user.display_name)} reported ${escapeHtml(describeReport(r))} as not them</strong> on ${ts(r.created_at)}. It was signed out when they reported it. Review their sign-in history below, and consider resetting their password or MFA.</div>
+          <form method="POST" action="/admin/users/${id}/reports/${r.id}/resolve" style="margin:0; flex-shrink:0;"><button class="secondary" type="submit">Mark reviewed</button></form>
+        </div>`
+        )
+        .join("")}
       <form method="POST" action="/admin/users/${id}" id="user-form">
         ${cardSection(`
           <h2>Identity</h2>

@@ -368,6 +368,52 @@
           "user_agent"
         ]
       },
+      "AccountReport": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "username": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "session",
+              "device"
+            ],
+            "description": "What the person reported: a signed-in session or a remembered device. It was revoked when reported."
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reported_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "kind",
+          "ip",
+          "user_agent",
+          "reported_at"
+        ]
+      },
       "GroupRule": {
         "type": [
           "object",
@@ -4404,6 +4450,161 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account-reports": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "List open account reports",
+        "description": "Sessions and remembered devices people flagged as not theirs on their Security page, still waiting for an administrator to review.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:read",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reports": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AccountReport"
+                      }
+                    }
+                  },
+                  "required": [
+                    "reports"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, revoked or expired token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token lacks the permission, or the action needs `*` (admin) because it touches an administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account-reports/{id}/resolve": {
+      "post": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Mark an account report reviewed",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-permission": "users:write",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
                 }
               }
             }

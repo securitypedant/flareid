@@ -4,7 +4,8 @@ import { enrolledFactors, FACTOR_SHORT_LABELS, hasSecondFactor, isFactorEnabled,
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
 import { aliasKindFor, deleteAlias, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
-import { signInHistory } from "../lib/signin-history.js";
+import { describeUserAgent, signInHistory } from "../lib/signin-history.js";
+import { reportItem } from "../lib/account-reports.js";
 import { listUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
 import {
@@ -137,6 +138,7 @@ const SAVED_MESSAGES: Record<string, string> = {
   "alias-code": "A code is on its way - enter it next to the address or number below.",
   "alias-verified": "Verified. It can sign you in from now on.",
   "alias-removed": "Removed.",
+  reported: "Reported. It has been signed out, and your administrator will review your account. If you think someone knows your password, change it now.",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -745,7 +747,7 @@ account.get("/account/security", async (c) => {
           ${sessions.length > 1 ? `<form method="POST" action="/account/sessions/revoke-others" ${confirmAttrs("Every session except this one will be signed out. Other devices will need to sign in again.", { title: "Sign out all other sessions?", action: "Sign out others" })}><button class="secondary" type="submit">Sign out all other sessions</button></form>` : ""}
         </div>
         <table style="margin-top:10px;">
-          <thead><tr><th>Started</th><th>Last active</th><th>IP</th><th></th></tr></thead>
+          <thead><tr><th>Started</th><th>Last active</th><th>IP</th><th>Device</th><th></th></tr></thead>
           <tbody>
             ${sessions
               .map(
@@ -753,13 +755,15 @@ account.get("/account/security", async (c) => {
                   <td>${ts(s.created_at)}</td>
                   <td>${escapeHtml(relativeTime(s.last_seen_at))}</td>
                   <td class="muted">${escapeHtml(s.ip ?? "unknown")}</td>
-                  <td>
-                    ${
-                      s.id === currentSessionId
-                        ? '<span class="badge badge-active">This device</span>'
-                        : `<form method="POST" action="/account/sessions/${escapeHtml(s.id)}/revoke" ${confirmAttrs("That device will need to sign in again.", { title: "Sign out this session?", action: "Sign out" })}>${iconButton("logOut", "Sign out", { danger: true })}</form>`
-                    }
-                  </td>
+                  <td class="muted">${escapeHtml(describeUserAgent(s.user_agent) || "-")}</td>
+                  <td>${
+                    s.id === currentSessionId
+                      ? '<div class="row-actions"><span class="badge badge-active">This device</span></div>'
+                      : rowActions(
+                          `<form method="POST" action="/account/sessions/${escapeHtml(s.id)}/report" confirmAttrs("The session is signed out straight away, and your administrator is asked to review your account. Change your password too if you think someone knows it.", { title: "Report this as not you?", action: "Report", danger: true })}>${iconButton("flag", "Report - this wasn't me", { danger: true })}</form>`,
+                          `<form method="POST" action="/account/sessions/${escapeHtml(s.id)}/revoke" ${confirmAttrs("That device will need to sign in again.", { title: "Sign out this session?", action: "Sign out" })}>${iconButton("logOut", "Sign out", { danger: true })}</form>`
+                        )
+                  }</td>
                 </tr>`
               )
               .join("")}
@@ -807,7 +811,7 @@ account.get("/account/security", async (c) => {
                         <td>${ts(d.created_at)}</td>
                         <td>${escapeHtml(relativeTime(d.last_used_at))}</td>
                         <td class="muted">${escapeHtml(d.ip ?? "unknown")}</td>
-                        <td><form method="POST" action="/account/devices/${escapeHtml(d.id)}/revoke" ${confirmAttrs("This device will be asked for a verification code the next time it signs in.", { title: "Remove this remembered device?", action: "Remove device" })}>${iconButton("trash", "Remove", { danger: true })}</form></td>
+                        <td>${rowActions(`<form method="POST" action="/account/devices/${escapeHtml(d.id)}/report" ${confirmAttrs("The device is forgotten straight away, and your administrator is asked to review your account. Change your password too if you think someone knows it.", { title: "Report this as not you?", action: "Report", danger: true })}>${iconButton("flag", "Report - this wasn't me", { danger: true })}</form>`, `<form method="POST" action="/account/devices/${escapeHtml(d.id)}/revoke" ${confirmAttrs("This device will be asked for a verification code the next time it signs in.", { title: "Remove this remembered device?", action: "Remove device" })}>${iconButton("trash", "Remove", { danger: true })}</form>`)}</td>
                       </tr>`
                     )
                     .join("")}
@@ -1195,6 +1199,23 @@ account.post("/account/sessions/:id/revoke", async (c) => {
   }
   return c.redirect("/account/security?saved=session", 302);
 });
+
+// "This wasn't me": revoke the item and raise it for an administrator (account-reports.ts).
+for (const kind of ["session", "device"] as const) {
+  account.post(`/account/${kind}s/:id/report`, async (c) => {
+    const user = c.get("user");
+    const id = c.req.param("id");
+    // Reporting the session you're using would just sign you out mid-report.
+    if (kind === "session" && id === c.get("sessionId")) return c.redirect("/account/security", 302);
+    if (await reportItem(c.env, user.id, kind, id)) {
+      await logAudit(c.env, user, `user.${kind}_reported`, user.upn, undefined, c.req.raw);
+      if (kind === "session") {
+        c.executionCtx.waitUntil(emitAndDrain(c.env, SSF_EVENTS["caep.session-revoked"], { format: "email", email: user.upn }).catch(() => undefined));
+      }
+    }
+    return c.redirect("/account/security?saved=reported", 302);
+  });
+}
 
 account.post("/account/sessions/revoke-others", async (c) => {
   const user = c.get("user");

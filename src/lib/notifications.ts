@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import type { NotificationFeed } from "./html.js";
+import { countOpenReports, describeReport, listOpenReports } from "./account-reports.js";
 
 /**
  * The bell's feed: work waiting on this person.
@@ -7,7 +8,8 @@ import type { NotificationFeed } from "./html.js";
  * An administrator sees every pending access request (they land on the
  * Access queue); a group manager sees the ones waiting on the groups they
  * own (they land on the managed group's page). Other alerts can join the
- * same shape later.
+ * same shape later. Administrators also see open "this wasn't me" reports
+ * (account-reports.ts), which land on the reported person's page.
  */
 export async function notificationFeedFor(env: Env, userId: number, isAdmin: boolean): Promise<NotificationFeed | null> {
   // A manager's feed skips their own requests - they can't decide those, and
@@ -30,13 +32,19 @@ export async function notificationFeedFor(env: Env, userId: number, isAdmin: boo
   const results = (rows?.results ?? []) as { id: number; target_type: string; target_id: number; display_name: string; target_name: string; created_at: string }[];
   // A non-admin with nothing to manage has no bell at all.
   if (!isAdmin && !(await env.DB.prepare("SELECT 1 FROM group_managers WHERE user_id = ? LIMIT 1").bind(userId).first())) return null;
+  const requestItems = results.map((r) => ({
+    at: r.created_at,
+    label: r.target_type === "group" ? `${r.display_name} asked to join ${r.target_name}` : `${r.display_name} asked for access to ${r.target_name}`,
+    href: isAdmin ? "/admin/access" : r.target_type === "group" ? `/account/groups/${r.target_id}` : "/account/access",
+  }));
+  const [reportCount, reports] = isAdmin ? await Promise.all([countOpenReports(env), listOpenReports(env, 5)]) : [0, []];
+  const reportItems = reports.map((r) => ({ at: r.created_at, label: `${r.display_name} reported ${describeReport(r)}`, href: `/admin/users/${r.user_id}` }));
   return {
-    count: Number((count?.results[0] as { n: number } | undefined)?.n ?? 0),
-    items: results.map((r) => ({
-      label: r.target_type === "group" ? `${r.display_name} asked to join ${r.target_name}` : `${r.display_name} asked for access to ${r.target_name}`,
-      href: isAdmin ? "/admin/access" : r.target_type === "group" ? `/account/groups/${r.target_id}` : "/account/access",
-      when: r.created_at.slice(0, 10),
-    })),
-    seeAllHref: isAdmin ? "/admin/access" : "/account/access",
+    count: Number((count?.results[0] as { n: number } | undefined)?.n ?? 0) + reportCount,
+    items: [...reportItems, ...requestItems]
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .slice(0, 5)
+      .map(({ at, label, href }) => ({ label, href, when: at.slice(0, 10) })),
+    seeAllHref: isAdmin ? (reportItems.length && !requestItems.length ? reportItems[0]!.href : "/admin/access") : "/account/access",
   };
 }

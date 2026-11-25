@@ -47,6 +47,7 @@ const CONSOLE_TO_API: Record<string, string | string[]> = {
   "POST /admin/email": "PUT /api/v1/email",
   "POST /admin/email/test": "POST /api/v1/email/test",
   "POST /admin/sms": "PUT /api/v1/sms",
+  "POST /admin/users/:id/reports/:rid/resolve": "POST /api/v1/account-reports/{id}/resolve",
   "POST /admin/integrations/cf-one": "PUT /api/v1/integrations/cloudflare-one",
   "POST /admin/integrations/cf-one/sync": "POST /api/v1/integrations/cloudflare-one/sync",
   "POST /admin/integrations/cf-one/watch": "PUT /api/v1/users/{username}/watch",
@@ -202,6 +203,8 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   "POST /account/aliases": "adds an unverified alias and sends a proof-of-ownership code to it",
   "POST /account/aliases/verify": "code-entry ceremony proving ownership of the new alias",
   "POST /account/aliases/delete": "self-service alias removal; admins use PATCH /api/v1/users/{username}",
+  "POST /account/sessions/:id/report": "a session id is the cookie's secret - the API never exposes it",
+  "POST /account/devices/:id/report": "names a remembered device the person sees on their own Security page",
 };
 
 /**
