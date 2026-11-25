@@ -354,6 +354,11 @@ const STYLES = `
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   .primary { background: var(--fi-accent); color: #fff; }
+  /* A text input with its submit button beside it: flush on one 38px line, stacked on narrow screens. */
+  .inline-action { display: flex; gap: 8px; align-items: center; }
+  .inline-action input { flex: 1; min-width: 0; margin: 0; }
+  .inline-action button { height: 38px; white-space: nowrap; flex-shrink: 0; }
+  @media (max-width: 480px) { .inline-action { flex-direction: column; align-items: stretch; } }
   .primary:hover:not(:disabled) { background: var(--fi-accent-dark); }
   .secondary { background: var(--fi-surface); color: var(--fi-body); border-color: var(--fi-line-strong); }
   .secondary:hover:not(:disabled) { background: var(--fi-line-soft); border-color: var(--fi-faint); }
