@@ -581,6 +581,18 @@ const STYLES = `
   .avatar-lg.avatar-initials { font-size: 34px; }
   .photo-upload-btn { font-size: 0.78rem; padding: 5px 12px; }
 
+  /* Icon row actions (Iconoir) */
+  .icon { display: block; flex-shrink: 0; }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0;
+    background: none; border: 1px solid transparent; border-radius: 6px; color: var(--fi-muted); cursor: pointer; text-decoration: none;
+  }
+  .icon-btn:hover { background: var(--fi-line-soft); color: var(--fi-ink); }
+  .icon-btn:focus-visible { outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18); }
+  .icon-btn-danger, .icon-btn-danger:hover { color: var(--fi-red); }
+  .icon-btn-danger:hover { background: var(--fi-red-soft); }
+  .row-actions { display: flex; gap: 2px; align-items: center; justify-content: flex-end; }
+  .row-actions form { margin: 0; display: inline-flex; }
   /* Copy-to-clipboard buttons */
   .copy-btn {
     background: var(--fi-surface); color: var(--fi-body); border: 1px solid var(--fi-line-strong); border-radius: 6px;
@@ -1215,6 +1227,56 @@ export function rankedBars(points: ChartPoint[]): string {
  */
 export function codeBlock(value: string, opts: { id?: string; className?: string; style?: string } = {}): string {
   return `<div class="code-block"><button type="button" class="copy-btn">Copy</button><pre${opts.id ? ` id="${escapeHtml(opts.id)}"` : ""}${opts.className === "" ? "" : ` class="${escapeHtml(opts.className ?? "import-log")}"`}${opts.style ? ` style="${escapeHtml(opts.style)}"` : ""}>${escapeHtml(value)}</pre></div>`;
+}
+
+/**
+ * Icons from Iconoir (https://iconoir.com, MIT licence), inlined as SVG so
+ * they need no request and no CSP allowance. Rule of thumb for the console:
+ * per-row actions in tables and lists are icon buttons; actions on a whole
+ * form or section (Save, Cancel, Delete this client) stay text buttons.
+ */
+const ICON_PATHS = {
+  trash: [
+    "M20 9L18.005 20.3463C17.8369 21.3026 17.0062 22 16.0353 22H7.96474C6.99379 22 6.1631 21.3026 5.99496 20.3463L4 9",
+    "M21 6L15.375 6M3 6L8.625 6M8.625 6V4C8.625 2.89543 9.52043 2 10.625 2H13.375C14.4796 2 15.375 2.89543 15.375 4V6M8.625 6L15.375 6",
+  ],
+  edit: [
+    "M14.3632 5.65156L15.8431 4.17157C16.6242 3.39052 17.8905 3.39052 18.6716 4.17157L20.0858 5.58579C20.8668 6.36683 20.8668 7.63316 20.0858 8.41421L18.6058 9.8942M14.3632 5.65156L4.74749 15.2672C4.41542 15.5993 4.21079 16.0376 4.16947 16.5054L3.92738 19.2459C3.87261 19.8659 4.39148 20.3848 5.0115 20.33L7.75191 20.0879C8.21972 20.0466 8.65806 19.8419 8.99013 19.5099L18.6058 9.8942M14.3632 5.65156L18.6058 9.8942",
+  ],
+  xmark: ["M6.75827 17.2426L12.0009 12M17.2435 6.75736L12.0009 12M12.0009 12L6.75827 6.75736M12.0009 12L17.2435 17.2426"],
+  plus: ["M6 12H12M18 12H12M12 12V6M12 12V18"],
+  logOut: [
+    "M12 12H19M19 12L16 15M19 12L16 9",
+    "M19 6V5C19 3.89543 18.1046 3 17 3H7C5.89543 3 5 3.89543 5 5V19C5 20.1046 5.89543 21 7 21H17C18.1046 21 19 20.1046 19 19V18",
+  ],
+  refresh: [
+    "M21.1679 8C19.6247 4.46819 16.1006 2 11.9999 2C6.81459 2 2.55104 5.94668 2.04932 11",
+    "M17 8H21.4C21.7314 8 22 7.73137 22 7.4V3",
+    "M2.88146 16C4.42458 19.5318 7.94874 22 12.0494 22C17.2347 22 21.4983 18.0533 22 13",
+    "M7.04932 16H2.64932C2.31795 16 2.04932 16.2686 2.04932 16.6V21",
+  ],
+  navRight: ["M9 6L15 12L9 18"],
+  eye: ["M3 13C6.6 5 17.4 5 21 13", "M12 17C10.3431 17 9 15.6569 9 14C9 12.3431 10.3431 11 12 11C13.6569 11 15 12.3431 15 14C15 15.6569 13.6569 17 12 17Z"],
+} as const;
+export type IconName = keyof typeof ICON_PATHS;
+
+export function icon(name: IconName, size = 16): string {
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name].map((d) => `<path d="${d}"/>`).join("")}</svg>`;
+}
+
+/** A row action as an icon: the label is its accessible name and tooltip. `danger` paints it red. */
+export function iconButton(name: IconName, label: string, opts: { danger?: boolean; type?: "submit" | "button"; attrs?: string } = {}): string {
+  return `<button type="${opts.type ?? "submit"}" class="icon-btn${opts.danger ? " icon-btn-danger" : ""}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"${opts.attrs ? ` ${opts.attrs}` : ""}>${icon(name)}</button>`;
+}
+
+/** The same, as a link (Edit, Preview). `newTab` opens it in a new tab. */
+export function iconLink(href: string, name: IconName, label: string, opts: { newTab?: boolean } = {}): string {
+  return `<a href="${escapeHtml(href)}" class="icon-btn" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"${opts.newTab ? ' target="_blank" rel="noopener"' : ""}>${icon(name)}</a>`;
+}
+
+/** Row actions as icons on one line, right-aligned: forms inside sit inline. */
+export function rowActions(...items: string[]): string {
+  return `<div class="row-actions">${items.filter(Boolean).join("")}</div>`;
 }
 
 /** A small inline "Copy" button that copies `value` to the clipboard on click. */

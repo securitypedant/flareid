@@ -17,7 +17,7 @@ import { Hono, type Context, type Next } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { adminHelp } from "../docs/help.js";
-import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, codeBlock, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, codeBlock, confirmAttrs, copyButton, iconButton, iconLink, rowActions, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -1202,7 +1202,7 @@ admin.get("/admin/users", async (c) => {
       `)}
       ${cardSection(`
         <table>
-          <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th><th>Schema</th><th style="width:40px;"></th></tr></thead>
+          <thead><tr><th>Name</th><th>UPN</th><th>Status</th><th>MFA</th><th>Role</th><th>Schema</th><th style="width:72px;"></th></tr></thead>
           <tbody>
             ${(users as (UserRow & { has_passkey: number; has_backup_codes: number })[])
               .map(
@@ -1213,17 +1213,13 @@ admin.get("/admin/users", async (c) => {
                   <td>${factorList(enrolledFactors(u))}</td>
                   <td>${admins.has(u.id) ? '<span class="badge badge-admin">Super Admin</span>' : "-"}</td>
                   <td>${u.schema_id && schemaNames.has(u.schema_id) ? escapeHtml(schemaNames.get(u.schema_id)!) : '<span class="muted">-</span>'}</td>
-                  <td style="text-align:right;">${rowMenu(`
-                    <a href="/admin/users/${u.id}">Edit</a>
-                    ${
-                      u.id === currentUserId
-                        ? ""
-                        : `<form method="POST" action="/admin/users/${u.id}/delete" style="margin:0;"
-                            ${confirmAttrs(`${u.display_name} (${u.upn}) is removed along with their sessions, tokens and group memberships. This cannot be undone.`, { title: "Delete this user?", action: "Delete user", danger: true })}>
-                            <button type="submit" class="danger">Delete</button>
-                          </form>`
-                    }
-                  `)}</td>
+                  <td>${rowActions(
+                    iconLink(`/admin/users/${u.id}`, "edit", `Edit ${u.display_name}`),
+                    u.id === currentUserId
+                      ? ""
+                      : `<form method="POST" action="/admin/users/${u.id}/delete"
+                          ${confirmAttrs(`${u.display_name} (${u.upn}) is removed along with their sessions, tokens and group memberships. This cannot be undone.`, { title: "Delete this user?", action: "Delete user", danger: true })}>${iconButton("trash", `Delete ${u.display_name}`, { danger: true })}</form>`
+                  )}</td>
                 </tr>`
               )
               .join("")}
@@ -1852,7 +1848,7 @@ admin.get("/admin/users/:id", async (c) => {
                   ${apps
                     .map(
                       (app) =>
-                        `<tr><td>${escapeHtml(app.name)}</td><td><form method="POST" action="/admin/users/${id}/apps/${app.id}/revoke" ${confirmAttrs(`${user.display_name} will need to sign in to ${app.name} again.`, { title: `Revoke access to ${app.name}?`, action: "Revoke access", danger: true })}><button class="link-button" type="submit">Revoke access</button></form></td></tr>`
+                        `<tr><td>${escapeHtml(app.name)}</td><td><form method="POST" action="/admin/users/${id}/apps/${app.id}/revoke" ${confirmAttrs(`${user.display_name} will need to sign in to ${app.name} again.`, { title: `Revoke access to ${app.name}?`, action: "Revoke access", danger: true })}>${iconButton("logOut", "Revoke access", { danger: true })}</form></td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -1908,7 +1904,7 @@ function userEmailRowHtml(e?: { email: string; type: string; is_primary: number 
     <input type="email" name="email_addr" value="${escapeHtml(e?.email ?? "")}" placeholder="name@example.com" />
     <input type="text" name="email_type" value="${escapeHtml(e?.type ?? "work")}" placeholder="type" list="email-type-options" />
     <label><input type="hidden" name="email_primary" value="${e?.is_primary ? 1 : 0}" /><input type="checkbox" ${e?.is_primary ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> Primary</label>
-    <button type="button" class="secondary" data-remove-closest=".email-row" aria-label="Remove address">&times;</button>
+    ${iconButton("trash", "Remove address", { danger: true, type: "button", attrs: 'data-remove-closest=".email-row"' })}
   </div>`;
 }
 
@@ -2125,7 +2121,7 @@ function ruleRowHtml(data: RuleBuilderData, cond?: RuleTerm): string {
       <option value="expr" ${isExpr ? "selected" : ""}>expr</option>
     </select>
     <input type="text" name="rule_value" class="rule-value" value="${escapeHtml(isExpr ? cond.expr : cond?.value ?? "")}" placeholder='Value, or expression: startsWith(department, "eng")' ${field ? `list="rv-${escapeHtml(field)}"` : ""} autocomplete="off" />
-    <button type="button" class="secondary" data-remove-closest=".rule-row" aria-label="Remove condition">&times;</button>
+    ${iconButton("trash", "Remove condition", { danger: true, type: "button", attrs: 'data-remove-closest=".rule-row"' })}
   </div>`;
 }
 
@@ -2524,7 +2520,7 @@ async function groupMembersPanel(env: Env, group: GroupRow, search: string, page
       rows.length
         ? `<table><thead><tr><th>Name</th><th>UPN</th><th>Status</th>${rule || group.system ? "" : "<th></th>"}</tr></thead><tbody>
             ${rows.map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td><span class="badge badge-${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>${
-              rule || group.system ? "" : `<td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/members/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td>`
+              rule || group.system ? "" : `<td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/members/${u.id}/remove" style="margin:0;">${iconButton("trash", "Remove", { danger: true })}</form></td>`
             }</tr>`).join("")}
           </tbody></table>
           ${pages > 1 ? `<div class="row" style="justify-content:space-between; margin-top:12px;">
@@ -2549,7 +2545,7 @@ async function groupManagersPanel(env: Env, group: GroupRow): Promise<string> {
       managers.length
         ? `<table><thead><tr><th>Name</th><th>UPN</th><th></th></tr></thead><tbody>
             ${managers
-              .map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/managers/${u.id}/remove" style="margin:0;"><button class="link-button" type="submit">Remove</button></form></td></tr>`)
+              .map((u) => `<tr><td><a href="/admin/users/${u.id}">${escapeHtml(u.display_name)}</a></td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/admin/groups/${group.id}/managers/${u.id}/remove" style="margin:0;">${iconButton("trash", "Remove", { danger: true })}</form></td></tr>`)
               .join("")}
           </tbody></table>`
         : '<p class="muted">No managers yet.</p>'
@@ -3795,10 +3791,10 @@ admin.get(SIGNALS, async (c) => {
             <td>${escapeHtml(s.name)}<br/><span class="muted"><code>${escapeHtml(s.endpoint_url)}</code></span></td>
             <td class="muted">${escapeHtml(eventNames(s.events))}</td>
             <td class="muted">${s.disabled ? "disabled" : s.last_error ? `<span class="error">${escapeHtml(s.last_error)}</span>` : s.last_push_at ? `pushed ${ts(s.last_push_at)}` : "never pushed"}${s.queued ? `<br/>${s.queued} queued` : ""}</td>
-            <td class="actions">
-              <form method="POST" action="${SIGNALS}/streams/${s.id}/toggle" style="display:inline;"><button class="link-button" type="submit">${s.disabled ? "Enable" : "Disable"}</button></form>
-              <form method="POST" action="${SIGNALS}/streams/${s.id}/delete" style="display:inline;" ${confirmAttrs(`Delete stream "${s.name}"? Queued events go with it.`)}><button class="link-button" type="submit">Delete</button></form>
-            </td>
+            <td><div class="row-actions">
+              <form method="POST" action="${SIGNALS}/streams/${s.id}/toggle" style="margin-right:6px;"><button class="link-button" type="submit">${s.disabled ? "Enable" : "Disable"}</button></form>
+              <form method="POST" action="${SIGNALS}/streams/${s.id}/delete" ${confirmAttrs(`Delete stream "${s.name}"? Queued events go with it.`)}>${iconButton("trash", "Delete", { danger: true })}</form>
+            </div></td>
           </tr>`
         )
         .join("")
@@ -3809,9 +3805,7 @@ admin.get(SIGNALS, async (c) => {
           (t) => `<tr>
             <td>${escapeHtml(t.name)}<br/><span class="muted"><code>${escapeHtml(t.issuer)}</code></span></td>
             <td class="muted"><code>${escapeHtml(t.jwks_url)}</code></td>
-            <td class="actions">
-              <form method="POST" action="${SIGNALS}/transmitters/${t.id}/delete" style="display:inline;" ${confirmAttrs(`Stop trusting "${t.name}"?`)}><button class="link-button" type="submit">Delete</button></form>
-            </td>
+            <td>${rowActions(`<form method="POST" action="${SIGNALS}/transmitters/${t.id}/delete" ${confirmAttrs(`Stop trusting "${t.name}"?`)}>${iconButton("trash", "Delete", { danger: true })}</form>`)}</td>
           </tr>`
         )
         .join("")
@@ -4014,17 +4008,17 @@ admin.get("/admin/integrations/api-keys", async (c) => {
                           <td><code>${escapeHtml(k.prefix)}&hellip;</code></td>
                           <td>${parseScopes(k.scopes).map(escapeHtml).join(", ")}</td>
                           <td>${k.last_used_at ? ts(k.last_used_at) : '<span class="muted">never</span>'}</td>
-                          <td style="white-space:nowrap;">
-                            <a href="/admin/audit?${new URLSearchParams({ actor: "api", search: `api-key:${k.name}` }).toString()}">Activity</a>
+                          <td><div class="row-actions">
+                            <a href="/admin/audit?${new URLSearchParams({ actor: "api", search: `api-key:${k.name}` }).toString()}" style="margin-right:6px;">Activity</a>
                             ${
                               k.revoked_at
                                 ? ""
-                                : ` &middot; <a href="/admin/api-keys/${k.id}/edit">Edit</a> &middot; <form method="POST" action="/admin/api-keys/${k.id}/revoke" style="display:inline" ${confirmAttrs(
+                                : `${iconLink(`/admin/api-keys/${k.id}/edit`, "edit", "Edit")}<form method="POST" action="/admin/api-keys/${k.id}/revoke" ${confirmAttrs(
                                     `Anything using "${k.name}" stops working immediately. This cannot be undone.`,
                                     { title: "Revoke this API key?", action: "Revoke", danger: true }
-                                  )}><button class="link-button" type="submit">Revoke</button></form>`
+                                  )}>${iconButton("logOut", "Revoke", { danger: true })}</form>`
                             }
-                          </td>
+                          </div></td>
                         </tr>`
                     )
                     .join("")}
@@ -4071,7 +4065,7 @@ function scimMappingRowHtml(m?: { target: string; expression: string; enabled: b
     <td><input type="text" name="map_target" value="${escapeHtml(m?.target ?? "")}" placeholder="display_name" list="scim-map-targets" required style="margin:0;" /></td>
     <td><input type="text" name="map_expr" value="${escapeHtml(m?.expression ?? "")}" placeholder='name.givenName + " " + name.familyName' required style="margin:0; font-family:monospace;" /></td>
     <td style="text-align:center;"><input type="hidden" name="map_enabled" value="${m && !m.enabled ? 0 : 1}" /><input type="checkbox" ${m && !m.enabled ? "" : "checked"} data-mirror-prev style="width:auto; margin:0;" /></td>
-    <td><button type="button" class="secondary" data-remove-closest=".mapping-row" aria-label="Remove mapping">&times;</button></td>
+    <td>${iconButton("trash", "Remove mapping", { danger: true, type: "button", attrs: 'data-remove-closest=".mapping-row"' })}</td>
   </tr>`;
 }
 
@@ -5104,7 +5098,7 @@ function attributeRowHtml(a?: { name: string; label: string; type: string; requi
     <select name="attr_type">${ATTRIBUTE_TYPE_OPTIONS.map(([v, l]) => `<option value="${v}" ${(a?.type ?? "string") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
     <label><input type="hidden" name="attr_required" value="${required}" /><input type="checkbox" ${required ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> Required</label>
     <label title="Users can change this themselves on their account page"><input type="hidden" name="attr_user_editable" value="${editable}" /><input type="checkbox" ${editable ? "checked" : ""} data-mirror-prev style="width:auto; margin:0;" /> User can edit</label>
-    <button type="button" class="secondary" data-remove-closest=".attr-row" aria-label="Remove attribute">&times;</button>
+    ${iconButton("trash", "Remove attribute", { danger: true, type: "button", attrs: 'data-remove-closest=".attr-row"' })}
   </div>`;
 }
 
@@ -5153,7 +5147,7 @@ admin.get("/admin/schemas", async (c) => {
                 <td><a href="/admin/schemas/${s.id}">${escapeHtml(s.name)}</a>${s.is_default ? ' <span class="badge badge-active">default</span>' : ""}${s.builtin ? ' <span class="pill">provided</span>' : ""}<br/><span class="muted">${escapeHtml(s.description ?? "")}</span></td>
                 <td>${attributes}</td>
                 <td>${conforming}</td>
-                <td style="text-align:right;">${rowMenu(`<a href="/admin/schemas/${s.id}">Edit</a>`)}</td>
+                <td>${rowActions(iconLink(`/admin/schemas/${s.id}`, "edit", "Edit"))}</td>
               </tr>`
             )
             .join("")}
@@ -5370,15 +5364,15 @@ admin.get("/admin/domains", async (c) => {
                   <td>${escapeHtml(d.domain)}</td>
                   <td>${d.is_default ? '<span class="badge badge-active">Default</span>' : ""}</td>
                   <td>${brandCell(d)}</td>
-                  <td>
-                    ${!d.is_default ? `<form method="POST" action="/admin/domains/${d.id}/set-default" style="display:inline;"><button class="link-button" type="submit">Make default</button></form> · ` : ""}
+                  <td><div class="row-actions" style="gap:10px;">
+                    ${!d.is_default ? `<form method="POST" action="/admin/domains/${d.id}/set-default"><button class="link-button" type="submit">Make default</button></form>` : ""}
                     ${c.get("isSuperAdmin") ? `<form method="POST" action="/admin/domains/${d.id}/apply-to-all" style="display:inline;" ${confirmAttrs(`Every user's UPN domain becomes ${d.domain}. Usernames are kept.`, { title: "Change the domain on every account?", action: "Apply to all" })}>
                       <button class="link-button" type="submit">Apply to all users</button>
-                    </form> · ` : ""}
-                    <form method="POST" action="/admin/domains/${d.id}/delete" style="display:inline;">
-                      <button class="link-button" type="submit">Delete</button>
+                    </form>` : ""}
+                    <form method="POST" action="/admin/domains/${d.id}/delete">
+                      ${iconButton("trash", "Delete", { danger: true })}
                     </form>
-                  </td>
+                  </div></td>
                 </tr>`
               )
               .join("")}
@@ -5898,7 +5892,11 @@ admin.get("/admin/branding/brands", async (c) => {
         <td>${escapeHtml(eff.appName)}${b.app_name ? "" : ' <span class="muted">(default)</span>'}</td>
         <td>${b.domains.length ? b.domains.map(escapeHtml).join(", ") : '<span class="muted">No domains yet</span>'}</td>
         <td>${b.logo_asset_id ? `<img src="${escapeHtml(eff.logoUrl ?? "")}" alt="" style="max-height:24px; max-width:90px; object-fit:contain;" />` : '<span class="muted">Default</span>'}</td>
-        <td style="white-space:nowrap;"><a href="/admin/branding/brands/${b.id}">Edit</a> · <a href="${previewHref(b.id)}" target="_blank" rel="noopener">Preview</a></td>
+        <td>${rowActions(
+          iconLink(previewHref(b.id), "eye", "Preview", { newTab: true }),
+          iconLink(`/admin/branding/brands/${b.id}`, "edit", "Edit"),
+          `<form method="POST" action="/admin/branding/brands/${b.id}/delete" ${confirmAttrs(`${b.domains.length ? `${b.domains.join(", ")} go back to the default brand. ` : ""}The brand's logo is deleted too.`, { title: `Delete ${b.name}?`, action: "Delete brand", danger: true })}>${iconButton("trash", "Delete", { danger: true })}</form>`
+        )}</td>
       </tr>`;
     })
     .join("");
@@ -5919,7 +5917,7 @@ admin.get("/admin/branding/brands", async (c) => {
               <td>${escapeHtml(def.appName)}</td>
               <td>${unbranded.length ? `${unbranded.map(escapeHtml).join(", ")}` : '<span class="muted">-</span>'} <span class="muted">and every sign-in with no hint</span></td>
               <td>${def.logoUrl ? `<img src="${escapeHtml(def.logoUrl)}" alt="" style="max-height:24px; max-width:90px; object-fit:contain;" />` : '<span class="muted">FlareID</span>'}</td>
-              <td style="white-space:nowrap;"><a href="/admin/branding">Edit</a> · <a href="${previewHref("default")}" target="_blank" rel="noopener">Preview</a></td>
+              <td>${rowActions(iconLink(previewHref("default"), "eye", "Preview", { newTab: true }), iconLink("/admin/branding", "edit", "Edit"), '<span class="icon-btn" aria-hidden="true"></span>')}</td>
             </tr>
             ${rows}
           </tbody>
@@ -6322,7 +6320,7 @@ admin.get("/admin/security/policies", async (c) => {
       <td>${reqLabel(p.requirement)}${p.device_cert ? '<br /><span class="badge badge-pending">WARP device cert</span>' : ""}${p.max_risk ? `<br /><span class="badge badge-pending">Risk cap: ${escapeHtml(p.max_risk)}</span>` : ""}</td>
       <td>${p.groups.map((g) => `<span class="pill">${escapeHtml(g.name)}</span>`).join(" ")}${p.is_default ? `${p.groups.length ? " and " : ""}<span class="muted">everyone not matched by another policy</span>` : p.groups.length ? "" : '<span class="muted">No groups yet</span>'}${p.apps.length ? `<br/>${p.apps.map((a) => `<a class="pill" href="${a.kind === "oidc" ? `/admin/clients/${a.id}` : `/admin/saml/${a.id}`}?tab=policies">${escapeHtml(a.name)}</a>`).join(" ")}` : ""}</td>
       <td>${p.groups.length ? p.priority : "&mdash;"}</td>
-      <td style="text-align:right;"><a href="/admin/security/policies/${p.id}">Edit</a></td>
+      <td>${rowActions(iconLink(`/admin/security/policies/${p.id}`, "edit", "Edit"))}</td>
     </tr>`;
   return c.html(
     layout(
@@ -6704,10 +6702,10 @@ admin.get("/admin/security/factors/security-questions", async (c) => {
             .map(
               (q) => `<tr><td>${escapeHtml(q.text)}</td><td>${q.answered_by}</td>
                 <td><span class="badge ${q.enabled ? "badge-active" : "badge-disabled"}">${q.enabled ? "Enabled" : "Disabled"}</span></td>
-                <td style="text-align:right; white-space:nowrap;">
-                  <form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}" style="display:inline;"><input type="hidden" name="enabled" value="${q.enabled ? "0" : "1"}" /><button class="secondary" type="submit">${q.enabled ? "Disable" : "Enable"}</button></form>
-                  ${q.answered_by === 0 ? `<form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}/delete" style="display:inline;" ${confirmAttrs("The question is removed from the list.", { title: "Delete this question?", action: "Delete", danger: true })}><button class="link-button" type="submit">Delete</button></form>` : ""}
-                </td></tr>`
+                <td><div class="row-actions" style="gap:8px;">
+                  <form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}"><input type="hidden" name="enabled" value="${q.enabled ? "0" : "1"}" /><button class="secondary" type="submit">${q.enabled ? "Disable" : "Enable"}</button></form>
+                  ${q.answered_by === 0 ? `<form method="POST" action="/admin/security/factors/security-questions/questions/${q.id}/delete" ${confirmAttrs("The question is removed from the list.", { title: "Delete this question?", action: "Delete", danger: true })}>${iconButton("trash", "Delete", { danger: true })}</form>` : ""}
+                </div></td></tr>`
             )
             .join("")}
         </tbody></table>
@@ -8037,7 +8035,7 @@ function flowRowHtml(m?: { target: string; expression: string; enabled: boolean 
     <td><input type="text" name="map_target" value="${escapeHtml(m?.target ?? "")}" placeholder="field" list="flow-map-targets" required style="margin:0;" /></td>
     <td><input type="text" name="map_expr" value="${escapeHtml(m?.expression ?? "")}" placeholder='given_name + " " + family_name' required style="margin:0; font-family:monospace;" /></td>
     <td style="text-align:center;"><input type="hidden" name="map_enabled" value="${m && !m.enabled ? 0 : 1}" /><input type="checkbox" ${m && !m.enabled ? "" : "checked"} data-mirror-prev style="width:auto; margin:0;" /></td>
-    <td><button type="button" class="secondary" data-remove-closest=".mapping-row" aria-label="Remove mapping">&times;</button></td>
+    <td>${iconButton("trash", "Remove mapping", { danger: true, type: "button", attrs: 'data-remove-closest=".mapping-row"' })}</td>
   </tr>`;
 }
 
@@ -8058,7 +8056,7 @@ admin.get("/admin/flows", async (c) => {
     return `<tr>
       <td>${escapeHtml(label)}${ownerHref ? ` <span class="muted">&middot; <a href="${ownerHref}">${escapeHtml(detail)}</a></span>` : ` <span class="muted">${escapeHtml(detail)}</span>`}</td>
       <td class="muted">${n ? `${n.n} row${n.n === 1 ? "" : "s"}${n.on_n < n.n ? ` (${n.n - n.on_n} off)` : ""}` : `<em>${escapeHtml(fallback)}</em>`}</td>
-      <td style="text-align:right;">${rowMenu(`<a href="${flowEditHref(channel, owner)}">Edit mappings</a>`)}</td>
+      <td>${rowActions(iconLink(flowEditHref(channel, owner), "edit", "Edit mappings"))}</td>
     </tr>`;
   };
 
@@ -8074,7 +8072,7 @@ admin.get("/admin/flows", async (c) => {
       (sp) => `<tr>
         <td>SAML attributes <span class="muted">&middot; <a href="/admin/saml/${sp.id}">${escapeHtml(sp.name)}</a></span></td>
         <td class="muted"><em>attribute map on the app</em></td>
-        <td style="text-align:right;">${rowMenu(`<a href="/admin/saml/${sp.id}">Edit on the app</a>`)}</td>
+        <td>${rowActions(iconLink(`/admin/saml/${sp.id}`, "edit", "Edit on the app"))}</td>
       </tr>`
     ),
   ];

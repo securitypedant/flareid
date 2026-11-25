@@ -30,7 +30,7 @@ import { brandFor } from "../lib/brands.js";
 import QRCode from "qrcode";
 import type { Env } from "../env.js";
 import { requireSession } from "../lib/middleware.js";
-import { attr, attrGrid, attrHtml, avatar, cancelLink, cardSection, confirmAttrs, escapeHtml, nav, page, paginationControls, remoteMultiSelect, scriptTag, successBanner, ts } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, cancelLink, cardSection, confirmAttrs, escapeHtml, iconButton, iconLink, nav, page, paginationControls, remoteMultiSelect, rowActions, scriptTag, successBanner, ts } from "../lib/html.js";
 import { buildOtpAuthUri, claimTotpCounter, generateBase32Secret, matchTotpCounter } from "../lib/totp.js";
 import { deletePendingEnrollment, getPendingEnrollment, storePendingEnrollment } from "../lib/mfa-enrollment.js";
 import { getUserById, getUserGroupIds, getUserGroupNames } from "../lib/db.js";
@@ -279,11 +279,11 @@ account.get("/account", async (c) => {
                     <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="6-digit code" aria-label="Code sent to ${escapeHtml(a.value)}" />
                     <button class="primary" type="submit">Verify</button>
                   </form>
-                  <form method="POST" action="/account/aliases"><input type="hidden" name="identifier" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Resend</button></form>`
+                  <form method="POST" action="/account/aliases"><input type="hidden" name="identifier" value="${escapeHtml(a.value)}" />${iconButton("refresh", "Resend code")}</form>`
                 }${
                   a.primary
                     ? ""
-                    : `<form method="POST" action="/account/aliases/delete" ${confirmAttrs(`Remove ${a.value} from your account?`)}><input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Remove</button></form>`
+                    : `<form method="POST" action="/account/aliases/delete" ${confirmAttrs(`Remove ${a.value} from your account?`)}><input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" />${iconButton("trash", "Remove", { danger: true })}</form>`
                 }</div></td>
               </tr>`
             )
@@ -393,7 +393,7 @@ account.get("/account/access", async (c) => {
       <td><span class="badge badge-status ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
         r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
       }</td>
-      <td>${r.status === "pending" ? `<form method="POST" action="/account/access/requests/${r.id}/cancel"><button class="link-button" type="submit">Withdraw</button></form>` : ""}</td>
+      <td>${r.status === "pending" ? `<form method="POST" action="/account/access/requests/${r.id}/cancel">${iconButton("xmark", "Withdraw request", { danger: true })}</form>` : ""}</td>
     </tr>` })),
     ...membershipEvents.map((e) => ({ at: e.at, html: `<tr>
       <td>${escapeHtml(e.target_name || "(deleted)")} ${kindBadge(e.target_type)}</td>
@@ -452,7 +452,7 @@ account.get("/account/access", async (c) => {
                   <td>${escapeHtml(g.name)}${g.description ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(g.description)}</span>` : ""}</td>
                   <td class="muted">${g.member_count}</td>
                   <td>${g.pending ? `<span class="badge badge-pending">${g.pending}</span>` : '<span class="muted">-</span>'}</td>
-                  <td style="text-align:right;"><a href="/account/groups/${g.id}"><button class="secondary" type="button">Manage</button></a></td>
+                  <td style="text-align:right;">${rowActions(iconLink(`/account/groups/${g.id}`, "edit", "Manage"))}</td>
                 </tr>`
               )
               .join("")}
@@ -539,7 +539,7 @@ account.get("/account/groups/:id", async (c) => {
             ? `<table><thead><tr><th>Name</th><th>UPN</th><th></th></tr></thead><tbody>
                 ${members.rows
                   .map(
-                    (u) => `<tr><td>${avatar(u.id, u.display_name, "sm", { upn: u.upn })}${escapeHtml(u.display_name)}</td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/account/groups/${group.id}/members/${u.id}/remove" style="margin:0;" ${confirmAttrs(`Remove ${u.display_name} from ${group.name}?`, { title: "Remove this member?", action: "Remove" })}><button class="link-button" type="submit">Remove</button></form></td></tr>`
+                    (u) => `<tr><td>${avatar(u.id, u.display_name, "sm", { upn: u.upn })}${escapeHtml(u.display_name)}</td><td>${escapeHtml(u.upn)}</td><td style="text-align:right;"><form method="POST" action="/account/groups/${group.id}/members/${u.id}/remove" style="margin:0;" ${confirmAttrs(`Remove ${u.display_name} from ${group.name}?`, { title: "Remove this member?", action: "Remove" })}>${iconButton("trash", "Remove", { danger: true })}</form></td></tr>`
                   )
                   .join("")}
               </tbody></table>
@@ -719,7 +719,7 @@ account.get("/account/security", async (c) => {
           passkeys.length
             ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
                 ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${ts(p.created_at, { dateOnly: true })}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
-                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}><button class="link-button" type="submit">Remove</button></form></td></tr>`).join("")}
+                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}>${iconButton("trash", "Remove", { danger: true })}</form></td></tr>`).join("")}
               </tbody></table>`
             : '<p class="muted">No passkeys yet.</p>'
         }
@@ -757,7 +757,7 @@ account.get("/account/security", async (c) => {
                     ${
                       s.id === currentSessionId
                         ? '<span class="badge badge-active">This device</span>'
-                        : `<form method="POST" action="/account/sessions/${escapeHtml(s.id)}/revoke" ${confirmAttrs("That device will need to sign in again.", { title: "Sign out this session?", action: "Sign out" })}><button class="link-button" type="submit">Sign out</button></form>`
+                        : `<form method="POST" action="/account/sessions/${escapeHtml(s.id)}/revoke" ${confirmAttrs("That device will need to sign in again.", { title: "Sign out this session?", action: "Sign out" })}>${iconButton("logOut", "Sign out", { danger: true })}</form>`
                     }
                   </td>
                 </tr>`
@@ -807,7 +807,7 @@ account.get("/account/security", async (c) => {
                         <td>${ts(d.created_at)}</td>
                         <td>${escapeHtml(relativeTime(d.last_used_at))}</td>
                         <td class="muted">${escapeHtml(d.ip ?? "unknown")}</td>
-                        <td><form method="POST" action="/account/devices/${escapeHtml(d.id)}/revoke" ${confirmAttrs("This device will be asked for a verification code the next time it signs in.", { title: "Remove this remembered device?", action: "Remove device" })}><button class="link-button" type="submit">Remove</button></form></td>
+                        <td><form method="POST" action="/account/devices/${escapeHtml(d.id)}/revoke" ${confirmAttrs("This device will be asked for a verification code the next time it signs in.", { title: "Remove this remembered device?", action: "Remove device" })}>${iconButton("trash", "Remove", { danger: true })}</form></td>
                       </tr>`
                     )
                     .join("")}
@@ -828,7 +828,7 @@ account.get("/account/security", async (c) => {
                     .map(
                       (app) => `<tr>
                         <td>${escapeHtml(app.name)}</td>
-                        <td><form method="POST" action="/account/apps/${app.id}/revoke" ${confirmAttrs(`You will need to sign in again the next time you use ${app.name}.`, { title: `Revoke access for ${app.name}?`, action: "Revoke access", danger: true })}><button class="link-button" type="submit">Revoke access</button></form></td>
+                        <td><form method="POST" action="/account/apps/${app.id}/revoke" ${confirmAttrs(`You will need to sign in again the next time you use ${app.name}.`, { title: `Revoke access for ${app.name}?`, action: "Revoke access", danger: true })}>${iconButton("logOut", "Revoke access", { danger: true })}</form></td>
                       </tr>`
                     )
                     .join("")}

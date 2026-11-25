@@ -134,7 +134,7 @@ describe("verified aliases", () => {
     expect(verifyForms).toHaveLength(1);
     expect(html).toContain('aria-label="Code sent to ada@partner.com"');
     expect(html).not.toContain('aria-label="Code sent to ada@home.com"');
-    expect(html).toContain(">Resend</button>");
+    expect(html).toContain('aria-label="Resend code"');
   });
 
   it("a phone add without an SMS provider fails clearly", async () => {
