@@ -4,6 +4,62 @@ Notable changes to FlareID. This project follows [semantic
 versioning](https://semver.org/) from v1.0.0 onward; until then, minor versions
 may break things.
 
+## [4.16.0] - 2026-11-25
+
+Self-service and console UX: access history, sign-in history, SMS codes, one
+Sign-in methods list, icon row actions and consistent action rows.
+
+### Added
+- **SMS one-time codes as a second factor** (migration 0063). Delivered by the
+  configured SMS provider to the person's verified phone; off until an admin
+  switches it on under Security -> Factors with a provider set up. Never
+  offered to, or counted for, administrators (SIM swap). Texts rotate between
+  several phrasings, because carriers filter repeated A2P bodies, and end with
+  the WebOTP `@host #code` line. Alias-verification texts rotate too. Strings
+  are in all eight locales.
+- **Access history** on /account/access (migration 0060). Requests and every
+  add or removal from a static group or a direct app assignment, in one
+  timeline. Captured by triggers, so every write path is covered (console,
+  API, SCIM, imports, Cloudflare One sync, approvals, JIT). Replace-all
+  rewrites don't log anything for members who stayed.
+- **Sign-in history** on /account/security: successful and failed sign-ins
+  (web, federated, LDAP binds), including attempts typed as an alias
+  (migration 0061 indexes the audit log for the lookup).
+- **Report a session or device as not you** (migration 0062). It is revoked at
+  once, and an open report reaches administrators' notifications and the
+  person's admin page until marked reviewed. API: `GET /api/v1/account-reports`,
+  `POST /api/v1/account-reports/{id}/resolve`.
+- **Personal launchpad sections** on /account/applications (migration 0064):
+  group your apps into named sections; presentation only.
+
+### Changed
+- /account/security: password, passkeys, authenticator app, email codes, SMS
+  codes, security questions and backup codes are rows in one **Sign-in
+  methods** list, each with its state and its controls behind Manage.
+- **Row actions are Iconoir icons** (edit, red trash, sign out or revoke,
+  report, preview) across the console and /account. Whole-form actions stay
+  text buttons. Brands gain a Delete icon; the users list drops its overflow
+  menu.
+- **Every form has one right-aligned action row**: Delete, then secondary
+  actions, then Cancel, then the primary action. OIDC clients, SAML apps,
+  federation and social providers, SCIM targets and users keep Delete or
+  Rotate in that row. Labels are just "Delete".
+- **SCIM target page**: connection, scope and tuning share one form and one
+  Save. The scope is re-applied only when it changed.
+- **Admin user page**: emails and phones, then attributes and groups, sit side
+  by side. Delete moved into the action row, and the raw record is collapsed.
+- App tiles open in a new tab, and the launchpad links to Access for requests.
+  Access-history status pills share one width.
+- Copy buttons on read-only data blocks (raw user record, SCIM and CSV logs,
+  email plain-text preview, integration snippets).
+
+### Fixed
+- LDAP app Reveal, Rotate and Revoke confirmations used inline `onsubmit`,
+  which the CSP blocks; they now use the confirm dialog.
+- `input[type=url]` and `[type=tel]` had no field styling (Signals endpoint and
+  JWKS URL).
+- `addGroupMembers` reported trigger writes in its `added` count.
+
 ## [4.15.1] - 2026-11-24
 
 Fixes and polish on the 4.15.0 identifier-trust release.
