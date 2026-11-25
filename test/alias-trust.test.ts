@@ -6,6 +6,7 @@ import { createUpstreamIdp, NoLocalAccount, resolveFederatedUser } from "../src/
 import { setUserEmails } from "../src/lib/user-emails.js";
 import { deleteAlias, startAliasVerification, verifyAliasCode } from "../src/lib/alias-verify.js";
 import { getSmsConfig, saveSmsConfig, smsConfigured } from "../src/lib/sms.js";
+import { createSession } from "../src/lib/sessions.js";
 import type { UserRow } from "../src/lib/types.js";
 
 const PASSWORD = "user-password-123";
@@ -117,6 +118,23 @@ describe("verified aliases", () => {
 
     await deleteAlias(env, user, "email", "ada@partner.com");
     expect((await resolveLoginIdentifier(env, "ada@partner.com")).user).toBeNull();
+  });
+
+  it("the account page offers code entry under every unverified row, with no reliance on KV listing", async () => {
+    const { apiKey } = await bootstrapInstance();
+    const u = await seedUser(apiKey, { username: "ada", domain: "example.com" });
+    const user = await userRow(u.upn);
+    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, verified, created_at) VALUES (?, 'ada@partner.com', 'work', 0, 0, '')").bind(user.id).run();
+    await env.DB.prepare("INSERT INTO user_emails (user_id, email, type, is_primary, verified, created_at) VALUES (?, 'ada@home.com', 'home', 0, 1, '')").bind(user.id).run();
+
+    const cookie = (await createSession(env, user.id, ["pwd", "mfa"], new Request(BASE))).setCookie.split(";")[0]!;
+    const html = await (await SELF.fetch(`${BASE}/account`, { headers: { Cookie: cookie } })).text();
+
+    const verifyForms = html.match(/action="\/account\/aliases\/verify"/g) ?? [];
+    expect(verifyForms).toHaveLength(1);
+    expect(html).toContain('aria-label="Code sent to ada@partner.com"');
+    expect(html).not.toContain('aria-label="Code sent to ada@home.com"');
+    expect(html).toContain(">Resend</button>");
   });
 
   it("a phone add without an SMS provider fails clearly", async () => {

@@ -27,11 +27,6 @@ const SEND_WINDOW_SECONDS = 15 * 60;
 
 export type AliasKind = "email" | "phone";
 
-export interface PendingAlias {
-  kind: AliasKind;
-  value: string;
-}
-
 export class AliasVerifyError extends Error {}
 
 /** Detect the alias kind from raw input: '+/digit-prefixed -> phone, else email. */
@@ -95,7 +90,7 @@ export async function startAliasVerification(env: Env, user: UserRow, kind: Alia
   const outcome =
     kind === "phone"
       ? await sendSms(env, value, `${code} is your verification code.`)
-      : await sendEmail(env, await buildEmail(env, "alias_verify", await brandFor(env, user), { name: user.display_name, code, minutes: String(ALIAS_VERIFY_MINUTES), address: value }).then((e) => ({ ...e, to: value })));
+      : await sendEmail(env, await buildEmail(env, "alias_verify", await brandFor(env, { upn: user.upn }), { name: user.display_name || user.username, code, minutes: String(ALIAS_VERIFY_MINUTES), address: value }).then((e) => ({ ...e, to: value })));
   if (!outcome.ok) return { ok: false, error: outcome.error };
 
   const now = new Date().toISOString();
@@ -105,20 +100,6 @@ export async function startAliasVerification(env: Env, user: UserRow, kind: Alia
   await env.SESSIONS_KV.put(kvKey(user.id, kind, value), JSON.stringify({ hash: await hashCode(user.id, kind, value, code), attempts: 0 } satisfies StoredCode), { expirationTtl: ALIAS_VERIFY_MINUTES * 60 });
   await env.SESSIONS_KV.put(sendKey(user.id), JSON.stringify({ count: (rate && rate.resetAt > Date.now() ? rate.count : 0) + 1, resetAt: rate && rate.resetAt > Date.now() ? rate.resetAt : Date.now() + SEND_WINDOW_SECONDS * 1000 }), { expirationTtl: SEND_WINDOW_SECONDS });
   return { ok: true, resent: Boolean(mine) };
-}
-
-/** Codes pending for the account page's "enter your code" list. */
-export async function listPendingAliases(env: Env, userId: number): Promise<PendingAlias[]> {
-  const out: PendingAlias[] = [];
-  const list = await env.SESSIONS_KV.list({ prefix: `aliasv:${userId}:` });
-  for (const k of list.keys) {
-    if (k.name.startsWith(`aliasv_n:`)) continue;
-    const parts = k.name.split(":");
-    const kind = parts[2] as AliasKind;
-    const value = decodeURIComponent(parts.slice(3).join(":"));
-    if ((kind === "email" || kind === "phone") && value) out.push({ kind, value });
-  }
-  return out;
 }
 
 export async function verifyAliasCode(env: Env, user: UserRow, kind: AliasKind, rawValue: string, code: string): Promise<"ok" | "wrong" | "locked" | "expired"> {

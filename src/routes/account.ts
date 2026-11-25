@@ -3,7 +3,7 @@ import { grants } from "../lib/permissions.js";
 import { enrolledFactors, FACTOR_SHORT_LABELS, hasSecondFactor, isFactorEnabled, isFactorUsable, secondFactorGate } from "../lib/auth-policy.js";
 import { accountScope, emailOtpAvailable, sendEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
 import { recipientFor } from "../lib/email.js";
-import { aliasKindFor, deleteAlias, listPendingAliases, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
+import { aliasKindFor, deleteAlias, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
 import { listUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
 import {
@@ -133,7 +133,7 @@ const SAVED_MESSAGES: Record<string, string> = {
   photo: "Your photo has been updated.",
   "backup-codes-removed": "Your backup codes have been removed.",
   "backup-codes": "Your backup codes are saved.",
-  "alias-code": "A code is on its way - enter it below to verify.",
+  "alias-code": "A code is on its way - enter it next to the address or number below.",
   "alias-verified": "Verified. It can sign you in from now on.",
   "alias-removed": "Removed.",
 };
@@ -147,7 +147,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "email-unavailable": "Email codes aren't available right now.",
   "no-factor": "Set up a sign-in method like an authenticator app or a passkey first - backup codes are a fallback, not a first factor.",
   password: "Incorrect password, please try again.",
-  "alias-code": "That code was not correct, or it has expired. Request a fresh one.",
+  "alias-code": "That code was not correct, or it has expired. Use Resend for a fresh one.",
 };
 
 function savedBanner(c: Context<{ Bindings: Env }>): string {
@@ -181,7 +181,7 @@ async function editableAttributes(env: Env, user: UserRow, attrs?: SchemaAttribu
 account.get("/account", async (c) => {
   const user = c.get("user");
   const schemaAttrs = user.schema_id ? await getSchemaAttributes(c.env, user.schema_id) : [];
-  const [editable, mastered, photoV, myEmails, myPhones, pendingAliases] = await Promise.all([editableAttributes(c.env, user, schemaAttrs), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id), listUserEmails(c.env, user.id), listUserPhones(c.env, user.id), listPendingAliases(c.env, user.id)]);
+  const [editable, mastered, photoV, myEmails, myPhones] = await Promise.all([editableAttributes(c.env, user, schemaAttrs), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id), listUserEmails(c.env, user.id), listUserPhones(c.env, user.id)]);
   const photoMastered = mastered.includes("photo");
 
   return c.html(
@@ -196,21 +196,25 @@ account.get("/account", async (c) => {
             <h2>Profile</h2>
             <p class="muted">Everything this directory holds about you. These values are managed by your administrator - ask them if something is wrong.</p>
             ${attrGrid([
-              ...(schemaAttrs.length
-                ? schemaAttrs.map((a) => attr(a.label, userAttributeValue(user, a)))
-                : [
-                    attr("Display name", user.display_name),
-                    attr("First name", user.given_name),
-                    attr("Last name", user.family_name),
-                    attr("Job title", user.job_title),
-                    attr("Department", user.department),
-                    attr("Employee number", user.employee_number),
-                    attr("Location", user.location),
-                    attr("Hire date", user.hire_date),
-                    attr("Employment status", user.employment_status),
-                    attr("Employment type", user.employment_type),
-                    attr("Manager", user.manager_external_id),
-                  ]),
+              attr("Display name", user.display_name),
+              attr("First name", user.given_name),
+              attr("Last name", user.family_name),
+              ...(user.schema_id
+                ? schemaAttrs.filter((a) => !["display_name", "given_name", "family_name"].includes(a.name)).map((a) => attr(a.label, userAttributeValue(user, a)))
+                : (
+                    [
+                      ["Job title", user.job_title],
+                      ["Department", user.department],
+                      ["Employee number", user.employee_number],
+                      ["Location", user.location],
+                      ["Hire date", user.hire_date],
+                      ["Employment status", user.employment_status],
+                      ["Employment type", user.employment_type],
+                      ["Manager", user.manager_external_id],
+                    ] as const
+                  )
+                    .filter(([, v]) => v)
+                    .map(([label, v]) => attr(label, v))),
               attr("Username", user.username),
               attr("UPN", user.upn),
               attr("Account status", user.status),
@@ -266,29 +270,24 @@ account.get("/account", async (c) => {
                 <td>${escapeHtml(a.value)}</td>
                 <td>${a.kind === "email" ? "Email" : "Phone"}</td>
                 <td>${a.primary ? '<span class="badge">primary</span> ' : ""}${a.verified ? '<span class="badge badge-active">verified</span>' : '<span class="badge badge-disabled">unverified</span>'}</td>
-                <td style="text-align:right;">${
+                <td><div class="alias-actions">${
+                  a.verified
+                    ? ""
+                    : `<form method="POST" action="/account/aliases/verify" class="inline-action">
+                    <input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" />
+                    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="6-digit code" aria-label="Code sent to ${escapeHtml(a.value)}" />
+                    <button class="primary" type="submit">Verify</button>
+                  </form>
+                  <form method="POST" action="/account/aliases"><input type="hidden" name="identifier" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Resend</button></form>`
+                }${
                   a.primary
                     ? ""
-                    : `<form method="POST" action="/account/aliases/delete" style="display:inline;" ${confirmAttrs(`Remove ${a.value} from your account?`)}><input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Remove</button></form>`
-                }</td>
+                    : `<form method="POST" action="/account/aliases/delete" ${confirmAttrs(`Remove ${a.value} from your account?`)}><input type="hidden" name="kind" value="${a.kind}" /><input type="hidden" name="value" value="${escapeHtml(a.value)}" /><button class="link-button" type="submit">Remove</button></form>`
+                }</div></td>
               </tr>`
             )
             .join("")}
         </tbody></table>`
-            : ""
-        }
-        ${
-          pendingAliases.length
-            ? `<h3 style="margin-top:14px;">Enter your code</h3>
-          ${pendingAliases
-            .map(
-              (p) => `<form method="POST" action="/account/aliases/verify" style="margin-bottom:12px;">
-              <input type="hidden" name="kind" value="${p.kind}" /><input type="hidden" name="value" value="${escapeHtml(p.value)}" />
-              <label for="alias_code_${escapeHtml(p.kind)}_${escapeHtml(p.value)}">Code sent to ${escapeHtml(p.value)}</label>
-              <div class="inline-action"><input type="text" id="alias_code_${escapeHtml(p.kind)}_${escapeHtml(p.value)}" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /><button class="primary" type="submit">Verify</button></div>
-            </form>`
-            )
-            .join("")}`
             : ""
         }
         <form method="POST" action="/account/aliases" style="margin-top:14px;">

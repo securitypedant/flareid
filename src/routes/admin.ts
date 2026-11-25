@@ -17,7 +17,7 @@ import { Hono, type Context, type Next } from "hono";
 import type { Env } from "../env.js";
 import { requireAdmin, requireSession, SUPER_ADMINS_GROUP } from "../lib/middleware.js";
 import { adminHelp } from "../docs/help.js";
-import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
+import { attr, attrGrid, attrHtml, avatar, barChart, barLineChart, breadcrumbs, cancelLink, cardSection, codeBlock, confirmAttrs, copyButton, errorCard, escapeHtml, formActions, helpLink, lineChart, multiSelect, nav, page, pageSizeSelect, paginationControls, rankedBars, remoteMultiSelect, rowMenu, safeBackHref, scriptTag, searchSelect, secretBlock, successBanner, ts, type Breadcrumb, type NotificationFeed } from "../lib/html.js";
 import { randomToken, sha256Hex } from "../lib/tokens.js";
 import type { GroupRow, OAuthClientRow, SamlServiceProviderRow, UserRow } from "../lib/types.js";
 import { isValidDomain, addDomain, applyDomainToAllUsers, listDomains, setDefaultDomain } from "../lib/domains.js";
@@ -1379,7 +1379,7 @@ async function importPageHtml(env: Env, kind: "users" | "groups"): Promise<strin
       ${cardSection(`
         <h2>Progress</h2>
         <progress id="csv-progress" value="0" max="1" class="import-progress"></progress>
-        <pre id="csv-log" class="import-log">Nothing imported yet.</pre>
+        ${codeBlock("Nothing imported yet.", { id: "csv-log" })}
         <p class="muted" style="margin-bottom:0;">Idempotent by username and group name: running it again updates rather than duplicates.
           Columns are described in <code>docs/csv-import.md</code>; <code>npm run test-data</code> generates a 10,000-person example.</p>
       `)}
@@ -1877,7 +1877,7 @@ admin.get("/admin/users/:id", async (c) => {
       ${cardSection(`
         <h2>Raw record</h2>
         <p class="muted">The user object exactly as the API and provisioning syncs see it - credential material (hashes, salts, TOTP secrets) excluded.</p>
-        <pre class="import-log" style="max-height:420px; overflow:auto;">${escapeHtml(rawUserJson)}</pre>
+        ${codeBlock(rawUserJson, { style: "max-height:420px; overflow:auto;" })}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, { label: "Users", href: "/admin/users" }, { label: user.display_name }],
@@ -4157,7 +4157,7 @@ admin.get("/admin/integrations/scim", async (c) => {
       `)}
       ${cardSection(`
         <h2>Sync log</h2>
-        <pre id="scim-log" class="import-log">${escapeHtml(scimLog || "No syncs yet.")}</pre>
+        ${codeBlock(scimLog || "No syncs yet.", { id: "scim-log" })}
       `)}
       `,
       [{ label: "Admin", href: "/admin" }, INTEGRATIONS_CRUMB, { label: "SCIM provisioning" }]
@@ -4304,7 +4304,7 @@ admin.get("/admin/integrations/scim/:id", async (c) => {
           </div>
           <div id="scim-status"></div>
           <h3 style="margin-top:18px;">Sync log</h3>
-          <pre id="scim-log" class="import-log">${escapeHtml(await scimLogTail(c.env) || "No syncs yet.")}</pre>
+          ${codeBlock((await scimLogTail(c.env)) || "No syncs yet.", { id: "scim-log" })}
         `)}
       </div>
 
@@ -6119,7 +6119,7 @@ function emailPreview(appName: string, key: TemplateKey, t: EmailTemplate, accen
     <label>HTML</label>
     <div style="${m?.[1] ?? ""} border:1px solid var(--fi-line); border-radius:10px; margin-bottom:16px;">${m?.[2] ?? ""}</div>
     <label>Plain text</label>
-    <pre style="white-space:pre-wrap; word-break:break-word; margin:0; padding:12px; border:1px solid var(--fi-line); border-radius:10px; background:var(--fi-surface-2); color:var(--fi-body); font-size:0.8125rem;">${escapeHtml(r.text)}</pre>`;
+    ${codeBlock(r.text, { className: "", style: "white-space:pre-wrap; word-break:break-word; margin:0; padding:12px 72px 12px 12px; border:1px solid var(--fi-line); border-radius:10px; background:var(--fi-surface-2); color:var(--fi-body); font-size:0.8125rem;" })}`;
 }
 
 // Re-renders the preview as the form changes: the server renders it (one
@@ -7682,7 +7682,7 @@ function ldapSecretPage(c: Context<{ Bindings: Env }>, app: LdapAppRow, secret: 
   const userFilter = "(&(objectClass=inetOrgPerson)(uid=%s))";
   const adFilter = "(&(objectCategory=person)(sAMAccountName=%s))";
   const kv = (k: string, v: string) => `<tr><td class="muted" style="width:180px;">${k}</td><td><code>${escapeHtml(v)}</code></td><td style="width:70px;">${copyButton(v)}</td></tr>`;
-  const snippet = (title: string, body: string) => `<details style="margin:8px 0;"><summary><strong>${escapeHtml(title)}</strong></summary><pre style="margin:8px 0 0; white-space:pre-wrap;">${escapeHtml(body)}</pre><div style="margin-top:4px;">${copyButton(body)}</div></details>`;
+  const snippet = (title: string, body: string) => `<details style="margin:8px 0;"><summary><strong>${escapeHtml(title)}</strong></summary><div style="margin-top:8px;">${codeBlock(body, { className: "", style: "margin:0; white-space:pre-wrap;" })}</div></details>`;
   const otpNote =
     app.mfa_mode === "password"
       ? ""

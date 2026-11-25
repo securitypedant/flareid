@@ -359,6 +359,11 @@ const STYLES = `
   .inline-action input { flex: 1; min-width: 0; margin: 0; }
   .inline-action button { height: 38px; white-space: nowrap; flex-shrink: 0; }
   @media (max-width: 480px) { .inline-action { flex-direction: column; align-items: stretch; } }
+  /* Per-row actions in a list (code entry, resend, remove): right-aligned on one line, wrapping on narrow screens. */
+  .alias-actions { display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+  .alias-actions form { margin: 0; }
+  .alias-actions .inline-action { flex-direction: row; }
+  .alias-actions .inline-action input { width: 130px; flex: none; }
   .primary:hover:not(:disabled) { background: var(--fi-accent-dark); }
   .secondary { background: var(--fi-surface); color: var(--fi-body); border-color: var(--fi-line-strong); }
   .secondary:hover:not(:disabled) { background: var(--fi-line-soft); border-color: var(--fi-faint); }
@@ -581,6 +586,9 @@ const STYLES = `
   }
   .copy-btn:hover { background: var(--fi-line-soft); border-color: var(--fi-faint); }
   .copy-btn.copied { background: var(--fi-green-soft); color: var(--fi-green); border-color: #86efac; }
+  .code-block { position: relative; }
+  .code-block > .copy-btn { position: absolute; top: 8px; right: 8px; z-index: 1; }
+  .code-block > pre { padding-right: 72px; }
 
   /* Prominent one-time secret display */
   .secret-block { background: var(--fi-amber-soft); border: 1px solid #fde68a; border-radius: var(--fi-radius); padding: 14px 16px; margin: 14px 0; }
@@ -827,7 +835,8 @@ const CONFIRM_DIALOG_HTML = `
 
 const COPY_SCRIPT = `
 function copyValue(btn) {
-  const value = btn.dataset.copy;
+  const block = btn.closest(".code-block");
+  const value = btn.dataset.copy ?? (block ? block.querySelector("pre").textContent : "");
   const original = btn.textContent;
   navigator.clipboard.writeText(value).then(() => {
     btn.textContent = 'Copied!';
@@ -1195,6 +1204,15 @@ export function rankedBars(points: ChartPoint[]): string {
       </div>`
     )
     .join("");
+}
+
+/**
+ * A read-only block of data (JSON, logs, snippets) with a Copy button pinned
+ * top-right. The button copies the <pre>'s live text, so blocks that scripts
+ * append to copy what's currently shown.
+ */
+export function codeBlock(value: string, opts: { id?: string; className?: string; style?: string } = {}): string {
+  return `<div class="code-block"><button type="button" class="copy-btn">Copy</button><pre${opts.id ? ` id="${escapeHtml(opts.id)}"` : ""}${opts.className === "" ? "" : ` class="${escapeHtml(opts.className ?? "import-log")}"`}${opts.style ? ` style="${escapeHtml(opts.style)}"` : ""}>${escapeHtml(value)}</pre></div>`;
 }
 
 /** A small inline "Copy" button that copies `value` to the clipboard on click. */
