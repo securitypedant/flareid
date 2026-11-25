@@ -6,6 +6,7 @@ import { recipientFor } from "../lib/email.js";
 import { aliasKindFor, deleteAlias, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
 import { describeUserAgent, signInHistory } from "../lib/signin-history.js";
 import { reportItem } from "../lib/account-reports.js";
+import { AppSectionError, createAppSection, deleteAppSection, listAppSections, moveAppSection, placeApp, renameAppSection, SECTION_NAME_MAX } from "../lib/app-sections.js";
 import { maskPhone, routablePhone, sendSmsOtp, smsOtpAvailable, verifySmsOtp } from "../lib/sms-otp.js";
 import { listUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
@@ -338,21 +339,29 @@ account.get("/account/applications", async (c) => {
         const href =
           cl.initiate_login_uri ||
           (firstRedirect ? `/authorize?${new URLSearchParams({ client_id: cl.client_id, redirect_uri: firstRedirect, response_type: "code", scope: "openid" }).toString()}` : "");
-        return { name: cl.name, logo: cl.logo_uri, href, kind: "OIDC" };
+        return { key: `oidc:${cl.id}`, name: cl.name, logo: cl.logo_uri, href, kind: "OIDC" };
       }),
     ...sps.results
       .filter((sp) => appAccessAllowed(sp, myGroupIds, user.id))
-      .map((sp) => ({ name: sp.name, logo: sp.logo_uri, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
+      .map((sp) => ({ key: `saml:${sp.id}`, name: sp.name, logo: sp.logo_uri, href: `/saml/idp-initiated?sp=${encodeURIComponent(sp.entity_id)}`, kind: "SAML" })),
     // Access-fronted apps aren't federated here - the card links straight at
     // the protected hostname, which Access guards itself.
     ...cfApps.results
       .filter((a) => a.granting_group_id !== null && myGroupSet.has(a.granting_group_id))
-      .map((a) => ({ name: a.name, logo: "", href: accessAppHref(a), kind: "Access" })),
+      .map((a) => ({ key: `access:${a.id}`, name: a.name, logo: "" as string | null, href: accessAppHref(a), kind: "Access" })),
   ];
   // External client logos need their exact URLs admitted to img-src for this
   // response - security-headers reads the marker (same as the sign-in page).
   const logos = [...new Set(launchpad.map((a) => a.logo).filter((u): u is string => Boolean(u)))];
   if (logos.length) c.header("X-FlareID-Img-Src", logos.join(" "));
+
+  const organise = c.req.query("organise") === "1";
+  const { sections, placements } = await listAppSections(c.env, user.id);
+  const sectionIds = new Set(sections.map((sct) => sct.id));
+  const sectionOf = (key: string) => {
+    const id = placements.get(key);
+    return id !== undefined && sectionIds.has(id) ? id : null;
+  };
 
   const card = (a: (typeof launchpad)[number]) => {
     const inner = `
@@ -361,25 +370,105 @@ account.get("/account/applications", async (c) => {
       </div>
       <div style="font-weight:600; font-size:0.9rem; color:var(--fi-ink); line-height:1.25; overflow-wrap:anywhere; word-break:break-word; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;">${escapeHtml(a.name)}</div>
       <div class="muted" style="font-size:0.72rem; margin-top:5px; letter-spacing:0.03em; text-transform:uppercase;">${a.kind}</div>`;
-    const style =
-      'style="display:block; width:150px; min-height:112px; border:1px solid var(--fi-line); border-radius:var(--fi-radius); padding:14px; background:var(--fi-surface-2); color:var(--fi-body); text-decoration:none; overflow:hidden;"';
-    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" target="_blank" rel="noopener" ${style}>${inner}</a>` : `<div ${style}>${inner}</div>`}</li>`;
+    // Organising: the tile carries a picker for its section instead of launching.
+    const picker = organise
+      ? `<form method="POST" action="/account/applications/place" style="margin:10px 0 0;">
+          <input type="hidden" name="app" value="${escapeHtml(a.key)}" />
+          <select name="section_id" data-autosubmit aria-label="Section for ${escapeHtml(a.name)}" style="margin:0; height:30px; padding:4px 8px; font-size:0.75rem;">
+            <option value="">Unsorted</option>
+            ${sections.map((sct) => `<option value="${sct.id}" ${sectionOf(a.key) === sct.id ? "selected" : ""}>${escapeHtml(sct.name)}</option>`).join("")}
+          </select>
+        </form>`
+      : "";
+    return `<li class="app-tile">${a.href && !organise ? `<a href="${escapeHtml(a.href)}" target="_blank" rel="noopener">${inner}</a>` : `<div>${inner}${picker}</div>`}</li>`;
   };
+  const grid = (apps: typeof launchpad) => `<ul class="app-grid">${apps.map(card).join("")}</ul>`;
+  const unsorted = launchpad.filter((a) => sectionOf(a.key) === null);
+
+  const sectionBlock = (sct: (typeof sections)[number], i: number) => {
+    const apps = launchpad.filter((a) => sectionOf(a.key) === sct.id);
+    if (!organise && !apps.length) return "";
+    const head = organise
+      ? `<div class="app-section-head">
+          <form method="POST" action="/account/applications/sections/${sct.id}" class="inline-action" style="flex:1; max-width:360px;">
+            <input type="text" name="name" value="${escapeHtml(sct.name)}" maxlength="${SECTION_NAME_MAX}" required aria-label="Section name" />
+            <button class="secondary" type="submit">Rename</button>
+          </form>
+          ${rowActions(
+            i > 0 ? `<form method="POST" action="/account/applications/sections/${sct.id}/move"><input type="hidden" name="dir" value="up" />${iconButton("navUp", "Move up")}</form>` : "",
+            i < sections.length - 1 ? `<form method="POST" action="/account/applications/sections/${sct.id}/move"><input type="hidden" name="dir" value="down" />${iconButton("navDown", "Move down")}</form>` : "",
+            `<form method="POST" action="/account/applications/sections/${sct.id}/delete" ${confirmAttrs(`Its apps go back to Unsorted.`, { title: `Delete the section "${sct.name}"?`, action: "Delete", danger: true })}>${iconButton("trash", "Delete section", { danger: true })}</form>`
+          )}
+        </div>`
+      : `<h2 class="app-section-title">${escapeHtml(sct.name)}</h2>`;
+    return `<section class="app-section">${head}${apps.length ? grid(apps) : '<p class="muted" style="margin:0;">No apps here yet - pick this section on an app below.</p>'}</section>`;
+  };
+
+  const body = !launchpad.length
+    ? '<p class="muted">No apps assigned yet. Applications your administrator gives you access to will appear here.</p>'
+    : `${sections.map(sectionBlock).join("")}
+       ${
+         unsorted.length
+           ? `<section class="app-section">${sections.length || organise ? `<h2 class="app-section-title">${organise ? "Unsorted" : "Other apps"}</h2>` : ""}${grid(unsorted)}</section>`
+           : ""
+       }`;
 
   return c.html(
     layout(
       c,
       "Applications",
-      cardSection(`
-        ${launchpad.length
-          ? `<ul style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:12px;">${launchpad.map(card).join("")}</ul>`
-          : '<p class="muted">No apps assigned yet. Applications your administrator gives you access to will appear here.</p>'}
+      `
+      ${savedBanner(c)}
+      ${cardSection(`
+        ${
+          launchpad.length
+            ? `<div class="app-toolbar">
+          ${
+            organise
+              ? `<form method="POST" action="/account/applications/sections" class="inline-action" style="flex:1; max-width:420px;">
+                  <input type="text" name="name" maxlength="${SECTION_NAME_MAX}" required placeholder="New section, e.g. Finance" aria-label="New section name" />
+                  <button class="secondary" type="submit">Add section</button>
+                </form>
+                <a href="/account/applications"><button class="primary" type="button">Done</button></a>`
+              : `<span></span><a href="/account/applications?organise=1"><button class="secondary" type="button">Organise</button></a>`
+          }
+        </div>`
+            : ""
+        }
+        ${body}
         <p class="muted" style="margin:16px 0 0;">Missing an app? Some apps and groups accept requests - <a href="/account/access">ask for access</a>.</p>
-      `),
+      `)}
+      `,
       `${launchpad.length} app${launchpad.length === 1 ? "" : "s"}`
     )
   );
 });
+
+// ---------- Launchpad sections (app-sections.ts): a personal layout only ----------
+
+const appsBack = (error?: string) => `/account/applications?organise=1${error ? `&error=${encodeURIComponent(error)}` : ""}`;
+const sectionAction = (fn: (c: Context<{ Bindings: Env }>, userId: number) => Promise<void>) => async (c: Context<{ Bindings: Env }>) => {
+  try {
+    await fn(c, c.get("user").id);
+  } catch (e) {
+    if (e instanceof AppSectionError) return c.redirect(appsBack(e.message), 302);
+    throw e;
+  }
+  return c.redirect(appsBack(), 302);
+};
+
+account.post("/account/applications/sections", sectionAction(async (c, uid) => void (await createAppSection(c.env, uid, String((await c.req.parseBody()).name ?? "")))));
+account.post("/account/applications/sections/:id", sectionAction(async (c, uid) => renameAppSection(c.env, uid, Number(c.req.param("id")), String((await c.req.parseBody()).name ?? ""))));
+account.post("/account/applications/sections/:id/delete", sectionAction((c, uid) => deleteAppSection(c.env, uid, Number(c.req.param("id")))));
+account.post("/account/applications/sections/:id/move", sectionAction(async (c, uid) => moveAppSection(c.env, uid, Number(c.req.param("id")), (await c.req.parseBody()).dir === "up" ? "up" : "down")));
+account.post(
+  "/account/applications/place",
+  sectionAction(async (c, uid) => {
+    const body = await c.req.parseBody();
+    const sid = String(body.section_id ?? "");
+    await placeApp(c.env, uid, String(body.app ?? ""), sid ? Number(sid) : null);
+  })
+);
 
 account.get("/account/groups", (c) => c.redirect("/account/access", 301));
 

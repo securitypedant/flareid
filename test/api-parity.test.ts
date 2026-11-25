@@ -208,6 +208,11 @@ const ACCOUNT_CONSOLE_ONLY: Record<string, string> = {
   "POST /account/aliases/delete": "self-service alias removal; admins use PATCH /api/v1/users/{username}",
   "POST /account/sessions/:id/report": "a session id is the cookie's secret - the API never exposes it",
   "POST /account/devices/:id/report": "names a remembered device the person sees on their own Security page",
+  "POST /account/applications/sections": "personal launchpad layout - presentation only, grants nothing",
+  "POST /account/applications/sections/:id": "personal launchpad layout - presentation only, grants nothing",
+  "POST /account/applications/sections/:id/delete": "personal launchpad layout - presentation only, grants nothing",
+  "POST /account/applications/sections/:id/move": "personal launchpad layout - presentation only, grants nothing",
+  "POST /account/applications/place": "personal launchpad layout - presentation only, grants nothing",
 };
 
 /**

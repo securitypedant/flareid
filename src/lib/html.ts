@@ -600,6 +600,15 @@ const STYLES = `
   .badge-neutral { background: var(--fi-surface-2); color: var(--fi-muted); border-color: var(--fi-line-strong); }
   @media (max-width: 560px) { .method-head { flex-wrap: wrap; row-gap: 8px; } .method-text { flex-basis: 100%; } .method-head .badge { margin-right: auto; } }
   .method-body > :first-child { margin-top: 0; }
+  /* Launchpad (account -> Applications): tiles, grouped into the person's sections */
+  .app-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .app-section { margin-bottom: 22px; }
+  .app-section:last-of-type { margin-bottom: 0; }
+  .app-section-title { font-size: 0.8125rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fi-muted); margin: 0 0 10px; }
+  .app-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  .app-grid { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .app-tile > a, .app-tile > div { display: block; height: 100%; min-height: 112px; box-sizing: border-box; border: 1px solid var(--fi-line); border-radius: var(--fi-radius); padding: 14px; background: var(--fi-surface-2); color: var(--fi-body); text-decoration: none; overflow: hidden; transition: border-color 0.12s, transform 0.12s; }
+  .app-tile > a:hover { border-color: var(--fi-accent); transform: translateY(-1px); }
   /* Icon row actions (Iconoir) */
   .icon { display: block; flex-shrink: 0; }
   .icon-btn {
@@ -1290,6 +1299,8 @@ const ICON_PATHS = {
   ],
   navRight: ["M9 6L15 12L9 18"],
   flag: ["M8 21L8 16M8 16V3.57709C8 3.10699 8.5161 2.81949 8.91581 3.06693L17.7061 8.50854C18.0775 8.73848 18.0866 9.2756 17.7231 9.51793L8 16Z"],
+  navUp: ["M6 15L12 9L18 15"],
+  navDown: ["M6 9L12 15L18 9"],
   eye: ["M3 13C6.6 5 17.4 5 21 13", "M12 17C10.3431 17 9 15.6569 9 14C9 12.3431 10.3431 11 12 11C13.6569 11 15 12.3431 15 14C15 15.6569 13.6569 17 12 17Z"],
 } as const;
 export type IconName = keyof typeof ICON_PATHS;
