@@ -3,6 +3,7 @@ import { ADMIN_FACTORS, FACTOR_KEYS, isFactorKey, isFactorUsable, setFactorEnabl
 import { isEmailAddress, isEmailConfigured, sendEmail, setEmailEnabled, setEmailSettings, type SendResult } from "../lib/email.js";
 import { getTemplate, setAccent, setTemplate, type EmailTemplate, type TemplateKey } from "../lib/email-templates.js";
 import { escapeHtml } from "../lib/html.js";
+import { getSmsConfig, smsConfigured } from "../lib/sms.js";
 import { isSupportedLocale, SUPPORTED_LOCALES } from "../lib/i18n.js";
 import { setRateLimitPolicy } from "../lib/rate-limit.js";
 import {
@@ -172,6 +173,9 @@ export async function saveFactor(ctx: ServiceCtx, key: string, enabled: boolean)
   // that would offer people a factor that cannot work.
   if (enabled && key === "email_otp" && !(await isEmailConfigured(ctx.env))) {
     throw new ServiceError(400, "Email one-time codes need email: set up sending under Integrations > Email first.");
+  }
+  if (enabled && key === "sms_otp" && !smsConfigured(await getSmsConfig(ctx.env))) {
+    throw new ServiceError(400, "SMS one-time codes need an SMS provider: set one up under Integrations > SMS first.");
   }
   // People must be able to choose as many questions as they are asked to set.
   if (enabled && key === "security_questions") {

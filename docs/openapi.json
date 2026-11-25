@@ -211,6 +211,10 @@
             "type": "boolean",
             "description": "Email one-time codes are enrolled as a second factor."
           },
+          "sms_otp_enabled": {
+            "type": "boolean",
+            "description": "SMS one-time codes are enrolled as a second factor."
+          },
           "security_questions_enabled": {
             "type": "boolean",
             "description": "Security questions are set as a second factor."
@@ -223,10 +227,11 @@
                 "totp",
                 "passkey",
                 "email_otp",
+                "sms_otp",
                 "security_questions"
               ]
             },
-            "description": "Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none."
+            "description": "Every second factor enrolled: an authenticator app, at least one passkey, email codes, SMS codes and security questions (the last two do not count for administrators). Empty when there is none."
           },
           "job_title": {
             "type": "string"
@@ -304,6 +309,7 @@
           "status",
           "mfa_enabled",
           "email_otp_enabled",
+          "sms_otp_enabled",
           "security_questions_enabled",
           "second_factors",
           "job_title",
@@ -1877,6 +1883,10 @@
             "type": "number",
             "description": "Email codes."
           },
+          "sms_otp": {
+            "type": "number",
+            "description": "SMS codes (not accepted as an administrator's second factor)."
+          },
           "security_questions": {
             "type": "number",
             "description": "Security questions (not accepted as an administrator's second factor)."
@@ -1887,6 +1897,7 @@
           "totp",
           "passkey",
           "email_otp",
+          "sms_otp",
           "security_questions"
         ]
       },
@@ -12997,7 +13008,7 @@
           "Security"
         ],
         "summary": "Turn a second factor on or off",
-        "description": "At least one factor must stay on while a policy requires a second factor, and one of totp, passkey, backup_codes and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
+        "description": "At least one factor must stay on while a policy requires a second factor, and one of totp, passkey, backup_codes and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured; SMS one-time codes (sms_otp) likewise need an SMS provider, and never count for administrators. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).",
         "security": [
           {
             "bearer": []
@@ -13013,6 +13024,7 @@
                 "passkey",
                 "backup_codes",
                 "email_otp",
+                "sms_otp",
                 "security_questions"
               ]
             },

@@ -2,6 +2,7 @@ import type { Env } from "../env.js";
 import { ServiceError } from "../services/context.js";
 import { getUserGroupNames } from "./db.js";
 import { isEmailConfigured } from "./email.js";
+import { getSmsConfig, smsConfigured } from "./sms.js";
 import { getSetting, setSetting } from "./settings.js";
 
 /**
@@ -39,6 +40,13 @@ export const FACTORS = [
   { key: "backup_codes", label: "Backup codes", description: "Single-use codes for when the usual method isn't available. Issued when a second factor is set up; each one signs you in once.", available: true },
   { key: "email_otp", label: "Email one-time code", description: "A six-digit code sent to the user's email address, using the Sign-in code email template. Needs email to be configured.", available: true },
   {
+    key: "sms_otp",
+    label: "SMS one-time code",
+    description:
+      "A six-digit code texted to the user's verified phone number. Needs an SMS provider (Integrations -> SMS). Phone numbers can be hijacked by SIM swap, so it never counts as an administrator's second factor.",
+    available: true,
+  },
+  {
     key: "security_questions",
     label: "Security questions",
     description:
@@ -46,15 +54,15 @@ export const FACTORS = [
     available: true,
   },
 ] as const;
-export type FactorKey = "totp" | "passkey" | "backup_codes" | "email_otp" | "security_questions";
-export const FACTOR_KEYS: readonly FactorKey[] = ["totp", "passkey", "backup_codes", "email_otp", "security_questions"];
+export type FactorKey = "totp" | "passkey" | "backup_codes" | "email_otp" | "sms_otp" | "security_questions";
+export const FACTOR_KEYS: readonly FactorKey[] = ["totp", "passkey", "backup_codes", "email_otp", "sms_otp", "security_questions"];
 
 export function isFactorKey(key: string): key is FactorKey {
   return (FACTOR_KEYS as readonly string[]).includes(key);
 }
 
 /** Factors that are off on a fresh install until an administrator switches them on. */
-const OFF_BY_DEFAULT: readonly FactorKey[] = ["email_otp", "security_questions"];
+const OFF_BY_DEFAULT: readonly FactorKey[] = ["email_otp", "sms_otp", "security_questions"];
 
 /**
  * The administrator's switch for a factor. TOTP and passkeys are on unless
@@ -72,11 +80,13 @@ export async function setFactorEnabled(env: Env, key: FactorKey, on: boolean): P
 /** Whether a factor actually works right now: switched on, and (for email codes) email can be sent. */
 export async function isFactorUsable(env: Env, key: FactorKey): Promise<boolean> {
   if (!(await isFactorEnabled(env, key))) return false;
-  return key === "email_otp" ? isEmailConfigured(env) : true;
+  if (key === "email_otp") return isEmailConfigured(env);
+  if (key === "sms_otp") return smsConfigured(await getSmsConfig(env));
+  return true;
 }
 
 /** Short names for a factor a person has enrolled (lists, status lines). */
-export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authenticator app", passkey: "Passkey", backup_codes: "Backup codes", email_otp: "Email codes", security_questions: "Security questions" };
+export const FACTOR_SHORT_LABELS: Record<FactorKey, string> = { totp: "Authenticator app", passkey: "Passkey", backup_codes: "Backup codes", email_otp: "Email codes", sms_otp: "SMS codes", security_questions: "Security questions" };
 
 /**
  * What "has a second factor" means wherever it is counted, filtered or shown:
@@ -89,25 +99,26 @@ export const hasBackupCodesSql = (alias: string) => `EXISTS (SELECT 1 FROM mfa_b
 // Matches hasSecondFactor's enrolment test: a backup-code set alone is not a
 // second factor (it is issued alongside one and stays usable at sign-in).
 export const anySecondFactorSql = (alias: string) =>
-  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)})`;
+  `(${alias}.mfa_enabled = 1 OR ${alias}.email_otp_enabled = 1 OR ${alias}.sms_otp_enabled = 1 OR ${alias}.security_questions_enabled = 1 OR ${hasPasskeySql(alias)})`;
 
 /** The factors a user row has enrolled, in FACTOR_KEYS order; `has_passkey` comes from hasPasskeySql. */
-export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean; has_backup_codes: number | boolean }): FactorKey[] {
-  const on: Record<FactorKey, boolean> = { totp: Boolean(u.mfa_enabled), passkey: Boolean(u.has_passkey), backup_codes: Boolean(u.has_backup_codes), email_otp: Boolean(u.email_otp_enabled), security_questions: Boolean(u.security_questions_enabled) };
+export function enrolledFactors(u: { mfa_enabled: number | boolean; email_otp_enabled: number | boolean; sms_otp_enabled?: number | boolean; security_questions_enabled: number | boolean; has_passkey: number | boolean; has_backup_codes: number | boolean }): FactorKey[] {
+  const on: Record<FactorKey, boolean> = { totp: Boolean(u.mfa_enabled), passkey: Boolean(u.has_passkey), backup_codes: Boolean(u.has_backup_codes), email_otp: Boolean(u.email_otp_enabled), sms_otp: Boolean(u.sms_otp_enabled), security_questions: Boolean(u.security_questions_enabled) };
   return FACTOR_KEYS.filter((k) => on[k]);
 }
 
 /** How many users have each factor enrolled (passkeys and backup codes: users with at least one). */
 export async function factorEnrolmentCounts(env: Env): Promise<Record<string, number>> {
-  const [totp, passkey, backup, email, kba] = await env.DB.batch([
+  const [totp, passkey, backup, email, sms, kba] = await env.DB.batch([
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE mfa_enabled = 1"),
     env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM webauthn_credentials"),
     env.DB.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM mfa_backup_codes WHERE used_at IS NULL"),
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE email_otp_enabled = 1"),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE sms_otp_enabled = 1"),
     env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE security_questions_enabled = 1"),
   ]);
   const n = (r: D1Result | undefined) => (r!.results[0] as { n: number }).n;
-  return { totp: n(totp), passkey: n(passkey), backup_codes: n(backup), email_otp: n(email), security_questions: n(kba) };
+  return { totp: n(totp), passkey: n(passkey), backup_codes: n(backup), email_otp: n(email), sms_otp: n(sms), security_questions: n(kba) };
 }
 
 /** Users with any second factor (anySecondFactorSql), and with each one, in one pass over users. */
@@ -117,11 +128,12 @@ export async function secondFactorCounts(env: Env): Promise<{ any: number } & Re
             COALESCE(SUM(u.mfa_enabled = 1), 0) AS totp,
             COALESCE(SUM(${hasPasskeySql("u")}), 0) AS passkey,
             COALESCE(SUM(u.email_otp_enabled = 1), 0) AS email_otp,
+            COALESCE(SUM(u.sms_otp_enabled = 1), 0) AS sms_otp,
             COALESCE(SUM(u.security_questions_enabled = 1), 0) AS security_questions,
             COALESCE(SUM(${hasBackupCodesSql("u")}), 0) AS backup_codes
        FROM users u`
-  ).first<{ any_factor: number; totp: number; passkey: number; email_otp: number; security_questions: number; backup_codes: number }>();
-  return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, backup_codes: row?.backup_codes ?? 0, email_otp: row?.email_otp ?? 0, security_questions: row?.security_questions ?? 0 };
+  ).first<{ any_factor: number; totp: number; passkey: number; email_otp: number; sms_otp: number; security_questions: number; backup_codes: number }>();
+  return { any: row?.any_factor ?? 0, totp: row?.totp ?? 0, passkey: row?.passkey ?? 0, backup_codes: row?.backup_codes ?? 0, email_otp: row?.email_otp ?? 0, sms_otp: row?.sms_otp ?? 0, security_questions: row?.security_questions ?? 0 };
 }
 
 export async function listPolicies(env: Env): Promise<(AuthPolicyRow & { groups: { id: number; name: string }[]; apps: { kind: "oidc" | "saml"; id: number; name: string }[] })[]> {
@@ -184,7 +196,8 @@ export const ADMIN_FACTORS: readonly FactorKey[] = ["totp", "passkey", "email_ot
 export async function hasSecondFactor(env: Env, user: SecondFactorUser, opts: { admin?: boolean } = {}): Promise<boolean> {
   if (user.mfa_enabled && (await isFactorEnabled(env, "totp"))) return true;
   if (user.email_otp_enabled && (await isFactorUsable(env, "email_otp"))) return true;
-  // Security questions are too weak to be an administrator's only second factor.
+  // SMS codes (SIM swap) and security questions are too weak to be an administrator's only second factor.
+  if (!opts.admin && user.sms_otp_enabled && (await isFactorUsable(env, "sms_otp"))) return true;
   if (!opts.admin && user.security_questions_enabled && (await isFactorUsable(env, "security_questions"))) return true;
   return (await userHasPasskey(env, user.id)) && (await isFactorEnabled(env, "passkey"));
 }
@@ -194,6 +207,7 @@ export interface SecondFactorUser {
   id: number;
   mfa_enabled: number;
   email_otp_enabled: number;
+  sms_otp_enabled?: number;
   security_questions_enabled: number;
 }
 

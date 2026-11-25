@@ -151,9 +151,9 @@ describe("account pages and notifications", () => {
     const account = await (await get("/account", cookie)).text();
     expect(account).toContain("Profile");
     expect(account).toContain("pat@horizon.test");
-    expect(account).not.toContain("Change password");
+    expect(account).not.toContain("Update password");
     const security = await (await get("/account/security", cookie)).text();
-    expect(security).toContain("Change password");
+    expect(security).toContain("Update password");
     expect(security).toContain("Authenticator app");
     const groups = await (await get("/account/access", cookie)).text();
     expect(groups).toContain("Your groups");

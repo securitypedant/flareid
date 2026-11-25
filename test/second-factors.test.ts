@@ -84,7 +84,7 @@ describe("second factors", () => {
     const stats = (await apiCall("/api/v1/stats", { token: apiKey })).body;
     const html = (await page("/admin", cookie)).html;
     expect(html).toContain(`${stats.counts.mfa_enrolled} of ${stats.counts.users}`);
-    expect(html).toContain(`Passkey 2 · Backup codes 0 · Email codes 1 · Security questions 1`);
+    expect(html).toContain(`Passkey 2 · Backup codes 0 · Email codes 1 · SMS codes 0 · Security questions 1`);
   });
 
   it("the user page and My account name the factors", async () => {
@@ -98,7 +98,7 @@ describe("second factors", () => {
     const own = (await createSession(env, await id("both"), ["pwd", "hwk"], new Request(BASE))).setCookie.split(";")[0]!;
     const account = (await page("/account/security", own)).html;
     expect(account).toContain("Your second factors: Authenticator app, Passkey.");
-    expect(account).toContain(">Authenticator app</h2>");
+    expect(account).toContain("<strong>Authenticator app</strong>");
     expect(account).not.toContain("Two-factor authentication</h2>");
     const bare = (await createSession(env, await id("none"), ["pwd"], new Request(BASE))).setCookie.split(";")[0]!;
     expect((await page("/account/security", bare)).html).toContain("You have no second factor yet.");

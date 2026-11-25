@@ -216,8 +216,8 @@ export function deleteUserStatements(env: Env, ...ids: number[]): D1PreparedStat
     // Per-user budgets keyed on the id (email-code sends, MFA and step-up
     // attempts): a later account must not inherit them.
     env.DB.prepare(
-      `DELETE FROM rate_limits WHERE key IN (SELECT 'email_otp:send:' || value FROM json_each(?) UNION SELECT 'login:mfa:' || value FROM json_each(?) UNION SELECT 'account:stepup:' || value FROM json_each(?))`
-    ).bind(idList, idList, idList),
+      `DELETE FROM rate_limits WHERE key IN (SELECT 'email_otp:send:' || value FROM json_each(?) UNION SELECT 'sms_otp:send:' || value FROM json_each(?) UNION SELECT 'login:mfa:' || value FROM json_each(?) UNION SELECT 'account:stepup:' || value FROM json_each(?))`
+    ).bind(idList, idList, idList, idList),
     // Audit history is kept, detached from the account.
     env.DB.prepare(`UPDATE audit_log SET actor_user_id = NULL WHERE actor_user_id IN (SELECT value FROM json_each(?))`).bind(idList),
     env.DB.prepare(`DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))`).bind(idList),

@@ -25,6 +25,7 @@ defineRoute(
           totp: z.number().openapi({ description: "Authenticator app." }),
           passkey: z.number().openapi({ description: "At least one passkey." }),
           email_otp: z.number().openapi({ description: "Email codes." }),
+          sms_otp: z.number().openapi({ description: "SMS codes (not accepted as an administrator's second factor)." }),
           security_questions: z.number().openapi({ description: "Security questions (not accepted as an administrator's second factor)." }),
         })
         .openapi("SecondFactorCounts"),

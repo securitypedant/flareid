@@ -964,7 +964,7 @@ admin.get("/admin", async (c) => {
             attr("Active sessions", activeSessions),
             attr("MFA enrolled", `${mfaEnrolled} of ${users}`),
             attr("MFA coverage", users ? `${Math.round((mfaEnrolled / users) * 100)}%` : "—"),
-            attr("By factor", (["totp", "passkey", "backup_codes", "email_otp", "security_questions"] as const).map((f) => `${FACTOR_SHORT_LABELS[f]} ${stats.second_factors[f]}`).join(" · ")),
+            attr("By factor", (["totp", "passkey", "backup_codes", "email_otp", "sms_otp", "security_questions"] as const).map((f) => `${FACTOR_SHORT_LABELS[f]} ${stats.second_factors[f]}`).join(" · ")),
             attr("Failed sign-ins (30d)", failedTotal),
           ])}
           <div style="margin-top:14px;"><a href="/admin/log">View the full log</a></div>
@@ -1818,10 +1818,10 @@ admin.get("/admin/users/:id", async (c) => {
         <div class="sec-row">
           <div>
             <h3>Multi-factor authentication <span class="badge ${countedFactors.length ? "badge-active" : "badge-disabled"}">${countedFactors.length ? "Enrolled" : "Not enrolled"}</span></h3>
-            <p class="muted">${(["totp", "passkey", "email_otp", "security_questions"] as const)
-              .map((f) => `${f === "passkey" ? "Passkeys" : FACTOR_SHORT_LABELS[f]}: ${factors.includes(f) ? "enrolled" : "not enrolled"}${f === "security_questions" && userIsAdmin && factors.includes(f) ? " (does not count for an administrator)" : ""}`)
+            <p class="muted">${(["totp", "passkey", "email_otp", "sms_otp", "security_questions"] as const)
+              .map((f) => `${f === "passkey" ? "Passkeys" : FACTOR_SHORT_LABELS[f]}: ${factors.includes(f) ? "enrolled" : "not enrolled"}${(f === "security_questions" || f === "sms_otp") && userIsAdmin && factors.includes(f) ? " (does not count for an administrator)" : ""}`)
               .join(" &middot; ")}</p>
-            <p class="muted">Resetting clears their authenticator, backup codes, email codes, security questions and remembered devices; they enrol again at next sign-in.</p>
+            <p class="muted">Resetting clears their authenticator, backup codes, email and SMS codes, security questions and remembered devices; they enrol again at next sign-in.</p>
           </div>
           <form method="POST" action="/admin/users/${id}/reset-mfa"
             ${confirmAttrs("Their authenticator, backup codes, email codes, security questions and remembered devices are removed. They will be asked to enrol again.", { title: "Reset MFA for this user?", action: "Reset MFA" })}>
@@ -6656,10 +6656,13 @@ admin.get("/admin/security/factors", async (c) => {
   const on = new Map<string, boolean>(states);
   const enrolled = await factorEnrolmentCounts(c.env);
   // Email codes need email: say so instead of offering a switch that cannot work.
-  const emailReady = await isEmailConfigured(c.env);
-  const blocked = (key: string) => key === "email_otp" && !emailReady;
+  const [emailReady, smsReadyNow] = await Promise.all([isEmailConfigured(c.env), getSmsConfig(c.env).then(smsConfigured)]);
+  const blocked = (key: string) => (key === "email_otp" && !emailReady) || (key === "sms_otp" && !smsReadyNow);
   const kba = await getKbaSettings(c.env);
   const note = (key: string) => {
+    if (blocked(key) && key === "sms_otp") {
+      return `<br /><span class="muted"><strong>${on.get(key) ? "Not working: no codes can be sent until an SMS provider is set up under" : "Needs an SMS provider first, under"} <a href="/admin/integrations/sms">Integrations &rarr; SMS</a>.</strong></span>`;
+    }
     if (blocked(key)) {
       return `<br /><span class="muted"><strong>${on.get(key) ? "Not working: no codes can be sent until email is configured under" : "Needs email to be configured first, under"} <a href="/admin/integrations/email">Integrations &rarr; Email</a>.</strong></span>`;
     }

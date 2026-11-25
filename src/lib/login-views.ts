@@ -420,6 +420,7 @@ export interface MfaFactors {
   passkey: boolean;
   backupCodes?: boolean;
   emailOtp?: boolean;
+  smsOtp?: boolean;
   securityQuestions?: boolean;
 }
 
@@ -428,6 +429,8 @@ export interface EmailCodeState {
   sent: boolean;
   to?: string;
   minutes?: number;
+  /** Which channel the code went out on (default email). */
+  channel?: "email" | "sms";
 }
 
 /** The security questions this step asks, once picked (they stay the same for the step). */
@@ -455,7 +458,7 @@ export function mfaForm(
     ? passkeyButton(
         locale,
         t(locale, "mfa.passkey.button"),
-        factors.totp || factors.emailOtp || factors.securityQuestions ? "secondary" : "primary",
+        factors.totp || factors.emailOtp || factors.smsOtp || factors.securityQuestions ? "secondary" : "primary",
         `data-param="mfa_id" data-flow="${id}" data-options="/login/mfa/passkey/options" data-post="/login/mfa/passkey"`
       )
     : "";
@@ -470,10 +473,13 @@ export function mfaForm(
       </label>
       <div class="row"><button class="${main ? "primary" : "secondary"}" type="submit">${tx("common.verify")}</button></div>
     </form>`;
-  const sendForm = (label: MessageKey, primary: boolean) => `<form method="POST" action="/login/mfa/email/send">
+  const sendForm = (label: MessageKey, primary: boolean, channel: "email" | "sms" = "email") => `<form method="POST" action="/login/mfa/${channel}/send">
       <input type="hidden" name="mfa_id" value="${id}" />
       <div class="row"><button class="${primary ? "primary" : "secondary"}" type="submit">${tx(label)}</button></div>
     </form>`;
+  // The other code channels on offer, as "send me one" buttons.
+  const emailAlt = (primary = false) => (factors.emailOtp ? sendForm("mfa.email.send", primary) : "");
+  const smsAlt = (primary = false) => (factors.smsOtp ? sendForm("mfa.sms.send", primary, "sms") : "");
   const kbaButton = (primary: boolean) =>
     factors.securityQuestions
       ? `<form method="POST" action="/login/mfa/questions/start">
@@ -493,22 +499,24 @@ export function mfaForm(
   const backupAlt = factors.backupCodes && !factors.totp ? `<p class="auth-alt muted">${tx("mfa.backup.or")}</p>${backupForm(false)}` : "";
 
   // A code is on its way: entering it is the main action.
-  if (factors.emailOtp && email.sent) {
+  if (email.sent && (email.channel === "sms" ? factors.smsOtp : factors.emailOtp)) {
+    const sms = email.channel === "sms";
     const minutes = email.minutes ?? 10;
     const sentLine = email.to
-      ? tHtml(locale, "mfa.email.sentTo", { to: html(`<strong>${escapeHtml(email.to)}</strong>`), minutes })
-      : tHtml(locale, "mfa.email.sent", { minutes });
-    return authPage(title("mfa.email.heading"), appearance, `
-    <h1>${tx("mfa.email.heading")}</h1>
+      ? tHtml(locale, sms ? "mfa.sms.sentTo" : "mfa.email.sentTo", { to: html(`<strong>${escapeHtml(email.to)}</strong>`), minutes })
+      : tHtml(locale, sms ? "mfa.sms.sent" : "mfa.email.sent", { minutes });
+    return authPage(title(sms ? "mfa.sms.heading" : "mfa.email.heading"), appearance, `
+    <h1>${tx(sms ? "mfa.sms.heading" : "mfa.email.heading")}</h1>
     <p class="sub">${sentLine}</p>
     ${errors.html}
-    <form method="POST" action="/login/mfa/email">
+    <form method="POST" action="/login/mfa/${sms ? "sms" : "email"}">
       <input type="hidden" name="mfa_id" value="${id}" />
-      <label for="email_code">${tx("mfa.email.label")}</label>
+      <label for="email_code">${tx(sms ? "mfa.sms.label" : "mfa.email.label")}</label>
       <input type="text" id="email_code" name="code" inputmode="numeric" maxlength="6" pattern="[0-9 ]*" required autofocus autocomplete="one-time-code"${errors.attrs("email_code", { primary: true })} />
       <div class="row"><button class="primary" type="submit">${tx("common.verify")}</button></div>
     </form>
-    ${sendForm("mfa.email.resend", false)}
+    ${sms ? sendForm("mfa.sms.resend", false, "sms") : sendForm("mfa.email.resend", false)}
+    ${sms ? emailAlt() : smsAlt()}
     ${orTotp}
     ${backupAlt}
     ${kbaButton(false)}
@@ -534,7 +542,8 @@ export function mfaForm(
     </form>
     ${orTotp}
     ${backupAlt}
-    ${factors.emailOtp ? sendForm("mfa.email.send", false) : ""}
+    ${emailAlt()}
+    ${smsAlt()}
     ${passkey}`);
   }
 
@@ -547,19 +556,21 @@ export function mfaForm(
     <p class="sub">${tx("mfa.totp.intro")}</p>
     ${errors.html}
     ${totpForm(true)}
-    ${factors.emailOtp ? sendForm("mfa.email.send", false) : ""}
+    ${emailAlt()}
+    ${smsAlt()}
     ${kbaButton(false)}
     ${passkey}
     `
     );
   }
 
-  if (factors.emailOtp) {
+  if (factors.emailOtp || factors.smsOtp) {
     return authPage(title("mfa.heading"), appearance, `
     <h1>${tx("mfa.heading")}</h1>
-    <p class="sub">${tx("mfa.email.intro")}</p>
+    <p class="sub">${tx(factors.emailOtp ? "mfa.email.intro" : "mfa.sms.intro")}</p>
     ${errors.html}
-    ${sendForm("mfa.email.send", true)}
+    ${emailAlt(true)}
+    ${smsAlt(!factors.emailOtp)}
     ${backupAlt}
     ${kbaButton(false)}
     ${passkey}`);

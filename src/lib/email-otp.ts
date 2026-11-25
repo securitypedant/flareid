@@ -49,11 +49,26 @@ export async function userHasEmailOtp(env: Env, user: { email_otp_enabled: numbe
 
 export const loginScope = (mfaId: string) => `login:${mfaId}`;
 export const accountScope = (sessionId: string) => `acct:${sessionId}`;
-const kvKey = (scope: string) => `emailotp:${scope}`;
 
-async function hashCode(scope: string, code: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`flareid email otp v1\n${scope}\n${code}`));
+/**
+ * The storage is shared with SMS codes (sms-otp.ts): each channel has its own
+ * KV prefix and hash domain, so a code sent by text can't satisfy an email
+ * step for the same scope and vice versa.
+ */
+export type OtpChannel = "email" | "sms";
+const kvKey = (scope: string, channel: OtpChannel = "email") => `${channel === "email" ? "emailotp" : "smsotp"}:${scope}`;
+
+async function hashCode(scope: string, code: string, channel: OtpChannel = "email"): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`flareid ${channel} otp v1\n${scope}\n${code}`));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Stores a fresh code for the scope (replacing any earlier one) and returns it, for the channel to deliver. */
+export async function issueOtpCode(env: Env, channel: OtpChannel, scope: string, userId: number, purpose: EmailOtpPurpose, minutes: number): Promise<string> {
+  const code = randomCode();
+  const record: StoredCode = { hash: await hashCode(scope, code, channel), userId, purpose, attempts: 0, expiresAt: Date.now() + minutes * 60_000 };
+  await env.SESSIONS_KV.put(kvKey(scope, channel), JSON.stringify(record), { expirationTtl: minutes * 60 });
+  return code;
 }
 
 /** Six uniformly random digits (rejection sampling: 4,294,000,000 is a multiple of 10^6). */
@@ -83,9 +98,7 @@ export type SendOutcome = { ok: true; to: string } | { ok: false; reason: "rate_
  */
 export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpose: EmailOtpPurpose): Promise<SendOutcome> {
   if (await recordRateAttempt(env, emailOtpSendKey(user.id), SENDS_PER_WINDOW, SEND_WINDOW_MINUTES)) return { ok: false, reason: "rate_limited" };
-  const code = randomCode();
-  const record: StoredCode = { hash: await hashCode(scope, code), userId: user.id, purpose, attempts: 0, expiresAt: Date.now() + EMAIL_OTP_MINUTES * 60_000 };
-  await env.SESSIONS_KV.put(kvKey(scope), JSON.stringify(record), { expirationTtl: EMAIL_OTP_MINUTES * 60 });
+  const code = await issueOtpCode(env, "email", scope, user.id, purpose, EMAIL_OTP_MINUTES);
   const to = routableRecipient(user);
   if (!to) return { ok: false, reason: "send_failed", error: "The account has no reachable email address." };
   const result = await sendEmail(env, {
@@ -107,24 +120,28 @@ export async function sendEmailOtp(env: Env, user: UserRow, scope: string, purpo
  *  - "locked": it did not match and that was the last allowed guess - the code is gone;
  *  - "expired": there is no current code for this scope, user and purpose (never sent, used, expired or invalidated).
  */
-export async function verifyEmailOtp(env: Env, scope: string, userId: number, purpose: EmailOtpPurpose, code: string): Promise<"ok" | "wrong" | "locked" | "expired"> {
-  const raw = await env.SESSIONS_KV.get(kvKey(scope));
+export function verifyEmailOtp(env: Env, scope: string, userId: number, purpose: EmailOtpPurpose, code: string): Promise<"ok" | "wrong" | "locked" | "expired"> {
+  return verifyOtpCode(env, "email", scope, userId, purpose, code);
+}
+
+export async function verifyOtpCode(env: Env, channel: OtpChannel, scope: string, userId: number, purpose: EmailOtpPurpose, code: string): Promise<"ok" | "wrong" | "locked" | "expired"> {
+  const raw = await env.SESSIONS_KV.get(kvKey(scope, channel));
   const record = raw ? (JSON.parse(raw) as StoredCode) : null;
   if (!record || record.userId !== userId || record.purpose !== purpose || Date.now() >= record.expiresAt || record.attempts >= MAX_WRONG_ATTEMPTS) {
     return "expired";
   }
   const submitted = code.replace(/\s+/g, "").slice(0, 12);
-  if (/^\d{6}$/.test(submitted) && (await hashCode(scope, submitted)) === record.hash) {
-    await env.SESSIONS_KV.delete(kvKey(scope));
+  if (/^\d{6}$/.test(submitted) && (await hashCode(scope, submitted, channel)) === record.hash) {
+    await env.SESSIONS_KV.delete(kvKey(scope, channel));
     return "ok";
   }
   const attempts = record.attempts + 1;
   if (attempts >= MAX_WRONG_ATTEMPTS) {
-    await env.SESSIONS_KV.delete(kvKey(scope));
+    await env.SESSIONS_KV.delete(kvKey(scope, channel));
     return "locked";
   }
   const ttl = Math.max(60, Math.ceil((record.expiresAt - Date.now()) / 1000));
-  await env.SESSIONS_KV.put(kvKey(scope), JSON.stringify({ ...record, attempts }), { expirationTtl: ttl });
+  await env.SESSIONS_KV.put(kvKey(scope, channel), JSON.stringify({ ...record, attempts }), { expirationTtl: ttl });
   return "wrong";
 }
 

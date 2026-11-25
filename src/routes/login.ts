@@ -2,6 +2,7 @@ import { canSignIn } from "../lib/admin-roles.js";
 import { isFactorEnabled, mfaRequiredFor, secondFactorGate, userHasPasskey, isAdministrator, policyForUser } from "../lib/auth-policy.js";
 import { deviceCertVerified, getCfOne, cfOneReady, riskScoreFor, riskAtMost } from "../lib/cfone.js";
 import { EMAIL_OTP_MINUTES, loginScope, maskEmail, sendEmailOtp, userHasEmailOtp, verifyEmailOtp } from "../lib/email-otp.js";
+import { maskPhone, sendSmsOtp, SMS_OTP_MINUTES, verifySmsOtp } from "../lib/sms-otp.js";
 import { challengeQuestions, KBA_MAX_ANSWER, userHasSecurityQuestions, verifyAnswers } from "../lib/security-questions.js";
 import type { UserRow } from "../lib/types.js";
 import { frontchannelLogoutPage, frontchannelTargets } from "../lib/frontchannel.js";
@@ -183,7 +184,7 @@ export async function completeLoginFlow(
   userId: number,
   amr: string[],
   request: Request,
-  user: { mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number }
+  user: { mfa_enabled: number; email_otp_enabled: number; sms_otp_enabled?: number; security_questions_enabled: number }
 ): Promise<{ outcome: LoginFlowOutcome; setCookies: string[] }> {
   // Roles decide whether this account may sign in at all (permission "signin").
   if (!(await canSignIn(env, userId))) return { outcome: { type: "redirect", to: "/login?denied=1" }, setCookies: clearSessionCookies() };
@@ -226,7 +227,7 @@ export async function completeLoginFlow(
   // relying party.
   // The user's authentication policy decides; a passkey sign-in (amr "hwk") is
   // already multi-factor.
-  const gateUser = { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled, security_questions_enabled: user.security_questions_enabled };
+  const gateUser = { id: userId, mfa_enabled: user.mfa_enabled, email_otp_enabled: user.email_otp_enabled, sms_otp_enabled: user.sms_otp_enabled ?? 0, security_questions_enabled: user.security_questions_enabled };
   if ((await secondFactorGate(env, gateUser, amr)) !== "ok") {
     const resumeFlowId = await storeLoginFlow(env, { ...flow, resumeFor: userId });
     return { outcome: { type: "redirect", to: `/account/mfa/setup?resume=${resumeFlowId}` }, setCookies };
@@ -348,22 +349,22 @@ login.post("/login", async (c) => {
   // remembered); otherwise email codes or security questions when enrolled;
   // otherwise a passkey when the user's policy needs a second factor.
   const factors = await secondStepFactors(c.env, user);
-  const { totp, passkey, backupCodes, emailOtp, securityQuestions } = factors;
+  const { totp, passkey, backupCodes, emailOtp, smsOtp, securityQuestions } = factors;
   // The app this flow ends at may demand a second factor on its own
   // (require_mfa), even when the user's policy does not: a password-only
   // sign-in takes the step too, as long as they have a method to answer with.
   const target = flow.kind === "oidc" ? await getClientByClientId(c.env, flow.request.clientId) : flow.kind === "saml" ? await getSpById(c.env, flow.request.spId) : null;
   const targetPolicy = target ? await appPolicy(c.env, target.policy_id) : null;
-  const appWantsStep = (target ? appRequiresMfa(target, targetPolicy) : false) && (totp || passkey || backupCodes || emailOtp || securityQuestions);
+  const appWantsStep = (target ? appRequiresMfa(target, targetPolicy) : false) && (totp || passkey || backupCodes || emailOtp || smsOtp || securityQuestions);
   const needsStep = totp
     ? appWantsStep || !(await isDeviceTrusted(c.env, c.req.raw, user.id))
-    : backupCodes || emailOtp || securityQuestions || appWantsStep || (passkey && (await mfaRequiredFor(c.env, user.id)));
+    : backupCodes || emailOtp || smsOtp || securityQuestions || appWantsStep || (passkey && (await mfaRequiredFor(c.env, user.id)));
   if (needsStep) {
     const mfaId = await storePendingMfa(c.env, user.id, flowId, appearance.locale);
     // Identified now: the second step wears the person's brand (in the same language).
     const mfaAppearance = await loginAppearance(c, { userId: user.id, locale: appearance.locale });
     // Security questions as the only method: ask them straight away.
-    if (securityQuestions && !totp && !emailOtp && !passkey) {
+    if (securityQuestions && !totp && !emailOtp && !smsOtp && !passkey) {
       const pending = (await getPendingMfa(c.env, mfaId))!;
       const questions = await challengeQuestions(c.env, mfaId, pending);
       if (questions) return c.html(mfaForm(mfaId, mfaAppearance, undefined, factors, undefined, { questions }));
@@ -664,6 +665,78 @@ login.post("/login/mfa/email", async (c) => {
   await deleteLoginFlow(c.env, pending.flowId);
 
   const amr = ["pwd", "otp", "mfa"];
+  const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
+  for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
+  await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);
+  if (outcome.type === "saml-post") return c.html(samlPostForm(c.get("appName"), outcome.acsUrl, outcome.samlResponse, outcome.relayState));
+  return respondAuthorize(c, outcome.to, outcome.responseMode);
+});
+
+// The same second step by text message (sms-otp.ts): a separate code store
+// and send budget, delivered to the person's verified phone number.
+login.post("/login/mfa/sms/send", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await loginAppearance(c, { userId: pending.userId, locale: pending.locale });
+  const factors = await secondStepFactors(c.env, user);
+  if (!factors.smsOtp) return c.html(mfaForm(mfaId, appearance, msg("mfa.error.smsUnavailable"), factors), 400);
+  const sent = await sendSmsOtp(c.env, user, loginScope(mfaId), "login");
+  if (!sent.ok) {
+    if (sent.reason === "rate_limited") {
+      await logAudit(c.env, null, "login.sms_otp_rate_limited", user.upn, { ip: getClientIp(c.req.raw) }, c.req.raw);
+      return c.html(mfaForm(mfaId, appearance, msg("mfa.error.tooManyCodes"), factors));
+    }
+    await logAudit(c.env, null, "login.sms_otp_send_failed", user.upn, { error: sent.error ?? sent.reason }, c.req.raw);
+    return c.html(mfaForm(mfaId, appearance, msg("mfa.error.sendFailed"), factors));
+  }
+  await extendPendingMfa(c.env, mfaId, pending, SMS_OTP_MINUTES * 60);
+  await logAudit(c.env, null, "login.sms_otp_sent", user.upn, undefined, c.req.raw);
+  return c.html(mfaForm(mfaId, appearance, undefined, factors, { sent: true, to: maskPhone(sent.to), minutes: SMS_OTP_MINUTES, channel: "sms" }));
+});
+
+login.post("/login/mfa/sms", async (c) => {
+  const body = await c.req.parseBody();
+  const mfaId = String(body.mfa_id ?? "");
+  const code = String(body.code ?? "").slice(0, 32);
+  const ip = getClientIp(c.req.raw);
+
+  const pending = await getPendingMfa(c.env, mfaId);
+  if (!pending) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  const user = await getUserById(c.env, pending.userId);
+  if (!user || user.status !== "active") {
+    await deletePendingMfa(c.env, mfaId);
+    return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  }
+  const appearance = await loginAppearance(c, { userId: pending.userId, locale: pending.locale });
+  const factors = await secondStepFactors(c.env, user);
+  if (!factors.smsOtp) return c.html(mfaForm(mfaId, appearance, msg("mfa.error.smsUnavailable"), factors), 400);
+
+  if (await recordMfaAttempt(c.env, user.id, ip)) {
+    await logAudit(c.env, null, "login.mfa_rate_limited", user.upn, { ip, method: "sms_otp" }, c.req.raw);
+    return c.html(mfaForm(mfaId, appearance, msg("common.tooManyAttempts"), factors));
+  }
+
+  const result = await verifySmsOtp(c.env, loginScope(mfaId), user.id, "login", code);
+  if (result !== "ok") {
+    await logAudit(c.env, null, "login.mfa_failed", user.upn, { ip, method: "sms_otp", reason: result }, c.req.raw);
+    const message = result === "wrong" ? fieldMsg("mfa.error.incorrectCode") : result === "locked" ? msg("mfa.error.codeLocked") : msg("mfa.error.codeExpired");
+    return c.html(mfaForm(mfaId, appearance, message, factors, { sent: result === "wrong", minutes: SMS_OTP_MINUTES, channel: "sms" }));
+  }
+
+  await clearMfaAttempts(c.env, user.id, ip);
+  const flow = await getLoginFlow(c.env, pending.flowId);
+  if (!flow) return renderAuthMessage(c, 400, AUTH_MESSAGES.expired);
+  await deletePendingMfa(c.env, mfaId);
+  await deleteLoginFlow(c.env, pending.flowId);
+
+  const amr = ["pwd", "sms", "mfa"];
   const { outcome, setCookies } = await completeLoginFlow(c.env, flow, user.id, amr, c.req.raw, user);
   for (const sc of setCookies) c.header("Set-Cookie", sc, { append: true });
   await logAudit(c.env, user, "login.success", user.upn, { amr }, c.req.raw);

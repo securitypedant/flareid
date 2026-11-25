@@ -6,6 +6,7 @@ import { recipientFor } from "../lib/email.js";
 import { aliasKindFor, deleteAlias, startAliasVerification, verifyAliasCode } from "../lib/alias-verify.js";
 import { describeUserAgent, signInHistory } from "../lib/signin-history.js";
 import { reportItem } from "../lib/account-reports.js";
+import { maskPhone, routablePhone, sendSmsOtp, smsOtpAvailable, verifySmsOtp } from "../lib/sms-otp.js";
 import { listUserEmails } from "../lib/user-emails.js";
 import { listUserPhones } from "../lib/user-phones.js";
 import {
@@ -125,6 +126,8 @@ const SAVED_MESSAGES: Record<string, string> = {
   app: "Access for that app has been revoked.",
   "email-otp-enabled": "Email codes are on: you'll be asked for one when you sign in.",
   "email-otp-disabled": "Email codes are now off.",
+  "sms-otp-enabled": "SMS codes are on: you can ask for one by text when you sign in.",
+  "sms-otp-disabled": "SMS codes are now off.",
   "kba-enabled": "Security questions are set: you can answer them when you sign in.",
   "kba-changed": "Your security questions have been changed.",
   "kba-removed": "Your security questions have been removed.",
@@ -148,6 +151,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   "email-send": "We couldn't send the email. Try again in a moment.",
   "email-limit": "Too many codes requested. Please wait a few minutes before asking for another.",
   "email-unavailable": "Email codes aren't available right now.",
+  "sms-code": "That code was not correct, or it has expired. Check the latest text message, or send a new code.",
+  "sms-send": "We couldn't send the text message. Try again in a moment.",
+  "sms-limit": "Too many codes requested. Please wait a few minutes before asking for another.",
+  "sms-unavailable": "SMS codes aren't available right now.",
+  "sms-no-phone": "Add and verify a phone number first.",
   "no-factor": "Set up a sign-in method like an authenticator app or a passkey first - backup codes are a fallback, not a first factor.",
   password: "Incorrect password, please try again.",
   "alias-code": "That code was not correct, or it has expired. Use Resend for a fresh one.",
@@ -634,22 +642,66 @@ account.get("/account/security", async (c) => {
   const enrolled = enrolledFactors({ ...user, has_passkey: passkeys.length > 0, has_backup_codes: remainingBackupCodes > 0 });
   const usable = await Promise.all(enrolled.map((f) => isFactorUsable(c.env, f)));
   const factors = enrolled.filter((_, i) => usable[i]);
-  const emailCard = (await emailOtpAvailable(c.env)) ? emailCodesCard(user, c.req.query("email_code") ?? "") : "";
-  const kbaCard = (await securityQuestionsAvailable(c.env))
-    ? isAdmin
-      ? adminSecurityQuestionsCard(user, c.req.query("kba_error") ?? "")
-      : await securityQuestionsCard(c.env, user, c.req.query("kba_error") ?? "")
-    : "";
-  // A person with an authenticator manages its set inside that card; this one
-  // serves everyone else who holds a real factor (or codes to refresh).
-  const backupCard =
-    !user.mfa_enabled && (await isFactorUsable(c.env, "backup_codes"))
-      ? backupCodesCard(
-          remainingBackupCodes,
-          !(await isFreshlyAuthenticated(c.env, currentSessionId)),
-          remainingBackupCodes > 0 || (await hasSecondFactor(c.env, user, { admin: isAdmin }))
-        )
-      : "";
+  const [emailOn, smsOn, kbaOn, backupOn, phone, fresh] = await Promise.all([
+    emailOtpAvailable(c.env),
+    smsOtpAvailable(c.env),
+    securityQuestionsAvailable(c.env),
+    isFactorUsable(c.env, "backup_codes"),
+    routablePhone(c.env, user),
+    isFreshlyAuthenticated(c.env, currentSessionId),
+  ]);
+  const q = (k: string) => c.req.query(k) ?? "";
+  const canGenerateCodes = remainingBackupCodes > 0 || (await hasSecondFactor(c.env, user, { admin: isAdmin }));
+  // Every way to sign in, one row each: a badge for its state and its controls
+  // behind "Manage". A row in the middle of a step (a code just sent, an error)
+  // starts open.
+  const on = (b: boolean, yes = "On", no = "Off") => `<span class="badge badge-status ${b ? "badge-active" : "badge-neutral"}">${b ? yes : no}</span>`;
+  const methods = [
+    methodRow("password", "Password", "Change the password you sign in with.", '<span class="badge badge-status badge-active">Set</span>', `
+          <form method="POST" action="/account/password" style="max-width:420px;">
+            <label for="current_password">Current password</label>
+            <input type="password" id="current_password" name="current_password" required autocomplete="current-password" />
+            <label for="new_password">New password</label>
+            <input type="password" id="new_password" name="new_password" required autocomplete="new-password" />
+            <label for="confirm_password">Confirm new password</label>
+            <input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password" />
+            <div class="form-actions end"><button class="primary" type="submit">Update password</button></div>
+          </form>`, q("error").startsWith("password")),
+    methodRow("passkeys", "Passkeys", "Sign in with your device's fingerprint, face or PIN - no password or code needed.", on(passkeys.length > 0, `${passkeys.length} passkey${passkeys.length === 1 ? "" : "s"}`, "None"), `
+        ${
+          passkeys.length
+            ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
+                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${ts(p.created_at, { dateOnly: true })}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
+                  <td>${rowActions(`<form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}>${iconButton("trash", "Remove", { danger: true })}</form>`)}</td></tr>`).join("")}
+              </tbody></table>`
+            : ""
+        }
+        <div class="inline-action" style="margin-top:10px; max-width:560px;">
+          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" />
+          <input type="password" id="passkey-confirm" placeholder="Current password" autocomplete="current-password" maxlength="1024" style="display:none;" />
+          <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
+        </div>
+        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
+        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}`),
+    methodRow("authenticator", "Authenticator app", "Six-digit codes from an app such as 1Password, Google Authenticator or Authy.", on(Boolean(user.mfa_enabled)), user.mfa_enabled
+      ? `<p class="muted">${remainingBackupCodes} backup code(s) remaining.</p>
+         <form method="POST" action="/account/mfa/backup-codes/regenerate" ${confirmAttrs("Your existing backup codes stop working immediately, and you will be shown a new set once.", { title: "Generate new backup codes?", action: "Regenerate" })}>
+           <label for="regen_code">Enter a current code from your authenticator (or a backup code)</label>
+           <div class="inline-action" style="max-width:420px;"><input type="text" id="regen_code" name="code" maxlength="12" required autocomplete="one-time-code" /><button class="secondary" type="submit">Regenerate backup codes</button></div>
+         </form>
+         <form method="POST" action="/account/mfa/disable" style="margin-top:14px;" ${confirmAttrs("Your authenticator is removed and every remembered device is forgotten. Backup codes stay enrolled.", { title: "Disable two-factor authentication?", action: "Disable MFA", danger: true })}>
+           <label for="mfa_code">Enter a current code, or a backup code if you lost your authenticator</label>
+           <div class="inline-action" style="max-width:420px;"><input type="text" id="mfa_code" name="code" maxlength="12" required autocomplete="one-time-code" /><button class="danger" type="submit">Turn off</button></div>
+         </form>`
+      : `<p class="muted">Protect your account with a standard authenticator app.</p><div class="form-actions end"><a href="/account/mfa/setup"><button class="primary" type="button">Set up</button></a></div>`),
+    emailOn ? methodRow("email-codes", "Email codes", `A one-time code sent to ${recipientFor(user)} when you sign in.`, on(Boolean(user.email_otp_enabled)), emailCodesCard(user, q("email_code")), Boolean(q("email_code")) || q("error").startsWith("email")) : "",
+    smsOn ? methodRow("sms-codes", "SMS codes", phone ? `A one-time code texted to ${maskPhone(phone)} when you sign in.` : "A one-time code by text message when you sign in.", on(Boolean(user.sms_otp_enabled)), smsCodesCard(user, phone, q("sms_code")), Boolean(q("sms_code")) || q("error").startsWith("sms")) : "",
+    kbaOn
+      ? methodRow("security-questions", "Security questions", "Answers to questions you pick, asked when you sign in.", isAdmin ? `<span class="badge badge-status badge-disabled">${user.security_questions_enabled ? "Not accepted" : "Unavailable"}</span>` : on(Boolean(user.security_questions_enabled)), isAdmin ? adminSecurityQuestionsCard(user, q("kba_error")) : await securityQuestionsCard(c.env, user, q("kba_error")), Boolean(q("kba_error")))
+      : "",
+    // With an authenticator the set is refreshed from its row; this one serves everyone else.
+    backupOn && !user.mfa_enabled ? methodRow("backup-codes", "Backup codes", "Single-use codes for when you can't use another method.", on(remainingBackupCodes > 0, `${remainingBackupCodes} left`, "None"), backupCodesCard(remainingBackupCodes, !fresh, canGenerateCodes)) : "",
+  ].join("");
   const { results: connectedApps } = await c.env.DB.prepare(
     `SELECT DISTINCT oc.id, oc.name FROM access_tokens at
      JOIN oauth_clients oc ON oc.client_id = at.client_id
@@ -668,77 +720,13 @@ account.get("/account/security", async (c) => {
       "Security",
       `
       ${savedBanner(c)}
-      <div class="two-col">
-        ${cardSection(`
-          <div class="row between">
-            <h2 style="margin:0;">Authenticator app</h2>
-            <span class="badge ${user.mfa_enabled ? "badge-active" : "badge-disabled"}">${user.mfa_enabled ? "Enabled" : "Not set up"}</span>
-          </div>
-          <p class="muted" id="second-factors" style="margin-top:8px;">${
-            factors.length
-              ? `Your second factors: ${factors.map((f) => FACTOR_SHORT_LABELS[f] + (f === "security_questions" && isAdmin ? " (not accepted for administrators)" : "")).join(", ")}.`
-              : "You have no second factor yet. Set up an authenticator app, a passkey or another factor below."
-          }</p>
-          ${
-            user.mfa_enabled
-              ? `<p class="muted" style="margin-top:8px;">${remainingBackupCodes} backup code(s) remaining.</p>
-                 <form method="POST" action="/account/mfa/backup-codes/regenerate" style="margin-bottom:14px;" ${confirmAttrs("Your existing backup codes stop working immediately, and you will be shown a new set once.", { title: "Generate new backup codes?", action: "Regenerate" })}>
-                   <label for="regen_code">Enter a current code from your authenticator (or a backup code)</label>
-                   <input type="text" id="regen_code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px" />
-                   <button class="secondary" type="submit">Regenerate backup codes</button>
-                 </form>
-                 <form method="POST" action="/account/mfa/disable" ${confirmAttrs("Your authenticator is removed and every remembered device is forgotten. Backup codes stay enrolled.", { title: "Disable two-factor authentication?", action: "Disable MFA", danger: true })}>
-                   <label for="mfa_code">Enter a current code, or a backup code if you lost your authenticator</label>
-                   <div class="field-row" style="align-items:flex-start;">
-                     <input type="text" id="mfa_code" name="code" maxlength="12" required autocomplete="one-time-code" style="max-width:160px" />
-                     <div></div>
-                   </div>
-                   <button class="danger" type="submit">Disable MFA</button>
-                 </form>`
-              : `<p class="muted" style="margin-top:8px;">Protect your account with a standard authenticator app.</p>
-                 <a href="/account/mfa/setup"><button class="primary" type="button">Set up MFA</button></a>`
-          }
-        `)}
-
-        ${cardSection(`
-          <h2>Change password</h2>
-          <form method="POST" action="/account/password">
-            <label for="current_password">Current password</label>
-            <input type="password" id="current_password" name="current_password" required />
-            <label for="new_password">New password</label>
-            <input type="password" id="new_password" name="new_password" required />
-            <label for="confirm_password">Confirm new password</label>
-            <input type="password" id="confirm_password" name="confirm_password" required />
-            <div class="row"><button class="primary" type="submit">Update password</button></div>
-          </form>
-        `)}
-      </div>
-
-      ${cardSection(`
-        <h2>Passkeys</h2>
-        <p class="muted">Sign in with your device's fingerprint, face or PIN instead of a password and code.</p>
-        ${
-          passkeys.length
-            ? `<table><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
-                ${passkeys.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${ts(p.created_at, { dateOnly: true })}</td><td>${p.last_used_at ? escapeHtml(relativeTime(p.last_used_at)) : "never"}</td>
-                  <td><form method="POST" action="/account/passkeys/${encodeURIComponent(p.id)}/remove" ${confirmAttrs("You will no longer be able to sign in with this passkey.", { title: "Remove this passkey?", action: "Remove passkey", danger: true })}>${iconButton("trash", "Remove", { danger: true })}</form></td></tr>`).join("")}
-              </tbody></table>`
-            : '<p class="muted">No passkeys yet.</p>'
-        }
-        <div class="row" style="justify-content:flex-start; gap:8px; margin-top:10px;">
-          <input type="text" id="passkey-name" placeholder="Name (e.g. MacBook)" maxlength="60" style="max-width:220px; margin:0;" />
-          <input type="password" id="passkey-confirm" placeholder="Current password" autocomplete="current-password" maxlength="1024" style="max-width:180px; margin:0; display:none;" />
-          <button class="secondary" type="button" data-passkey-register>Add a passkey</button>
-        </div>
-        <p class="muted" id="passkey-status" style="margin-top:8px;"></p>
-        ${scriptTag(PASSKEY_REGISTER_SCRIPT)}
-      `)}
-
-      ${emailCard}
-
-      ${kbaCard}
-
-      ${backupCard}
+      <h2 class="section-title">Sign-in methods</h2>
+      <p class="muted" id="second-factors" style="margin:-6px 0 12px;">${
+        factors.length
+          ? `Your second factors: ${factors.map((f) => FACTOR_SHORT_LABELS[f] + ((f === "security_questions" || f === "sms_otp") && isAdmin ? " (not accepted for administrators)" : "")).join(", ")}.`
+          : "You have no second factor yet. Set up an authenticator app, a passkey or another method below."
+      }</p>
+      ${cardSection(`<div class="methods">${methods}</div>`)}
 
       <h2 class="section-title">Sessions and devices</h2>
       ${cardSection(`
@@ -852,6 +840,18 @@ account.get("/account/security", async (c) => {
  * takes a code sent to the address, so only someone who reads that inbox can
  * do either. `step` is "enrol" or "disable" once a code has been sent.
  */
+/** One sign-in method on the Security page: name, one line about it, its state, and its controls behind Manage. */
+function methodRow(id: string, title: string, summary: string, badge: string, body: string, open = false): string {
+  return `<details class="method" id="${id}"${open ? " open" : ""}>
+    <summary class="method-head">
+      <div class="method-text"><strong>${escapeHtml(title)}</strong><span class="muted">${escapeHtml(summary)}</span></div>
+      ${badge}
+      <span class="method-toggle" aria-hidden="true"><span class="when-closed">Manage</span><span class="when-open">Close</span></span>
+    </summary>
+    <div class="method-body">${body}</div>
+  </details>`;
+}
+
 function emailCodesCard(user: UserRow, step: string): string {
   const to = escapeHtml(recipientFor(user));
   const enrolled = Boolean(user.email_otp_enabled);
@@ -873,12 +873,28 @@ function emailCodesCard(user: UserRow, step: string): string {
     : step === "disable"
       ? codeForm("/account/mfa/email/disable", "Turn off email codes", true) + sendForm("disable", "Send a new code", "link-button")
       : `<p class="muted" style="margin-top:8px;">When you sign in, you can ask for a code sent to ${to}. Turning this off takes a code sent there too.</p>${sendForm("disable", "Turn off", "secondary")}`;
-  return cardSection(`
-    <div class="row between" id="email-codes">
-      <h2 style="margin:0;">Email codes</h2>
-      <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
-    </div>
-    ${body}`);
+  return body;
+}
+
+/** SMS codes, the same flow as email codes (sms-otp.ts), to the person's verified number. */
+function smsCodesCard(user: UserRow, phone: string | null, step: string): string {
+  if (!phone) return `<p class="muted">Add a phone number on <a href="/account#aliases">your Account page</a> and verify it, then come back to turn on text message codes.</p>`;
+  const to = escapeHtml(maskPhone(phone));
+  const enrolled = Boolean(user.sms_otp_enabled);
+  const codeForm = (action: string, button: string, danger: boolean) => `
+    <form method="POST" action="${action}" ${danger ? confirmAttrs("You will no longer be able to sign in with a code sent by text message.", { title: "Turn off SMS codes?", action: "Turn off", danger: true }) : ""}>
+      <label for="sms_otp_code">Enter the 6-digit code we texted to ${to}</label>
+      <div class="inline-action" style="max-width:360px;"><input type="text" id="sms_otp_code" name="code" inputmode="numeric" maxlength="6" required autocomplete="one-time-code" /><button class="${danger ? "danger" : "primary"}" type="submit">${button}</button></div>
+    </form>`;
+  const sendForm = (purpose: "enrol" | "disable", label: string, cls: string) =>
+    `<form method="POST" action="/account/mfa/sms/send" style="margin-top:8px;"><input type="hidden" name="purpose" value="${purpose}" /><button class="${cls}" type="submit">${label}</button></form>`;
+  return !enrolled
+    ? step === "enrol"
+      ? codeForm("/account/mfa/sms/enable", "Turn on", false) + sendForm("enrol", "Text me a new code", "link-button")
+      : `<p class="muted">Get a one-time code by text message when you sign in. Phone numbers can be taken over by SIM swap, so prefer an authenticator app or passkey where you can.</p><div class="form-actions end">${sendForm("enrol", `Text a code to ${to}`, "primary")}</div>`
+    : step === "disable"
+      ? codeForm("/account/mfa/sms/disable", "Turn off", true) + sendForm("disable", "Text me a new code", "link-button")
+      : `<p class="muted">When you sign in, you can ask for a code texted to ${to}. Turning this off takes a code sent there too.</p><div class="form-actions end">${sendForm("disable", "Turn off", "secondary")}</div>`;
 }
 
 /**
@@ -909,12 +925,7 @@ function backupCodesCard(remaining: number, needsPassword: boolean, canGenerate:
            <button class="primary" type="submit">Generate backup codes</button>
          </form>`
         : `<p class="muted" style="margin-top:8px;">Single-use codes for when you cannot use another method. They are issued automatically when you set up a sign-in method such as an authenticator app or a passkey.</p>`;
-  return cardSection(`
-    <div class="row between" id="backup-codes">
-      <h2 style="margin:0;">Backup codes</h2>
-      <span class="badge ${remaining > 0 ? "badge-active" : "badge-disabled"}">${remaining > 0 ? "Enabled" : "Not set up"}</span>
-    </div>
-    ${body}`);
+  return body;
 }
 
 /** The question pickers and answer boxes of an enrolment form: `count` rows, each a different question. */
@@ -968,12 +979,7 @@ async function securityQuestionsCard(env: Env, user: UserRow, error: string): Pr
          </div>
          <button class="danger" type="submit">Remove security questions</button>
        </form>`;
-  return cardSection(`
-    <div class="row between" id="security-questions">
-      <h2 style="margin:0;">Security questions</h2>
-      <span class="badge ${enrolled ? "badge-active" : "badge-disabled"}">${enrolled ? "Enabled" : "Not enabled"}</span>
-    </div>
-    ${body}`);
+  return body;
 }
 
 /** Why an administrator cannot set security questions: shown on My account and on a refused POST. */
@@ -988,12 +994,8 @@ const ADMIN_KBA_REFUSAL =
 function adminSecurityQuestionsCard(user: UserRow, error: string): string {
   const enrolled = Boolean(user.security_questions_enabled);
   const errorHtml = KBA_ERRORS[error] ? `<p class="error">${escapeHtml(KBA_ERRORS[error]!)}</p>` : "";
-  return cardSection(`
-    <div class="row between" id="security-questions">
-      <h2 style="margin:0;">Security questions</h2>
-      <span class="badge badge-disabled">${enrolled ? "Not accepted" : "Unavailable"}</span>
-    </div>
-    <p class="muted" style="margin-top:8px;">${escapeHtml(ADMIN_KBA_REFUSAL)}</p>
+  return `
+    <p class="muted">${escapeHtml(ADMIN_KBA_REFUSAL)}</p>
     ${errorHtml}
     ${
       enrolled
@@ -1006,7 +1008,7 @@ function adminSecurityQuestionsCard(user: UserRow, error: string): string {
          <button class="danger" type="submit">Remove security questions</button>
        </form>`
         : ""
-    }`);
+    }`;
 }
 
 account.post("/account/profile", async (c) => {
@@ -1412,7 +1414,7 @@ account.post("/account/password", async (c) => {
     // Factor state goes too: a hijacked fresh session can have planted an
     // authenticator or harvested the backup-code set - none of it may
     // outlive the reset.
-    c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, email_otp_enabled = 0, security_questions_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id),
+    c.env.DB.prepare("UPDATE users SET totp_secret = NULL, mfa_enabled = 0, totp_last_counter = NULL, email_otp_enabled = 0, sms_otp_enabled = 0, security_questions_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id),
     c.env.DB.prepare("DELETE FROM user_security_answers WHERE user_id = ?").bind(user.id),
   ]);
   await deleteBackupCodes(c.env, user.id);
@@ -1441,13 +1443,17 @@ account.get("/account/mfa/setup", async (c) => {
   // its factor being switched off, and an 'enrol'-gated session would loop
   // between this page and the gate that sent it here.
   if (await hasSecondFactor(c.env, user, { admin: Boolean(c.get("access")?.isAdmin) })) return c.redirect("/account/security", 302);
-  const [totpOn, passkeyOn, emailAvailable, kbaAvailable] = await Promise.all([
+  const [totpOn, passkeyOn, emailAvailable, kbaAvailable, smsAvailable, setupPhone] = await Promise.all([
     isFactorEnabled(c.env, "totp"),
     isFactorEnabled(c.env, "passkey"),
     emailOtpAvailable(c.env),
     securityQuestionsAvailable(c.env),
+    smsOtpAvailable(c.env),
+    routablePhone(c.env, user),
   ]);
   const emailOn = emailAvailable && !user.email_otp_enabled;
+  // SMS codes need a verified number, and never satisfy an administrator's policy.
+  const smsOnSetup = smsAvailable && Boolean(setupPhone) && !user.sms_otp_enabled && !c.get("access")?.isAdmin;
   // Administrators need a stronger second factor than security questions.
   const kbaOn = kbaAvailable && !user.security_questions_enabled && !c.get("access")?.isAdmin;
   const emailError = ERROR_MESSAGES[c.req.query("error") ?? ""];
@@ -1469,6 +1475,22 @@ account.get("/account/mfa/setup", async (c) => {
               </form>
               <form method="POST" action="/account/mfa/email/send" style="margin-top:8px;">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="link-button" type="submit">Send a new code</button></form>`
             : `<form method="POST" action="/account/mfa/email/send">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="${passkeyOn ? "secondary" : "primary"}" type="submit">Send a code to ${to}</button></form>`
+        }`);
+
+  const smsSetupCard = !smsOnSetup
+    ? ""
+    : cardSection(`
+        <h2>Or use SMS codes</h2>
+        <p class="muted">A one-time code texted to ${escapeHtml(maskPhone(setupPhone!))} each time you sign in.</p>
+        ${
+          c.req.query("sms_code") === "enrol"
+            ? `<form method="POST" action="/account/mfa/sms/enable">
+                ${emailHidden}
+                <label for="sms_otp_code">Enter the 6-digit code we texted to ${escapeHtml(maskPhone(setupPhone!))}</label>
+                <div class="inline-action" style="max-width:360px;"><input type="text" id="sms_otp_code" name="code" inputmode="numeric" maxlength="6" required autofocus autocomplete="one-time-code" /><button class="primary" type="submit">Turn on</button></div>
+              </form>
+              <form method="POST" action="/account/mfa/sms/send" style="margin-top:8px;">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="link-button" type="submit">Text me a new code</button></form>`
+            : `<div class="form-actions end"><form method="POST" action="/account/mfa/sms/send">${emailHidden}<input type="hidden" name="purpose" value="enrol" /><button class="secondary" type="submit">Text a code to ${escapeHtml(maskPhone(setupPhone!))}</button></form></div>`
         }`);
 
   // Enrolling a credential from a session that isn't freshly authenticated
@@ -1523,6 +1545,7 @@ account.get("/account/mfa/setup", async (c) => {
         ${scriptTag(PASSKEY_REGISTER_SCRIPT)}`)
         : "") +
       emailCard +
+      smsSetupCard +
       kbaCard +
       (!totpOn ? "" : cardSection(`
         <div style="text-align:center;">
@@ -1744,6 +1767,70 @@ function kbaReturn(body: Record<string, unknown>, query: string): string {
  * email-code path: other sessions end, this one gains "kba" and "mfa", and a
  * paused sign-in resumes.
  */
+// ---------- SMS codes (sms-otp.ts) - the email-code flow, by text ----------
+
+const smsReturn = (body: Record<string, unknown>, query: string) =>
+  body.from === "setup" ? `/account/mfa/setup?resume=${encodeURIComponent(String(body.resume ?? ""))}&${query}` : `/account/security?${query}#sms-codes`;
+
+account.post("/account/mfa/sms/send", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const purpose = body.purpose === "disable" ? "disable" : "enrol";
+  if (!(await smsOtpAvailable(c.env))) return c.redirect(smsReturn(body, "error=sms-unavailable"), 302);
+  if ((purpose === "enrol") === Boolean(user.sms_otp_enabled)) return c.redirect("/account/security", 302);
+  const sent = await sendSmsOtp(c.env, user, accountScope(c.get("sessionId")), purpose);
+  if (!sent.ok) {
+    await logAudit(c.env, user, sent.reason === "rate_limited" ? "user.sms_otp_rate_limited" : "user.sms_otp_send_failed", user.upn, { purpose, error: sent.error ?? sent.reason }, c.req.raw);
+    return c.redirect(smsReturn(body, `error=${sent.reason === "rate_limited" ? "sms-limit" : sent.reason === "no_phone" ? "sms-no-phone" : "sms-send"}`), 302);
+  }
+  await logAudit(c.env, user, "user.sms_otp_code_sent", user.upn, { purpose }, c.req.raw);
+  return c.redirect(smsReturn(body, `sms_code=${purpose}`), 302);
+});
+
+account.post("/account/mfa/sms/enable", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.parseBody();
+  const resume = String(body.resume ?? "");
+  const sessionId = c.get("sessionId");
+  if (!(await smsOtpAvailable(c.env))) return c.redirect(smsReturn(body, "error=sms-unavailable"), 302);
+  if (user.sms_otp_enabled) return c.redirect("/account/security", 302);
+  const result = await verifySmsOtp(c.env, accountScope(sessionId), user.id, "enrol", String(body.code ?? ""));
+  if (result !== "ok") {
+    await logAudit(c.env, user, "user.sms_otp_enrol_failed", user.upn, { reason: result }, c.req.raw);
+    return c.redirect(smsReturn(body, result === "wrong" ? "sms_code=enrol&error=sms-code" : "error=sms-code"), 302);
+  }
+  await c.env.DB.prepare("UPDATE users SET sms_otp_enabled = 1, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
+  // As with the other factors: every other session predates the second factor.
+  await revokeAllSessionsForUser(c.env, user.id, sessionId);
+  const current = await c.env.DB.prepare("SELECT amr FROM sessions WHERE id = ?").bind(sessionId).first<{ amr: string }>();
+  let previous: string[] = [];
+  try {
+    previous = current ? (JSON.parse(current.amr) as string[]) : [];
+  } catch {
+    previous = [];
+  }
+  const amr = [...new Set([...(previous.length ? previous : ["pwd"]), "sms", "mfa"])];
+  await c.env.DB.prepare("UPDATE sessions SET amr = ? WHERE id = ?").bind(JSON.stringify(amr), sessionId).run();
+  await logAudit(c.env, user, "user.sms_otp_enabled", user.upn, undefined, c.req.raw);
+  const dest = resume ? await resumeLoginFlow(c.env, c.req.raw, resume, user.id, sessionId, amr) : { to: "/account/security?saved=sms-otp-enabled" };
+  return finishEnrolment(c, user.id, dest, "SMS codes turned on. Here are your emergency backup codes.");
+});
+
+account.post("/account/mfa/sms/disable", async (c) => {
+  const user = c.get("user");
+  if (!user.sms_otp_enabled) return c.redirect("/account/security", 302);
+  if (await stepUpBudgetExceeded(c)) return c.redirect("/account/security?error=too-many#sms-codes", 302);
+  const result = await verifySmsOtp(c.env, accountScope(c.get("sessionId")), user.id, "disable", String((await c.req.parseBody()).code ?? ""));
+  if (result !== "ok") {
+    await chargeStepUp(c);
+    await logAudit(c.env, user, "user.step_up_failed", user.upn, { action: "sms_otp_disable", reason: result }, c.req.raw);
+    return c.redirect(`/account/security?${result === "wrong" ? "sms_code=disable&" : ""}error=sms-code#sms-codes`, 302);
+  }
+  await c.env.DB.prepare("UPDATE users SET sms_otp_enabled = 0, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id).run();
+  await logAudit(c.env, user, "user.sms_otp_disabled", user.upn, undefined, c.req.raw);
+  return c.redirect("/account/security?saved=sms-otp-disabled", 302);
+});
+
 account.post("/account/mfa/questions", async (c) => {
   const user = c.get("user");
   const body = await c.req.parseBody();

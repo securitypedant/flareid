@@ -217,8 +217,9 @@ Response `200`:
 | `status` | "active" \| "disabled" | yes |  |
 | `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
+| `sms_otp_enabled` | boolean | yes | SMS one-time codes are enrolled as a second factor. |
 | `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
-| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none. |
+| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "sms_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, SMS codes and security questions (the last two do not count for administrators). Empty when there is none. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -283,8 +284,9 @@ Response `200`:
 | `status` | "active" \| "disabled" | yes |  |
 | `mfa_enabled` | boolean | yes | An authenticator app (TOTP) is enrolled. Only that factor: see second_factors for all of them. |
 | `email_otp_enabled` | boolean | yes | Email one-time codes are enrolled as a second factor. |
+| `sms_otp_enabled` | boolean | yes | SMS one-time codes are enrolled as a second factor. |
 | `security_questions_enabled` | boolean | yes | Security questions are set as a second factor. |
-| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, security questions (which do not count for administrators). Empty when there is none. |
+| `second_factors` | "totp" \| "passkey" \| "email_otp" \| "sms_otp" \| "security_questions"[] | yes | Every second factor enrolled: an authenticator app, at least one passkey, email codes, SMS codes and security questions (the last two do not count for administrators). Empty when there is none. |
 | `job_title` | string | yes |  |
 | `department` | string | yes |  |
 | `employee_number` | string | yes |  |
@@ -4538,13 +4540,13 @@ Errors: `400`, `401`, `403` (`{ "error", "message" }`).
 
 Turn a second factor on or off.
 
-At least one factor must stay on while a policy requires a second factor, and one of totp, passkey, backup_codes and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
+At least one factor must stay on while a policy requires a second factor, and one of totp, passkey, backup_codes and email_otp while a policy requires one of an administrator (security questions never count for administrators). Email one-time codes (email_otp) are off on a fresh install and can be switched on only once email is configured; SMS one-time codes (sms_otp) likewise need an SMS provider, and never count for administrators. Security questions (security_questions) are off on a fresh install and need at least as many enabled questions as each person sets (see /api/v1/security/security-questions).
 
 Permission: `security:write`
 
 | Parameter | In | Required | Description |
 |---|---|---|---|
-| `key` | path | yes | "totp" \\| "passkey" \\| "backup_codes" \\| "email_otp" \\| "security_questions" |
+| `key` | path | yes | "totp" \\| "passkey" \\| "backup_codes" \\| "email_otp" \\| "sms_otp" \\| "security_questions" |
 
 Request body:
 

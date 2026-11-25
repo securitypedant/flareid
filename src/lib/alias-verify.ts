@@ -18,6 +18,7 @@ import { isEmailAddress, sendEmail } from "./email.js";
 import { buildEmail } from "./email-templates.js";
 import { brandFor } from "./brands.js";
 import { sendSms } from "./sms.js";
+import { otpSmsText } from "./sms-otp.js";
 import { normalizePhone } from "./user-phones.js";
 
 export const ALIAS_VERIFY_MINUTES = 10;
@@ -89,7 +90,7 @@ export async function startAliasVerification(env: Env, user: UserRow, kind: Alia
   const code = randomCode();
   const outcome =
     kind === "phone"
-      ? await sendSms(env, value, `${code} is your verification code.`)
+      ? await sendSms(env, value, otpSmsText({ app: (await brandFor(env, { upn: user.upn })).appName, code, minutes: ALIAS_VERIFY_MINUTES, host: env.ISSUER_URL ? new URL(env.ISSUER_URL).hostname : undefined, purpose: "verify" }))
       : await sendEmail(env, await buildEmail(env, "alias_verify", await brandFor(env, { upn: user.upn }), { name: user.display_name || user.username, code, minutes: String(ALIAS_VERIFY_MINUTES), address: value }).then((e) => ({ ...e, to: value })));
   if (!outcome.ok) return { ok: false, error: outcome.error };
 

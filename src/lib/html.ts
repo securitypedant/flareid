@@ -584,6 +584,22 @@ const STYLES = `
   .avatar-lg.avatar-initials { font-size: 34px; }
   .photo-upload-btn { font-size: 0.78rem; padding: 5px 12px; }
 
+  /* Sign-in methods (account -> Security): one row per method, controls behind Manage */
+  .methods { display: flex; flex-direction: column; }
+  .method { border-top: 1px solid var(--fi-line-soft); }
+  .method:first-child { border-top: none; }
+  .method-head { display: flex; align-items: center; gap: 14px; padding: 14px 0; cursor: pointer; list-style: none; }
+  .method-head::-webkit-details-marker { display: none; }
+  .method-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .method-text .muted { font-size: 0.8125rem; }
+  .method-toggle { color: var(--fi-accent); font-size: 0.8125rem; font-weight: 550; min-width: 56px; text-align: right; }
+  .method[open] .method-toggle { color: var(--fi-muted); }
+  .method .when-open, .method[open] .when-closed { display: none; }
+  .method[open] .when-open { display: inline; }
+  .method-body { padding: 0 0 18px; }
+  .badge-neutral { background: var(--fi-surface-2); color: var(--fi-muted); border-color: var(--fi-line-strong); }
+  @media (max-width: 560px) { .method-head { flex-wrap: wrap; row-gap: 8px; } .method-text { flex-basis: 100%; } .method-head .badge { margin-right: auto; } }
+  .method-body > :first-child { margin-top: 0; }
   /* Icon row actions (Iconoir) */
   .icon { display: block; flex-shrink: 0; }
   .icon-btn {

@@ -56,7 +56,7 @@ export async function selectUsers(env: Env, opts: { id?: number; username?: stri
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.upn, u.username, u.email, u.display_name, u.given_name, u.family_name, u.external_id, u.status,
-            u.mfa_enabled, u.email_otp_enabled, u.security_questions_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
+            u.mfa_enabled, u.email_otp_enabled, u.sms_otp_enabled, u.security_questions_enabled, u.job_title, u.department, u.employee_number, u.hire_date, u.employment_status,
             u.employment_type, u.location, u.manager_external_id, u.schema_id, u.custom_attributes, u.created_at, u.updated_at,
             (SELECT upn FROM users m WHERE m.external_id = u.manager_external_id) AS manager_upn,
             (SELECT name FROM schemas s WHERE s.id = u.schema_id) AS schema_name,
@@ -66,7 +66,7 @@ export async function selectUsers(env: Env, opts: { id?: number; username?: stri
        FROM users u ${where} ORDER BY u.id LIMIT ? OFFSET ?`
   )
     .bind(...binds, opts.limit, opts.offset)
-    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; email_otp_enabled: number; security_questions_enabled: number; has_passkey: number; has_backup_codes: number; custom_attributes: string }>();
+    .all<Record<string, unknown> & { group_names: string | null; mfa_enabled: number; email_otp_enabled: number; sms_otp_enabled: number; security_questions_enabled: number; has_passkey: number; has_backup_codes: number; custom_attributes: string }>();
 
   // Dynamic groups don't live in group_members, so resolve them once per
   // request and fold them into each user's groups.
@@ -76,12 +76,13 @@ export async function selectUsers(env: Env, opts: { id?: number; username?: stri
 
   const emailsById = await listUserEmailsFor(env, results.map((u) => Number(u.id)));
 
-  return results.map(({ group_names, mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey, has_backup_codes, custom_attributes, id, ...user }) => ({
+  return results.map(({ group_names, mfa_enabled, email_otp_enabled, sms_otp_enabled, security_questions_enabled, has_passkey, has_backup_codes, custom_attributes, id, ...user }) => ({
     ...user,
     mfa_enabled: mfa_enabled === 1,
     email_otp_enabled: email_otp_enabled === 1,
+    sms_otp_enabled: sms_otp_enabled === 1,
     security_questions_enabled: security_questions_enabled === 1,
-    second_factors: enrolledFactors({ mfa_enabled, email_otp_enabled, security_questions_enabled, has_passkey, has_backup_codes }),
+    second_factors: enrolledFactors({ mfa_enabled, email_otp_enabled, sms_otp_enabled, security_questions_enabled, has_passkey, has_backup_codes }),
     attributes: parseCustomAttributes(custom_attributes),
     emails: (emailsById.get(Number(id)) ?? []).map((e) => ({ value: e.email, type: e.type, primary: e.is_primary === 1 })),
     groups: [...new Set([...(group_names ? group_names.split("\n") : []), ...(dynamicById.get(Number(id)) ?? [])])],
