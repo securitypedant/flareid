@@ -171,16 +171,17 @@ function relativeTime(iso: string): string {
 }
 
 /** The attributes this user may edit: their schema's user-editable ones, minus anything a rule now matches on or provisioning masters. */
-async function editableAttributes(env: Env, user: UserRow): Promise<SchemaAttributeRow[]> {
+async function editableAttributes(env: Env, user: UserRow, attrs?: SchemaAttributeRow[]): Promise<SchemaAttributeRow[]> {
   if (!user.schema_id) return [];
-  const [attrs, ruleFields, mastered] = await Promise.all([getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env), getMasteredFields(env)]);
+  const [a, ruleFields, mastered] = await Promise.all([attrs ? Promise.resolve(attrs) : getSchemaAttributes(env, user.schema_id), ruleAttributeNames(env), getMasteredFields(env)]);
   const masteredSet = new Set(mastered);
-  return attrs.filter((a) => a.user_editable === 1 && a.type !== "reference" && a.name !== "manager" && !ruleFields.has(a.name) && !masteredSet.has(masteringKeyFor(a)));
+  return a.filter((attr) => attr.user_editable === 1 && attr.type !== "reference" && attr.name !== "manager" && !ruleFields.has(attr.name) && !masteredSet.has(masteringKeyFor(attr)));
 }
 
 account.get("/account", async (c) => {
   const user = c.get("user");
-  const [editable, mastered, photoV, myEmails, myPhones, pendingAliases] = await Promise.all([editableAttributes(c.env, user), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id), listUserEmails(c.env, user.id), listUserPhones(c.env, user.id), listPendingAliases(c.env, user.id)]);
+  const schemaAttrs = user.schema_id ? await getSchemaAttributes(c.env, user.schema_id) : [];
+  const [editable, mastered, photoV, myEmails, myPhones, pendingAliases] = await Promise.all([editableAttributes(c.env, user, schemaAttrs), getMasteredFields(c.env), getUserPhotoVersion(c.env, user.id), listUserEmails(c.env, user.id), listUserPhones(c.env, user.id), listPendingAliases(c.env, user.id)]);
   const photoMastered = mastered.includes("photo");
 
   return c.html(
@@ -195,19 +196,23 @@ account.get("/account", async (c) => {
             <h2>Profile</h2>
             <p class="muted">Everything this directory holds about you. These values are managed by your administrator - ask them if something is wrong.</p>
             ${attrGrid([
-              attr("Display name", user.display_name),
-              attr("First name", user.given_name),
-              attr("Last name", user.family_name),
+              ...(schemaAttrs.length
+                ? schemaAttrs.map((a) => attr(a.label, userAttributeValue(user, a)))
+                : [
+                    attr("Display name", user.display_name),
+                    attr("First name", user.given_name),
+                    attr("Last name", user.family_name),
+                    attr("Job title", user.job_title),
+                    attr("Department", user.department),
+                    attr("Employee number", user.employee_number),
+                    attr("Location", user.location),
+                    attr("Hire date", user.hire_date),
+                    attr("Employment status", user.employment_status),
+                    attr("Employment type", user.employment_type),
+                    attr("Manager", user.manager_external_id),
+                  ]),
               attr("Username", user.username),
               attr("UPN", user.upn),
-              attr("Job title", user.job_title),
-              attr("Department", user.department),
-              attr("Employee number", user.employee_number),
-              attr("Location", user.location),
-              attr("Hire date", user.hire_date),
-              attr("Employment status", user.employment_status),
-              attr("Employment type", user.employment_type),
-              attr("Manager", user.manager_external_id),
               attr("Account status", user.status),
               attr("Administrator", user.is_admin ? "Yes" : "No"),
               attrHtml("Created", ts(user.created_at)),
@@ -279,7 +284,7 @@ account.get("/account", async (c) => {
             .map(
               (p) => `<form method="POST" action="/account/aliases/verify" style="margin-bottom:10px;">
               <input type="hidden" name="kind" value="${p.kind}" /><input type="hidden" name="value" value="${escapeHtml(p.value)}" />
-              <div><label>Code sent to ${escapeHtml(p.value)}</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required style="width:140px;" /></div>
+              <label>Code sent to ${escapeHtml(p.value)}</label><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required style="max-width:220px;" />
               <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Verify</button></div>
             </form>`
             )
@@ -288,7 +293,8 @@ account.get("/account", async (c) => {
         }
         <h3 style="margin-top:14px;">Add an address or number</h3>
         <form method="POST" action="/account/aliases">
-          <div style="max-width:420px;"><label for="alias_identifier">Email address or phone number</label><input type="text" id="alias_identifier" name="identifier" placeholder="you@example.com or +15551234567" required /></div>
+          <label for="alias_identifier">Email address or phone number</label>
+          <input type="text" id="alias_identifier" name="identifier" placeholder="you@example.com or +15551234567" required />
           <div class="row" style="justify-content:flex-start;"><button class="primary" type="submit">Send code</button></div>
         </form>
       `)}
