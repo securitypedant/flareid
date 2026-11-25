@@ -200,8 +200,9 @@ export async function addGroupMembers(ctx: ServiceCtx, id: number, userIds: numb
   // Adding someone changes their account's memberships: an administrator's
   // need admin authority - the check SCIM's member operations make.
   for (const uid of userIds) await assertMayTouchUser(ctx, uid);
-  const results = await ctx.env.DB.batch(userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)").bind(id, uid)));
-  const added = results.reduce((n, r) => n + Number(r.meta.changes ?? 0), 0);
+  // RETURNING, not meta.changes: the access-history trigger's writes count as changes too.
+  const results = await ctx.env.DB.batch(userIds.map((uid) => ctx.env.DB.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?) RETURNING user_id").bind(id, uid)));
+  const added = results.reduce((n, r) => n + r.results.length, 0);
   await audit(ctx, "group.members_added", group.name, { count: added });
   await afterResponse(ctx, async (later) => {
     await syncGroupBestEffort(later, id);

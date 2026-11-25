@@ -398,6 +398,8 @@ const STYLES = `
   .badge-disabled { background: var(--fi-red-soft); color: var(--fi-red); border-color: #fecaca; }
   .badge-revoked { background: var(--fi-red-soft); color: var(--fi-red); border-color: #fecaca; }
   .badge-pending { background: var(--fi-accent-soft); color: var(--fi-amber); border-color: #fed7aa; }
+  /* Status pills in a column: one width, so a column of them lines up. */
+  .badge-status { min-width: 84px; text-align: center; box-sizing: border-box; }
   .badge-admin { background: var(--fi-accent-soft); color: var(--fi-amber); border-color: #fed7aa; }
   .pill {
     display: inline-block; background: var(--fi-line-soft); color: var(--fi-body); border: 1px solid var(--fi-line);

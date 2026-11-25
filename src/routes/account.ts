@@ -50,7 +50,7 @@ import { bindFlowToUser, deleteLoginFlow, getLoginFlow, isSealedFlowId } from ".
 import { finishOidcAuthorize, respondAuthorize } from "./authorize.js";
 import { safeNextPath } from "./login.js";
 import { deleteTrustedDevicesForUser, listTrustedDevices, revokeTrustedDevice } from "../lib/trusted-devices.js";
-import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessRequests, requestAccess, requestableApps, requestableGroups, type AccessTargetType } from "../lib/access.js";
+import { cancelAccessRequest, decideAccessRequest, getAccessRequest, listAccessRequests, myAccessHistory, myAccessRequests, requestAccess, requestableApps, requestableGroups, type AccessTargetType } from "../lib/access.js";
 import { groupRolesMap } from "../lib/admin-roles.js";
 import { isGroupManager, managedGroups } from "../lib/group-managers.js";
 import { notificationFeedFor } from "../lib/notifications.js";
@@ -352,7 +352,7 @@ account.get("/account/applications", async (c) => {
       <div class="muted" style="font-size:0.72rem; margin-top:5px; letter-spacing:0.03em; text-transform:uppercase;">${a.kind}</div>`;
     const style =
       'style="display:block; width:150px; min-height:112px; border:1px solid var(--fi-line); border-radius:var(--fi-radius); padding:14px; background:var(--fi-surface-2); color:var(--fi-body); text-decoration:none; overflow:hidden;"';
-    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" ${style}>${inner}</a>` : `<div ${style}>${inner}</div>`}</li>`;
+    return `<li>${a.href ? `<a href="${escapeHtml(a.href)}" target="_blank" rel="noopener" ${style}>${inner}</a>` : `<div ${style}>${inner}</div>`}</li>`;
   };
 
   return c.html(
@@ -363,6 +363,7 @@ account.get("/account/applications", async (c) => {
         ${launchpad.length
           ? `<ul style="list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:12px;">${launchpad.map(card).join("")}</ul>`
           : '<p class="muted">No apps assigned yet. Applications your administrator gives you access to will appear here.</p>'}
+        <p class="muted" style="margin:16px 0 0;">Missing an app? Some apps and groups accept requests - <a href="/account/access">ask for access</a>.</p>
       `),
       `${launchpad.length} app${launchpad.length === 1 ? "" : "s"}`
     )
@@ -373,13 +374,34 @@ account.get("/account/groups", (c) => c.redirect("/account/access", 301));
 
 account.get("/account/access", async (c) => {
   const user = c.get("user");
-  const [groups, requestable, apps, myRequests, managed] = await Promise.all([
+  const [groups, requestable, apps, myRequests, managed, membershipEvents] = await Promise.all([
     getUserGroupNames(c.env, user.id),
     requestableGroups(c.env, user.id),
     requestableApps(c.env, user.id, await getUserGroupIds(c.env, user.id)),
     myAccessRequests(c.env, user.id),
     managedGroups(c.env, user.id),
+    myAccessHistory(c.env, user.id),
   ]);
+  const kindBadge = (t: string) => `<span class="badge">${t === "group" ? "Group" : t === "oidc_app" ? "OIDC app" : t === "saml_app" ? "SAML app" : "Access app"}</span>`;
+  // Requests and membership changes, newest first, in one timeline.
+  const history = [
+    ...myRequests.map((r) => ({ at: r.created_at, html: `<tr>
+      <td>${escapeHtml(r.target_name)} ${kindBadge(r.target_type)}${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
+      <td class="muted">Requested</td>
+      <td class="muted">${ts(r.created_at)}</td>
+      <td><span class="badge badge-status ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
+        r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
+      }</td>
+      <td>${r.status === "pending" ? `<form method="POST" action="/account/access/requests/${r.id}/cancel"><button class="link-button" type="submit">Withdraw</button></form>` : ""}</td>
+    </tr>` })),
+    ...membershipEvents.map((e) => ({ at: e.at, html: `<tr>
+      <td>${escapeHtml(e.target_name || "(deleted)")} ${kindBadge(e.target_type)}</td>
+      <td class="muted">${e.action === "added" ? "Access granted" : "Access removed"}</td>
+      <td class="muted">${ts(e.at)}</td>
+      <td><span class="badge badge-status ${e.action === "added" ? "badge-active" : "badge-disabled"}">${e.action === "added" ? "Added" : "Removed"}</span></td>
+      <td></td>
+    </tr>` })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
   return c.html(
     layout(
       c,
@@ -403,28 +425,12 @@ account.get("/account/access", async (c) => {
             : ""
         }
         ${
-          myRequests.length
-            ? `<h3 style="margin-top:16px;">Your requests</h3>
+          history.length
+            ? `<h3 style="margin-top:16px;">Access history</h3>
+               <p class="muted">Your requests, and every time you were added to or removed from a group or app.</p>
                <table>
-                 <thead><tr><th>For</th><th>Asked</th><th>Status</th><th></th></tr></thead>
-                 <tbody>
-                   ${myRequests
-                     .map(
-                       (r) => `<tr>
-                         <td>${escapeHtml(r.target_name)} <span class="badge">${r.target_type === "group" ? "Group" : r.target_type === "oidc_app" ? "OIDC app" : r.target_type === "saml_app" ? "SAML app" : "Access app"}</span>${r.reason ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</span>` : ""}</td>
-                         <td class="muted">${ts(r.created_at)}</td>
-                         <td><span class="badge ${r.status === "pending" ? "badge-pending" : r.status === "approved" ? "badge-active" : "badge-disabled"}">${{ pending: "Waiting", approved: "Approved", denied: "Denied", cancelled: "Withdrawn" }[r.status] ?? r.status}</span>${
-                           r.status !== "pending" && r.status !== "cancelled" && r.note ? `<br/><span class="muted" style="font-size:12px;">${escapeHtml(r.note)}</span>` : ""
-                         }</td>
-                         <td>${
-                           r.status === "pending"
-                             ? `<form method="POST" action="/account/access/requests/${r.id}/cancel"><button class="link-button" type="submit">Withdraw</button></form>`
-                             : ""
-                         }</td>
-                       </tr>`
-                     )
-                     .join("")}
-                 </tbody>
+                 <thead><tr><th>For</th><th>Event</th><th>When</th><th>Status</th><th></th></tr></thead>
+                 <tbody>${history.map((h) => h.html).join("")}</tbody>
                </table>`
             : ""
         }

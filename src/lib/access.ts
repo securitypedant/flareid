@@ -101,6 +101,24 @@ export async function myAccessRequests(env: Env, userId: number): Promise<Access
   ).results;
 }
 
+/** A membership change recorded by migration 0060's triggers: added to / removed from a static group or a direct app assignment. */
+export interface AccessHistoryEvent {
+  id: number;
+  target_type: "group" | "oidc_app" | "saml_app";
+  target_id: number;
+  target_name: string;
+  action: "added" | "removed";
+  at: string;
+}
+
+export async function myAccessHistory(env: Env, userId: number, limit = 50): Promise<AccessHistoryEvent[]> {
+  return (
+    await env.DB.prepare("SELECT id, target_type, target_id, target_name, action, at FROM access_history WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT ?")
+      .bind(userId, limit)
+      .all<AccessHistoryEvent>()
+  ).results;
+}
+
 export interface RequestableApp {
   target_type: "oidc_app" | "saml_app" | "cfapp";
   id: number;
