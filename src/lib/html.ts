@@ -613,13 +613,16 @@ const STYLES = `
   .icon { display: block; flex-shrink: 0; }
   .icon-btn {
     display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0;
-    background: none; border: 1px solid transparent; border-radius: 6px; color: var(--fi-muted); cursor: pointer; text-decoration: none;
+    /* The border alone marks it as a button: >= 3:1 against cards and table rows in both themes (WCAG 1.4.11). */
+    background: var(--fi-surface); border: 1px solid color-mix(in srgb, var(--fi-muted) 70%, var(--fi-line-strong)); border-radius: 6px; color: var(--fi-body); cursor: pointer; text-decoration: none;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
-  .icon-btn:hover { background: var(--fi-line-soft); color: var(--fi-ink); }
+  .icon-btn:hover { background: var(--fi-line-soft); border-color: var(--fi-muted); color: var(--fi-ink); }
   .icon-btn:focus-visible { outline: none; border-color: var(--fi-accent); box-shadow: 0 0 0 3px rgba(246, 130, 31, 0.18); }
-  .icon-btn-danger, .icon-btn-danger:hover { color: var(--fi-red); }
-  .icon-btn-danger:hover { background: var(--fi-red-soft); }
-  .row-actions { display: flex; gap: 2px; align-items: center; justify-content: flex-end; }
+  /* Destructive: red icon on a red-tinted border, filling on hover. */
+  .icon-btn-danger { color: var(--fi-red); border-color: color-mix(in srgb, var(--fi-red) 55%, var(--fi-line-strong)); }
+  .icon-btn-danger:hover { color: var(--fi-red); background: var(--fi-red-soft); border-color: var(--fi-red); }
+  .row-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
   .row-actions form { margin: 0; display: inline-flex; }
   /* Copy-to-clipboard buttons */
   .copy-btn {
@@ -699,6 +702,22 @@ const STYLES = `
   .success-banner {
     background: var(--fi-green-soft); color: var(--fi-green); border: 1px solid #bbf7d0; border-radius: 8px;
     padding: 10px 14px; margin-bottom: 16px; font-size: 0.875rem; font-weight: 550;
+  }
+
+  /* Phones: a larger type scale. Everything sized in rem grows with the root
+     (small labels and badges land at >= 12px); form fields are 16px so iOS
+     Safari doesn't zoom the page when one is focused; and the SVG charts,
+     which shrink to about half their 640-unit width, get labels that still
+     read at roughly 10-11px once scaled. */
+  @media (max-width: 640px) {
+    html { font-size: 18px; }
+    body { font-size: 15px; }
+    input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], input[type=password], input[type=number], input[type=date], select, textarea { font-size: 16px; }
+    code { font-size: 0.875em; }
+    .chart text { font-size: 20px; }
+    .avatar-sm.avatar-initials { font-size: 12px; }
+    /* Tables scroll sideways here: keep dates and pills on one line rather than stacking a word per line. */
+    .card table time.ts, .card table .badge { white-space: nowrap; }
   }
 `;
 

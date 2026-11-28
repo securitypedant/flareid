@@ -238,15 +238,15 @@ account.get("/account", async (c) => {
             ${avatar(user.id, user.display_name, "lg", { upn: user.upn, v: photoV ?? "none" })}
             ${
               photoMastered
-                ? '<p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">Your photo is managed by your HR system.</p>'
+                ? '<p class="muted" style="font-size:0.75rem; margin-top:6px; max-width:180px;">Your photo is managed by your HR system.</p>'
                 : `<form method="POST" action="/account/photo" enctype="multipart/form-data" style="margin-top:10px;">
                     <label class="secondary photo-upload-btn" style="cursor:pointer; display:inline-block;">
                       Change photo
                       <input type="file" name="photo" accept="image/png,image/jpeg,image/webp,image/gif" data-autosubmit style="display:none;" />
                     </label>
                   </form>
-                  <form method="POST" action="/account/photo/remove" style="margin-top:4px;"><button class="link-button" type="submit" style="font-size:11px;">Remove photo</button></form>
-                  <p class="muted" style="font-size:11px; margin-top:6px; max-width:180px;">PNG, JPG, WebP or GIF up to 1 MB.</p>`
+                  <form method="POST" action="/account/photo/remove" style="margin-top:4px;"><button class="link-button" type="submit" style="font-size:0.75rem;">Remove photo</button></form>
+                  <p class="muted" style="font-size:0.75rem; margin-top:6px; max-width:180px;">PNG, JPG, WebP or GIF up to 1 MB.</p>`
             }
           </div>
         </div>
